@@ -85,6 +85,8 @@ impl Session {
     /// no job is open yet).
     pub fn call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
         let op = ops::find(name).ok_or_else(|| format!("unknown operation '{name}' — see `nestpro ops`"))?;
+        // The material list may have changed on another PC since (MA14).
+        self.ctx.reload_materials();
         let args = if args.is_null() { json!({}) } else { args.clone() };
         ops::check_args(op, &args)?;
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };

@@ -265,6 +265,11 @@ pub struct ProductFile {
     pub part: Part,
     pub folder: String,
     pub material: usize,
+    /// The material's name, written on every save from the material list,
+    /// so the part finds its material again by name (MA17). Empty in a part
+    /// saved before names were stored. Readers go by `material`.
+    #[serde(default)]
+    pub material_name: String,
     pub thickness: f64,
     /// Who saved it, and when (LB5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -442,7 +447,10 @@ impl Library {
                     let written = stamp.0.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
                     let e = match kind {
                         Kind::Job => crate::jobfile::load(&p).ok().map(|j| job_entry(id, &j, written)),
-                        Kind::Product => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<ProductFile>(&t).ok()).map(|pf| product_entry(id, &pf, written)),
+                        Kind::Product => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<ProductFile>(&t).ok()).map(|mut pf| {
+                            pf.material = crate::engine::material::resolve(pf.material, &pf.material_name);
+                            product_entry(id, &pf, written)
+                        }),
                     };
                     if let Some(e) = e {
                         out.insert((kind as u8, id), (stamp, e));
@@ -729,7 +737,7 @@ impl Library {
         let mut part = part.clone();
         part.erp.clear();
         self.store(Kind::Product, to, || Ok(part), |part, saved, rec| {
-            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, thickness, saved: Some(saved), revision: rec.revision };
+            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: crate::engine::material::stored_name(material, ""), thickness, saved: Some(saved), revision: rec.revision };
             let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
             Ok((text, move |id| product_entry(id, &pf, 0)))
         })
@@ -737,7 +745,10 @@ impl Library {
 
     pub fn load_product(&self, id: u64) -> Result<ProductFile, String> {
         let t = std::fs::read_to_string(self.path(Kind::Product, id)).map_err(|e| e.to_string())?;
-        serde_json::from_str(&t).map_err(|e| format!("not a library product ({e})"))
+        let mut pf: ProductFile = serde_json::from_str(&t).map_err(|e| format!("not a library product ({e})"))?;
+        // MA17: by id, else by the name it was saved with.
+        pf.material = crate::engine::material::resolve(pf.material, &pf.material_name);
+        Ok(pf)
     }
 
     /// The product stored under this reference. As in Lantek
@@ -937,7 +948,7 @@ mod library_tests {
         assert_eq!((p1, p2), (1, 2));
         assert_eq!(lib.path(Kind::Product, 1234), dir.join("Products").join("1").join("1234.json"));
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
-        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
+        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
         let j = lib.save_job(&job, SaveTo::New).unwrap().id;
         // Saving again over the same number keeps one record.
         lib.save_job(&job, SaveTo::Over(j)).unwrap();

@@ -301,6 +301,7 @@ impl App {
             saved: None,
             library: None,
             library_parts: Default::default(),
+            material_name: String::new(),
         }
     }
 

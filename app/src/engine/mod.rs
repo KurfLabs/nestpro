@@ -14,6 +14,7 @@ pub mod imports;
 pub mod inuse;
 pub mod librarycheck;
 pub mod material;
+pub mod materialops;
 pub mod ops;
 pub mod pattern;
 pub mod readback;
@@ -54,6 +55,9 @@ pub struct Ctx {
     /// What this session has seen of the holds on jobs in use, to judge when
     /// one is gone (CU7). Agents never hold a job (CU12).
     pub watch: inuse::Watch,
+    /// This PC's settings folder: the material list lives there when the PC
+    /// has no Library (MA14).
+    pub pc_dir: PathBuf,
 }
 
 /// The post library of a machine (built-in values when it has none or it can't be read).
@@ -71,10 +75,25 @@ pub fn install_machine(m: &settings::Machine, lantek_dir: &str) -> crate::ct1::M
     t
 }
 
-/// Tell the rules which machine-file key each material has (Settings →
-/// Materials → Machine table, MTL2). Shared with the GUI's Settings → Apply.
-pub fn install_material_keys(cfg: &AppSettings) {
-    crate::ct1::set_material_keys(material::machine_keys(cfg));
+/// Read the material list from where it lives and answer from it (MA14):
+/// the Library's, or this PC's own when it has no Library. While it can't
+/// be read (the Library is out of reach) the list in use stays; `first`
+/// (starting up) uses the one this PC's settings seed instead (MA15).
+/// Shared with the window.
+pub fn load_materials(library_dir: &Path, pc_dir: &Path, cfg: &AppSettings, first: bool) -> Result<(), String> {
+    let home = crate::materials::Home::of(library_dir, pc_dir);
+    match crate::materials::load(&home, pc_dir, cfg) {
+        Ok(l) => {
+            material::install(l);
+            Ok(())
+        }
+        Err(e) => {
+            if first {
+                material::install(material::List::seed(cfg));
+            }
+            Err(e)
+        }
+    }
 }
 
 /// The machine's part gap and sheet margin for a sheet's material and
@@ -123,10 +142,10 @@ pub fn blm_base(m: &settings::Machine) -> crate::blm::BlmSettings {
 }
 
 /// BLM settings with the job's name, material and thickness filled in
-/// (material name and code from Settings → Materials).
-pub fn blm_for(spec: &SheetSpec, base: &crate::blm::BlmSettings, job_name: &str, cfg: &AppSettings) -> crate::blm::BlmSettings {
+/// (material name and code in programs from the material list).
+pub fn blm_for(spec: &SheetSpec, base: &crate::blm::BlmSettings, job_name: &str) -> crate::blm::BlmSettings {
     let b = crate::blm::BlmSettings::for_spec(spec, &base.machine, job_name);
-    let (mat_name, mat_id) = material::program(cfg, spec.material);
+    let (mat_name, mat_id) = material::program(spec.material);
     crate::blm::BlmSettings { on: base.on, gas_id: base.gas_id, gas_name: base.gas_name.clone(), mat_name, mat_id, ..b }
 }
 
@@ -139,9 +158,21 @@ impl Ctx {
     pub fn from_settings(cfg: AppSettings) -> Ctx {
         let m = cfg.machine();
         let tech = install_machine(&m, &cfg.lantek_dir);
-        install_material_keys(&cfg);
         let library_dir = if cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&cfg.library_dir) };
-        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who: crate::shared::Who::this_pc().as_agent(), clock: crate::shared::Clock::pc(), watch: Default::default() }
+        let pc_dir = AppSettings::file().parent().map(Path::to_path_buf).unwrap_or_default();
+        let _ = load_materials(&library_dir, &pc_dir, &cfg, true);
+        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who: crate::shared::Who::this_pc().as_agent(), clock: crate::shared::Clock::pc(), watch: Default::default(), pc_dir }
+    }
+
+    /// Where the material list lives for this session (MA14).
+    pub fn material_home(&self) -> crate::materials::Home {
+        crate::materials::Home::of(&self.library_dir, &self.pc_dir)
+    }
+
+    /// Read the material list again (each call: another PC may have changed
+    /// it). While the Library can't be reached the list in use stays.
+    pub fn reload_materials(&self) {
+        let _ = load_materials(&self.library_dir, &self.pc_dir, &self.cfg, false);
     }
 
     /// Built-in values only (tests).
@@ -154,6 +185,9 @@ impl Ctx {
         let mut c = Ctx::from_settings(cfg);
         // Never the shop's real stock: an empty library of the test's own.
         c.library_dir = std::env::temp_dir().join(format!("nestpro_test_nolib_{}_{:?}", std::process::id(), std::thread::current().id()));
+        c.pc_dir = std::env::temp_dir().join(format!("nestpro_test_pc_{}_{:?}", std::process::id(), std::thread::current().id()));
+        // The material list of a new install, on this test's thread.
+        material::install(material::List::seed(&c.cfg));
         c
     }
 
@@ -211,8 +245,8 @@ pub fn next_color(parts: &[Part]) -> usize {
 /// The app material a material text names: its name, code or an alias; then a
 /// grade that starts with an alias holding a digit ("S355J2" → the material
 /// with alias S355); then a look-alike name (as the XML import does).
-pub fn material_like(cfg: &AppSettings, text: &str) -> Option<usize> {
-    material::like(cfg, text)
+pub fn material_like(text: &str) -> Option<usize> {
+    material::like(text)
 }
 
 /// What a drawing's import left out or changed, for the user (every format's
@@ -246,10 +280,10 @@ pub fn import_notes(name: &str, rep: &dxf::ImportReport) -> Vec<String> {
 
 /// "material …, thickness … mm" where part data (from a file name or a file)
 /// doesn't match the job; `None` when it does or says nothing.
-fn spec_mismatch(cfg: &AppSettings, spec: &SheetSpec, material: Option<&str>, thickness: Option<f64>) -> Option<String> {
+fn spec_mismatch(spec: &SheetSpec, material: Option<&str>, thickness: Option<f64>) -> Option<String> {
     let mut info = vec![];
     if let Some(m) = material.filter(|m| !m.trim().is_empty()) {
-        if material_like(cfg, m) != Some(spec.material) {
+        if material_like(m) != Some(spec.material) {
             info.push(format!("material {}", m.trim()));
         }
     }
@@ -277,7 +311,7 @@ pub fn part_from_read(cfg: &AppSettings, spec: &SheetSpec, file: &str, name: &st
     let one_part = name == file;
     let (reference, qty) = match fd {
         Some(fd) => {
-            if let Some(m) = spec_mismatch(cfg, spec, fd.material.as_deref(), fd.thickness) {
+            if let Some(m) = spec_mismatch(spec, fd.material.as_deref(), fd.thickness) {
                 notes.push(format!("{name}: the name says {m}"));
             }
             let reference = if one_part { fd.reference.unwrap_or_else(|| file.to_string()) } else { name.to_string() };
@@ -285,7 +319,7 @@ pub fn part_from_read(cfg: &AppSettings, spec: &SheetSpec, file: &str, name: &st
         }
         None => (name.to_string(), meta.qty.unwrap_or(1).max(1)),
     };
-    if let Some(m) = spec_mismatch(cfg, spec, meta.material.as_deref(), meta.thickness) {
+    if let Some(m) = spec_mismatch(spec, meta.material.as_deref(), meta.thickness) {
         notes.push(format!("{name}: the file says {m}"));
     }
     // Prefix + name + suffix, at most 40 characters (FN5).
@@ -1368,7 +1402,7 @@ pub fn drop_empty_sheets(sheets: &mut Vec<Vec<Placed>>, formats: &mut Vec<SheetF
 
 impl JobFile {
     pub fn new_job(name: &str, spec: SheetSpec) -> JobFile {
-        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() }
+        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() }
     }
 
     pub fn plans(&self) -> Vec<SheetPlan> {
@@ -1422,8 +1456,8 @@ impl JobFile {
     }
 
     /// The job's sheets as the stock's remnant generation sees them.
-    pub fn stock_sheets(&self, cfg: &AppSettings) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: material::program_name_or_name(cfg, self.spec.material) }
+    pub fn stock_sheets(&self) -> stockflow::JobSheets<'_> {
+        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: material::program_name_or_name(self.spec.material) }
     }
 
     /// Bring the stock in step with the job (what the window does on save):
@@ -1439,7 +1473,7 @@ impl JobFile {
     pub fn book_stock_named(&mut self, ctx: &Ctx, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
         self.normalise_formats();
         let (mut formats, mut held) = (std::mem::take(&mut self.formats), std::mem::take(&mut self.held));
-        let note = stockflow::on_save(&ctx.library_at(), &self.stock_sheets(&ctx.cfg), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
+        let note = stockflow::on_save(&ctx.library_at(), &self.stock_sheets(), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
         (self.formats, self.held) = (formats, held);
         self.booked = true;
         note

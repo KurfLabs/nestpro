@@ -45,6 +45,7 @@ mod formats;
 mod importui;
 mod inuseui;
 mod jobfile;
+mod materials;
 mod jobs;
 mod libui;
 mod library;
@@ -723,6 +724,8 @@ impl App {
             erp_job: None,
             erp: Default::default(),
         };
+        // The material list (MA14): the Library's, or this PC's own.
+        a.reload_materials(true);
         a.run_nesting();
         a.undo.clear();
         a.jobs = demo_jobs(&a);
@@ -912,6 +915,7 @@ impl App {
             library: None,
             // The library parts it read, and at which revision (LB7).
             library_parts: self.lib_read.parts.clone(),
+            material_name: String::new(),
         };
         match jobfile::save(path, &j) {
             Ok(()) => {
@@ -1738,7 +1742,7 @@ impl App {
     /// Write every sheet's machine program plus a CSV parts report.
     /// BLM settings with this job's name, material and thickness filled in.
     pub fn blm_now(&self) -> blm::BlmSettings {
-        engine::blm_for(&self.spec, &self.blm, &self.job_name, &self.cfg)
+        engine::blm_for(&self.spec, &self.blm, &self.job_name)
     }
 
     /// The program file name shown and written for a sheet.

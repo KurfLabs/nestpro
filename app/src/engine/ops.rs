@@ -82,11 +82,11 @@ pub struct Op {
 }
 
 impl Op {
-    /// Changes a file: the job, the sheet stock (`stock`), the Library's job
-    /// or part folders (`job-folders`, `part-folders`) or a test Library
-    /// folder (`library-check`).
+    /// Changes a file: the job, the sheet stock (`stock`), the material list
+    /// (`material`), the Library's job or part folders (`job-folders`,
+    /// `part-folders`) or a test Library folder (`library-check`).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check" | "job-folders" | "part-folders")
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "material" | "library-check" | "job-folders" | "part-folders")
     }
 
     /// MCP tool name (underscores).
@@ -335,6 +335,17 @@ pub static OPS: &[Op] = &[
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
     ] },
     // --- the shared Library ---
+    Op { name: "material", group: "Library", kind: Kind::Global, help: "The material list, the same on every PC that shares the Library (kept in its Sheets folder, beside the stock; on a PC with no Library, in its settings folder): list every material (its number, name, other names, standard, kind, weight per volume, name and code in programs, machine-file key, and which of those are its standard's), add one based on a standard of the catalogue (it takes the next number, never one given before), or edit one. Each name and other name means one material: one already used, whatever its capitals or spaces, is refused, naming the material that has it. Jobs, stock and library parts name a material by its name, another name or its number (0 mild steel, 1 stainless steel, 2 aluminium as always). Changes are made under the Library's write lock and refused while it can't be reached. Before the first change, the list is this PC's three materials from Settings → Materials.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "add", "edit"] },
+        a("material", Ty::Str, "edit: the material to change: its name, another name or its number"),
+        a("name", Ty::Str, "add: the new material's name (e.g. \"DEMO 316 Stainless\"); edit: its new name"),
+        a("standard", Ty::Str, "add (needed), edit: the standard it is based on: its catalogue number or name (see list: standards); it gives the kind, the weight per volume and every value the material has none of its own for"),
+        a("other_names", Ty::Str, "add/edit: other names it goes by, comma-separated (grades, norms, shop names); edit: replaces them all"),
+        a("density", Ty::Num, "add/edit: its own weight per volume, g/cm³ (\"standard\" or empty: its standard's)"),
+        a("program_name", Ty::Str, "add/edit: its own name in machine programs (\"standard\": its standard's)"),
+        a("program_code", Ty::Str, "add/edit: its own code in machine programs (\"standard\": its standard's)"),
+        a("machine_ref", Ty::Str, "add/edit: its own key in the machine file's material and thickness sections, a catalogue number or the name the file uses; empty = its name in programs; \"standard\": its standard's"),
+    ] },
     Op { name: "library-check", group: "Library", kind: Kind::Global, help: "The two-PC Library check (run it on two or more programming PCs at once before sharing one Library folder): saves made-up DEMO-CHECK jobs and library parts, saves over them again and changes the sheet stock in a loop in a test folder, tagged with this PC's name, then checks that everything this run and every other run saved there is present and whole, and reports PASS or FAIL in plain words. Only an empty folder (made if missing) or one it made itself; a real Library is refused. `nestpro library-check <folder> --minutes 10 --text`.", args: &[
         r("folder", Ty::Path, "The test folder: empty or missing, or one the check made before (e.g. a folder next to the Library on the share). Never the Library itself"),
         a("minutes", Ty::Num, "How long to keep saving, minutes (default 1)"), a("rounds", Ty::Int, "Stop after this many rounds instead (each round: 2 job saves, 2 library part saves, 1 stock change)"),
@@ -576,18 +587,27 @@ fn contour_state_from(s: &str) -> Result<dxf::ContourState, String> {
     pick(s, "contour state", &words)
 }
 
-/// Material by number (from 0 as in catalog), name, or a Settings alias.
-pub fn material_from(s: &str, cfg: &AppSettings) -> Result<usize, String> {
+/// Material by number (0 to 2 as always, or as `material mode=list` shows),
+/// name or other name (any capitals and spaces), or the start of one name
+/// that only one material's name starts with.
+pub fn material_from(s: &str, _cfg: &AppSettings) -> Result<usize, String> {
     use super::material;
+    let listed = || material::ids().into_iter().map(|i| format!("{i} {}", material::name_or(i, "?"))).collect::<Vec<_>>().join(", ");
     if let Ok(n) = s.trim().parse::<usize>() {
-        return if material::exists(n) { Ok(n) } else { Err(format!("material {n}: there are {} (0-{})", material::count(), material::count() - 1)) };
+        if material::exists(n) || material::find(s).is_none() {
+            return if material::exists(n) { Ok(n) } else { Err(format!("There's no material {n} in the list: {}.", listed())) };
+        }
     }
-    let l = s.trim().to_lowercase();
-    material::ids()
-        .into_iter()
-        .find(|&i| material::name(i).is_some_and(|m| m.to_lowercase() == l || m.to_lowercase().starts_with(&l)))
-        .or_else(|| cfg.material_for(s))
-        .ok_or_else(|| format!("material '{s}' is not one of: {}", material::names().join(", ")))
+    if let Some(i) = material::find(s) {
+        return Ok(i);
+    }
+    let l = material::norm(s);
+    let starts: Vec<usize> = material::ids().into_iter().filter(|&i| !l.is_empty() && material::name(i).is_some_and(|m| material::norm(&m).starts_with(&l))).collect();
+    match starts.as_slice() {
+        [i] => Ok(*i),
+        [] => Err(format!("Material '{}' isn't in the list: {}. Add it with material mode=add, or give it as another name of one (material mode=edit).", s.trim(), listed())),
+        many => Err(format!("Material '{}' could be {}: give the whole name.", s.trim(), many.iter().map(|&i| material::name_or(i, "?")).collect::<Vec<_>>().join(" or "))),
+    }
 }
 
 fn key(s: &str) -> String {
@@ -1310,6 +1330,7 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
     match op.name {
         "catalog" => Ok(Outcome::read("Choices for the operations.", catalog())),
         "stock" => stock_op(ctx, &a),
+        "material" => super::materialops::run(ctx, &a),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
         "import-xml" => import_xml(ctx, &a),
         "job-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Job),
@@ -2277,8 +2298,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     job.normalise_formats();
                     let used = stockflow::sheets_used(&job.formats, job.sheets.len());
                     let missing: Vec<&String> = used.keys().filter(|r| st.get(r).is_none()).collect();
-                    let rows = stockflow::remnant_rows(&ctx.library_dir, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock, true);
-                    let (_, kept_used) = stockflow::pending_remnants(&st, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock, true);
+                    let rows = stockflow::remnant_rows(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock, true);
+                    let (_, kept_used) = stockflow::pending_remnants(&st, &job.stock_sheets(), &job.formats, &ctx.cfg.stock, true);
                     let v = json!({
                         "booked": job.booked,
                         "held": job.held,
@@ -2295,7 +2316,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let names: Option<BTreeMap<(usize, usize), String>> = match a.str("refs") {
                         None => None,
                         Some(list) => {
-                            let rows = stockflow::remnant_rows(&ctx.library_dir, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock, true);
+                            let rows = stockflow::remnant_rows(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock, true);
                             let refs: Vec<String> = list.split(',').map(|r| r.trim().to_string()).collect();
                             if refs.len() != rows.len() {
                                 return Err(format!("refs: {} given, but booking stores {} new remnant(s) — see stock-book mode=status", refs.len(), rows.len()));
@@ -2976,7 +2997,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 return Err(stop_refusal(s + 1, &stops));
             }
             let text = if ctx.blm.on {
-                let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &ctx.blm, &job.name, &ctx.cfg));
+                let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &ctx.blm, &job.name));
                 // BL39: the same refusal as export.
                 let issues = readback::check_set(&set, &job.parts, &job.sheets[s], &plans[s], job.cuts(s));
                 if !issues.is_empty() {
@@ -2988,7 +3009,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
                 t
             } else {
-                let marks = stockflow::remnant_marks(&crate::stock::Stock::load_cached(&ctx.library_dir), &job.stock_sheets(&ctx.cfg), &job.formats, s, &ctx.cfg.stock);
+                let marks = stockflow::remnant_marks(&crate::stock::Stock::load_cached(&ctx.library_dir), &job.stock_sheets(), &job.formats, s, &ctx.cfg.stock);
                 program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, &ctx.post, ctx.cfg.stock.line.edge_offset)
             };
             // QR6: say so when parts on the sheet overlap.
@@ -3004,8 +3025,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         "export" => {
             let base = a.str("dir").map(PathBuf::from).unwrap_or_else(|| ctx.export_dir());
             let plans = job.plans();
-            let blm = blm_for(&job.spec, &ctx.blm, &job.name, &ctx.cfg);
-            let marks = stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock);
+            let blm = blm_for(&job.spec, &ctx.blm, &job.name);
+            let marks = stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock);
             let ex = export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &ctx.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
             let what = if blm.on { "BLM LC5 program set(s) (.zip + .XML)" } else { "program(s)" };
             let mut o = Outcome::read(

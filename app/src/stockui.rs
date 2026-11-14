@@ -89,7 +89,7 @@ impl App {
     }
 
     fn job_sheets(&self) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: crate::engine::material::program_name_or_name(&self.cfg, self.spec.material) }
+        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: crate::engine::material::program_name_or_name(self.spec.material) }
     }
 
     /// The Library folder as whoever works at this window, without setting

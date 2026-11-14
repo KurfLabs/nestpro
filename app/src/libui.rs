@@ -312,13 +312,24 @@ impl App {
             saved: None,
             library: self.job_lib_id.map(|id| Record { id, revision: self.lib_read.revision }),
             library_parts: self.lib_read.parts.clone(),
+            material_name: String::new(),
         }
     }
 
     /// Another library folder: the open jobs' record numbers belong to the old
     /// one, so saving would replace whatever has that number in the new one.
     /// They become new records there.
+    /// Read the material list again from where it lives (MA14); while it
+    /// can't be read the list in use stays (`first`: this PC's settings seed
+    /// it, MA15).
+    pub fn reload_materials(&mut self, first: bool) {
+        let pc_dir = crate::settings::AppSettings::file().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let _ = crate::engine::load_materials(&self.library_dir(), &pc_dir, &self.cfg, first);
+    }
+
     pub fn library_folder_changed(&mut self) {
+        // The materials are the new Library's (MA14).
+        self.reload_materials(false);
         // The holds belong to the old Library: let go of them there (CU5).
         self.release_holds();
         self.inuse.watch.done_with_all();
