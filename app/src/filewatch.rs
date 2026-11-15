@@ -91,6 +91,7 @@ impl App {
         self.job_name = j.name;
         self.parts = j.parts;
         self.spec = j.spec;
+        self.job_material_name = j.material_name;
         self.result = { let mut r = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 }; r.normalise(&self.spec); r };
         self.held = j.held;
         self.lib_read.parts = j.library_parts;

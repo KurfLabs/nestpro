@@ -208,6 +208,7 @@ impl App {
         self.job_path = j.file.as_ref().map(|l| l.path.clone());
         self.job_link = j.file;
         self.erp_job = j.erp;
+        self.job_material_name = j.material_name;
         self.ghost = None;
         self.sel_cut = None;
         self.jobs_reindexed();
@@ -301,7 +302,7 @@ impl App {
             saved: None,
             library: None,
             library_parts: Default::default(),
-            material_name: String::new(),
+            material_name: j.material_name.clone(),
         }
     }
 

@@ -353,6 +353,7 @@ impl App {
             file: None,
             saved: None,
             lib_folder: None,
+            material_name: String::new(),
         });
         let i = self.jobs.len() - 1;
         self.open_job(i);

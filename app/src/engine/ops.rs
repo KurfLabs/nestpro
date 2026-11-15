@@ -2106,7 +2106,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     }
                     let mut ids = vec![];
                     for (&i, &to) in t.iter().zip(&to) {
-                        match lib.save_product_in(&job.parts[i], &folder, job.spec.material, job.spec.thickness, to, &into) {
+                        match lib.save_product_in(&job.parts[i], &folder, (job.spec.material, &job.material_name), job.spec.thickness, to, &into) {
                             Ok(rec) => {
                                 job.library_parts.insert(job.parts[i].name.clone(), rec);
                                 ids.push(rec.id);

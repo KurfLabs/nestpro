@@ -738,11 +738,18 @@ impl Library {
     /// Save a product, recording who saved it and when (LB5) and its
     /// revision (LB7). Returns its record.
     pub fn save_product(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo) -> Result<Record, Refused> {
+        self.store_product(part, folder, (material, ""), thickness, to)
+    }
+
+    /// `save_product` with the material's id and the name it was read with
+    /// (MA17): kept while the material list doesn't have the id.
+    fn store_product(&self, part: &Part, folder: &str, material: (usize, &str), thickness: f64, to: SaveTo) -> Result<Record, Refused> {
+        let (material, read_name) = material;
         // A library product is reusable stock, not one order's part: its ERP orders stay with the job.
         let mut part = part.clone();
         part.erp.clear();
         self.store(Kind::Product, to, || Ok(part), |part, saved, rec| {
-            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: crate::engine::material::stored_name(material, ""), thickness, saved: Some(saved), revision: rec.revision };
+            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: crate::engine::material::stored_name(material, read_name), thickness, saved: Some(saved), revision: rec.revision };
             let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
             Ok((text, move |id| product_entry(id, &pf, 0)))
         })
@@ -797,14 +804,15 @@ impl Library {
     }
 
     /// `save_product`, a new part going into the part folder `into` names,
+    /// in `material`: its id and the name the job read it with (MA17),
     /// made if missing (JX19); saving over a part never moves it. The
     /// revision check (LB7), the part, its line in the list and its place in
     /// the parts tree are one hold of the write lock (LB1): a save refused
     /// because someone saved the part since files nothing. A place that
     /// can't be written leaves the part at the top of the tree, saved.
-    pub fn save_product_in(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo, into: &crate::folders::PartsFolder) -> Result<Record, Refused> {
+    pub fn save_product_in(&self, part: &Part, folder: &str, material: (usize, &str), thickness: f64, to: SaveTo, into: &crate::folders::PartsFolder) -> Result<Record, Refused> {
         let _lock = self.lock()?;
-        let rec = self.save_product(part, folder, material, thickness, to)?;
+        let rec = self.store_product(part, folder, material, thickness, to)?;
         if to.id().is_none() {
             let _ = crate::folders::file_part(self, rec.id, into);
         }
@@ -950,6 +958,12 @@ mod library_tests {
         let p3 = lib.save_product(&tp, "ACME", 2, 1.0, SaveTo::New).unwrap().id;
         assert!(lib.entries().iter().find(|e| e.kind == Kind::Product && e.id == p3).unwrap().tech);
         lib.delete(Kind::Product, p3).unwrap();
+        // MA17: a part saved from a job in a material the list doesn't have
+        // keeps the name the job read it with.
+        let p4 = lib.save_product_in(&part, "ACME", (41, "DEMO 904L"), 2.0, SaveTo::New, &crate::folders::PartsFolder::Path(String::new())).unwrap().id;
+        let pf = lib.load_product(p4).unwrap();
+        assert_eq!((pf.material, pf.material_name.as_str()), (41, "DEMO 904L"));
+        lib.delete(Kind::Product, p4).unwrap();
         assert_eq!((p1, p2), (1, 2));
         assert_eq!(lib.path(Kind::Product, 1234), dir.join("Products").join("1").join("1234.json"));
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };

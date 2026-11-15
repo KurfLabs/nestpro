@@ -199,6 +199,10 @@ pub struct Job {
     /// goes into (JX15): the folder of the library job it was opened or
     /// copied from. None: by its folder's name.
     pub lib_folder: Option<u64>,
+    /// The material name the job was opened with (MA17): saved back while
+    /// the material list doesn't have its material, so the job keeps its id
+    /// and name (invariant 3).
+    pub material_name: String,
 }
 
 pub struct App {
@@ -442,6 +446,8 @@ pub struct App {
     pub round_edge: bool,
     /// The open job's ERP/MES link (see Job::erp).
     pub erp_job: Option<integrations::ErpJob>,
+    /// The open job's material name as it was opened (`Job::material_name`).
+    pub job_material_name: String,
     /// ERP/MES window and background requests (erpui.rs).
     pub erp: erpui::ErpUi,
 }
@@ -517,7 +523,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
     let p = |name: &str, shape, w, h, qty, color| Part { name: name.into(), shape, w, h, qty, rotate: true, color, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let mk = |week: &str, name: &str, parts: Vec<Part>, spec: SheetSpec| {
         let result = nest::nest(&parts, &spec);
-        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None }
+        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_name: String::new() }
     };
     let mut steel5 = spec.clone();
     steel5.thickness = 5.0;
@@ -542,6 +548,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
             file: None,
             saved: None,
             lib_folder: None,
+            material_name: String::new(),
             held: Default::default(),
             erp: None,
         },
@@ -724,6 +731,7 @@ impl App {
             cut_drag: None,
             round_edge: true,
             erp_job: None,
+            job_material_name: String::new(),
             erp: Default::default(),
         };
         // The material list (MA14): the Library's, or this PC's own.
@@ -754,6 +762,7 @@ impl App {
             j.held = self.held.clone();
             j.file = self.job_link.clone();
             j.erp = self.erp_job.clone();
+            j.material_name = self.job_material_name.clone();
         }
     }
 
@@ -781,6 +790,7 @@ impl App {
         self.job_path = j.file.as_ref().map(|l| l.path.clone());
         self.job_link = j.file;
         self.erp_job = j.erp;
+        self.job_material_name = j.material_name;
         self.ghost = None;
         self.sel_cut = None;
         self.cur_sheet = 0;
@@ -834,6 +844,7 @@ impl App {
             file: None,
             saved: None,
             lib_folder: None,
+            material_name: String::new(),
             erp: None,
         });
         let i = self.jobs.len() - 1;
@@ -917,7 +928,7 @@ impl App {
             library: None,
             // The library parts it read, and at which revision (LB7).
             library_parts: self.lib_read.parts.clone(),
-            material_name: String::new(),
+            material_name: self.job_material_name.clone(),
         };
         match jobfile::save(path, &j) {
             Ok(()) => {
@@ -957,7 +968,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let tried = 0;
-        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, parts: j.library_parts }, lib_folder: None });
+        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, parts: j.library_parts }, lib_folder: None, material_name: j.material_name.clone() });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -1131,7 +1142,7 @@ impl App {
             return;
         };
         self.store_job();
-        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None });
+        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_name: String::new() });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.status = format!("Created job {} — add products, then nest.", self.job_name);
@@ -3086,7 +3097,7 @@ fn main() -> eframe::Result {
             // Without the example jobs: one empty job (not for screenshots).
             if load_layout && !app.cfg.examples {
                 let spec = app.spec.clone();
-                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None }];
+                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_name: String::new() }];
                 app.cur_job = 0;
                 app.job_name = "New job".into();
                 app.parts.clear();
@@ -3927,6 +3938,37 @@ mod tests {
 #[cfg(test)]
 mod job_tests {
     use super::*;
+
+    #[test]
+    fn a_job_whose_material_isnt_in_the_list_keeps_its_name_saved_from_the_window() {
+        // Invariant 3, MA17: a job in a material this PC's list doesn't have
+        // shows `?`, and the window saves it back with the name it came with,
+        // to a file and to the Library, after switching jobs too.
+        let dir = std::env::temp_dir().join(format!("nestpro_unknown_material_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("DEMO-904.snjob");
+        let mut j = jobfile::JobFile::new_job("DEMO-904", engine::default_spec());
+        j.spec.material = 41;
+        j.material_name = "DEMO 904L".into();
+        jobfile::save(&src, &j).unwrap();
+        let mut a = App::new(None);
+        a.open_job_file(&src);
+        assert_eq!((a.spec.material, engine::material::name_or(a.spec.material, "?")), (41, "?".to_string()));
+        let mine = a.cur_job;
+        a.open_job(0);
+        a.open_job(mine);
+        let out = dir.join("DEMO-904-saved.snjob");
+        a.save_job_to(&out);
+        let saved = jobfile::load(&out).unwrap();
+        assert_eq!((saved.spec.material, saved.material_name.as_str()), (41, "DEMO 904L"));
+        assert_eq!(a.current_jobfile().material_name, "DEMO 904L", "the Library save's job");
+        // A job in a material the list has is saved with the list's name.
+        a.spec.material = 1;
+        a.save_job_to(&out);
+        assert_eq!(jobfile::load(&out).unwrap().material_name, "Stainless steel");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn switching_jobs_keeps_each_jobs_products() {
