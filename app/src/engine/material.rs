@@ -198,12 +198,18 @@ pub struct List {
     /// Who changed it last, and when (as SV9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<crate::shared::Saved>,
-    /// The names materials had before they were renamed, by number (MA31):
-    /// a file saved before a rename still means its material, even once
-    /// another material takes the old name. Never used to find a name from
-    /// outside (MA32).
+    /// The names materials had before they were renamed on this list, by
+    /// number (MA31): a file saved under that number before the rename still
+    /// means its material, even once another material takes the old name.
+    /// Never used to find a name from outside (MA32).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub former: Vec<(Id, String)>,
+    /// The names joining PCs had for materials of this list (MA28), by this
+    /// list's number. They are in those PCs' numbering, so a file's number
+    /// never picks one of them (MA31). Never used to find a name from
+    /// outside (MA32).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joined: Vec<(Id, String)>,
     /// Only the first three of a Library's list that can't be read now
     /// (MA28): names never stand for its other materials. Never stored.
     #[serde(skip)]
@@ -250,7 +256,7 @@ impl List {
     /// out, so a name means one material (invariant 6); a lookup finds the
     /// same material it found before, since it always took the first.
     pub fn seed(cfg: &AppSettings) -> List {
-        let mut l = List { format: FORMAT.into(), version: VERSION, next_id: OLD_THREE.len(), materials: vec![], deleted: vec![], changed: None, former: vec![], offline: false };
+        let mut l = List { format: FORMAT.into(), version: VERSION, next_id: OLD_THREE.len(), materials: vec![], deleted: vec![], changed: None, former: vec![], joined: vec![], offline: false };
         for (id, b) in OLD_THREE.iter().enumerate() {
             let (pn, pc) = cfg.materials.get(id).cloned().unwrap_or_else(|| default_program(id));
             let typed = cfg.material_aliases.get(id).cloned().unwrap_or_else(|| b.other_names.to_string());
@@ -431,7 +437,7 @@ impl List {
             }
         }
         // MA31: the PC's name for each material it brought, and its names
-        // before a rename, go with it as former names of the Library's
+        // before a rename, go with it as joined names of the Library's
         // number, so a PC job saved under one of them still finds it (they
         // aren't names the list shows, invariant 6). The first three are
         // read by number.
@@ -440,8 +446,8 @@ impl List {
             for n in pc_names.collect::<Vec<_>>() {
                 let k = norm(&n);
                 let shown = list.get(to).is_some_and(|x| x.names().any(|y| y == k));
-                if !k.is_empty() && !shown && !list.former.iter().any(|(i, f)| *i == to && norm(f) == k) {
-                    list.former.push((to, n));
+                if !k.is_empty() && !shown && !list.joined.iter().any(|(i, f)| *i == to && norm(f) == k) {
+                    list.joined.push((to, n));
                 }
             }
         }
@@ -859,10 +865,10 @@ fn holder_now(l: &List, n: &str) -> Option<Id> {
     l.materials.iter().find(|m| m.names().any(|x| x == n)).map(|m| m.id)
 }
 
-/// The materials that had the name `n` before (a rename, or a joining PC's
-/// name, MA31), each once.
+/// The materials that had the name `n` before (a rename here, or a joining
+/// PC's name, MA31), each once.
 fn former_holders(l: &List, n: &str) -> Vec<Id> {
-    let mut ids: Vec<Id> = l.former.iter().filter(|(i, f)| norm(f) == n && l.get(*i).is_some()).map(|x| x.0).collect();
+    let mut ids: Vec<Id> = l.former.iter().chain(&l.joined).filter(|(i, f)| norm(f) == n && l.get(*i).is_some()).map(|x| x.0).collect();
     ids.sort_unstable();
     ids.dedup();
     ids
@@ -891,11 +897,24 @@ pub fn resolve_read(id: Id, name: &str) -> Option<Id> {
     if l.offline {
         return Some(id);
     }
-    // MA31: the material that has the name now (its name or an other name);
-    // else the one material that had it before (a rename, or a joining PC's
-    // name); several that had it can't be told apart, and the file's own
-    // number doesn't break the tie.
-    if let Some(m) = holder_now(&l, &n) {
+    // MA31, in order: the number's material has the name now; the number's
+    // material had it before a rename on this list (renaming touches no
+    // file, spec #142 user story 17), unless a joining PC brought that name
+    // for another material (its file could be either, so the number doesn't
+    // decide); the material that has the name now; the one material that
+    // had it before (a rename here, or a joining PC's name, which is in that
+    // PC's numbering and so never lets the number pick); several that had
+    // it can't be told apart.
+    let now = holder_now(&l, &n);
+    if now == Some(id) {
+        return Some(id);
+    }
+    let renamed_here = l.get(id).is_some() && l.former.iter().any(|(i, f)| *i == id && norm(f) == n);
+    let joined_elsewhere = l.joined.iter().any(|(i, f)| *i != id && norm(f) == n && l.get(*i).is_some());
+    if renamed_here && !joined_elsewhere {
+        return Some(id);
+    }
+    if let Some(m) = now {
         return Some(m);
     }
     match former_holders(&l, &n).as_slice() {
@@ -1431,7 +1450,7 @@ mod tests {
         assert_eq!(j.list.materials, lib.materials, "nothing added");
         assert_eq!(j.same[3..], [(3, 4), (4, 4)], "both are the Library's DEMO 316");
         // MA31: the PC's name goes with it, unseen, so the PC's jobs find it.
-        assert_eq!(j.list.former, [(4, "DEMO Inox 316".to_string())]);
+        assert_eq!((j.list.joined.as_slice(), j.list.former.len()), (&[(4, "DEMO Inox 316".to_string())][..], 0));
     }
 
     #[test]
@@ -1512,32 +1531,48 @@ mod tests {
     }
 
     #[test]
-    fn a_name_held_now_wins_and_former_names_count_only_when_one_material_had_them() {
+    fn a_name_from_a_rename_here_keeps_its_number_and_a_joining_pcs_name_never_does() {
         let mut l = list_with(&[grade("DEMO 304", 100, &[])]);
         let was = l.get(3).unwrap().clone();
         let now = Material { name: "DEMO 304 Brushed".into(), ..was.clone() };
         l.apply(&[crate::engine::materialedit::Change::Edit { was, now }], |_| Ok(Uses::default())).unwrap();
         l.add(grade("DEMO 304", 100, &[])).unwrap();
         install(l);
-        // A job saved before the rename stored (3, "DEMO 304"): the material
-        // called DEMO 304 now (MA31: a name held now wins; the file's
-        // number doesn't break a tie).
-        assert_eq!(resolve(3, "DEMO 304"), 4);
+        // MA31: a job saved before the rename stored (3, "DEMO 304"): still
+        // 3, though 4 is called DEMO 304 now (spec #142 user story 17).
+        assert_eq!(resolve(3, "DEMO 304"), 3);
         // Its new name finds it, whatever the number.
         assert_eq!((resolve(3, "DEMO 304 Brushed"), resolve(8, "demo 304 brushed")), (3, 3));
         // A file from elsewhere naming DEMO 304 by a number we don't have:
-        // the material called that now (MA31).
+        // the material called that now.
         assert!(!ambiguous("DEMO 304"));
         assert_eq!(resolve(9, "DEMO 304"), 4);
-        // Once the new DEMO 304 is renamed too, the old name is a former
-        // name of two materials: it can't be told (unknown, MA31).
+        // Once 4 is renamed from it too, each keeps its own files; a number
+        // that is neither can't be told.
         let mut l = (*current()).clone();
         let was = l.get(4).unwrap().clone();
         let now = Material { name: "DEMO 304 Satin".into(), ..was.clone() };
         l.apply(&[crate::engine::materialedit::Change::Edit { was, now }], |_| Ok(Uses::default())).unwrap();
         install(l);
         assert!(ambiguous("DEMO 304"));
-        assert_eq!((resolve_read(3, "DEMO 304"), resolve_read(4, "DEMO 304"), resolve_read(9, "DEMO 304")), (None, None, None));
+        assert_eq!((resolve_read(3, "DEMO 304"), resolve_read(4, "DEMO 304"), resolve_read(9, "DEMO 304")), (Some(3), Some(4), None));
+        // Names joining PCs brought (MA28) are in those PCs' numbering: the
+        // file's number never picks one of them.
+        let mut l = (*current()).clone();
+        l.joined = vec![(3, "DEMO Shared".into()), (4, "DEMO Shared".into())];
+        install(l);
+        assert_eq!((resolve_read(3, "DEMO Shared"), resolve_read(4, "DEMO Shared")), (None, None));
+        let mut l = (*current()).clone();
+        l.joined.pop();
+        install(l);
+        assert_eq!((resolve_read(4, "DEMO Shared"), resolve_read(9, "DEMO Shared")), (Some(3), Some(3)), "one material had it: that one");
+        // 3 was renamed here from DEMO 304, and a joining PC brought DEMO 304
+        // for 4: a file (3, DEMO 304) could be either, so the number doesn't
+        // decide; with no material called that now, it can't be told.
+        let mut l = (*current()).clone();
+        l.joined = vec![(4, "DEMO 304".into())];
+        install(l);
+        assert_eq!((resolve_read(3, "DEMO 304"), resolve_read(4, "DEMO 304")), (None, Some(4)));
     }
 
     // -----------------------------------------------------------------------

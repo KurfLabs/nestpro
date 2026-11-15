@@ -8041,17 +8041,22 @@ fn a_job_whose_material_cant_be_told_writes_its_own_number_everywhere() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A session on a Library where DEMO Shared was the name of material 3
-/// (now DEMO Inox, stainless) and of 4 (now DEMO Cu, copper), and job
-/// `DEMO-SHARED.snjob` stored as (3, DEMO Shared): its material can't be
-/// told (MA31).
+/// A session on a Library that two PCs joined, each with its own material
+/// 3 once called DEMO Shared: the first's joined as 3 (now DEMO Inox,
+/// stainless), the second's as 4 (now DEMO Cu, copper). Job
+/// `DEMO-SHARED.snjob` is stored as (3, DEMO Shared), as either PC saved
+/// it: its material can't be told (MA28, MA31).
 fn shared_name_session(d: &Path) -> (PathBuf, PathBuf, Session) {
     let lib = stock_ctx(d).library_dir;
-    let mut s = Session::new(stock_ctx_again(&lib));
-    for (standard, now) in [("stainless", "DEMO Inox"), ("copper", "DEMO Cu")] {
-        call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": standard}));
-        call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": now}));
+    for (pc_name, standard, now) in [("a", "stainless", "DEMO Inox"), ("b", "copper", "DEMO Cu")] {
+        let mut pc = pc_without_library(&d.join(pc_name));
+        call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": standard}));
+        call(&mut pc, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": now}));
+        pc.ctx.library_dir = lib.clone();
+        call(&mut pc, "material", None, json!({"mode": "list"}));
     }
+    let mut s = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "DEMO Inox", "DEMO Cu"]);
     let jp = d.join("DEMO-SHARED.snjob");
     call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3}));
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
@@ -8059,6 +8064,39 @@ fn shared_name_session(d: &Path) -> (PathBuf, PathBuf, Session) {
     v["material_name"] = json!("DEMO Shared");
     std::fs::write(&jp, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     (lib, jp, s)
+}
+
+#[test]
+fn a_job_saved_before_a_rename_keeps_its_material_when_another_takes_the_old_name() {
+    // MA31, spec #142 user story 17: 3 renamed DEMO 304 -> DEMO 304
+    // Brushed, then a new 4 named DEMO 304. A job and a stock sheet saved as
+    // (3, DEMO 304) stay on 3 through open, save, reload, save.
+    let d = dir("rename_round_trip");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 304", "standard": "stainless"}));
+    let jp = d.join("DEMO-304.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO 304"}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-S304", "material": "DEMO 304", "w": 1000, "h": 500, "thickness": 3}));
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 304", "name": "DEMO 304 Brushed"}));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 304", "standard": "stainless"}));
+    let stock_of = || -> Value { serde_json::from_str::<Value>(&std::fs::read_to_string(crate::stock::Stock::file(&lib)).unwrap()).unwrap()["items"].as_array().unwrap().iter().find(|i| i["reference"] == "DEMO-S304").cloned().unwrap() };
+    assert_eq!((jobfile::load(Path::new(jp)).unwrap().material_name, stock_of()["material_name"].as_str().map(str::to_string)), ("DEMO 304".to_string(), Some("DEMO 304".to_string())), "saved before the rename");
+    for round in 0..2 {
+        let mut s = Session::new(stock_ctx_again(&lib));
+        let info = call(&mut s, "info", Some(jp), json!({}));
+        assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 304 Brushed"), Some(3)), "round {round}: {info}");
+        call(&mut s, "set-sheet", None, json!({"gap": 6 + round}));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(jp).unwrap()).unwrap();
+        assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(3), Some("DEMO 304 Brushed")), "round {round}");
+        let l = call(&mut s, "stock", None, json!({"mode": "list", "show_zero": true}));
+        assert!(l["data"]["sheets"].as_array().unwrap().iter().any(|i| i["ref"] == "DEMO-S304" && i["material"] == "DEMO 304 Brushed"), "round {round}: {l}");
+        // An unrelated stock change saves the stock again.
+        call(&mut s, "stock", None, json!({"mode": "create", "ref": format!("DEMO-MS-{round}"), "material": "mild steel", "w": 1000, "h": 500, "thickness": 3}));
+        assert_eq!((stock_of()["material"].as_u64(), stock_of()["material_name"].as_str().map(str::to_string)), (Some(3), Some("DEMO 304 Brushed".to_string())), "round {round}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// A record's stored material: (number, name).
