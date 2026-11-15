@@ -47,8 +47,8 @@ pub struct Standard {
     pub kind: Kind,
     /// Weight per volume, g/cm³.
     pub density: f64,
-    /// Name and code in machine programs (BLM codes 0010, 0100, 0200).
-    pub program: (&'static str, &'static str),
+    /// Name in machine programs (MA25); its code there is its number.
+    pub program_name: &'static str,
     /// Short code in made-up sheet references ("ST3-2000x1000").
     pub short_code: &'static str,
 }
@@ -57,9 +57,9 @@ pub struct Standard {
 /// the standards are the three the app always knew, numbered as the machine
 /// file and the BLM number them.
 pub const STANDARDS: [Standard; 3] = [
-    Standard { number: 10, name: "Mild steel", kind: Kind::MildSteel, density: 7.85, program: ("STEEL", "0010"), short_code: "ST" },
-    Standard { number: 100, name: "Stainless steel", kind: Kind::Stainless, density: 8.0, program: ("STAINLESS", "0100"), short_code: "SS" },
-    Standard { number: 200, name: "Aluminium", kind: Kind::Aluminium, density: 2.70, program: ("ALUMINIUM", "0200"), short_code: "AL" },
+    Standard { number: 10, name: "Mild steel", kind: Kind::MildSteel, density: 7.85, program_name: "STEEL", short_code: "ST" },
+    Standard { number: 100, name: "Stainless steel", kind: Kind::Stainless, density: 8.0, program_name: "STAINLESS", short_code: "SS" },
+    Standard { number: 200, name: "Aluminium", kind: Kind::Aluminium, density: 2.70, program_name: "ALUMINIUM", short_code: "AL" },
 ];
 
 impl Standard {
@@ -68,9 +68,18 @@ impl Standard {
         format!("{:04} {}", self.number, self.name)
     }
 
-    /// Its key in the machine file's material × thickness sections.
+    /// Its key in the machine file's material × thickness sections (MA24).
     pub fn machine_ref(&self) -> String {
         format!("{:04}", self.number)
+    }
+
+    /// MA25: its name and code in machine programs: the first three's
+    /// STEEL, STAINLESS and ALUMINIUM (MA18), every other standard's name as
+    /// the catalogue shows it; the code is its four-digit number (0010,
+    /// 0300), as the original's LC5 post writes for its starter materials,
+    /// each named as its standard (MA11).
+    pub fn program(&self) -> (String, String) {
+        (self.program_name.to_string(), format!("{:04}", self.number))
     }
 }
 
@@ -151,10 +160,12 @@ impl Material {
         self.density.unwrap_or(self.standard().density)
     }
 
-    /// Name and code in machine programs.
+    /// MA25: name and code in machine programs: its own (an empty one too,
+    /// written empty), else its standard's. Never its name shown: renaming a
+    /// material changes no program (MA19).
     pub fn program(&self) -> (String, String) {
-        let (n, c) = self.standard().program;
-        (self.program_name.clone().unwrap_or_else(|| n.to_string()), self.program_code.clone().unwrap_or_else(|| c.to_string()))
+        let (n, c) = self.standard().program();
+        (self.program_name.clone().unwrap_or(n), self.program_code.clone().unwrap_or(c))
     }
 
     /// The machine-file key (MTL2): the one typed, normalised, or the name in
@@ -615,8 +626,7 @@ pub fn density(id: Id) -> f64 {
 /// The first three materials' names and codes in machine programs as a new
 /// install has them; any other id is written as mild steel.
 pub fn default_program(id: Id) -> (String, String) {
-    let s = OLD_THREE.get(id).map_or(&STANDARDS[0], |b| standard(b.standard));
-    (s.program.0.to_string(), s.program.1.to_string())
+    OLD_THREE.get(id).map_or(&STANDARDS[0], |b| standard(b.standard)).program()
 }
 
 /// The material's name and code in machine programs; an id that isn't in
@@ -903,6 +913,20 @@ mod tests {
         assert_eq!(machine_key(3), "##MATEXP0100##");
         assert_eq!(resolve(9, "demo-316"), 3, "a file from another Library finds it by name");
         assert_eq!((resolve(1, "DEMO 316"), resolve(9, "")), (1, 9), "the id first; an id alone stays");
+    }
+
+    #[test]
+    fn every_standard_has_its_own_name_and_code_in_programs() {
+        // MA25: the first three as always; the catalogue's others their name
+        // as shown and their number; MA27: a number the catalogue lacks as
+        // mild steel.
+        let p = |n: u32| standard(n).program();
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!([p(10), p(100), p(200)], [pair("STEEL", "0010"), pair("STAINLESS", "0100"), pair("ALUMINIUM", "0200")]);
+        assert_eq!([p(300), p(510), p(110), p(40), p(670)], [pair("Galvanized", "0300"), pair("Copper", "0510"), pair("X3CrNiMo 17-13-3", "0110"), pair("ST 52-3", "0040"), pair("PVC", "0670")]);
+        let odd = Material { id: 9, name: "DEMO odd".into(), other_names: vec![], standard: 9999, density: None, program_name: None, program_code: None, machine_ref: None };
+        assert_eq!((odd.program(), odd.machine_key(), odd.density(), odd.kind()), (pair("STEEL", "0010"), "##MATEXP0010##".to_string(), 7.85, Kind::MildSteel));
+        assert_eq!(group_of(9999), Group::Other);
     }
 
     /// The seed plus made-up grades: DEMO 316 (stainless, its own name and

@@ -158,7 +158,9 @@ impl BlmSettings {
     }
 
     pub fn for_spec(spec: &SheetSpec, machine: &str, job: &str) -> Self {
-        let (mat_name, mat_id) = crate::engine::material::default_program(spec.material);
+        // MA25: the material's name and code in programs, its own or its
+        // standard's (STEEL 0010 for a number not in the list, JOB-86).
+        let (mat_name, mat_id) = crate::engine::material::program(spec.material);
         let blm = machine.to_uppercase().contains("LC5") || machine.to_uppercase().contains("BLM");
         // The job's gas, as the LC5 names it (GS10, GS2); a job without one takes the
         // machine's in `engine::blm_for` (GS11), nitrogen until then, as for

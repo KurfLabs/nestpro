@@ -118,10 +118,9 @@ pub fn kind_name(number: u32) -> &'static str {
 /// MA22 (estimated): the values a catalogue standard other than the app's
 /// first three (MA18) gives the materials based on it where they have none
 /// of their own: its kind (as `app_kind`), its weight per volume (mild
-/// steel's 7.85 when the catalogue gives none), its own number as the
-/// machine-file key, and the sheet-reference code of its kind. Its name and
-/// code in programs stay mild steel's (STEEL, 0010), as for any standard the
-/// app didn't know: what posts write for the catalogue is ticket #149's.
+/// steel's 7.85 when the catalogue gives none, MA26), its own number as the
+/// machine-file key (MA24), the sheet-reference code of its kind, and its
+/// name as shown and its number as its name and code in programs (MA25).
 pub(crate) fn standards() -> &'static [Standard] {
     static ALL: std::sync::OnceLock<Vec<Standard>> = std::sync::OnceLock::new();
     ALL.get_or_init(|| {
@@ -132,7 +131,7 @@ pub(crate) fn standards() -> &'static [Standard] {
             .map(|e| {
                 let kind = e.app_kind();
                 let like = super::material::STANDARDS.iter().find(|s| s.kind == kind).unwrap_or(steel);
-                Standard { number: e.number, name: e.name, kind, density: e.density.unwrap_or(steel.density), program: steel.program, short_code: like.short_code }
+                Standard { number: e.number, name: e.name, kind, density: e.density.unwrap_or(steel.density), program_name: e.name, short_code: like.short_code }
             })
             .collect()
     })

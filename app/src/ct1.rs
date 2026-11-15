@@ -449,7 +449,10 @@ pub const CATALOGUE: [(&str, &str); 7] = [
     ("0590", "brass"),
 ];
 
-/// A material key for people: "0010 mild steel", "any material", or the name.
+/// A material key for people: "0010 mild steel", "any material", or the
+/// name. A number of the material catalogue (MA12) beyond those above is
+/// named as the catalogue shows it ("0110 X3CrNiMo 17-13-3"), so the section
+/// a grade on it cuts with (MA24) reads as its standard.
 pub fn material_label(key: &str) -> String {
     if key == "*" {
         return "any material".into();
@@ -457,7 +460,10 @@ pub fn material_label(key: &str) -> String {
     match key.strip_prefix("##MATEXP").and_then(|r| r.strip_suffix("##")) {
         Some(n) => match CATALOGUE.iter().find(|c| c.0 == n) {
             Some((_, name)) => format!("{n} {name}"),
-            None => n.to_string(),
+            None => match n.parse::<u32>().ok().and_then(crate::engine::catalogue::entry) {
+                Some(e) => format!("{n} {}", e.name),
+                None => n.to_string(),
+            },
         },
         None => key.to_string(),
     }
@@ -954,6 +960,10 @@ mod ct1_tests {
         assert_eq!(material_key("210"), "##MATEXP0210##");
         assert_eq!(material_key(" AISI304 "), "AISI304");
         assert_eq!(material_label("##MATEXP0300##"), "0300 galvanised steel");
+        // MA24: the catalogue names the other standards; a number it lacks stays a number.
+        assert_eq!(material_label("##MATEXP0110##"), "0110 X3CrNiMo 17-13-3");
+        assert_eq!(material_label("##MATEXP0400##"), "0400 Titanium");
+        assert_eq!(material_label("##MATEXP9999##"), "9999");
         // A plain-name section fits only the same name, case and all.
         let s = Section { material: "AISI304".into(), t_min: 0.0, t_max: 10.0, ..Default::default() };
         assert!(section_fits(&s, &JobKeys::new("AISI304", 2.0)));

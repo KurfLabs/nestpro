@@ -912,6 +912,8 @@ fn part_info(job: &JobFile, i: usize) -> Value {
     json!({
         "part": i + 1, "name": p.name, "shape": p.shape.label(), "w": r1(w), "h": r1(h), "qty": p.qty, "group": p.group,
         "area_mm2": r1(p.net_area()), "cut_len_mm": r1(p.cut_length()),
+        // MA26: at the job's material and thickness.
+        "weight_kg": (crate::cnc::weight_kg(job.spec.material, p.net_area(), job.spec.thickness) * 1000.0).round() / 1000.0,
         "rotations": { "turn_90": p.rotate, "plain": p.rots.plain, "mirrored": p.rots.mirrored },
         "contours": contours,
         "cut_order": {
@@ -1542,6 +1544,8 @@ fn stock_json(s: &crate::stock::Item, clock: &crate::shared::Clock) -> Value {
     json!({
         "ref": s.reference, "kind": s.kind.label(), "material": super::material::name_or(s.material, "?"), "thickness": s.thickness, "w": r1(s.length), "h": r1(s.width), "qty": s.qty,
         "priority": s.priority, "blocked": s.locked, "remnant": s.kind.is_remnant(), "area_m2": (s.area_m2() * 1000.0).round() / 1000.0,
+        // MA26: one piece's weight at its material's weight per volume.
+        "weight_kg": (s.weight_kg() * 1000.0).round() / 1000.0,
         "origin": s.origin, "job": s.from_job, "irregular": s.outline.is_some(), "user": s.user_data, "created": s.created,
         // Who changed it last, and when (SV9); null for a stock from before.
         "changed_by": s.changed.as_ref().map(|c| c.by.label()), "changed_at": s.changed.as_ref().map(|c| clock.stamp(c.at)),

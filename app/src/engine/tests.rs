@@ -7192,7 +7192,7 @@ fn a_blank_field_shows_the_standards_value_a_typed_one_overrides_it_and_clearing
     p.rows[k].m.name = "DEMO 316L".into();
     p.rows[k].other_names = "DEMO-AISI 316L, DEMO 1.4404".into();
     assert_eq!(p.rows[k].text(Field::Density), "", "blank");
-    assert_eq!(FIELDS_SHOWN.map(|f| p.rows[k].standard_value(f)), ["8", "STEEL", "0010", "0110"], "greyed: the standard's");
+    assert_eq!(FIELDS_SHOWN.map(|f| p.rows[k].standard_value(f)), ["8", "X3CrNiMo 17-13-3", "0110", "0110"], "greyed: the standard's (MA25)");
     save_page(&s, &p).unwrap();
     let m = listed(&mut s, "DEMO 316L");
     assert_eq!((m["density"].as_f64(), m["machine_key"].as_str()), (Some(8.0), Some("##MATEXP0110##")), "{m}");
@@ -7402,5 +7402,232 @@ fn the_pages_kind_is_the_group_the_material_picker_puts_a_material_in() {
     }
     let kind = |n: &str| crate::engine::catalogue::kind_name(l.materials.iter().find(|m| m.name == n).unwrap().standard);
     assert_eq!([kind("Aluminium"), kind("DEMO 5754"), kind("DEMO G90"), kind("DEMO CuZn37"), kind("DEMO Ti"), kind("DEMO S355")], ["Aluminium", "Aluminium", "Galvanized", "Copper and brass", "Other", "Carbon steel"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Grades cut, weigh and write programs from their own values (ticket #149:
+// MA24–MA27).
+// ---------------------------------------------------------------------------
+
+/// The stock item `r`'s weight as `stock mode=list` gives it, kg.
+fn stock_weight(s: &mut Session, r: &str) -> f64 {
+    let l = call(s, "stock", None, json!({"mode": "list", "show_zero": true}));
+    let it = l["data"]["sheets"].as_array().unwrap().iter().find(|i| i["ref"] == r).cloned().unwrap_or_else(|| panic!("{r} isn't listed: {l}"));
+    it["weight_kg"].as_f64().unwrap_or_else(|| panic!("no weight: {it}"))
+}
+
+#[test]
+fn a_grade_weighs_with_its_own_density_else_its_standards() {
+    // MA26: sheet, part and remnant weights use the material's own weight per
+    // volume, else its standard's (7.85 where the catalogue gives none).
+    let (d, lib, mut s) = page_session("material_weights");
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 5052 Aluminium", "standard": "aluminium", "density": 2.68}));
+    for (name, std) in [("DEMO 1050", "0200"), ("DEMO G90", "0300"), ("DEMO Cu", "0510"), ("DEMO Ti", "0400"), ("DEMO 316L", "0110")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    let sheet = |s: &mut Session, r: &str, m: &str| {
+        call(s, "stock", None, json!({"mode": "create", "ref": r, "material": m, "w": 1000, "h": 1000, "thickness": 2}));
+        stock_weight(s, r)
+    };
+    // The acceptance example: 1 000 × 1 000 × 2 mm at 2.68 g/cm³.
+    assert!((sheet(&mut s, "DEMO-AL-2", "DEMO 5052 Aluminium") - 5.36).abs() < 1e-9);
+    // Blank: the standard's (Al99 2.7, galvanized 7.9, copper 8.9, 0110 8.0);
+    // titanium has none in the catalogue: 7.85.
+    for (r, m, kg) in [("DEMO-1050", "DEMO 1050", 5.4), ("DEMO-G90", "DEMO G90", 15.8), ("DEMO-CU", "DEMO Cu", 17.8), ("DEMO-TI", "DEMO Ti", 15.7), ("DEMO-316L", "DEMO 316L", 16.0)] {
+        assert!((sheet(&mut s, r, m) - kg).abs() < 1e-9, "{m}: {}", stock_weight(&mut s, r));
+    }
+    // The old three weigh as before (MA18): 7.85, 8.0, 2.70.
+    for (r, m, kg) in [("DEMO-MS", "mild steel", 15.7), ("DEMO-SS", "stainless", 16.0), ("DEMO-AL", "aluminium", 5.4)] {
+        assert!((sheet(&mut s, r, m) - kg).abs() < 1e-9, "{m}");
+    }
+    // Its own weight changed: the sheet weighs with it; back to the standard's.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 1050", "density": 2.71}));
+    assert!((stock_weight(&mut s, "DEMO-1050") - 5.42).abs() < 1e-9);
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 1050", "density": "standard"}));
+    assert!((stock_weight(&mut s, "DEMO-1050") - 5.4).abs() < 1e-9);
+
+    // A part: 500 × 400 × 2 mm in DEMO 5052 = 0.2 m² × 2 mm × 2.68.
+    let jp = d.join("DEMO-W.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 1000, "material": "DEMO 5052 Aluminium", "thickness": 2}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 500, "h": 400, "qty": 1}));
+    let p = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert!((p["data"]["weight_kg"].as_f64().unwrap() - 1.072).abs() < 1e-9, "{p}");
+    // A remnant of the sheet: what it weighs is its area at the grade's density.
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "line", "x": 600.0}));
+    call(&mut s, "stock-book", None, json!({"mode": "book", "refs": "DEMO-AL-2-R"}));
+    let st = crate::stock::Stock::load(&lib).unwrap();
+    let rem = st.get("DEMO-AL-2-R").unwrap_or_else(|| panic!("no remnant: {:?}", st.items.iter().map(|i| &i.reference).collect::<Vec<_>>()));
+    assert_eq!(rem.material, 3);
+    assert!((stock_weight(&mut s, "DEMO-AL-2-R") - rem.area_m2() * 2.0 * 2.68).abs() < 0.0006, "rounded to grams");
+    assert!(rem.area_m2() > 0.3 && rem.area_m2() < 0.45, "{}", rem.area_m2());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A made-up laser's machine file with 2.2–3.2 mm sections for mild steel
+/// (part gap 9 mm), stainless (7), galvanized 0300 (13), a section named
+/// DEMO-KEY (11) and one named by the name STAINLESS (5).
+fn grade_machine_file() -> String {
+    let section = |key: &str, gap: f64| format!("Z000 \"{key}\"\nZ001 2.2\nZ002 3.2\nZ006 {gap}\nZ999 0\n");
+    format!(
+        "# Demo laser\nA051 40000\nA058 3000\nA093 OFF\nB056 6.0\n{}{}{}{}{}",
+        section("##MATEXP0010##", 9.0),
+        section("##MATEXP0100##", 7.0),
+        section("##MATEXP0300##", 13.0),
+        section("DEMO-KEY", 11.0),
+        section("STAINLESS", 5.0)
+    )
+}
+
+/// A session with a Library under `d`, on that laser, writing LC5 programs
+/// (`blm`) or G-code, with a 3 mm job open in mild steel.
+fn grade_session(d: &Path, blm: bool) -> (Session, OnMachine) {
+    let m = crate::settings::Machine { gas_id: 1, gas_name: "Nitrogen".into(), ..demo_machine_with("Demo laser", blm, Default::default()) };
+    let mut ctx = stock_ctx(d);
+    ctx.cfg = crate::settings::AppSettings { stock: ctx.cfg.stock.clone(), ..shop_settings(&d.join("Lantek"), &grade_machine_file(), vec![m]) };
+    let mut s = Session::new(ctx);
+    let on = apply_machine(&mut s);
+    call(&mut s, "new", Some(d.join("DEMO-G.snjob").to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "force": true}));
+    (s, on)
+}
+
+/// The machine-file key `material` is looked for by, and the key of the
+/// section that applies at 3 mm (None: the machine's own values, MTL6).
+fn section_for(s: &mut Session, material: &str) -> (String, Option<String>) {
+    let r = call(s, "machine-tech", None, json!({"material": material, "thickness": 3}));
+    (r["data"]["material_key"].as_str().unwrap_or_default().to_string(), r["data"]["section"]["material_key"].as_str().map(str::to_string))
+}
+
+#[test]
+fn a_grade_with_no_key_of_its_own_cuts_with_its_standards_sections() {
+    // MA24 (acceptance): DEMO 316 on stainless, no key of its own, picks the
+    // stainless section; given its own key it picks that section instead.
+    let d = dir("grade_sections");
+    let (mut s, _on) = grade_session(&d, false);
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    let stainless = section_for(&mut s, "stainless");
+    assert_eq!(stainless, ("##MATEXP0100##".to_string(), Some("##MATEXP0100##".to_string())));
+    assert_eq!(section_for(&mut s, "DEMO 316"), stainless, "the same section as a stainless job");
+    let r = call(&mut s, "machine-tech", None, json!({"material": "DEMO 316", "thickness": 3}));
+    assert_eq!(r["data"]["spacing"]["machine_gap"].as_f64(), Some(7.0), "{r}");
+
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "machine_ref": "DEMO-KEY"}));
+    assert_eq!(section_for(&mut s, "DEMO 316"), ("DEMO-KEY".to_string(), Some("DEMO-KEY".to_string())));
+    assert_eq!(section_for(&mut s, "stainless"), stainless, "stainless keeps its own");
+
+    // Its own key that the file has no section for: the machine's own values
+    // (MTL6), not the standard's section.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "machine_ref": "DEMO-NONE"}));
+    assert_eq!(section_for(&mut s, "DEMO 316"), ("DEMO-NONE".to_string(), None));
+    let r = call(&mut s, "machine-tech", None, json!({"material": "DEMO 316", "thickness": 3}));
+    assert!(r["data"]["table"].as_str().unwrap().contains("no section for this material"), "{r}");
+    // An empty key of its own: the name in programs (MTL2), here STAINLESS.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "machine_ref": ""}));
+    assert_eq!(section_for(&mut s, "DEMO 316"), ("STAINLESS".to_string(), Some("STAINLESS".to_string())));
+    // Back to the standard's.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "machine_ref": "standard"}));
+    assert_eq!(section_for(&mut s, "DEMO 316"), stainless);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn each_standard_gives_its_grades_its_own_machine_file_key() {
+    // MA24: a grade with no key of its own on each of the first three
+    // standards and on the catalogue's others: its standard's number.
+    let d = dir("grade_keys");
+    let (mut s, _on) = grade_session(&d, false);
+    for (name, std) in [("DEMO A36", "mild steel"), ("DEMO 304", "stainless"), ("DEMO 1050", "aluminium"), ("DEMO 5754", "0210"), ("DEMO G90", "0300"), ("DEMO Cu", "0510"), ("DEMO S355", "0040")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    let key = |s: &mut Session, m: &str| section_for(s, m);
+    assert_eq!(key(&mut s, "DEMO A36"), ("##MATEXP0010##".into(), Some("##MATEXP0010##".into())));
+    assert_eq!(key(&mut s, "DEMO 304"), ("##MATEXP0100##".into(), Some("##MATEXP0100##".into())));
+    assert_eq!(key(&mut s, "DEMO G90"), ("##MATEXP0300##".into(), Some("##MATEXP0300##".into())), "galvanized reaches its section");
+    // No section in the file for these: the machine's own values.
+    assert_eq!(key(&mut s, "DEMO 1050"), ("##MATEXP0200##".into(), None), "on 0200, not the old aluminium's 0210");
+    assert_eq!(key(&mut s, "DEMO 5754"), ("##MATEXP0210##".into(), None));
+    assert_eq!(key(&mut s, "DEMO Cu"), ("##MATEXP0510##".into(), None));
+    assert_eq!(key(&mut s, "DEMO S355"), ("##MATEXP0040##".into(), None), "0040 is its own key, not mild steel's");
+    // The old three keep theirs (aluminium 0210).
+    assert_eq!(["mild steel", "stainless", "aluminium"].map(|m| key(&mut s, m).0), ["##MATEXP0010##", "##MATEXP0100##", "##MATEXP0210##"]);
+    // A material number not in the list: no key, only a `*` section fits.
+    assert_eq!(crate::ct1::key_of_material(41), "");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The LC5 sheet program's material lines for the open job's sheet 1.
+fn blm_material_lines(s: &mut Session) -> Vec<String> {
+    let text = call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    text.lines().filter(|l| l.starts_with(";IDMAT=") || l.starts_with(";NOMEMAT=") || l.starts_with(";ALIASMAT=")).map(str::to_string).collect()
+}
+
+/// The open job put in `material`, with one plate placed.
+fn grade_job(s: &mut Session, d: &Path, material: &str) {
+    let jp = d.join(format!("DEMO-{}.snjob", material.replace(' ', "-")));
+    call(s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": material, "thickness": 3, "force": true}));
+    call(s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-PLATE"}));
+    call(s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+}
+
+fn lines(id: &str, name: &str) -> Vec<String> {
+    vec![format!(";IDMAT={id}"), format!(";NOMEMAT={name}"), format!(";ALIASMAT={name}")]
+}
+
+#[test]
+fn a_grades_lc5_program_carries_its_standards_code_until_it_has_its_own() {
+    // MA25 (acceptance): DEMO 316 (stainless, no code of its own) writes the
+    // stainless code; given its own code, that code.
+    let d = dir("grade_blm");
+    let (mut s, _on) = grade_session(&d, true);
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    grade_job(&mut s, &d, "stainless");
+    assert_eq!(blm_material_lines(&mut s), lines("0100", "STAINLESS"));
+    grade_job(&mut s, &d, "DEMO 316");
+    assert_eq!(blm_material_lines(&mut s), lines("0100", "STAINLESS"), "the stainless code and name");
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "program_code": "0316"}));
+    assert_eq!(blm_material_lines(&mut s), lines("0316", "STAINLESS"), "its own code; the name still the standard's");
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "program_name": "DEMO316"}));
+    assert_eq!(blm_material_lines(&mut s), lines("0316", "DEMO316"));
+    // Renamed: the program still carries the name in programs, not the name shown.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "name": "DEMO 316 Brushed"}));
+    assert_eq!(blm_material_lines(&mut s), lines("0316", "DEMO316"));
+    // An empty code of its own is written empty (as for a material without
+    // one, MA11); "standard" gives the standard's again.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Brushed", "program_code": ""}));
+    assert_eq!(blm_material_lines(&mut s), lines("", "DEMO316"));
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Brushed", "program_code": "standard", "program_name": "standard"}));
+    assert_eq!(blm_material_lines(&mut s), lines("0100", "STAINLESS"));
+    // The job sheet (XML) says the same.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Brushed", "program_code": "0316"}));
+    let out = d.join("cnc");
+    let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    let xml = e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).find(|f| f.to_uppercase().ends_with(".XML")).map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_else(|| panic!("no XML: {e}"));
+    assert!(xml.contains("<MatName>STAINLESS</MatName>") && xml.contains("<MatId>0316</MatId>") && xml.contains("<MatAlias>STAINLESS</MatAlias>"), "{xml}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_grade_on_a_newer_standard_writes_that_standards_name_and_number() {
+    // MA25: the catalogue's other standards are written with their name and
+    // their number (as the original writes its starter materials, MA11);
+    // the first three keep STEEL 0010, STAINLESS 0100, ALUMINIUM 0200.
+    let d = dir("grade_blm_catalogue");
+    let (mut s, _on) = grade_session(&d, true);
+    for (name, std) in [("DEMO G90", "0300"), ("DEMO Cu", "0510"), ("DEMO 316L", "0110"), ("DEMO A36", "mild steel"), ("DEMO 1050", "aluminium")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    for (m, id, name) in [("DEMO G90", "0300", "Galvanized"), ("DEMO Cu", "0510", "Copper"), ("DEMO 316L", "0110", "X3CrNiMo 17-13-3"), ("DEMO A36", "0010", "STEEL"), ("DEMO 1050", "0200", "ALUMINIUM"), ("mild steel", "0010", "STEEL"), ("aluminium", "0200", "ALUMINIUM")] {
+        grade_job(&mut s, &d, m);
+        assert_eq!(blm_material_lines(&mut s), lines(id, name), "{m}");
+    }
+    // An empty name in programs of its own is written empty.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO Cu", "program_name": ""}));
+    grade_job(&mut s, &d, "DEMO Cu");
+    assert_eq!(blm_material_lines(&mut s), lines("0510", ""));
+    // A material number not in the list writes mild steel's (JOB-86).
+    let spec = SheetSpec { material: 41, ..crate::engine::default_spec() };
+    let set = crate::engine::blm_for(&spec, &s.ctx.blm, "DEMO");
+    assert_eq!((set.mat_name.as_str(), set.mat_id.as_str()), ("STEEL", "0010"));
     let _ = std::fs::remove_dir_all(&d);
 }
