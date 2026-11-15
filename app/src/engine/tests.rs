@@ -6587,6 +6587,59 @@ fn picking_the_gas_on_the_sheet_tab_moves_the_joints_as_set_sheet_does() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn an_agent_finds_materials_grouped_by_kind_and_sees_which_are_in_stock() {
+    // MA23: `material mode=list find=…` offers what the window's Material ▾
+    // offers for the same typed text, grouped by kind; `info` gives the
+    // counts it shows beside each material in stock at the job's thickness.
+    let d = dir("material_find");
+    let jp = d.join("DEMO-002.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(stock_ctx(&d));
+    add_demo_316(&mut s);
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 5052 Aluminium", "standard": "aluminium", "other_names": "DEMO-AlMg2.5"}));
+    let l = call(&mut s, "material", None, json!({"mode": "list", "find": " 316 "}));
+    assert_eq!(
+        l["data"]["groups"],
+        json!([{"kind": "Stainless steel", "materials": [
+            {"material": 3, "name": "DEMO 316 Stainless", "matched": null},
+            {"material": 1, "name": "Stainless steel", "matched": "316"},
+        ]}]),
+        "{l}"
+    );
+    assert_eq!(l["message"], "2 materials match '316': Stainless steel: DEMO 316 Stainless, Stainless steel (316).", "{l}");
+    let l = call(&mut s, "material", None, json!({"mode": "list", "find": "almg2.5"}));
+    assert_eq!(l["data"]["groups"], json!([{"kind": "Aluminium", "materials": [{"material": 4, "name": "DEMO 5052 Aluminium", "matched": "DEMO-AlMg2.5"}]}]), "{l}");
+    let l = call(&mut s, "material", None, json!({"mode": "list", "find": "DEMO-NOTHING"}));
+    assert_eq!((l["data"]["groups"].clone(), l["message"].as_str()), (json!([]), Some("No material matches 'DEMO-NOTHING': try fewer letters, or another name.")), "{l}");
+    // Without find: every material, grouped, besides the full list.
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    let kinds: Vec<&str> = l["data"]["groups"].as_array().unwrap().iter().map(|g| g["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, vec!["Carbon steel", "Stainless steel", "Aluminium"], "{l}");
+    assert_eq!(l["data"]["materials"].as_array().unwrap().len(), 5);
+    // Deleted (MA20), DEMO 5052 is offered no more; "5052" still finds
+    // Aluminium by its other name.
+    delete_material(&mut s, "DEMO 5052 Aluminium").unwrap();
+    let l = call(&mut s, "material", None, json!({"mode": "list", "find": "5052"}));
+    assert_eq!(l["data"]["groups"], json!([{"kind": "Aluminium", "materials": [{"material": 2, "name": "Aluminium", "matched": "5052"}]}]), "{l}");
+
+    // Stock at the job's 3 mm: two DEMO 316, one stainless; a 5 mm mild
+    // steel sheet and a locked aluminium sheet don't count.
+    call(&mut s, "new", Some(jp), json!({"w": 2000, "h": 1000, "thickness": 3, "material": "DEMO-316"}));
+    let on = |s: &mut Session| call(s, "info", None, json!({}))["data"]["nest_on"]["materials_in_stock"].clone();
+    assert_eq!(on(&mut s), json!([]), "nothing in stock yet");
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-A", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 3, "qty": 2}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-SS-A", "material": "stainless", "w": 3000, "h": 1500, "thickness": 3, "qty": 1}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-MS-5", "material": "mild steel", "w": 3000, "h": 1500, "thickness": 5, "qty": 4}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-AL-L", "material": "aluminium", "w": 3000, "h": 1500, "thickness": 3, "qty": 4}));
+    call(&mut s, "stock", None, json!({"mode": "block", "ref": "DEMO-AL-L"}));
+    assert_eq!(
+        on(&mut s),
+        json!([{"material": 1, "name": "Stainless steel", "qty": 1}, {"material": 3, "name": "DEMO 316 Stainless", "qty": 2}]),
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // ---------------------------------------------------------------------------
 // Renaming and deleting materials (spec #142, ticket #146: MA19, MA20).
 // ---------------------------------------------------------------------------

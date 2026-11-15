@@ -7099,6 +7099,20 @@
   "value": "never 0-2; refused while a saved job, library part, stock item or the open job uses it, naming the first 3 of each",
   "source": "MA20",
   "estimated": true
+ },
+ {
+  "name": "material picker groups",
+  "group": "materials",
+  "value": "Carbon steel, Stainless steel, Aluminium, Galvanized, Copper and brass, Other",
+  "source": "MA23",
+  "estimated": true
+ },
+ {
+  "name": "material picker find",
+  "group": "materials",
+  "value": "every word typed in the name or one other name; any order, case, spaces or accents",
+  "source": "MA23",
+  "estimated": true
  }
 ]
 }
