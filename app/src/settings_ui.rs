@@ -1136,7 +1136,7 @@ impl App {
     }
 
     /// Where this PC's material list lives (MA14), and its settings folder.
-    fn material_home(&self) -> (crate::materials::Home, std::path::PathBuf) {
+    pub(crate) fn material_home(&self) -> (crate::materials::Home, std::path::PathBuf) {
         let pc_dir = crate::settings::AppSettings::file().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         (crate::materials::Home::of(&self.library_dir(), &pc_dir), pc_dir)
     }

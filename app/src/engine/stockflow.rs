@@ -524,6 +524,10 @@ pub struct JobSheets<'a> {
     pub cut_lines: &'a [Vec<CutLine>],
     /// The job material's name as programs call it ([MAT], mark #400).
     pub material_name: String,
+    /// The name the job's material was read with, for a material the list
+    /// doesn't have (MA17): a remnant of a sheet not from stock is stored
+    /// with it beside the number (invariant 3).
+    pub read_name: String,
 }
 
 /// What a reference format can use for a remnant of sheet `i` (RF4–RF5).
@@ -552,7 +556,7 @@ pub fn remnant_refs(stock: &Stock, j: &JobSheets, formats: &[SheetFormat], i: us
     // What the next store names them: the sheets up to this one, in store
     // order (the sheets after it don't change its names).
     let upto = (i + 1).min(j.sheets.len());
-    let head = JobSheets { name: j.name, parts: j.parts, spec: j.spec, sheets: &j.sheets[..upto], cut_lines: &j.cut_lines[..upto.min(j.cut_lines.len())], material_name: j.material_name.clone() };
+    let head = JobSheets { name: j.name, parts: j.parts, spec: j.spec, sheets: &j.sheets[..upto], cut_lines: &j.cut_lines[..upto.min(j.cut_lines.len())], material_name: j.material_name.clone(), read_name: j.read_name.clone() };
     let named: Vec<String> = rows_from(stock, &head, &formats[..upto.min(formats.len())], st, false).into_iter().filter(|r| r.sheet == i).map(|r| r.reference).collect();
     if named.len() == pieces.len() {
         return named;
@@ -896,6 +900,7 @@ pub fn make_remnants(lib: &Library, j: &JobSheets, formats: &mut Vec<SheetFormat
             // sheet that wasn't taken from stock.
             let parent = s.get(&f.stock_ref).cloned().unwrap_or_else(|| {
                 let mut it = Item::sheet(&format!("{}-{:02}", j.name, p.sheet + 1), material, thickness, f.w, f.h, 0);
+                it.material_name = crate::engine::material::stored_name(material, &j.read_name);
                 it.priority = stock::DEFAULT_PRIORITY;
                 it
             });
@@ -1126,7 +1131,7 @@ mod tests {
         let parts = [part];
         let store = |sheet: Placed, formats: &mut Vec<SheetFormat>| {
             let sheets = [vec![sheet]];
-            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new() };
+            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new(), read_name: String::new() };
             make_remnants(&as_sam(&dir), &j, formats, &st, false, None).unwrap()
         };
         let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
@@ -1150,7 +1155,7 @@ mod tests {
         let mut restored = first;
         follow_stock(&stock, &mut restored);
         let sheets = [vec![p]];
-        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new() };
+        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new(), read_name: String::new() };
         let (todo, _) = pending_remnants(&stock, &j, &restored, &st, false);
         assert!(todo.is_empty(), "the hand-deleted remnant is not remade");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1174,12 +1179,12 @@ mod tests {
         let sheets = [vec![p]];
         let mut formats = vec![SheetFormat::rect(1000.0, 500.0)];
         let lines1 = [line(300.0)];
-        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &lines1, material_name: String::new() };
+        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &lines1, material_name: String::new(), read_name: String::new() };
         make_remnants(&as_sam(&dir), &j, &mut formats, &st, false, None).unwrap();
         assert_eq!(formats[0].made, vec!["R".to_string()]);
         // The line moves: still one piece, to be rebuilt.
         let lines2 = [line(400.0)];
-        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &lines2, material_name: String::new() };
+        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &lines2, material_name: String::new(), read_name: String::new() };
         let stock = Stock::load(&dir).unwrap();
         let pieces = crate::remnant::sheet_remnants(&parts, &sheets[0], &formats[0], &lines2[0], crate::kerf::kerf_mm(&spec), st.min_remnant_m2, false);
         assert_eq!(pieces.len(), 1);
@@ -1209,7 +1214,7 @@ mod tests {
         let sheets = [vec![p], vec![p]];
         let mut formats = vec![SheetFormat::rect(1000.0, 500.0), SheetFormat::rect(1000.0, 500.0)];
         let check = |lines: &[Vec<CutLine>], formats: &mut Vec<SheetFormat>| {
-            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: lines, material_name: String::new() };
+            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: lines, material_name: String::new(), read_name: String::new() };
             let stock = Stock::load(&dir).unwrap();
             let marked: Vec<Vec<String>> = (0..2)
                 .map(|i| {
@@ -1243,7 +1248,7 @@ mod tests {
         let parts = [part];
         let pending = |sheet: Vec<Placed>, made_from: u64| {
             let sheets = [sheet];
-            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new() };
+            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new(), read_name: String::new() };
             let f = SheetFormat { made: vec!["R-1".into()], made_from, ..SheetFormat::rect(1000.0, 500.0) };
             let (todo, kept) = pending_remnants(&stock, &j, &[f], &st, false);
             !todo.is_empty() || !kept.is_empty()

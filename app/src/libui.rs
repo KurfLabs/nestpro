@@ -326,7 +326,122 @@ impl App {
     /// it, MA15).
     pub fn reload_materials(&mut self, first: bool) {
         let pc_dir = crate::settings::AppSettings::file().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-        let _ = crate::engine::load_materials(&self.library_dir(), &pc_dir, &self.cfg, first);
+        let dir = self.library_dir();
+        let lib = crate::library::Library::at(&dir, &self.who, &self.clock);
+        // A screenshot run writes to no Library: it never joins one.
+        let by = || lib.saved();
+        let joined = crate::engine::load_materials(&dir, &pc_dir, &self.cfg, first, (!self.shot_mode_now()).then_some(&by as &dyn Fn() -> crate::shared::Saved)).ok().flatten();
+        // MA28: the jobs open here were in this PC's numbering.
+        if let Some(n) = &joined {
+            self.spec.material = n.id(self.spec.material);
+            for j in &mut self.jobs {
+                j.spec.material = n.id(j.spec.material);
+            }
+            self.status = n.note();
+        }
+        // MA30: a material added since the job was read is found by the
+        // name it came with.
+        self.find_job_material();
+    }
+
+    /// MA30: while the open job's material isn't in the list, a notice over
+    /// the sheet names it and offers to add it; the job keeps its material
+    /// until another is picked. Closed, it stays closed for that job and
+    /// material while the window runs; the field still shows `?`.
+    pub fn unknown_material_card(&mut self, ctx: &egui::Context) {
+        let id = self.spec.material;
+        let read = crate::engine::material::read_name(id, &self.job_material_names);
+        let Some(note) = crate::engine::material::unknown_note(id, &read) else { return };
+        let closed = egui::Id::unique(("unknown_material_closed", self.job_name.clone(), id));
+        if ctx.data(|d| d.get_temp::<bool>(closed)).unwrap_or(false) {
+            return;
+        }
+        let name = read.split_whitespace().collect::<Vec<_>>().join(" ");
+        let (mut add, mut close) = (false, false);
+        let top = 70.0 + crate::ui_parts::RIBBON_H;
+        egui::Area::new(egui::Id::unique("unknown_material")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, [0.0, top]).show(ctx, |ui| {
+            egui::Frame::new().fill(th().warn_bg).stroke(egui::Stroke::new(1.0, th().warn_fg)).corner_radius(6).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("⚠ Unknown material").strong().color(th().warn_fg));
+                    ui.label(RichText::new(&note).color(th().text));
+                    ui.add_space(6.0);
+                    // A material that can't be told (MA31): adding one by
+                    // that name wouldn't say which; pick one instead.
+                    if !name.is_empty() && !crate::engine::material::cant_tell(id, &name) {
+                        add = ui.button(format!("Add {name} to the list")).on_hover_text("Adds it to the material list, based on mild steel (0010) until you set its standard and values in Settings → Materials").clicked();
+                    }
+                    close = ui.small_button("✖").on_hover_text("Close this note (the material stays unknown: pick one on the Sheet tab)").clicked();
+                });
+            });
+        });
+        if add {
+            self.add_job_material(&name);
+        }
+        if close {
+            ctx.data_mut(|d| d.insert_temp(closed, true));
+        }
+    }
+
+    /// Screenshots (`--unknown-material` with `--library-dir=` a new, empty
+    /// folder): a made-up job from elsewhere, DEMO-904 in DEMO 904L
+    /// (material 41), which the list has by neither number nor name, opened
+    /// with its notice (MA30).
+    pub fn demo_unknown_material(&mut self) {
+        let dir = self.library_dir();
+        if self.cfg.library_dir.is_empty() || dir == crate::library::default_dir() || crate::library::holds_library(&dir) {
+            self.status = "--unknown-material needs --library-dir= set to a new, empty folder".into();
+            return;
+        }
+        let r = (|| -> Result<std::path::PathBuf, String> {
+            crate::library::create(&dir)?;
+            self.reload_materials(false);
+            let mut j = self.current_jobfile();
+            j.name = "DEMO-904".into();
+            j.week = "Acme".into();
+            j.library = None;
+            j.held.clear();
+            j.spec.material = 41;
+            j.material_name = "DEMO 904L".into();
+            let path = dir.join("DEMO-904.snjob");
+            crate::jobfile::save(&path, &j)?;
+            Ok(path)
+        })();
+        match r {
+            Ok(path) => self.open_job_file(&path),
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// MA30: add the open job's unknown material to the list, as it is named
+    /// there, and give the job that material.
+    pub fn add_job_material(&mut self, name: &str) {
+        let (home, pc_dir) = self.material_home();
+        let lib = crate::library::Library::at(&self.library_dir(), &self.who, &self.clock);
+        let m = crate::engine::material::for_unknown(name);
+        match crate::materials::apply(&home, &pc_dir, &self.cfg, || lib.saved(), &lib, &[crate::engine::materialedit::Change::Add(m)], &[]) {
+            Ok((_, l)) => {
+                crate::engine::material::install(l);
+                self.find_job_material();
+                self.status = format!("Added {name} to the material list, based on mild steel (0010): set its standard and values in Settings → Materials.");
+                self.refresh();
+            }
+            Err(e) => self.status = format!("{name} wasn't added: {e}"),
+        }
+    }
+
+    /// MA30: the open job's material, when the list doesn't have its
+    /// number, found again by the name the job came with.
+    pub fn find_job_material(&mut self) {
+        let id = self.spec.material;
+        if !crate::engine::material::exists(id) {
+            let found = crate::engine::material::read_material(id, &crate::engine::material::read_name(id, &self.job_material_names));
+            if found != id {
+                self.spec.material = found;
+                if let Some(j) = self.jobs.get_mut(self.cur_job) {
+                    j.spec.material = found;
+                }
+            }
+        }
     }
 
     pub fn library_folder_changed(&mut self) {
@@ -2450,6 +2565,36 @@ pub(crate) mod libui_tests {
         let mut names: Vec<String> = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap().entries().into_iter().map(|e| e.name).collect();
         names.sort();
         assert_eq!(names, ["DEMO-001 frames", "DEMO-003 brackets"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MA30: a job whose material the list doesn't have opens on it, with
+    /// the notice; Add puts it in the Library's list and the job takes it.
+    #[test]
+    fn a_job_whose_material_is_missing_offers_to_add_it_and_then_uses_it() {
+        use crate::engine::material;
+        let dir = new_library("unknown_material");
+        let mut a = window(&dir, "demo", "DEMO-PC", &Clock::pc());
+        a.reload_materials(true);
+        let mut j = a.current_jobfile();
+        j.name = "DEMO-904".into();
+        j.library = None;
+        j.held.clear();
+        j.spec.material = 41;
+        j.material_name = "DEMO 904L".into();
+        let path = dir.with_extension("snjob");
+        crate::jobfile::save(&path, &j).unwrap();
+        a.open_job_file(&path);
+        assert_eq!(a.spec.material, 41, "never switched");
+        let read = material::read_name(41, &a.job_material_names);
+        assert_eq!(material::unknown_note(41, &read).as_deref(), Some("This job's material, DEMO 904L, isn't in the material list. The job keeps it (number 41) until another material is picked, or DEMO 904L is added to the list."));
+        a.add_job_material(&read);
+        assert_eq!((a.spec.material, material::name(a.spec.material).as_deref()), (3, Some("DEMO 904L")), "{}", a.status);
+        assert!(a.status.starts_with("Added DEMO 904L to the material list"), "{}", a.status);
+        let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
+        assert_eq!(stored.get(3).map(|m| (m.name.as_str(), m.standard)), Some(("DEMO 904L", 10)));
+        assert_eq!(material::unknown_note(a.spec.material, ""), None, "no notice any more");
+        let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

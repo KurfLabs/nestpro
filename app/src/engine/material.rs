@@ -198,6 +198,22 @@ pub struct List {
     /// Who changed it last, and when (as SV9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<crate::shared::Saved>,
+    /// The names materials had before they were renamed on this list, by
+    /// number (MA31): a file saved under that number before the rename still
+    /// means its material, even once another material takes the old name.
+    /// Never used to find a name from outside (MA32).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub former: Vec<(Id, String)>,
+    /// The names joining PCs had for materials of this list (MA28), by this
+    /// list's number. They are in those PCs' numbering, so a file's number
+    /// never picks one of them (MA31). Never used to find a name from
+    /// outside (MA32).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joined: Vec<(Id, String)>,
+    /// Only the first three of a Library's list that can't be read now
+    /// (MA28): names never stand for its other materials. Never stored.
+    #[serde(skip)]
+    pub offline: bool,
 }
 
 pub const FORMAT: &str = "nestpro-materials";
@@ -240,7 +256,7 @@ impl List {
     /// out, so a name means one material (invariant 6); a lookup finds the
     /// same material it found before, since it always took the first.
     pub fn seed(cfg: &AppSettings) -> List {
-        let mut l = List { format: FORMAT.into(), version: VERSION, next_id: OLD_THREE.len(), materials: vec![], deleted: vec![], changed: None };
+        let mut l = List { format: FORMAT.into(), version: VERSION, next_id: OLD_THREE.len(), materials: vec![], deleted: vec![], changed: None, former: vec![], joined: vec![], offline: false };
         for (id, b) in OLD_THREE.iter().enumerate() {
             let (pn, pc) = cfg.materials.get(id).cloned().unwrap_or_else(|| default_program(id));
             let typed = cfg.material_aliases.get(id).cloned().unwrap_or_else(|| b.other_names.to_string());
@@ -262,7 +278,47 @@ impl List {
             }
             l.materials.push(m);
         }
+        if cfg.starter_materials {
+            l.add_starters();
+        }
         l
+    }
+
+    /// MA29: a new install's list: after the first three (as above), the
+    /// rest of the original's starter materials (MA11) with numbers 3 to 7.
+    /// The first three keep the values a new install always gave them, so
+    /// their programs don't change (invariant 2); the original's names for
+    /// them (RST 37-2, X5CrNi, Al99) are other names of theirs. A starter's
+    /// name taken off the first three's other names (AlMg3), so a name
+    /// means one material.
+    fn add_starters(&mut self) {
+        for (id, n) in [(0, "RST 37-2"), (1, "X5CrNi"), (2, "Al99")] {
+            if self.holder(&norm(n), None).is_none() {
+                if let Some(m) = self.materials.iter_mut().find(|m| m.id == id) {
+                    m.other_names.push(n.to_string());
+                }
+            }
+        }
+        // MA11: stainless steel's weight per volume and kind (corrected), its
+        // own name and catalogue number in programs and as machine table key.
+        let film = Material {
+            id: 0,
+            name: "X5CrNi + Film".into(),
+            other_names: vec![],
+            standard: 100,
+            density: None,
+            program_name: Some("X5CrNi + Film".into()),
+            program_code: Some("3060".into()),
+            machine_ref: Some("3060".into()),
+        };
+        let rest = [210, 300, 510, 590].map(|n| super::catalogue::from_standard(n).expect("a starter's standard is in the catalogue"));
+        for m in std::iter::once(film).chain(rest) {
+            let n = norm(&m.name);
+            for x in &mut self.materials {
+                x.other_names.retain(|o| norm(o) != n);
+            }
+            let _ = self.add(m);
+        }
     }
 
     pub fn get(&self, id: Id) -> Option<&Material> {
@@ -325,6 +381,79 @@ impl List {
             *x = m;
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Joining a Library (MA28).
+// ---------------------------------------------------------------------------
+
+/// What joining a Library did with this PC's own materials.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Joined {
+    /// The Library's list with this PC's own materials added.
+    pub list: List,
+    /// This PC's materials added to it: (its number on this PC, its number
+    /// in the Library).
+    pub added: Vec<(Id, Id)>,
+    /// This PC's materials taken as one the Library already has.
+    pub same: Vec<(Id, Id)>,
+}
+
+impl List {
+    /// MA28: this PC's own list `pc` joining the Library's (`self`). The
+    /// Library's list wins: its materials keep their numbers and values. The
+    /// first three are the same material on every PC (invariant 1), whatever
+    /// they are called. Each other material of this PC is taken as the
+    /// Library material one of its names (its name or an other name,
+    /// compared as MA16) already belongs to — the one holding its name
+    /// first, else the first in the list — and is otherwise added with the
+    /// Library's next number and every value it had. Files keep working
+    /// through the name stored beside the number (MA17, MA31).
+    pub fn merge(&self, pc: &List) -> Joined {
+        let mut list = self.clone();
+        let (mut added, mut same) = (vec![], vec![]);
+        for m in &pc.materials {
+            if m.id < KEPT && self.get(m.id).is_some() {
+                same.push((m.id, m.id));
+                continue;
+            }
+            let own: Vec<String> = m.names().collect();
+            let found = self.materials.iter().find(|x| x.names().any(|n| n == own[0])).or_else(|| self.materials.iter().find(|x| x.names().any(|n| own.contains(&n))));
+            if let Some(x) = found {
+                same.push((m.id, x.id));
+                continue;
+            }
+            // No name of it is in the Library's list; an other name an
+            // earlier added material took is left out (invariant 6).
+            let taken = |l: &List, n: &str| l.holder(&norm(n), None).is_some();
+            let mut copy = m.clone();
+            copy.other_names.retain(|o| !taken(&list, o));
+            if taken(&list, &copy.name) {
+                continue;
+            }
+            if let Ok(id) = list.add(copy) {
+                added.push((m.id, id));
+            }
+        }
+        // MA31: the PC's name for each material it brought, and its names
+        // before a rename, go with it as joined names of the Library's
+        // number, so a PC job saved under one of them still finds it (they
+        // aren't names the list shows, invariant 6). The first three are
+        // read by number.
+        for &(from, to) in same.iter().chain(&added).filter(|x| x.0 >= KEPT) {
+            let pc_names = pc.get(from).map(|m| m.name.clone()).into_iter().chain(pc.former.iter().filter(|f| f.0 == from).map(|f| f.1.clone()));
+            // Kept even when the Library's material shows that name now: a
+            // rename here of another material from the same name must not
+            // decide a PC file (MA31 step 2).
+            for n in pc_names.collect::<Vec<_>>() {
+                let k = norm(&n);
+                if !k.is_empty() && !list.joined.iter().any(|(i, f)| *i == to && norm(f) == k) {
+                    list.joined.push((to, n));
+                }
+            }
+        }
+        Joined { list, added, same }
     }
 }
 
@@ -725,12 +854,134 @@ pub fn like(text: &str) -> Option<Id> {
 /// MA17: the material a file means by the id and name it stored. The id,
 /// when the list has it; else the name (or one of the other names) finds
 /// it; else the id stays, and the screens show `?` (JOB-86). A file saved
-/// before names were stored has only the id.
+/// before names were stored has only the id. A name no material has now
+/// and several had before (MA31) picks none: the id stays.
+#[cfg(test)]
 pub fn resolve(id: Id, name: &str) -> Id {
-    if exists(id) || name.trim().is_empty() {
-        return id;
+    resolve_read(id, name).unwrap_or(id)
+}
+
+/// The material that has the name `n` (as compared, MA16) now, as its name
+/// or an other name: one at most (invariant 6).
+fn holder_now(l: &List, n: &str) -> Option<Id> {
+    l.materials.iter().find(|m| m.names().any(|x| x == n)).map(|m| m.id)
+}
+
+/// The materials that had the name `n` before (a rename here, or a joining
+/// PC's name, MA31), each once.
+fn former_holders(l: &List, n: &str) -> Vec<Id> {
+    let mut ids: Vec<Id> = l.former.iter().chain(&l.joined).filter(|(i, f)| norm(f) == n && l.get(*i).is_some()).map(|x| x.0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// MA31: a name no material has now and several materials had before: it
+/// means none of them when a file is read (unless the file's number keeps
+/// it, `cant_tell`).
+#[cfg(test)]
+pub fn ambiguous(name: &str) -> bool {
+    let (l, n) = (current(), norm(name));
+    holder_now(&l, &n).is_none() && former_holders(&l, &n).len() > 1
+}
+
+/// MA31: a file whose number and stored name can't say which material it
+/// is: adding a material by that name wouldn't settle it; one is picked by
+/// hand.
+pub fn cant_tell(id: Id, name: &str) -> bool {
+    resolve_read(file_id(id), name).is_none()
+}
+
+/// MA17, MA31: the material a file's number and stored name mean; None
+/// when no material has the name now and several had it before: it can't
+/// be told which, whatever the file's number is (the file's material is
+/// unknown).
+pub fn resolve_read(id: Id, name: &str) -> Option<Id> {
+    let n = norm(name);
+    if n.is_empty() || id < KEPT {
+        return Some(id);
     }
-    find(name).unwrap_or(id)
+    let l = current();
+    // MA28: a Library's list that can't be read: only the first three are
+    // known here, and this PC's names for them never stand for the
+    // Library's other materials.
+    if l.offline {
+        return Some(id);
+    }
+    // MA31, in order: the number's material has the name now; the number's
+    // material had it before a rename on this list (renaming touches no
+    // file, spec #142 user story 17) — but when a joining PC brought that
+    // name for another material the file could be this list's from before
+    // the rename or that PC's, so it can't be told: no material is picked,
+    // not even the one with the name now; the material that has the name
+    // now; the one material that had it before (a rename here, or a joining
+    // PC's name, which is in that PC's numbering and so never lets the
+    // number pick); several that had it can't be told apart.
+    let now = holder_now(&l, &n);
+    if now == Some(id) {
+        return Some(id);
+    }
+    if l.get(id).is_some() && l.former.iter().any(|(i, f)| *i == id && norm(f) == n) {
+        let joined_elsewhere = l.joined.iter().any(|(i, f)| *i != id && norm(f) == n && l.get(*i).is_some());
+        return if joined_elsewhere { None } else { Some(id) };
+    }
+    if let Some(m) = now {
+        return Some(m);
+    }
+    match former_holders(&l, &n).as_slice() {
+        [one] => Some(*one),
+        [] if l.get(id).is_some() => Some(id),
+        [] => Some(find(name).unwrap_or(id)),
+        _ => None,
+    }
+}
+
+/// Added to a file's material number while it is read (a job, a library
+/// part, a stock item), when its name can't say which material it is
+/// (MA31): no material has the number so made, so it shows `?` (MA30), and
+/// its file gets its own number and name back when saved (`file_id`,
+/// `stored_name`).
+pub const UNRESOLVED: Id = 1_000_000_000;
+
+/// The number a file stores for material `id` (the file's own for an
+/// unresolved one). Take the name with `stored_name` from `id` first: the
+/// file's number may be another material's.
+pub fn file_id(id: Id) -> Id {
+    if id >= UNRESOLVED { id - UNRESOLVED } else { id }
+}
+
+/// MA17, MA31: a material from a file's number and stored name (a job, a
+/// library part, a stock item): unresolved (shown `?`, MA30) when the name
+/// can't say which.
+pub fn read_material(id: Id, name: &str) -> Id {
+    let id = file_id(id);
+    resolve_read(id, name).unwrap_or(UNRESOLVED + id)
+}
+
+/// MA30: what a job whose material the list doesn't have says, from its
+/// number and the name it came with (`read`): None when the list has it.
+/// The job is never switched to another material by itself.
+pub fn unknown_note(id: Id, read: &str) -> Option<String> {
+    if exists(id) {
+        return None;
+    }
+    let id = file_id(id);
+    let r = read.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(if r.is_empty() {
+        format!("This job's material (number {id}) isn't in the material list. The job keeps it until another material is picked.")
+    } else if cant_tell(id, &r) {
+        format!("This job's material, {r} (number {id}), can't be told: several materials had that name before, and the number doesn't say which. The job keeps it until another material is picked.")
+    } else {
+        format!("This job's material, {r}, isn't in the material list. The job keeps it (number {id}) until another material is picked, or {r} is added to the list.")
+    })
+}
+
+/// MA30: the material that adding a job's unknown material to the list
+/// makes: named as the job has it, based on mild steel (0010) with every
+/// value its standard's, as a blank material is (MA22), until the shop sets
+/// its standard and values in Settings → Materials.
+pub fn for_unknown(read: &str) -> Material {
+    Material { name: read.split_whitespace().collect::<Vec<_>>().join(" "), ..super::catalogue::blank() }
 }
 
 /// The name a file stores beside a material id (invariant 3): the list's,
@@ -797,13 +1048,23 @@ pub fn write_pc(cfg: &AppSettings, s: &mut String, esc: impl Fn(&str) -> String)
     for (k, r) in cfg.material_refs.iter().enumerate() {
         s.push_str(&format!("material_ref{k} = {}\n", esc(r)));
     }
+    if cfg.starter_materials {
+        s.push_str(&format!("{START_LINE} = {STARTERS_WORD}\n"));
+    }
 }
+
+/// The settings line that says a new install's list starts with the
+/// starter materials (MA29); settings saved before it have none.
+const START_LINE: &str = "material_list";
+const STARTERS_WORD: &str = "starter";
 
 /// Read one `[general]` line of the settings file if it is a material line
 /// (a line for a material past the first three is ignored). False when it
 /// isn't one.
 pub fn read_pc(cfg: &mut AppSettings, k: &str, v: String) -> bool {
-    if let Some(i) = k.strip_prefix("material_ref") {
+    if k == START_LINE {
+        cfg.starter_materials = v.trim() == STARTERS_WORD;
+    } else if let Some(i) = k.strip_prefix("material_ref") {
         if let Some(r) = i.parse::<usize>().ok().and_then(|i| cfg.material_refs.get_mut(i)) {
             *r = v;
         }
@@ -1143,5 +1404,242 @@ mod tests {
         assert!(e.contains("material 0 (Mild steel)"), "{e}");
         assert_eq!(l.materials.len(), 3, "nothing added");
         assert_eq!(l.add(m("", &[])).unwrap_err(), "A material needs a name.");
+    }
+
+    // -----------------------------------------------------------------------
+    // Joining a Library (MA28): the Library's list wins; this PC's own
+    // materials are added unless one of their names is already there.
+    // -----------------------------------------------------------------------
+
+    fn grade(name: &str, standard: u32, other: &[&str]) -> Material {
+        Material { id: 0, name: name.into(), other_names: other.iter().map(|s| s.to_string()).collect(), standard, density: None, program_name: None, program_code: None, machine_ref: None }
+    }
+
+    /// The old three, then `grades`, as a list stores them.
+    fn list_with(grades: &[Material]) -> List {
+        let mut l = List::seed(&AppSettings::parse(""));
+        for g in grades {
+            l.add(g.clone()).unwrap();
+        }
+        l
+    }
+
+    fn names(l: &List) -> Vec<&str> {
+        l.materials.iter().map(|m| m.name.as_str()).collect()
+    }
+
+    #[test]
+    fn joining_a_library_keeps_its_list_and_adds_the_pcs_own_grades() {
+        let pc = list_with(&[grade("DEMO 316", 100, &[])]);
+        let lib = list_with(&[grade("DEMO 316L", 100, &[])]);
+        let j = lib.merge(&pc);
+        assert_eq!(names(&j.list), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316"]);
+        // The PC's DEMO 316 had number 3, the Library's DEMO 316L's: it gets a new one.
+        assert_eq!(j.list.get(4).map(|m| m.name.as_str()), Some("DEMO 316"));
+        assert_eq!(j.added, [(3, 4)]);
+        assert_eq!(j.same, [(0, 0), (1, 1), (2, 2)]);
+        assert_eq!(j.list.next_id, 5);
+    }
+
+    #[test]
+    fn a_name_that_differs_only_in_case_or_spaces_is_the_same_material() {
+        let pc = list_with(&[grade("  demo   316 ", 100, &[])]);
+        let lib = list_with(&[grade("DEMO 316", 100, &[])]);
+        let j = lib.merge(&pc);
+        assert_eq!(names(&j.list), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316"]);
+        assert_eq!((j.added.len(), j.same.last()), (0, Some(&(3, 3))));
+        assert_eq!(j.list.materials, lib.materials, "nothing added");
+        assert_eq!(j.list.joined, [(3, "demo 316".to_string())], "the PC's name, kept as it had it (MA31)");
+    }
+
+    #[test]
+    fn a_pc_material_whose_other_name_is_a_library_name_is_that_material() {
+        // Either way round: the PC's other name is the Library's name, or the
+        // PC's name is one of the Library material's other names.
+        let pc = list_with(&[grade("DEMO Inox 316", 100, &["DEMO 316"]), grade("DEMO 1.4404", 100, &[])]);
+        let lib = list_with(&[grade("DEMO 304", 100, &[]), grade("DEMO 316", 100, &["DEMO 1.4404"])]);
+        let j = lib.merge(&pc);
+        assert_eq!(j.list.materials, lib.materials, "nothing added");
+        assert_eq!(j.same[3..], [(3, 4), (4, 4)], "both are the Library's DEMO 316");
+        // MA31: the PC's name goes with it, unseen, so the PC's jobs find it.
+        assert_eq!((j.list.joined.as_slice(), j.list.former.len()), (&[(4, "DEMO Inox 316".to_string()), (4, "DEMO 1.4404".to_string())][..], 0));
+    }
+
+    #[test]
+    fn a_name_wins_over_an_other_name_when_two_library_materials_match() {
+        let pc = list_with(&[grade("DEMO 316", 100, &["DEMO 304"])]);
+        let lib = list_with(&[grade("DEMO 304", 100, &[]), grade("DEMO 316", 100, &[])]);
+        assert_eq!(lib.merge(&pc).same.last(), Some(&(3, 4)));
+    }
+
+    #[test]
+    fn the_first_three_are_the_same_material_whatever_they_are_called() {
+        let mut pc = list_with(&[]);
+        pc.materials[0].name = "DEMO Plate".into();
+        pc.materials[2].other_names = vec!["DEMO-ALU".into()];
+        let lib = list_with(&[grade("DEMO Plate", 10, &[])]);
+        let j = lib.merge(&pc);
+        assert_eq!(j.same, [(0, 0), (1, 1), (2, 2)], "by number, not by the name another material has");
+        assert_eq!(j.list, lib, "the Library's values stand");
+    }
+
+    #[test]
+    fn an_added_material_keeps_its_values_and_only_its_free_other_names() {
+        let mut g = grade("DEMO 904L", 100, &["DEMO-904", "DEMO-X"]);
+        g.density = Some(8.1);
+        g.program_name = Some("DEMO904".into());
+        g.machine_ref = Some("0110".into());
+        let pc = list_with(&[g]);
+        let lib = list_with(&[]);
+        let j = lib.merge(&pc);
+        let m = j.list.get(3).unwrap();
+        assert_eq!((m.name.as_str(), m.density, m.program_name.as_deref(), m.machine_ref.as_deref()), ("DEMO 904L", Some(8.1), Some("DEMO904"), Some("0110")));
+        assert_eq!(m.other_names, ["DEMO-904", "DEMO-X"]);
+    }
+
+    #[test]
+    fn joining_twice_adds_nothing_more() {
+        let pc = list_with(&[grade("DEMO 316", 100, &[]), grade("DEMO A36", 10, &[])]);
+        let lib = list_with(&[grade("DEMO 316L", 100, &[])]);
+        let once = lib.merge(&pc).list;
+        let twice = once.merge(&pc);
+        assert_eq!(twice.list, once);
+        assert!(twice.added.is_empty());
+    }
+
+    #[test]
+    fn a_library_number_deleted_is_never_given_to_a_pc_material() {
+        let mut lib = list_with(&[grade("DEMO Gone", 100, &[])]);
+        lib.remove(3, &Uses::default()).unwrap();
+        let pc = list_with(&[grade("DEMO 316", 100, &[])]);
+        let j = lib.merge(&pc);
+        assert_eq!(j.added, [(3, 4)]);
+        assert_eq!(j.list.deleted, [3]);
+    }
+
+    // -----------------------------------------------------------------------
+    // A file's material by its number and name (MA17, MA31).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_pc_job_reopens_on_its_own_grade_after_joining() {
+        // The PC's DEMO 316 was number 3; in the Library 3 is DEMO 316L and
+        // DEMO 316 became 4. The name stored beside the number finds it.
+        let pc = list_with(&[grade("DEMO 316", 100, &["DEMO-316"])]);
+        let lib = list_with(&[grade("DEMO 316L", 100, &[]), grade("DEMO 1.4404", 100, &["DEMO-1.4404"])]);
+        install(lib.merge(&pc).list);
+        assert_eq!(resolve(3, "DEMO 316"), 5);
+        assert_eq!(resolve(3, "  demo 316 "), 5, "compared as names are");
+        assert_eq!(resolve(3, "DEMO 316L"), 3, "the number's own name: itself");
+        // Found only by an other name.
+        assert_eq!(resolve(3, "DEMO-1.4404"), 4);
+        // Gone by number and by name: the number stays (the screens show ?).
+        assert_eq!(resolve(41, "DEMO 904L"), 41);
+        assert_eq!(resolve(3, "DEMO 904L"), 3, "a number the list has and a name nothing has: a rename");
+        // Files saved before names were stored: the number alone.
+        assert_eq!(resolve(3, ""), 3);
+        // The first three are themselves whatever name is stored beside them.
+        assert_eq!(resolve(1, "DEMO 316"), 1);
+    }
+
+    #[test]
+    fn a_name_from_a_rename_here_keeps_its_number_and_a_joining_pcs_name_never_does() {
+        let mut l = list_with(&[grade("DEMO 304", 100, &[])]);
+        let was = l.get(3).unwrap().clone();
+        let now = Material { name: "DEMO 304 Brushed".into(), ..was.clone() };
+        l.apply(&[crate::engine::materialedit::Change::Edit { was, now }], |_| Ok(Uses::default())).unwrap();
+        l.add(grade("DEMO 304", 100, &[])).unwrap();
+        install(l);
+        // MA31: a job saved before the rename stored (3, "DEMO 304"): still
+        // 3, though 4 is called DEMO 304 now (spec #142 user story 17).
+        assert_eq!(resolve(3, "DEMO 304"), 3);
+        // Its new name finds it, whatever the number.
+        assert_eq!((resolve(3, "DEMO 304 Brushed"), resolve(8, "demo 304 brushed")), (3, 3));
+        // A file from elsewhere naming DEMO 304 by a number we don't have:
+        // the material called that now.
+        assert!(!ambiguous("DEMO 304"));
+        assert_eq!(resolve(9, "DEMO 304"), 4);
+        // Once 4 is renamed from it too, each keeps its own files; a number
+        // that is neither can't be told.
+        let mut l = (*current()).clone();
+        let was = l.get(4).unwrap().clone();
+        let now = Material { name: "DEMO 304 Satin".into(), ..was.clone() };
+        l.apply(&[crate::engine::materialedit::Change::Edit { was, now }], |_| Ok(Uses::default())).unwrap();
+        install(l);
+        assert!(ambiguous("DEMO 304"));
+        assert_eq!((resolve_read(3, "DEMO 304"), resolve_read(4, "DEMO 304"), resolve_read(9, "DEMO 304")), (Some(3), Some(4), None));
+        // Names joining PCs brought (MA28) are in those PCs' numbering: the
+        // file's number never picks one of them.
+        let mut l = (*current()).clone();
+        l.joined = vec![(3, "DEMO Shared".into()), (4, "DEMO Shared".into())];
+        install(l);
+        assert_eq!((resolve_read(3, "DEMO Shared"), resolve_read(4, "DEMO Shared")), (None, None));
+        let mut l = (*current()).clone();
+        l.joined.pop();
+        install(l);
+        assert_eq!((resolve_read(4, "DEMO Shared"), resolve_read(9, "DEMO Shared")), (Some(3), Some(3)), "one material had it: that one");
+        // 3 was renamed here from DEMO 304, and a joining PC brought DEMO 304
+        // for 4: a file (3, DEMO 304) could be either, so the number doesn't
+        // decide; with no material called that now, it can't be told.
+        let mut l = (*current()).clone();
+        l.joined = vec![(4, "DEMO 304".into())];
+        install(l);
+        assert_eq!((resolve_read(3, "DEMO 304"), resolve_read(4, "DEMO 304")), (None, Some(4)));
+    }
+
+    // -----------------------------------------------------------------------
+    // The starting list (MA29).
+    // -----------------------------------------------------------------------
+
+    fn settings_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("nestpro_material_start_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_new_install_starts_with_the_starter_materials() {
+        let d = settings_dir("fresh");
+        let cfg = AppSettings::load_from(&d.join("settings.ini"));
+        install(List::seed(&cfg));
+        let l = current();
+        assert_eq!(names(&l), ["Mild steel", "Stainless steel", "Aluminium", "X5CrNi + Film", "AlMg3", "Galvanized", "Copper", "Brass"]);
+        assert_eq!(l.next_id, 8);
+        // The first three are as a new install always had them (invariant 2).
+        assert_eq!((program(0), program(1), program(2)), (("STEEL".into(), "0010".into()), ("STAINLESS".into(), "0100".into()), ("ALUMINIUM".into(), "0200".into())));
+        assert_eq!((machine_key(0), machine_key(2), density(2)), ("##MATEXP0010##".to_string(), "##MATEXP0210##".to_string(), 2.70));
+        // The original's names for them find them.
+        assert_eq!((find("RST 37-2"), find("x5crni"), find("Al99")), (Some(0), Some(1), Some(2)));
+        // MA11: the film-covered stainless weighs as stainless (8.0, corrected)
+        // and writes its own name and number; Copper is spelt right.
+        assert_eq!((kind(3), density(3), program(3), machine_key(3)), (Kind::Stainless, 8.0, ("X5CrNi + Film".to_string(), "3060".to_string()), "##MATEXP3060##".to_string()));
+        assert_eq!((density(4), program(4), machine_key(4)), (2.7, ("AlMg3".to_string(), "0210".to_string()), "##MATEXP0210##".to_string()));
+        assert_eq!((density(5), program(5)), (7.9, ("Galvanized".to_string(), "0300".to_string())));
+        assert_eq!((density(6), program(6), find("copper")), (8.9, ("Copper".to_string(), "0510".to_string()), Some(6)));
+        assert_eq!((density(7), program(7)), (8.5, ("Brass".to_string(), "0590".to_string())));
+        // A name means one material: AlMg3 is the starter, no longer one of
+        // aluminium's other names.
+        assert_eq!(find("almg3"), Some(4));
+        assert!(!l.get(2).unwrap().other_names.iter().any(|o| o == "AlMg3"));
+        // Saved and read again, it still starts so.
+        cfg.save_to(&d.join("settings.ini")).unwrap();
+        assert_eq!(List::seed(&AppSettings::load_from(&d.join("settings.ini"))).materials.len(), 8);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn settings_saved_before_keep_their_three() {
+        let d = settings_dir("old");
+        let f = d.join("settings.ini");
+        std::fs::write(&f, "[general]\ntheme = dark\nmaterial0 = STEEL|0010\nmaterial1 = STAINLESS|0100\nmaterial2 = ALUMINIUM|0200\n").unwrap();
+        let l = List::seed(&AppSettings::load_from(&f));
+        assert_eq!(names(&l), ["Mild steel", "Stainless steel", "Aluminium"]);
+        // Empty values stay empty, exactly (MA15).
+        std::fs::write(&f, "[general]\nmaterial0 = |\nmaterial_alias0 =\nmaterial_ref0 =\n").unwrap();
+        let l = List::seed(&AppSettings::load_from(&f));
+        let m = l.get(0).unwrap();
+        assert_eq!((l.materials.len(), m.program_name.as_deref(), m.program_code.as_deref(), m.machine_ref.as_deref(), m.other_names.len()), (3, Some(""), Some(""), Some(""), 0));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

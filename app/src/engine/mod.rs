@@ -78,20 +78,28 @@ pub fn install_machine(m: &settings::Machine, lantek_dir: &str) -> crate::ct1::M
 }
 
 /// Read the material list from where it lives and answer from it (MA14):
-/// the Library's, or this PC's own when it has no Library. While it can't
-/// be read (the Library is out of reach) the list in use stays; `first`
-/// (starting up) uses the one this PC's settings seed instead (MA15).
-/// Shared with the window.
-pub fn load_materials(library_dir: &Path, pc_dir: &Path, cfg: &AppSettings, first: bool) -> Result<(), String> {
+/// the Library's, or this PC's own when it has no Library. The first time
+/// this PC points at a Library, its own list joins the Library's first
+/// (MA28; `by` says who for the list's file): what that did is given, so a
+/// job open in this PC's numbering takes the Library's. While the list
+/// can't be read (the Library is out of reach) the list in use stays;
+/// `first` (starting up) uses this PC's own instead (`materials::fallback`).
+/// `by` None: read only, never join (a screenshot run writes to no
+/// Library). Shared with the window.
+pub fn load_materials(library_dir: &Path, pc_dir: &Path, cfg: &AppSettings, first: bool, by: Option<&dyn Fn() -> crate::shared::Saved>) -> Result<Option<crate::materials::JoinedNow>, String> {
     let home = crate::materials::Home::of(library_dir, pc_dir);
+    let joined = match by {
+        Some(by) => crate::materials::join(&home, pc_dir, cfg, by),
+        None => Ok(None),
+    };
     match crate::materials::load(&home, pc_dir, cfg) {
         Ok(l) => {
             material::install(l);
-            Ok(())
+            joined
         }
         Err(e) => {
             if first {
-                material::install(material::List::seed(cfg));
+                material::install(crate::materials::fallback(&home, pc_dir, cfg));
             }
             Err(e)
         }
@@ -282,8 +290,10 @@ impl Ctx {
         let tech = install_machine(&m, &cfg.lantek_dir);
         let library_dir = if cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&cfg.library_dir) };
         let pc_dir = AppSettings::file().parent().map(Path::to_path_buf).unwrap_or_default();
-        let _ = load_materials(&library_dir, &pc_dir, &cfg, true);
-        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who: crate::shared::Who::this_pc().as_agent(), clock: crate::shared::Clock::pc(), watch: Default::default(), pc_dir }
+        let who = crate::shared::Who::this_pc().as_agent();
+        let clock = crate::shared::Clock::pc();
+        let _ = load_materials(&library_dir, &pc_dir, &cfg, true, Some(&|| crate::library::Library::at(&library_dir, &who, &clock).saved()));
+        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who, clock, watch: Default::default(), pc_dir }
     }
 
     /// Where the material list lives for this session (MA14).
@@ -293,8 +303,8 @@ impl Ctx {
 
     /// Read the material list again (each call: another PC may have changed
     /// it). While the Library can't be reached the list in use stays.
-    pub fn reload_materials(&self) {
-        let _ = load_materials(&self.library_dir, &self.pc_dir, &self.cfg, false);
+    pub fn reload_materials(&self) -> Option<crate::materials::JoinedNow> {
+        load_materials(&self.library_dir, &self.pc_dir, &self.cfg, false, Some(&|| self.library_at().saved())).ok().flatten()
     }
 
     /// Built-in values only (tests).
@@ -1608,7 +1618,7 @@ impl JobFile {
 
     /// The job's sheets as the stock's remnant generation sees them.
     pub fn stock_sheets(&self) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: material::program_name_or_name(self.spec.material) }
+        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: material::program_name_or_name(self.spec.material), read_name: self.material_name.clone() }
     }
 
     /// Bring the stock in step with the job (what the window does on save):

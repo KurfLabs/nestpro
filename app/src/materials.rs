@@ -97,6 +97,123 @@ pub fn load(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings) -> R
     Ok(List::seed(cfg))
 }
 
+/// This PC's own list (MA28): the one stored in its settings folder; else,
+/// on a new install, its starter list (MA29). None for settings from before
+/// the list, whose three are every list's first three.
+pub fn own_list(pc_dir: &Path, cfg: &crate::settings::AppSettings) -> Result<Option<List>, String> {
+    if let Some(l) = read(&Home::Pc(pc_dir.to_path_buf()).file())? {
+        return Ok(Some(l));
+    }
+    Ok(cfg.starter_materials.then(|| List::seed(cfg)))
+}
+
+/// Where this PC notes the Libraries its own list has joined (MA28).
+pub const JOINED_FILE: &str = "materials-joined.json";
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct JoinedLibraries {
+    libraries: Vec<String>,
+}
+
+fn joined_file(pc_dir: &Path) -> PathBuf {
+    pc_dir.join(JOINED_FILE)
+}
+
+fn joined_libraries(pc_dir: &Path) -> JoinedLibraries {
+    std::fs::read_to_string(joined_file(pc_dir)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// Whether this PC's own list has joined the Library in `dir` already.
+pub fn has_joined(pc_dir: &Path, dir: &Path) -> bool {
+    joined_libraries(pc_dir).libraries.iter().any(|l| Path::new(l) == dir)
+}
+
+/// What joining a Library did now (MA28).
+#[derive(Clone, Debug, PartialEq)]
+pub struct JoinedNow {
+    /// This PC's material numbers and the Library's for the same material:
+    /// a job open here in this PC's numbering takes the Library's.
+    pub map: Vec<(Id, Id)>,
+    /// The names of this PC's materials added to the Library's list.
+    pub added: Vec<String>,
+}
+
+impl JoinedNow {
+    /// The Library's number for this PC's material `id`.
+    pub fn id(&self, id: Id) -> Id {
+        self.map.iter().find(|m| m.0 == id).map_or(id, |m| m.1)
+    }
+
+    /// What the window and agents say about it.
+    pub fn note(&self) -> String {
+        if self.added.is_empty() {
+            "This PC's materials joined the Library's material list: each was there already.".into()
+        } else {
+            format!("This PC's materials joined the Library's material list: added {}.", self.added.join(", "))
+        }
+    }
+}
+
+/// MA28: the first time this PC points at the Library of `home`, its own
+/// list joins the Library's, under the Library's write lock (invariant 5):
+/// the Library's list wins and this PC's materials whose names it doesn't
+/// have are added (`List::merge`); a Library with no list yet takes this
+/// PC's own as it is. Nothing to do (None) when the home is this PC's own,
+/// this PC has no list of its own (its settings' three are the Library's
+/// first three), or it joined this Library before. Refused, to be tried
+/// again the next time the list is read, while the Library can't be
+/// reached; nothing is stored then.
+pub fn join(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved) -> Result<Option<JoinedNow>, String> {
+    let Home::Library(d) = home else { return Ok(None) };
+    if has_joined(pc_dir, d) {
+        return Ok(None);
+    }
+    let Some(own) = own_list(pc_dir, cfg)? else { return Ok(None) };
+    crate::library::usable(d).map_err(|e| format!("{e} This PC's materials will join the Library's material list once it can be reached."))?;
+    let lock = WriteLock::take(d)?;
+    let joined = match read(&home.file())? {
+        None => crate::engine::material::Joined { same: own.materials.iter().map(|m| (m.id, m.id)).collect(), added: vec![], list: own.clone() },
+        Some(lib) => lib.merge(&own),
+    };
+    let stored = read(&home.file())?;
+    if stored.as_ref() != Some(&joined.list) {
+        let mut l = joined.list.clone();
+        l.changed = Some(by());
+        store(home, &l, &lock)?;
+    }
+    drop(lock);
+    let mut marks = joined_libraries(pc_dir);
+    marks.libraries.push(d.to_string_lossy().into_owned());
+    let text = serde_json::to_string_pretty(&marks).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(pc_dir).map_err(|e| format!("{}: {e}", pc_dir.display()))?;
+    crate::shared::write_file(&joined_file(pc_dir), text.as_bytes(), None)?;
+    let added = joined.added.iter().filter_map(|(_, id)| joined.list.get(*id).map(|m| m.name.clone())).collect();
+    Ok(Some(JoinedNow { map: joined.same.iter().chain(&joined.added).copied().collect(), added }))
+}
+
+/// The list to answer from when a window or session starts while the list
+/// can't be read (the Library is out of reach): this PC's own while it
+/// hasn't joined the Library yet (its jobs are still in its numbering).
+/// Otherwise only the first three, as this PC's settings seed them (MA15):
+/// every other number is the Library's, which can't be read now, so it is
+/// unknown (`?`, MA30) and keeps its number and name, never taken as one of
+/// this PC's own (MA28).
+pub fn fallback(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings) -> List {
+    let library = matches!(home, Home::Library(_));
+    let joined = matches!(home, Home::Library(d) if has_joined(pc_dir, d));
+    if !joined {
+        if let Ok(Some(l)) = own_list(pc_dir, cfg) {
+            return l;
+        }
+    }
+    let mut l = List::seed(cfg);
+    if library {
+        l.materials.retain(|m| m.id < crate::engine::material::KEPT);
+        l.offline = true;
+    }
+    l
+}
+
 /// Re-read the list, change it and store it, all under the write lock of
 /// the folder it lives in (LB1, invariant 5), so two PCs (or the window and
 /// an agent) changing it at once both count. Nothing is stored when `f`

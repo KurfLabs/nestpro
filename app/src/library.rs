@@ -65,7 +65,14 @@ pub struct Entry {
     pub name: String,
     /// Jobs: their folder (week); products: a group, e.g. the customer.
     pub folder: String,
+    /// Its material as read (MA17, MA31); the list file keeps the record's
+    /// own number.
+    #[serde(serialize_with = "file_material")]
     pub material: usize,
+    /// The name of a material that can't be told (MA31), so the list file
+    /// keeps the record's own number and name, and reads it back the same.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub material_name: String,
     pub thickness: f64,
     pub w: f64,
     pub h: f64,
@@ -262,6 +269,27 @@ struct Index {
     entries: Vec<Entry>,
 }
 
+/// An entry's material as its record stores it (the record's own number
+/// for one that can't be told, MA31).
+fn file_material<S: serde::Serializer>(m: &usize, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64(crate::engine::material::file_id(*m) as u64)
+}
+
+/// The list file's entries, each material as read (MA31).
+fn read_entries(i: Index) -> Vec<Entry> {
+    let mut v = i.entries;
+    for e in v.iter_mut().filter(|e| !e.material_name.is_empty()) {
+        e.material = crate::engine::material::read_material(e.material, &e.material_name);
+    }
+    v
+}
+
+/// The name a list entry keeps beside material `id`: only for one that
+/// can't be told (MA31).
+fn unresolved_name(id: usize, name: &str) -> String {
+    if crate::engine::material::file_id(id) != id { name.to_string() } else { String::new() }
+}
+
 /// A product as stored: the part plus its material and thickness.
 #[derive(Serialize, Deserialize)]
 pub struct ProductFile {
@@ -409,14 +437,14 @@ impl Library {
         std::fs::read_to_string(self.dir.join(INDEX))
             .ok()
             .and_then(|t| serde_json::from_str::<Index>(&t).ok())
-            .map(|i| i.entries)
+            .map(read_entries)
             .unwrap_or_else(|| self.rescan())
     }
 
     /// The list as stored, or why it can't be read (the Library check).
     pub fn read_index(&self) -> Result<Vec<Entry>, String> {
         let t = std::fs::read_to_string(self.dir.join(INDEX)).map_err(|e| e.to_string())?;
-        serde_json::from_str::<Index>(&t).map(|i| i.entries).map_err(|e| e.to_string())
+        serde_json::from_str::<Index>(&t).map(read_entries).map_err(|e| e.to_string())
     }
 
     fn write_index(&self, entries: &[Entry], lock: &WriteLock) -> Result<(), String> {
@@ -458,10 +486,8 @@ impl Library {
                     let written = stamp.0.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
                     let e = match kind {
                         Kind::Job => crate::jobfile::load(&p).ok().map(|j| job_entry(id, &j, written)),
-                        Kind::Product => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<ProductFile>(&t).ok()).map(|mut pf| {
-                            pf.material = crate::engine::material::resolve(pf.material, &pf.material_name);
-                            product_entry(id, &pf, written)
-                        }),
+                        // MA17, MA31: its material as read (`product_entry`).
+                        Kind::Product => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<ProductFile>(&t).ok()).map(|pf| product_entry(id, &pf, written)),
                     };
                     if let Some(e) = e {
                         out.insert((kind as u8, id), (stamp, e));
@@ -763,12 +789,17 @@ impl Library {
     /// (MA17): kept while the material list doesn't have the id.
     fn store_product(&self, part: &Part, folder: &str, material: (usize, &str), thickness: f64, to: SaveTo) -> Result<Record, Refused> {
         let (material, read_name) = material;
+        // MA31: an unresolved material keeps the name it was read with and
+        // the file's own number (the name first: that number may be another
+        // material's).
+        let read_name = crate::engine::material::stored_name(material, read_name);
+        let material = crate::engine::material::file_id(material);
         // A library product is reusable stock, not one order's part: its ERP orders stay with the job.
         let mut part = part.clone();
         part.erp.clear();
         self.store(Kind::Product, to, || Ok(part), |part, saved, rec| {
             crate::materials::not_deleted(&self.dir, material, "the library part")?;
-            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: crate::engine::material::stored_name(material, read_name), thickness, saved: Some(saved), revision: rec.revision };
+            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: read_name.clone(), thickness, saved: Some(saved), revision: rec.revision };
             let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
             Ok((text, move |id| product_entry(id, &pf, 0)))
         })
@@ -778,7 +809,7 @@ impl Library {
         let t = std::fs::read_to_string(self.path(Kind::Product, id)).map_err(|e| e.to_string())?;
         let mut pf: ProductFile = serde_json::from_str(&t).map_err(|e| format!("not a library product ({e})"))?;
         // MA17: by id, else by the name it was saved with.
-        pf.material = crate::engine::material::resolve(pf.material, &pf.material_name);
+        pf.material = crate::engine::material::read_material(pf.material, &pf.material_name);
         Ok(pf)
     }
 
@@ -912,14 +943,15 @@ fn saved_line(saved: Option<&Saved>, written: u64) -> (u64, Option<Who>) {
 
 fn job_entry(id: u64, j: &JobFile, written: u64) -> Entry {
     let (updated, saved_by) = saved_line(j.saved.as_ref(), written);
-    Entry { kind: Kind::Job, id, name: j.name.clone(), folder: j.week.clone(), material: j.spec.material, thickness: j.spec.thickness, w: j.spec.w, h: j.spec.h, count_a: j.parts.len(), count_b: j.sheets.len(), updated, tech: false, saved_by, gas: j.spec.gas }
+    Entry { kind: Kind::Job, id, name: j.name.clone(), folder: j.week.clone(), material: j.spec.material, material_name: unresolved_name(j.spec.material, &j.material_name), thickness: j.spec.thickness, w: j.spec.w, h: j.spec.h, count_a: j.parts.len(), count_b: j.sheets.len(), updated, tech: false, saved_by, gas: j.spec.gas }
 }
 
 fn product_entry(id: u64, p: &ProductFile, written: u64) -> Entry {
     let (w, h) = p.part.bbox();
     let tech = p.part.tech.is_some() || !p.part.texts.is_empty();
     let (updated, saved_by) = saved_line(p.saved.as_ref(), written);
-    Entry { kind: Kind::Product, id, name: p.part.name.clone(), folder: p.folder.clone(), material: p.material, thickness: p.thickness, w, h, count_a: p.part.qty as usize, count_b: 0, updated, tech, saved_by, gas: None }
+    let material = crate::engine::material::read_material(p.material, &p.material_name);
+    Entry { kind: Kind::Product, id, name: p.part.name.clone(), folder: p.folder.clone(), material, material_name: unresolved_name(material, &p.material_name), thickness: p.thickness, w, h, count_a: p.part.qty as usize, count_b: 0, updated, tech, saved_by, gas: None }
 }
 
 /// Thickness filters below this mean "any thickness" (rule PK3: Lantek adds

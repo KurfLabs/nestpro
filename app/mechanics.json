@@ -7157,6 +7157,34 @@
   "estimated": true
  },
  {
+  "name": "joining a Library",
+  "group": "materials",
+  "value": "the Library's list wins; 0 to 2 the same by number; another PC material is the Library material one of its names (name or other name) belongs to, else added with its values and the Library's next number; the PC's name (always, even when the Library's material shows it) and former names go with it as joined names, kept apart from renames on the list; a Library with no list takes the PC's, stored; once per Library (materials-joined.json); under the write lock, retried while out of reach; started offline after joining: 0 to 2 only, no name finds another number",
+  "source": "MA28",
+  "estimated": true
+ },
+ {
+  "name": "starting list",
+  "group": "materials",
+  "value": "a new install: Mild steel, Stainless steel, Aluminium (as before, with RST 37-2, X5CrNi, Al99 as other names), X5CrNi + Film (on 0100, programs X5CrNi + Film 3060, key 3060), AlMg3, Galvanized, Copper, Brass; settings from before keep their three",
+  "source": "MA29",
+  "estimated": true
+ },
+ {
+  "name": "job whose material is unknown",
+  "group": "materials",
+  "value": "opens as it is, never switched; the window's notice names it and offers to add it (on 0010, blank values); info: material_known false, material_unknown",
+  "source": "MA30",
+  "estimated": true
+ },
+ {
+  "name": "file's number another material has",
+  "group": "materials",
+  "value": "jobs, library parts, stock items: 0 to 2 always themselves; else (1) the number's material has the name now; (2) the number's material had it before a rename on this list (when a joining PC brought it for another material: unknown, kept); (3) the material with that name now; (4) the one material that had it before (a rename here, or a joining PC's name), whatever the number; (5) several and none now: unknown, number and name kept through every read and save; (6) else the number",
+  "source": "MA31",
+  "estimated": true
+ },
+ {
   "name": "material from a name outside",
   "group": "materials",
   "value": "name or other name; then name or code in programs (first in the list); then the longest grade other name; then the longest name held (3 characters or more); else unchanged",

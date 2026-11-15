@@ -736,6 +736,12 @@ impl App {
             job_material_names: vec![],
             erp: Default::default(),
         };
+        // --library-dir=<folder> (screenshots, scripts): the Library this run
+        // works on, set before anything reads one, so the configured Library
+        // is never read or joined (MA28) in its place.
+        if let Some(d) = library_dir_arg() {
+            a.cfg.library_dir = d;
+        }
         // The material list (MA14): the Library's, or this PC's own.
         a.reload_materials(true);
         a.run_nesting();
@@ -2786,6 +2792,7 @@ impl eframe::App for App {
             self.hold_frame(&ctx);
         }
         self.reload_note_card(&ctx);
+        self.unknown_material_card(&ctx);
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
         if self.follow_system {
@@ -2975,6 +2982,12 @@ impl eframe::App for App {
         self.pending_dialog(&ctx);
         self.joint_sizes_window(&ctx);
     }
+}
+
+/// `--library-dir=<folder>` on the command line: the Library this run works
+/// on instead of the one in the settings.
+fn library_dir_arg() -> Option<String> {
+    std::env::args().find_map(|a| a.strip_prefix("--library-dir=").map(str::to_string))
 }
 
 impl App {
@@ -3257,10 +3270,8 @@ fn main() -> eframe::Result {
                 Some(startup::StartFile::Job(p)) => app.open_job_file(p),
                 None => {}
             }
-            // --library-dir=<folder> / --lib-save: screenshots of a filled library.
-            if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--library-dir=").map(str::to_string)) {
-                app.cfg.library_dir = d;
-            }
+            // --library-dir=<folder> was set when the window was made
+            // (`library_dir_arg`); --lib-save: screenshots of a filled library.
             if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--save-question=").map(str::to_string)) {
                 app.demo_save_question(&what);
             }
@@ -3275,6 +3286,11 @@ fn main() -> eframe::Result {
             // --reload-note=ask: it has unsaved changes here, so it asks.
             if let Some(a) = std::env::args().find(|a| a == "--reload-note" || a == "--reload-note=ask") {
                 app.demo_reload_note(a.ends_with("=ask"));
+            }
+            // --unknown-material (screenshots, with --library-dir= a new,
+            // empty folder): a job whose material isn't in the list (MA30).
+            if std::env::args().any(|a| a == "--unknown-material") {
+                app.demo_unknown_material();
             }
             // --refresh-minutes=N (screenshots): the auto-refresh setting (JX8).
             if let Some(m) = std::env::args().find_map(|a| a.strip_prefix("--refresh-minutes=").and_then(|v| v.parse::<i64>().ok())) {

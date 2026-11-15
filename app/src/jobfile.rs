@@ -89,10 +89,14 @@ pub fn layout_for(job: &JobFile) -> u32 {
 pub fn to_text(job: &JobFile) -> Result<String, String> {
     let v = layout_for(job);
     let name = crate::engine::material::stored_name(job.spec.material, &job.material_name);
-    if job.version == v && job.material_name == name {
+    // MA31: an unresolved material is saved with the file's own number.
+    let id = crate::engine::material::file_id(job.spec.material);
+    if job.version == v && job.material_name == name && id == job.spec.material {
         return serde_json::to_string_pretty(job).map_err(|e| e.to_string());
     }
-    serde_json::to_string_pretty(&JobFile { version: v, material_name: name, ..job.clone() }).map_err(|e| e.to_string())
+    let mut out = JobFile { version: v, material_name: name, ..job.clone() };
+    out.spec.material = id;
+    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
 }
 
 pub fn save(path: &std::path::Path, job: &JobFile) -> Result<(), String> {
@@ -118,7 +122,7 @@ pub fn load(path: &std::path::Path) -> Result<JobFile, String> {
 /// MA17: the job's material as the list has it: by id, else by the name it
 /// was saved with. The file itself is left as it is until it is saved.
 pub fn with_material(mut j: JobFile) -> JobFile {
-    j.spec.material = crate::engine::material::resolve(j.spec.material, &j.material_name);
+    j.spec.material = crate::engine::material::read_material(j.spec.material, &j.material_name);
     j
 }
 
