@@ -5398,12 +5398,16 @@ fn stock_remnants_and_library_parts_of_a_new_material_keep_it() {
     std::fs::write(&other, serde_json::to_string(&j).unwrap()).unwrap();
     let info = call(&mut s, "info", Some(other.to_str().unwrap()), json!({}));
     assert_eq!(info["data"]["sheet"]["material"], "DEMO 316 Stainless", "{info}");
+    // Another file: the session reads a job again only when its file's time
+    // changed, and two writes within one clock tick (about 16 ms on Windows)
+    // can keep the same time.
+    let unknown = d.join("DEMO-UNKNOWN.snjob");
     j.material_name = "DEMO 904L".into();
-    std::fs::write(&other, serde_json::to_string(&j).unwrap()).unwrap();
-    let info = call(&mut s, "info", Some(other.to_str().unwrap()), json!({}));
+    std::fs::write(&unknown, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(unknown.to_str().unwrap()), json!({}));
     assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(41)), "{info}");
     call(&mut s, "set-sheet", None, json!({"gap": 7}));
-    assert_eq!(jobfile::load(&other).unwrap().material_name, "DEMO 904L", "the name it came with stays");
+    assert_eq!(jobfile::load(&unknown).unwrap().material_name, "DEMO 904L", "the name it came with stays");
     let _ = std::fs::remove_dir_all(&d);
 }
 
