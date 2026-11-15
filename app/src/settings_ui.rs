@@ -119,45 +119,6 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Right-click (or S) in the Part view", "Quick ring: lead-ins, micro-joints, texts, loops, fit"),
 ];
 
-/// One material's row on Settings → Materials, as typed.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MatRow {
-    pub id: usize,
-    pub name: String,
-    pub program_name: String,
-    pub program_code: String,
-    pub machine_ref: String,
-    pub other_names: String,
-}
-
-impl MatRow {
-    fn of(m: &crate::engine::material::Material) -> MatRow {
-        let (program_name, program_code) = m.program();
-        MatRow { id: m.id, name: m.name.clone(), program_name, program_code, machine_ref: m.machine_ref.clone().unwrap_or_else(|| m.standard().machine_ref()), other_names: m.other_names.join(", ") }
-    }
-
-    /// `m` with what was typed where it differs from what was shown (`was`):
-    /// a value left alone stays its standard's when it was.
-    fn onto(&self, was: &MatRow, mut m: crate::engine::material::Material) -> crate::engine::material::Material {
-        if self.name != was.name {
-            m.name = self.name.clone();
-        }
-        if self.program_name != was.program_name {
-            m.program_name = Some(self.program_name.trim().to_string());
-        }
-        if self.program_code != was.program_code {
-            m.program_code = Some(self.program_code.trim().to_string());
-        }
-        if self.machine_ref != was.machine_ref {
-            m.machine_ref = Some(self.machine_ref.trim().to_string());
-        }
-        if self.other_names != was.other_names {
-            m.other_names = crate::engine::material::split_names(&self.other_names);
-        }
-        m
-    }
-}
-
 #[derive(Default)]
 pub struct SettingsUi {
     pub open: bool,
@@ -172,9 +133,19 @@ pub struct SettingsUi {
     pub pending: Option<Receiver<String>>,
     /// Materials page: a name typed to see which material it means.
     pub mat_probe: String,
-    /// Materials page: the rows being edited, and the list they were read
-    /// from (None until the page is shown, and again after a save).
-    pub mat_rows: Option<(Vec<MatRow>, Vec<MatRow>)>,
+    /// Materials page: the list as the page is editing it (None until the
+    /// page is shown, and again after a save or Undo changes).
+    pub mat_draft: Option<crate::engine::materialedit::Draft>,
+    /// Materials page: the row picked to edit.
+    pub mat_sel: Option<usize>,
+    /// Materials page: the catalogue standard Add from standard adds.
+    pub mat_add: u32,
+    /// Materials page: why the list can't be changed now (MA14), looked at
+    /// when the page is read and on Try again; None: it can.
+    pub mat_locked: Option<String>,
+    /// Materials page: the last result of Save or Delete (true: done), shown
+    /// by the buttons.
+    pub mat_note: Option<(bool, String)>,
     /// Machines page: the machine file's own sheet and hole order of the
     /// machine being edited, read once per file: (which files, its values,
     /// its start bottom is off, the file's name).
@@ -215,6 +186,14 @@ pub(crate) fn card<R>(ui: &mut egui::Ui, title: &str, sub: &str, body: impl FnOn
             body(ui)
         })
         .inner
+}
+
+/// A button on a Settings page. `page` and `label` name it in
+/// `engine::ops::GUI_MAP` ("Settings → Materials/Add blank"), so agents
+/// keep up with it.
+pub(crate) fn page_button(ui: &mut egui::Ui, page: &str, label: &str, enabled: bool) -> egui::Response {
+    let _ = page;
+    ui.add_enabled(enabled, egui::Button::new(label))
 }
 
 /// A labelled row inside a card.
@@ -1144,94 +1123,262 @@ impl App {
         }
     }
 
+    /// Where this PC's material list lives (MA14), and its settings folder.
+    fn material_home(&self) -> (crate::materials::Home, std::path::PathBuf) {
+        let pc_dir = crate::settings::AppSettings::file().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        (crate::materials::Home::of(&self.library_dir(), &pc_dir), pc_dir)
+    }
+
+    /// The jobs open in this window, as what uses a material counts them
+    /// (MA20, JOB-88).
+    fn open_material_jobs(&mut self) -> Vec<crate::materials::Open> {
+        self.store_job();
+        self.jobs.iter().map(|j| crate::materials::Open { name: j.name.clone(), material: j.spec.material, record: j.lib_id }).collect()
+    }
+
+    /// Settings → Materials: the material list (MA21). The page edits a copy
+    /// of the list (`Draft`); Save materials stores every change together
+    /// under the Library's write lock, Undo changes throws them away.
     fn settings_materials(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Materials").size(18.0).strong().color(th().text_strong));
-        ui.label(RichText::new("The name and code each material gets in machine programs and job sheets.").size(11.5).color(th().text_dim));
+        use crate::engine::catalogue::{self, CATALOGUE};
+        use crate::engine::materialedit::{Draft, Field};
+        let t = th();
+        let (home, _) = self.material_home();
+        // The list as stored; read again when nothing is typed and another PC
+        // (or an agent) changed it.
+        let list = crate::engine::material::current();
+        match self.setui.mat_draft.as_mut() {
+            Some(d) => d.follow(&list),
+            None => {
+                self.setui.mat_draft = Some(Draft::of(&list));
+                self.setui.mat_locked = crate::materials::can_change(&home).err();
+            }
+        }
+        if self.setui.mat_add == 0 {
+            self.setui.mat_add = 100;
+        }
+        ui.label(RichText::new("Materials").size(18.0).strong().color(t.text_strong));
+        ui.label(RichText::new("The shop's materials, each grade its own. Every PC that shares the Library uses this list.").size(11.5).color(t.text_dim));
         ui.add_space(8.0);
-        card(ui, "Material names and codes", "Also called: other names a material goes by — grades, norms, shop names. When an import, a program or a file name uses one of them, it means this material (as Lantek's aliases).", |ui| {
-            egui::Grid::new("mat_codes").num_columns(5).spacing([16.0, 8.0]).show(ui, |ui| {
-                ui.label(RichText::new("Material").strong());
-                ui.label(RichText::new("Name in programs").strong());
-                ui.label(RichText::new("Code").strong());
-                ui.label(RichText::new("Machine table").strong()).on_hover_text(
-                    "The material's key in the machine file's material and thickness sections: a catalogue number (0010 mild steel, 0100 stainless, 0200 pure aluminium, 0210 aluminium-magnesium, 0300 galvanised, 0510 copper, 0590 brass) or the name the file uses. Empty = the name in programs.",
-                );
-                ui.label(RichText::new("Also called (comma-separated)").strong());
-                ui.end_row();
-                // The material list (MA14): every material, as stored.
-                let shown: Vec<MatRow> = crate::engine::material::current().materials.iter().map(MatRow::of).collect();
-                // Read again when nothing is typed and the list changed (another PC).
-                if self.setui.mat_rows.as_ref().is_none_or(|(rows, was)| rows == was && was != &shown) {
-                    self.setui.mat_rows = Some((shown.clone(), shown));
+
+        enum Act {
+            TryAgain,
+            Delete(usize),
+            Keep(usize),
+            Save,
+            Undo,
+            Reset,
+        }
+        let mut act = None;
+        // MA14: while the Library can't be reached, the page says why and
+        // nothing on it can be changed.
+        let can = self.setui.mat_locked.is_none();
+        if let Some(why) = &self.setui.mat_locked {
+            egui::Frame::new().fill(t.warn_bg).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(why).color(t.warn_fg));
+                    if page_button(ui, "Materials", "Try again", true).clicked() {
+                        act = Some(Act::TryAgain);
+                    }
+                });
+            });
+            ui.add_space(8.0);
+        }
+
+        let su = &mut self.setui;
+        let d = su.mat_draft.as_mut().unwrap();
+        let where_ = match home {
+            crate::materials::Home::Library(_) => "The Library's list",
+            crate::materials::Home::Pc(_) => "This PC's own list (it has no Library)",
+        };
+        card(ui, "Material list", &format!("{where_}: {} materials. Pick one to edit it.", d.rows.iter().filter(|r| !r.delete).count()), |ui| {
+            ui.add_enabled_ui(can, |ui| {
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("mat_add_standard").width(230.0).selected_text(catalogue::label(su.mat_add)).show_ui(ui, |ui| {
+                        for e in CATALOGUE.iter() {
+                            ui.selectable_value(&mut su.mat_add, e.number, format!("{}  ·  {}", e.label(), e.details()));
+                        }
+                    });
+                    if page_button(ui, "Materials", "Add from standard", true).on_hover_text("A new material based on the standard picked: named as it, its weight, machine table key and codes in programs the standard's until you type its own.").clicked() {
+                        if let Ok(k) = d.add_from_standard(su.mat_add) {
+                            su.mat_sel = Some(k);
+                        }
+                    }
+                    ui.add_space(8.0);
+                    if page_button(ui, "Materials", "Add blank", true).on_hover_text("A new material with no name yet, on standard 0010 until you pick another.").clicked() {
+                        su.mat_sel = Some(d.add_blank());
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            egui::Grid::new("mat_list").num_columns(5).striped(true).spacing([18.0, 6.0]).show(ui, |ui| {
+                for h in ["Material", "Kind", "Standard", "Also called", ""] {
+                    ui.label(RichText::new(h).strong());
                 }
-                let (rows, _) = self.setui.mat_rows.as_mut().unwrap();
-                for row in rows.iter_mut() {
-                    ui.label(&row.name);
-                    ui.add(egui::TextEdit::singleline(&mut row.program_name).desired_width(160.0));
-                    ui.add(egui::TextEdit::singleline(&mut row.program_code).desired_width(80.0));
-                    ui.add(egui::TextEdit::singleline(&mut row.machine_ref).desired_width(80.0).hint_text("name"));
-                    ui.add(egui::TextEdit::singleline(&mut row.other_names).desired_width(320.0));
+                ui.end_row();
+                for (k, r) in d.rows.iter().enumerate() {
+                    let mut name = RichText::new(if r.m.name.trim().is_empty() { "(no name yet)".to_string() } else { r.m.name.clone() });
+                    if r.delete {
+                        name = name.strikethrough().color(t.text_dim);
+                    }
+                    if ui.selectable_label(su.mat_sel == Some(k), name).clicked() {
+                        su.mat_sel = Some(k);
+                    }
+                    ui.label(catalogue::kind_name(r.m.standard));
+                    ui.label(catalogue::label(r.m.standard));
+                    let other = r.other_names.trim();
+                    let short: String = if other.chars().count() > 34 { format!("{}…", other.chars().take(33).collect::<String>()) } else { other.to_string() };
+                    let l = ui.label(RichText::new(&short).color(t.text_dim));
+                    if short.ends_with('…') {
+                        l.on_hover_text(other);
+                    }
+                    let state = if r.delete { "to be deleted" } else if r.is_new() { "new" } else if r.changed() { "changed" } else { "" };
+                    ui.label(RichText::new(state).size(11.0).color(t.accent_fg));
                     ui.end_row();
                 }
             });
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Try a name:").size(11.5).color(th().text_dim));
-                ui.add(egui::TextEdit::singleline(&mut self.setui.mat_probe).desired_width(140.0).hint_text("e.g. S355"));
-                if !self.setui.mat_probe.trim().is_empty() {
-                    let t = match self.cfg.material_for(&self.setui.mat_probe) {
-                        Some(k) => format!("→ {}", crate::engine::material::name_or(k, "?")),
-                        None => "→ not a known material".into(),
-                    };
-                    ui.label(RichText::new(t).size(11.5));
-                }
-            });
-            ui.add_space(6.0);
-            let changed = self.setui.mat_rows.as_ref().is_some_and(|(r, w)| r != w);
-            ui.horizontal(|ui| {
-                if ui.add_enabled(changed, egui::Button::new("Save materials")).on_hover_text("Saved to the material list every PC that shares the Library uses.").clicked() {
-                    self.save_material_rows();
-                }
-                if ui.add_enabled(changed, egui::Button::new("Undo changes")).clicked() {
-                    self.setui.mat_rows = None;
-                }
-                if ui.button("Reset to defaults").on_hover_text("Puts the first three materials' names and codes in programs, machine table and other names back as a new install has them. Save materials keeps it.").clicked() {
-                    let defaults = crate::engine::material::List::seed(&crate::settings::AppSettings::default());
-                    if let Some((rows, _)) = self.setui.mat_rows.as_mut() {
-                        for r in rows.iter_mut() {
-                            if let Some(d) = defaults.get(r.id) {
-                                *r = MatRow { name: r.name.clone(), ..MatRow::of(d) };
-                            }
-                        }
-                    }
-                }
-            });
         });
+
+        // The material picked, every value editable; a blank one shows its
+        // standard's, greyed (MA16).
+        if let Some(k) = su.mat_sel.filter(|&k| k < d.rows.len()) {
+            ui.add_space(10.0);
+            let r = &mut d.rows[k];
+            let title = if r.is_new() { format!("{} (new)", r.label()) } else { format!("{} (material {})", r.label(), r.m.id) };
+            card(ui, &title, "A blank field takes the standard's value, shown grey. Type a value to give the material its own; clear it to go back to the standard's.", |ui| {
+                ui.add_enabled_ui(can && !r.delete, |ui| {
+                    row(ui, "Name", |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut r.m.name).desired_width(260.0).hint_text("needed"));
+                    });
+                    row(ui, "Standard", |ui| {
+                        egui::ComboBox::from_id_salt(("mat_standard", r.key)).width(260.0).selected_text(catalogue::label(r.m.standard)).show_ui(ui, |ui| {
+                            for e in CATALOGUE.iter() {
+                                ui.selectable_value(&mut r.m.standard, e.number, format!("{}  ·  {}", e.label(), e.details()));
+                            }
+                        });
+                        ui.label(RichText::new(catalogue::kind_name(r.m.standard)).color(t.text_dim));
+                    });
+                    let field = |ui: &mut egui::Ui, r: &mut crate::engine::materialedit::Row, label: &str, f: Field, w: f32, unit: &str| {
+                        let hint = r.standard_value(f);
+                        row(ui, label, |ui| {
+                            ui.add(egui::TextEdit::singleline(r.text(f)).desired_width(w).hint_text(if hint.is_empty() { "empty".to_string() } else { hint }));
+                            if !unit.is_empty() {
+                                ui.label(RichText::new(unit).color(t.text_dim));
+                            }
+                        });
+                    };
+                    field(ui, r, "Weight per volume", Field::Density, 80.0, "g/cm³");
+                    field(ui, r, "Name in programs", Field::ProgramName, 180.0, "");
+                    field(ui, r, "Code in programs", Field::ProgramCode, 80.0, "");
+                    field(ui, r, "Machine table key", Field::MachineRef, 120.0, "catalogue number, or the name the machine file uses");
+                    row(ui, "Also called", |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut r.other_names).desired_width(400.0).hint_text("other names, comma-separated: grades, norms, shop names"));
+                    });
+                });
+                ui.add_space(4.0);
+                ui.add_enabled_ui(can, |ui| {
+                    if r.delete {
+                        if page_button(ui, "Materials", "Keep", true).on_hover_text("Keep this material: it isn't deleted when you save.").clicked() {
+                            act = Some(Act::Keep(k));
+                        }
+                    } else if page_button(ui, "Materials", "Delete", true).on_hover_text("Delete this material when you save. Refused for the first three materials and while a job, library part or stock sheet uses it.").clicked() {
+                        act = Some(Act::Delete(k));
+                    }
+                });
+            });
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Try a name:").size(11.5).color(t.text_dim));
+            ui.add(egui::TextEdit::singleline(&mut su.mat_probe).desired_width(160.0).hint_text("e.g. S355"));
+            if !su.mat_probe.trim().is_empty() {
+                let txt = match crate::engine::material::find(&su.mat_probe) {
+                    Some(k) => format!("→ {}", crate::engine::material::name_or(k, "?")),
+                    None => "→ not a known material".into(),
+                };
+                ui.label(RichText::new(txt).size(11.5));
+            }
+        });
+        ui.add_space(6.0);
+        let changed = d.changed();
+        ui.horizontal(|ui| {
+            if page_button(ui, "Materials", "Save materials", can && changed).on_hover_text("Keeps every change on this page, in the list every PC that shares the Library uses. Nothing is kept if a name is taken.").clicked() {
+                act = Some(Act::Save);
+            }
+            if page_button(ui, "Materials", "Undo changes", changed).on_hover_text("Throws away the changes not saved yet.").clicked() {
+                act = Some(Act::Undo);
+            }
+            if page_button(ui, "Materials", "Reset to defaults", can).on_hover_text("Puts the first three materials' names and codes in programs, machine table keys and other names back as a new install has them. Save materials keeps it.").clicked() {
+                act = Some(Act::Reset);
+            }
+        });
+        if let Some((ok, note)) = &su.mat_note {
+            ui.add_space(4.0);
+            ui.label(RichText::new(note).size(11.5).color(if *ok { t.ok_fg } else { t.warn_fg }));
+        }
+
+        match act {
+            Some(Act::TryAgain) => {
+                self.reload_materials(false);
+                self.setui.mat_locked = crate::materials::can_change(&home).err();
+            }
+            Some(Act::Delete(k)) => {
+                let open = self.open_material_jobs();
+                let lib = crate::library::Library::at(&self.library_dir(), &self.who, &self.clock);
+                let list = crate::engine::material::current();
+                if let Some(d) = self.setui.mat_draft.as_mut() {
+                    let r = d.delete(k, |id| crate::engine::materialedit::check_delete(&list, id, |id| crate::materials::uses(&lib, id, &open)));
+                    if d.rows.len() <= k {
+                        self.setui.mat_sel = None;
+                    }
+                    self.setui.mat_note = r.err().map(|e| (false, e));
+                }
+            }
+            Some(Act::Keep(k)) => {
+                if let Some(d) = self.setui.mat_draft.as_mut() {
+                    d.keep(k);
+                }
+            }
+            Some(Act::Save) => self.save_materials(),
+            Some(Act::Undo) => {
+                self.setui.mat_draft = None;
+                self.setui.mat_sel = None;
+                self.setui.mat_note = None;
+            }
+            Some(Act::Reset) => {
+                let defaults = crate::engine::material::List::seed(&crate::settings::AppSettings::default());
+                if let Some(d) = self.setui.mat_draft.as_mut() {
+                    d.reset_first_three(&defaults);
+                }
+            }
+            None => {}
+        }
     }
 
-    /// Save the Materials page's rows to the material list, under its write
-    /// lock (MA14); refused (and kept for another try) when a name is taken
-    /// or the Library can't be reached.
-    fn save_material_rows(&mut self) {
-        let Some((rows, was)) = self.setui.mat_rows.clone() else { return };
-        let pc_dir = crate::settings::AppSettings::file().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-        let home = crate::materials::Home::of(&self.library_dir(), &pc_dir);
+    /// Save materials: every change of the page together, under the write
+    /// lock of the list (MA14, MA21); refused (and kept for another try)
+    /// when a name is taken, a material is used, or the Library can't be
+    /// reached, with nothing stored.
+    fn save_materials(&mut self) {
+        let Some(d) = self.setui.mat_draft.clone() else { return };
+        let (home, pc_dir) = self.material_home();
+        let open = self.open_material_jobs();
         let lib = crate::library::Library::at(&self.library_dir(), &self.who, &self.clock);
-        let r = crate::materials::update(&home, &pc_dir, &self.cfg, || lib.saved(), |l| {
-            for (row, w) in rows.iter().zip(was.iter()).filter(|(r, w)| r != w) {
-                let m = l.get(row.id).cloned().ok_or_else(|| format!("{} is no longer in the material list.", w.name))?;
-                l.replace(row.onto(w, m))?;
-            }
-            Ok(())
-        });
+        let r = d.changes().and_then(|c| crate::materials::apply(&home, &pc_dir, &self.cfg, || lib.saved(), &lib, &c, &open));
         match r {
             Ok((_, l)) => {
                 crate::engine::material::install(l);
-                self.setui.mat_rows = None;
-                self.setui.note = "Materials saved.".into();
+                self.setui.mat_draft = None;
+                self.setui.mat_sel = None;
+                self.setui.mat_note = Some((true, "Materials saved.".into()));
                 self.refresh();
             }
-            Err(e) => self.setui.note = e,
+            Err(e) => {
+                self.setui.mat_note = Some((false, e));
+                self.setui.mat_locked = crate::materials::can_change(&home).err();
+            }
         }
     }
 
