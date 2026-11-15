@@ -58,17 +58,21 @@ fn row(ui: &mut egui::Ui, c: &Choice, on: bool, in_stock: Option<i32>, width: f3
     }
     let sw = egui::Rect::from_center_size(egui::pos2(rect.left() + 12.0, rect.center().y), Vec2::new(14.0, 14.0));
     crate::stockpics::paint_swatch(ui.painter(), sw, c.id);
+    // The count is drawn first and keeps its place; the name and the other
+    // name are cut short of it (the full text shows on hover).
+    let count = in_stock.map(|n| ui.painter().text(egui::pos2(rect.right() - 6.0, rect.center().y), egui::Align2::RIGHT_CENTER, format!("{n} in stock"), egui::FontId::proportional(11.5), th().ok_fg));
+    let text_right = count.map_or(rect.right() - 6.0, |r| r.left() - 8.0);
+    let p = ui.painter().with_clip_rect(rect.with_max_x(text_right));
     let font = egui::FontId::proportional(13.0);
-    let name = ui.painter().text(egui::pos2(sw.right() + 7.0, rect.center().y), egui::Align2::LEFT_CENTER, &c.name, font, vis.text_color());
+    let name = p.text(egui::pos2(sw.right() + 7.0, rect.center().y), egui::Align2::LEFT_CENTER, &c.name, font, vis.text_color());
+    let mut right = name.right();
     if let Some(o) = &c.matched {
-        ui.painter().text(egui::pos2(name.right() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, format!("· {o}"), egui::FontId::proportional(11.5), th().text_dim);
+        right = p.text(egui::pos2(name.right() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, format!("· {o}"), egui::FontId::proportional(11.5), th().text_dim).right();
     }
-    if let Some(n) = in_stock {
-        ui.painter().text(egui::pos2(rect.right() - 6.0, rect.center().y), egui::Align2::RIGHT_CENTER, format!("{n} in stock"), egui::FontId::proportional(11.5), th().ok_fg);
-    }
-    let resp = match &c.matched {
-        Some(o) => resp.on_hover_text(format!("Found by its other name {o}")),
-        None => resp,
+    let resp = match (&c.matched, right > text_right) {
+        (Some(o), _) => resp.on_hover_text(format!("{}: found by its other name {o}", c.name)),
+        (None, true) => resp.on_hover_text(&c.name),
+        (None, false) => resp,
     };
     resp.clicked()
 }

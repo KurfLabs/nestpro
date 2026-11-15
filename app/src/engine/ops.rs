@@ -776,7 +776,7 @@ fn nest_on_json(job: &JobFile, ctx: &Ctx) -> Value {
     json!({
         "mode": on.key(), "from_stock": on.from_stock(), "picked": on.picked, "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes,
         // MA23: what the Material ▾ shows beside each material in stock at this thickness.
-        "materials_in_stock": stockflow::in_stock_by_material(&job.spec, &ctx.stock_use(job)).into_iter().map(|(m, n)| json!({"material": m, "name": super::material::name_or(m, "?"), "qty": n})).collect::<Vec<_>>(),
+        "materials_in_stock": stockflow::in_stock_by_material(&job.spec, &ctx.stock_use(job), grouped).into_iter().map(|(m, n)| json!({"material": m, "name": super::material::name_or(m, "?"), "qty": n})).collect::<Vec<_>>(),
         "line": on.line(&format!("{:.0} × {:.0} mm", job.spec.w, job.spec.h)), "why": on.explain(),
     })
 }

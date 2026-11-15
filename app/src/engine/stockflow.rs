@@ -274,9 +274,11 @@ impl NestOn {
 /// counts a Material ▾ shows beside each material, as `nest_on` counts them
 /// for the job's own (what the job holds counts as free; locked items and
 /// what the criteria leave out don't count; a picked size doesn't narrow
-/// it). Nothing while the stock isn't used or can't be read.
-pub fn in_stock_by_material(spec: &SheetSpec, u: &StockUse) -> Vec<(super::material::Id, i32)> {
-    if !u.st.use_stock || crate::library::usable(&u.dir).is_err() {
+/// it). Nothing while the stock isn't used or can't be read, or while
+/// `grouped` (Group by attribute nests several groups on the job's size, as
+/// `nest_on`).
+pub fn in_stock_by_material(spec: &SheetSpec, u: &StockUse, grouped: bool) -> Vec<(super::material::Id, i32)> {
+    if grouped || !u.st.use_stock || crate::library::usable(&u.dir).is_err() {
         return vec![];
     }
     let Ok(stock) = Stock::load(&u.dir) else { return vec![] };

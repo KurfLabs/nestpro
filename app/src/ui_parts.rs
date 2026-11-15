@@ -2397,16 +2397,17 @@ impl App {
     /// take at the job's thickness, for the Material ▾ (read again at most
     /// every 3 s, as `nest_on`).
     pub(crate) fn materials_in_stock(&self, ctx: &egui::Context) -> Vec<(usize, i32)> {
-        type Key = (u64, bool, usize, usize, String);
+        type Key = (u64, bool, bool, usize, usize, String);
         #[derive(Clone)]
         struct Memo(Key, f64, Vec<(usize, i32)>);
-        let key: Key = (self.spec.thickness.to_bits(), self.cfg.stock.use_stock, self.held.len(), crate::engine::material::count(), self.library_dir().display().to_string());
+        let grouped = self.group_nest && crate::nest::part_groups(&self.parts).len() > 1;
+        let key: Key = (self.spec.thickness.to_bits(), grouped, self.cfg.stock.use_stock, self.held.len(), crate::engine::material::count(), self.library_dir().display().to_string());
         let now = ctx.input(|i| i.time);
         let id = egui::Id::unique("materials_in_stock_memo");
         if let Some(m) = ctx.data(|d| d.get_temp::<Memo>(id)).filter(|m| m.0 == key && now - m.1 < 3.0) {
             return m.2;
         }
-        let n = crate::engine::stockflow::in_stock_by_material(&self.spec, &self.stock_use());
+        let n = crate::engine::stockflow::in_stock_by_material(&self.spec, &self.stock_use(), grouped);
         ctx.data_mut(|d| d.insert_temp(id, Memo(key, now, n.clone())));
         n
     }
