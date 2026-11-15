@@ -317,6 +317,132 @@ impl List {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Picking a material: the Material ▾ everywhere (MA23).
+// ---------------------------------------------------------------------------
+
+/// The kinds a Material ▾ groups materials under, in the order it shows
+/// them (MA23).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    CarbonSteel,
+    Stainless,
+    Aluminium,
+    Galvanized,
+    CopperBrass,
+    Other,
+}
+
+impl Group {
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::CarbonSteel => "Carbon steel",
+            Group::Stainless => "Stainless steel",
+            Group::Aluminium => "Aluminium",
+            Group::Galvanized => "Galvanized",
+            Group::CopperBrass => "Copper and brass",
+            Group::Other => "Other",
+        }
+    }
+}
+
+/// MA23 (estimated): the group of a standard, from the catalogue's kind for
+/// its number (MA11, MA12): Carbon Steel 0010–0080; Stainless steel 0100,
+/// 0110 and the film-covered stainless 3060; Aluminium alloy 0200, 0210;
+/// Steel, the zinc-coated 0300 and 0310, as Galvanized; copper 0510 and
+/// brass 0590. Every other number (the waterjet entries, which have no
+/// kind, and numbers the catalogue doesn't have) is Other.
+pub fn group_of(standard: u32) -> Group {
+    match standard {
+        10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 => Group::CarbonSteel,
+        100 | 110 | 3060 => Group::Stainless,
+        200 | 210 => Group::Aluminium,
+        300 | 310 => Group::Galvanized,
+        510 | 590 => Group::CopperBrass,
+        _ => Group::Other,
+    }
+}
+
+/// One material a Material ▾ offers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub id: Id,
+    pub name: String,
+    /// The other name the typed text was found in, when the name itself
+    /// doesn't hold it ("DEMO 316 Stainless — AISI 316").
+    pub matched: Option<String>,
+}
+
+/// One group of a Material ▾: its kind and its materials.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choices {
+    pub group: Group,
+    pub choices: Vec<Choice>,
+}
+
+/// A text as typed text is matched: `norm`, and accented letters as plain
+/// ones ("brossé" → "brosse").
+pub fn fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in norm(s).chars() {
+        match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
+            'ç' | 'ć' | 'č' => out.push('c'),
+            'ď' | 'đ' => out.push('d'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => out.push('e'),
+            'ğ' => out.push('g'),
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => out.push('i'),
+            'ł' | 'ľ' | 'ĺ' => out.push('l'),
+            'ñ' | 'ń' | 'ň' => out.push('n'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => out.push('o'),
+            'ř' | 'ŕ' => out.push('r'),
+            'ś' | 'š' | 'ş' => out.push('s'),
+            'ť' | 'ţ' => out.push('t'),
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' => out.push('u'),
+            'ý' | 'ÿ' => out.push('y'),
+            'ź' | 'ż' | 'ž' => out.push('z'),
+            'ß' => out.push_str("ss"),
+            'æ' => out.push_str("ae"),
+            'œ' => out.push_str("oe"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// MA23: what a Material ▾ offers for a typed text: the materials whose
+/// name, or one of whose other names, holds every word typed (in any order,
+/// ignoring case, spaces and accents), grouped by kind in `Group` order and
+/// by name within a kind. Nothing typed offers every material; a kind none
+/// of them is in isn't shown.
+pub fn choose(list: &List, text: &str) -> Vec<Choices> {
+    let words: Vec<String> = fold(text).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect();
+    let holds = |s: &str| {
+        let s = fold(s);
+        words.iter().all(|w| s.contains(w.as_str()))
+    };
+    let mut found: Vec<(Group, String, Choice)> = vec![];
+    for m in &list.materials {
+        let matched = if holds(&m.name) {
+            None
+        } else if let Some(o) = m.other_names.iter().find(|o| holds(o)) {
+            Some(o.clone())
+        } else {
+            continue;
+        };
+        found.push((group_of(m.standard), fold(&m.name), Choice { id: m.id, name: m.name.clone(), matched }));
+    }
+    found.sort_by(|a, b| (a.0, &a.1, a.2.id).cmp(&(b.0, &b.1, b.2.id)));
+    let mut out: Vec<Choices> = vec![];
+    for (g, _, c) in found {
+        match out.last_mut() {
+            Some(last) if last.group == g => last.choices.push(c),
+            _ => out.push(Choices { group: g, choices: vec![c] }),
+        }
+    }
+    out
+}
+
 /// MA20: materials 0 to 2 (mild steel, stainless steel, aluminium) are what
 /// every file saved before the material list means (invariant 1), so they
 /// are never deleted, whatever they are called now. The original lets any
@@ -470,11 +596,6 @@ pub fn nearest_name(id: Id) -> String {
     name(id).unwrap_or_else(|| nearest(id).name.to_string())
 }
 
-/// Every material's name, in list order.
-pub fn names() -> Vec<String> {
-    current().materials.iter().map(|m| m.name.clone()).collect()
-}
-
 pub fn kind(id: Id) -> Kind {
     with(id, |m| m.kind()).unwrap_or_else(|| standard(nearest(id).standard).kind)
 }
@@ -516,37 +637,79 @@ pub fn machine_key(id: Id) -> String {
     with(id, |m| m.machine_key()).unwrap_or_default()
 }
 
-/// The material a name from outside means (an import, a program, a file
-/// name): the material's own name, its own name or code in programs or one
-/// of its other names, without case. As in the original (MA6), another name
-/// gives its main material; an unknown name gives None.
+/// The material a name means exactly (MA32 steps 1 and 2), compared as
+/// names are (MA16): a material's name or one of its other names, which
+/// only one material has; else a material's name or code in programs (its
+/// own, or its standard's when it has none), the first in the list when
+/// several share it. As in the original (MA6), another name gives its main
+/// material; an unknown name gives None.
 pub fn find(text: &str) -> Option<Id> {
     let n = norm(text);
     if n.is_empty() {
         return None;
     }
     let l = current();
-    let own = |o: &Option<String>| o.as_deref().is_some_and(|p| norm(p) == n);
-    l.materials.iter().find(|m| m.names().any(|x| x == n) || own(&m.program_name) || own(&m.program_code)).map(|m| m.id)
+    l.materials
+        .iter()
+        .find(|m| m.names().any(|x| x == n))
+        .or_else(|| {
+            l.materials.iter().find(|m| {
+                let (p, c) = m.program();
+                norm(&p) == n || norm(&c) == n
+            })
+        })
+        .map(|m| m.id)
 }
 
-/// A look-alike: an exact name or code first, then a name that contains the
-/// text or the other way round (as the XML import reads its files).
+/// MA32: the shortest name a look-alike or a grade compares.
+const LIKE_MIN: usize = 3;
+
+/// A look-alike (MA32 step 4): the longest material name the text holds
+/// ("X5CrNi + Film 2B" → "X5CrNi + Film", not "X5CrNi"); else the first
+/// material whose name holds the text. Names and texts shorter than three
+/// characters are only ever found exactly (step 1).
 pub fn look_alike(text: &str) -> Option<Id> {
-    let l = current();
-    let programs: Vec<(String, String)> = l.materials.iter().map(|m| (m.program_name.clone().unwrap_or_default(), m.program_code.clone().unwrap_or_default())).collect();
-    crate::xmlimport::material_index(text, &names(), &programs).and_then(|i| l.materials.get(i)).map(|m| m.id)
-}
-
-/// The material a material text names: `find`; then a grade that starts with
-/// another name holding a digit ("S355J2" → the material called S355); then
-/// a look-alike.
-pub fn like(text: &str) -> Option<Id> {
     let t = norm(text);
     let l = current();
-    find(text)
-        .or_else(|| l.materials.iter().find(|m| m.other_names.iter().map(|o| norm(o)).any(|x| x.len() >= 3 && x.chars().any(|c| c.is_ascii_digit()) && t.starts_with(&x))).map(|m| m.id))
-        .or_else(|| look_alike(text))
+    let mut best: Option<(usize, Id)> = None;
+    for m in &l.materials {
+        let n = norm(&m.name);
+        let len = n.chars().count();
+        if len >= LIKE_MIN && t.contains(&n) && best.is_none_or(|(b, _)| len > b) {
+            best = Some((len, m.id));
+        }
+    }
+    best.map(|b| b.1).or_else(|| (t.chars().count() >= LIKE_MIN).then(|| l.materials.iter().find(|m| norm(&m.name).contains(&t)).map(|m| m.id)).flatten())
+}
+
+/// A grade (MA32 step 3): the text starts with another name of three
+/// characters or more holding a digit ("S355J2" → the material with other
+/// name S355); the longest such other name wins, then the first in the list.
+fn grade(text: &str) -> Option<Id> {
+    let t = norm(text);
+    let l = current();
+    let mut best: Option<(usize, Id)> = None;
+    for m in &l.materials {
+        for x in m.other_names.iter().map(|o| norm(o)) {
+            let len = x.chars().count();
+            if len >= LIKE_MIN && x.chars().any(|c| c.is_ascii_digit()) && t.starts_with(&x) && best.is_none_or(|(b, _)| len > b) {
+                best = Some((len, m.id));
+            }
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// MA32: the material a name from outside means — an XML import's or a
+/// drawing file's material, an opened program's material header, a file
+/// name's material field, an ERP job's material. Searches the whole list:
+/// `find` (names and other names, then names and codes in programs); then a
+/// grade; then a look-alike. None when nothing matches: each import then
+/// does what it always did (the job's material stays, and it says so).
+/// A plain number is a name like any other here, never a material number:
+/// files from outside number materials their own way.
+pub fn like(text: &str) -> Option<Id> {
+    find(text).or_else(|| grade(text)).or_else(|| look_alike(text))
 }
 
 /// MA17: the material a file means by the id and name it stored. The id,
@@ -660,7 +823,7 @@ mod tests {
     fn the_old_three_answer_by_id() {
         seeded("");
         assert_eq!(ids(), vec![0, 1, 2]);
-        assert_eq!(names(), vec!["Mild steel", "Stainless steel", "Aluminium"]);
+        assert_eq!(current().materials.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), vec!["Mild steel", "Stainless steel", "Aluminium"]);
         assert_eq!(name(1).as_deref(), Some("Stainless steel"));
         assert_eq!((density(0), density(1), density(2)), (7.85, 8.0, 2.70));
         assert_eq!((kind(0), kind(1), kind(2)), (Kind::MildSteel, Kind::Stainless, Kind::Aluminium));
@@ -740,6 +903,205 @@ mod tests {
         assert_eq!(machine_key(3), "##MATEXP0100##");
         assert_eq!(resolve(9, "demo-316"), 3, "a file from another Library finds it by name");
         assert_eq!((resolve(1, "DEMO 316"), resolve(9, "")), (1, 9), "the id first; an id alone stays");
+    }
+
+    /// The seed plus made-up grades: DEMO 316 (stainless, its own name and
+    /// code in programs), DEMO 304 (stainless, its standard's), DEMO-X
+    /// (stainless, named only by its other name) and DEMO MILD + FILM.
+    fn with_demo_grades() {
+        seeded("");
+        let mut l = (*current()).clone();
+        let m = |name: &str, other: &[&str], standard: u32, program: Option<(&str, &str)>| Material {
+            id: 0,
+            name: name.into(),
+            other_names: other.iter().map(|s| s.to_string()).collect(),
+            standard,
+            density: None,
+            program_name: program.map(|p| p.0.to_string()),
+            program_code: program.map(|p| p.1.to_string()),
+            machine_ref: None,
+        };
+        assert_eq!(l.add(m("DEMO 316", &["AISI 316", "DEMO-316", "DEMO1.4401"], 100, Some(("DEMO316", "0316")))), Ok(3));
+        assert_eq!(l.add(m("DEMO 304", &[], 100, None)), Ok(4));
+        assert_eq!(l.add(m("DEMO STEEL", &["DEMO-S3"], 10, None)), Ok(5));
+        assert_eq!(l.add(m("DEMO STEEL + FILM", &["DEMO-S35"], 10, Some(("DEMO-FILM", "0010")))), Ok(6));
+        install(l);
+    }
+
+    #[test]
+    fn a_name_from_outside_finds_any_material_of_the_list() {
+        // MA32 steps 1 and 2: names, other names, names and codes in programs.
+        with_demo_grades();
+        assert_eq!(like("aisi 316"), Some(3), "another name, any capitals");
+        assert_eq!(like("  AISI   316 "), Some(3), "spaces around and inside");
+        assert_eq!(like("AISI316"), Some(1), "the seed's own other name stays stainless");
+        assert_eq!(like("demo 316"), Some(3), "its name");
+        assert_eq!((like("DEMO316"), like("0316")), (Some(3), Some(3)), "its name and code in programs");
+        assert_eq!(like("demo1.4401"), Some(3), "an other name only it has");
+        // A code shared by several: the first in the list (lowest number).
+        assert_eq!(like("0100"), Some(1), "DEMO 304 writes 0100 too, but stainless is first");
+        assert_eq!(like("STAINLESS"), Some(1));
+        assert_eq!(like("0010"), Some(0), "DEMO STEEL + FILM writes 0010 too; mild steel is first");
+        assert_eq!(like("demo-film"), Some(6));
+        // A name wins over another material's name in programs (names mean
+        // one material; names in programs may repeat).
+        let mut l = (*current()).clone();
+        let id = l.add(Material { id: 0, name: "DEMO316".into(), other_names: vec![], standard: 100, density: None, program_name: None, program_code: None, machine_ref: None }).unwrap();
+        install(l);
+        assert_eq!((like("demo316"), like("0316")), (Some(id), Some(3)));
+    }
+
+    #[test]
+    fn a_name_from_outside_falls_back_to_a_grade_then_a_look_alike() {
+        with_demo_grades();
+        // Step 3: the longest other name the grade starts with.
+        assert_eq!(like("DEMO-316L"), Some(3));
+        assert_eq!(like("DEMO-S355"), Some(6), "DEMO-S35 is longer than DEMO-S3");
+        assert_eq!(like("DEMO-S3X"), Some(5));
+        assert_eq!(like("S355J2"), Some(0), "the seed's S355");
+        // Step 4: the longest name the text holds, then a name holding it.
+        assert_eq!(like("DEMO STEEL + FILM 2B"), Some(6));
+        assert_eq!(like("DEMO STEEL 2B"), Some(5));
+        assert_eq!(like("Aluminium 5754"), Some(2));
+        assert_eq!(like("demo 30"), Some(4), "the first name that holds it");
+        // Short texts are found only exactly; nothing else gives None.
+        assert_eq!((like("ST"), like("al"), like("1")), (None, Some(2), None), "AL is an other name of aluminium");
+        assert_eq!((like(""), like("   "), like("DEMO-COPPER")), (None, None, None));
+        // A plain number is never read as a material number here.
+        assert_eq!((like("0"), like("2"), like("4")), (None, None, None));
+    }
+
+    #[test]
+    fn a_material_taken_off_the_list_is_found_no_more() {
+        with_demo_grades();
+        let mut l = (*current()).clone();
+        l.materials.retain(|m| m.id != 3);
+        install(l);
+        assert_eq!((like("aisi 316"), like("DEMO316"), like("0316"), like("DEMO 316")), (None, None, None, None));
+        assert_eq!(like("DEMO-316L"), None);
+    }
+
+    /// A made-up shop list: the old three, then grades on several standards
+    /// (0300 galvanized, 0510 copper, 0590 brass, 0400 titanium, and a number
+    /// the catalogue doesn't have).
+    fn demo_list() -> List {
+        let mut l = List::seed(&AppSettings::parse(""));
+        let mut add = |name: &str, std: u32, other: &[&str]| {
+            l.add(Material { id: 0, name: name.into(), other_names: other.iter().map(|s| s.to_string()).collect(), standard: std, density: None, program_name: None, program_code: None, machine_ref: None }).unwrap()
+        };
+        add("DEMO 316 Stainless", 100, &["DEMO-AISI 316"]);
+        add("DEMO 304 Stainless", 100, &[]);
+        add("DEMO A36", 10, &[]);
+        add("DEMO 5052 Aluminium", 210, &["DEMO-AlMg2.5"]);
+        add("DEMO Galvanized G90", 300, &[]);
+        add("DEMO Copper", 510, &[]);
+        add("DEMO Brass", 590, &[]);
+        add("DEMO Titanium", 400, &[]);
+        add("DEMO Mystery", 9999, &[]);
+        l
+    }
+
+    /// The groups and their materials' names, as the Material ▾ shows them.
+    fn shown(groups: &[Choices]) -> Vec<(&'static str, Vec<String>)> {
+        groups.iter().map(|g| (g.group.label(), g.choices.iter().map(|c| c.name.clone()).collect())).collect()
+    }
+
+    #[test]
+    fn the_material_list_groups_every_material_by_its_standards_kind() {
+        // MA23: with nothing typed, every material, grouped by the kind of
+        // its standard (MA12) in a fixed order, by name within a kind;
+        // a kind with one material is a group of one; empty kinds aren't shown.
+        let g = choose(&demo_list(), "");
+        assert_eq!(
+            shown(&g),
+            vec![
+                ("Carbon steel", vec!["DEMO A36".to_string(), "Mild steel".into()]),
+                ("Stainless steel", vec!["DEMO 304 Stainless".into(), "DEMO 316 Stainless".into(), "Stainless steel".into()]),
+                ("Aluminium", vec!["Aluminium".into(), "DEMO 5052 Aluminium".into()]),
+                ("Galvanized", vec!["DEMO Galvanized G90".into()]),
+                ("Copper and brass", vec!["DEMO Brass".into(), "DEMO Copper".into()]),
+                ("Other", vec!["DEMO Mystery".into(), "DEMO Titanium".into()]),
+            ]
+        );
+        assert!(g.iter().flat_map(|g| &g.choices).all(|c| c.matched.is_none()), "nothing typed, no other name shown");
+        assert_eq!(g[0].choices[1].id, 0, "each choice carries its material's id");
+    }
+
+    #[test]
+    fn the_old_three_are_three_groups_of_one() {
+        let g = choose(&List::seed(&AppSettings::parse("")), "");
+        assert_eq!(shown(&g), vec![("Carbon steel", vec!["Mild steel".to_string()]), ("Stainless steel", vec!["Stainless steel".into()]), ("Aluminium", vec!["Aluminium".into()])]);
+    }
+
+    #[test]
+    fn typing_filters_by_name_without_case_or_extra_spaces() {
+        let g = choose(&demo_list(), "  demo   316 ");
+        assert_eq!(shown(&g), vec![("Stainless steel", vec!["DEMO 316 Stainless".to_string()])]);
+        // Every word typed, in any order.
+        assert_eq!(shown(&choose(&demo_list(), "STAINLESS 304")), vec![("Stainless steel", vec!["DEMO 304 Stainless".to_string()])]);
+        assert!(choose(&demo_list(), "DEMO-NOTHING").is_empty(), "nothing matches: no groups");
+        assert!(choose(&demo_list(), "   ").iter().map(|g| g.choices.len()).sum::<usize>() == 12, "only spaces: everything");
+    }
+
+    #[test]
+    fn an_other_name_finds_its_material_and_says_which_matched() {
+        // Neither name holds "aisi": both are found by an other name.
+        let g = choose(&demo_list(), "aisi 316");
+        assert_eq!(shown(&g), vec![("Stainless steel", vec!["DEMO 316 Stainless".to_string(), "Stainless steel".into()])]);
+        let by = |n: &str| g[0].choices.iter().find(|c| c.name == n).unwrap().matched.clone();
+        assert_eq!(by("DEMO 316 Stainless").as_deref(), Some("DEMO-AISI 316"));
+        assert_eq!(by("Stainless steel").as_deref(), Some("AISI316"), "the first other name holding every word");
+        // A name that matches shows no other name.
+        assert_eq!(choose(&demo_list(), "copper")[0].choices[0].matched, None);
+        // Only an other name matches: "AlMg2.5" is no material's name.
+        assert_eq!(shown(&choose(&demo_list(), "almg2.5")), vec![("Aluminium", vec!["DEMO 5052 Aluminium".to_string()])]);
+    }
+
+    #[test]
+    fn accents_are_ignored_both_ways() {
+        let mut l = demo_list();
+        l.add(Material { id: 0, name: "DEMO Acier inoxydable brossé".into(), other_names: vec![], standard: 100, density: None, program_name: None, program_code: None, machine_ref: None }).unwrap();
+        assert_eq!(shown(&choose(&l, "brosse")), vec![("Stainless steel", vec!["DEMO Acier inoxydable brossé".to_string()])]);
+        assert_eq!(shown(&choose(&l, "MYSTÉRY")), vec![("Other", vec!["DEMO Mystery".to_string()])]);
+    }
+
+    #[test]
+    fn a_standard_the_catalogue_lacks_is_other() {
+        assert_eq!(group_of(9999), Group::Other);
+        assert_eq!(group_of(400), Group::Other, "the waterjet entries have no kind");
+        assert_eq!((group_of(10), group_of(80), group_of(110), group_of(3060), group_of(200), group_of(310), group_of(590)), (Group::CarbonSteel, Group::CarbonSteel, Group::Stainless, Group::Stainless, Group::Aluminium, Group::Galvanized, Group::CopperBrass));
+    }
+
+    #[test]
+    fn a_deleted_material_is_not_offered_and_a_file_naming_it_shows_a_question_mark() {
+        // MA20 + MA23: deleted, it leaves the list (its number is kept in
+        // `deleted`, never given again); the Material ▾ doesn't offer it,
+        // not even by typing its old name, and a job still naming its number
+        // shows `?` in the field (JOB-86).
+        let mut l = demo_list();
+        let id = l.materials.iter().find(|m| m.name == "DEMO Galvanized G90").unwrap().id;
+        l.remove(id, &Uses::default()).unwrap();
+        assert!(l.deleted.contains(&id));
+        let g = choose(&l, "");
+        assert!(g.iter().all(|g| g.group != Group::Galvanized), "its kind had only it");
+        assert!(g.iter().flat_map(|g| &g.choices).all(|c| c.id != id));
+        assert!(choose(&l, "galvanized g90").is_empty());
+        install(l);
+        assert_eq!(name_or(id, "?"), "?");
+    }
+
+    #[test]
+    fn a_long_list_keeps_every_material_in_name_order() {
+        let mut l = List::seed(&AppSettings::parse(""));
+        for k in (0..300).rev() {
+            l.add(Material { id: 0, name: format!("DEMO-{k:03}"), other_names: vec![], standard: [10, 100, 200, 300][k % 4], density: None, program_name: None, program_code: None, machine_ref: None }).unwrap();
+        }
+        let g = choose(&l, "");
+        assert_eq!(g.iter().map(|g| g.choices.len()).sum::<usize>(), 303);
+        assert_eq!(g[3].group, Group::Galvanized);
+        assert_eq!(g[3].choices.first().map(|c| c.name.as_str()), Some("DEMO-003"));
+        assert_eq!(g[3].choices.last().map(|c| c.name.as_str()), Some("DEMO-299"));
+        assert_eq!(choose(&l, "demo-15").iter().map(|g| g.choices.len()).sum::<usize>(), 10, "DEMO-150 to DEMO-159 (not DEMO-015)");
     }
 
     #[test]

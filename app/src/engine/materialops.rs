@@ -75,9 +75,28 @@ pub fn run(ctx: &Ctx, a: &Args, open: Option<&crate::jobfile::JobFile>) -> Resul
             let l = material::current();
             let stored = home.file().is_file();
             let where_ = if stored { format!("{} list", home.label()) } else { format!("{} list (not stored yet: this PC's Settings → Materials seed it)", home.label()) };
+            // MA23: what the Material ▾ offers for the text, grouped by kind.
+            let find = a.str("find").unwrap_or_default();
+            let groups = material::choose(&l, &find);
+            let groups_json: Vec<Value> = groups
+                .iter()
+                .map(|g| json!({"kind": g.group.label(), "materials": g.choices.iter().map(|c| json!({"material": c.id, "name": c.name, "matched": c.matched})).collect::<Vec<_>>()}))
+                .collect();
+            let typed = material::norm(&find);
+            let message = if typed.is_empty() {
+                format!("{} materials, {where_}: {}.", l.materials.len(), l.materials.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", "))
+            } else if groups.is_empty() {
+                format!("No material matches '{}': try fewer letters, or another name.", find.trim())
+            } else {
+                let n: usize = groups.iter().map(|g| g.choices.len()).sum();
+                let shown = |c: &material::Choice| c.matched.as_ref().map_or(c.name.clone(), |o| format!("{} ({o})", c.name));
+                let by_kind: Vec<String> = groups.iter().map(|g| format!("{}: {}", g.group.label(), g.choices.iter().map(shown).collect::<Vec<_>>().join(", "))).collect();
+                format!("{n} material{} match{} '{}': {}.", if n == 1 { "" } else { "s" }, if n == 1 { "es" } else { "" }, find.trim(), by_kind.join("; "))
+            };
             Ok(done(
-                format!("{} materials, {where_}: {}.", l.materials.len(), l.materials.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ")),
+                message,
                 json!({
+                    "groups": groups_json,
                     "materials": l.materials.iter().map(material_json).collect::<Vec<_>>(),
                     // MA12: the catalogue a material is added from.
                     "standards": CATALOGUE.iter().map(|e| {

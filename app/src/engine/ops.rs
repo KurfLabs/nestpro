@@ -347,6 +347,7 @@ pub static OPS: &[Op] = &[
         a("program_name", Ty::Str, "add/edit: its own name in machine programs (\"standard\": its standard's)"),
         a("program_code", Ty::Str, "add/edit: its own code in machine programs (\"standard\": its standard's)"),
         a("machine_ref", Ty::Str, "add/edit: its own key in the machine file's material and thickness sections, a catalogue number or the name the file uses; empty = its name in programs; \"standard\": its standard's"),
+        a("find", Ty::Str, "list: text typed as into the window's Material ▾: groups (the materials by kind) then holds only those whose name or one of whose other names holds every word typed, in any order, ignoring case and accents; materials stays the whole list"),
     ] },
     Op { name: "library-check", group: "Library", kind: Kind::Global, help: "The two-PC Library check (run it on two or more programming PCs at once before sharing one Library folder): saves made-up DEMO-CHECK jobs and library parts, saves over them again and changes the sheet stock in a loop in a test folder, tagged with this PC's name, then checks that everything this run and every other run saved there is present and whole, and reports PASS or FAIL in plain words. Only an empty folder (made if missing) or one it made itself; a real Library is refused. `nestpro library-check <folder> --minutes 10 --text`.", args: &[
         r("folder", Ty::Path, "The test folder: empty or missing, or one the check made before (e.g. a folder next to the Library on the share). Never the Library itself"),
@@ -774,6 +775,8 @@ fn nest_on_json(job: &JobFile, ctx: &Ctx) -> Value {
     let sizes: Vec<Value> = on.sizes.iter().map(|s| json!({"w": r1(s.length), "h": r1(s.width), "qty": s.qty})).collect();
     json!({
         "mode": on.key(), "from_stock": on.from_stock(), "picked": on.picked, "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes,
+        // MA23: what the Material ▾ shows beside each material in stock at this thickness.
+        "materials_in_stock": stockflow::in_stock_by_material(&job.spec, &ctx.stock_use(job), grouped).into_iter().map(|(m, n)| json!({"material": m, "name": super::material::name_or(m, "?"), "qty": n})).collect::<Vec<_>>(),
         "line": on.line(&format!("{:.0} × {:.0} mm", job.spec.w, job.spec.h)), "why": on.explain(),
     })
 }
