@@ -54,7 +54,7 @@ pub fn xml_import(cfg: &AppSettings, lib: Option<&crate::library::Library>, path
     for (mat, thk) in groups {
         let first = products.iter().find(|p| p.material.to_lowercase() == mat).map(|p| p.material.clone()).unwrap_or_default();
         // Names, codes and aliases first (an alias gives its main material, MA6), then by look.
-        let material = cfg.material_for(&first).or_else(|| crate::engine::material::look_alike(cfg, &first));
+        let material = cfg.material_for(&first).or_else(|| crate::engine::material::look_alike(&first));
         let mut job = XmlJob { name: if several { format!("{stem} · {first} {thk}") } else { stem.clone() }, material_text: first, material, thickness: thk, parts: vec![] };
         for p in products.iter().filter(|p| key(p) == (mat.clone(), thk)) {
             // Quantity 0 (or not a number, which reads as 0, XI6): nothing to make.

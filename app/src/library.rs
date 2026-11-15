@@ -270,6 +270,11 @@ pub struct ProductFile {
     pub part: Part,
     pub folder: String,
     pub material: usize,
+    /// The material's name, written on every save from the material list,
+    /// so the part finds its material again by name (MA17). Empty in a part
+    /// saved before names were stored. Readers go by `material`.
+    #[serde(default)]
+    pub material_name: String,
     pub thickness: f64,
     /// Who saved it, and when (LB5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -447,7 +452,10 @@ impl Library {
                     let written = stamp.0.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
                     let e = match kind {
                         Kind::Job => crate::jobfile::load(&p).ok().map(|j| job_entry(id, &j, written)),
-                        Kind::Product => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<ProductFile>(&t).ok()).map(|pf| product_entry(id, &pf, written)),
+                        Kind::Product => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<ProductFile>(&t).ok()).map(|mut pf| {
+                            pf.material = crate::engine::material::resolve(pf.material, &pf.material_name);
+                            product_entry(id, &pf, written)
+                        }),
                     };
                     if let Some(e) = e {
                         out.insert((kind as u8, id), (stamp, e));
@@ -730,11 +738,18 @@ impl Library {
     /// Save a product, recording who saved it and when (LB5) and its
     /// revision (LB7). Returns its record.
     pub fn save_product(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo) -> Result<Record, Refused> {
+        self.store_product(part, folder, (material, ""), thickness, to)
+    }
+
+    /// `save_product` with the material's id and the name it was read with
+    /// (MA17): kept while the material list doesn't have the id.
+    fn store_product(&self, part: &Part, folder: &str, material: (usize, &str), thickness: f64, to: SaveTo) -> Result<Record, Refused> {
+        let (material, read_name) = material;
         // A library product is reusable stock, not one order's part: its ERP orders stay with the job.
         let mut part = part.clone();
         part.erp.clear();
         self.store(Kind::Product, to, || Ok(part), |part, saved, rec| {
-            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, thickness, saved: Some(saved), revision: rec.revision };
+            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: crate::engine::material::stored_name(material, read_name), thickness, saved: Some(saved), revision: rec.revision };
             let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
             Ok((text, move |id| product_entry(id, &pf, 0)))
         })
@@ -742,7 +757,10 @@ impl Library {
 
     pub fn load_product(&self, id: u64) -> Result<ProductFile, String> {
         let t = std::fs::read_to_string(self.path(Kind::Product, id)).map_err(|e| e.to_string())?;
-        serde_json::from_str(&t).map_err(|e| format!("not a library product ({e})"))
+        let mut pf: ProductFile = serde_json::from_str(&t).map_err(|e| format!("not a library product ({e})"))?;
+        // MA17: by id, else by the name it was saved with.
+        pf.material = crate::engine::material::resolve(pf.material, &pf.material_name);
+        Ok(pf)
     }
 
     /// The product stored under this reference. As in Lantek
@@ -786,14 +804,15 @@ impl Library {
     }
 
     /// `save_product`, a new part going into the part folder `into` names,
+    /// in `material`: its id and the name the job read it with (MA17),
     /// made if missing (JX19); saving over a part never moves it. The
     /// revision check (LB7), the part, its line in the list and its place in
     /// the parts tree are one hold of the write lock (LB1): a save refused
     /// because someone saved the part since files nothing. A place that
     /// can't be written leaves the part at the top of the tree, saved.
-    pub fn save_product_in(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo, into: &crate::folders::PartsFolder) -> Result<Record, Refused> {
+    pub fn save_product_in(&self, part: &Part, folder: &str, material: (usize, &str), thickness: f64, to: SaveTo, into: &crate::folders::PartsFolder) -> Result<Record, Refused> {
         let _lock = self.lock()?;
-        let rec = self.save_product(part, folder, material, thickness, to)?;
+        let rec = self.store_product(part, folder, material, thickness, to)?;
         if to.id().is_none() {
             let _ = crate::folders::file_part(self, rec.id, into);
         }
@@ -939,10 +958,16 @@ mod library_tests {
         let p3 = lib.save_product(&tp, "ACME", 2, 1.0, SaveTo::New).unwrap().id;
         assert!(lib.entries().iter().find(|e| e.kind == Kind::Product && e.id == p3).unwrap().tech);
         lib.delete(Kind::Product, p3).unwrap();
+        // MA17: a part saved from a job in a material the list doesn't have
+        // keeps the name the job read it with.
+        let p4 = lib.save_product_in(&part, "ACME", (41, "DEMO 904L"), 2.0, SaveTo::New, &crate::folders::PartsFolder::Path(String::new())).unwrap().id;
+        let pf = lib.load_product(p4).unwrap();
+        assert_eq!((pf.material, pf.material_name.as_str()), (41, "DEMO 904L"));
+        lib.delete(Kind::Product, p4).unwrap();
         assert_eq!((p1, p2), (1, 2));
         assert_eq!(lib.path(Kind::Product, 1234), dir.join("Products").join("1").join("1234.json"));
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
-        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
+        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
         let j = lib.save_job(&job, SaveTo::New).unwrap().id;
         // Saving again over the same number keeps one record.
         lib.save_job(&job, SaveTo::Over(j)).unwrap();

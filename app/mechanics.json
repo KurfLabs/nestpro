@@ -7029,6 +7029,62 @@
   "group": "gas",
   "value": "the sheet program's gas, and the reply says the XML named another",
   "source": "MECHANICS GS18"
+ },
+ {
+  "name": "material list file",
+  "group": "materials",
+  "value": "Library\\Sheets\\materials.json, under the Library's write lock; settings folder without a Library",
+  "source": "MA14",
+  "estimated": true
+ },
+ {
+  "name": "material list change while the Library is out of reach",
+  "group": "materials",
+  "value": "refused",
+  "source": "MA14",
+  "estimated": true
+ },
+ {
+  "name": "material list seed",
+  "group": "materials",
+  "value": "this PC's three materials from Settings → Materials, ids 0 to 2",
+  "source": "MA15",
+  "estimated": true
+ },
+ {
+  "name": "material id",
+  "group": "materials",
+  "value": "next number, never given twice",
+  "source": "MA16",
+  "estimated": true
+ },
+ {
+  "name": "material names unique",
+  "group": "materials",
+  "value": "names and other names, ignoring case and spaces",
+  "source": "MA16",
+  "estimated": true
+ },
+ {
+  "name": "material value left unset",
+  "group": "materials",
+  "value": "its standard's",
+  "source": "MA16",
+  "estimated": true
+ },
+ {
+  "name": "saved material",
+  "group": "materials",
+  "value": "id and name; id first, else the name finds it",
+  "source": "MA17",
+  "estimated": true
+ },
+ {
+  "name": "standards",
+  "group": "materials",
+  "value": "0010 mild steel 7.85, 0100 stainless steel 8.0, 0200 aluminium 2.70",
+  "source": "MA18",
+  "estimated": true
  }
 ]
 }

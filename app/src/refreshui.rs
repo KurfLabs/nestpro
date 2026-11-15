@@ -116,6 +116,9 @@ impl App {
         if self.libui.loaded && lists {
             ok &= self.refresh_lists(&lib, list.clone(), full);
         }
+        if full || seen.as_ref().is_none_or(|s| s.materials != stamp.materials) {
+            self.reload_materials(false);
+        }
         if self.stockui.loaded && (full || seen.as_ref().is_none_or(|s| s.stock != stamp.stock)) {
             ok &= self.refresh_stock(&dir);
         }

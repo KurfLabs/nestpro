@@ -390,9 +390,11 @@ impl AppSettings {
     /// The app's material for a name from outside (an import, a program, a
     /// file name): the material's own name, its name in programs, its code or
     /// one of its aliases, without case. As in the original (MA6), an
-    /// alias gives its main material; an unknown name gives None.
+    /// alias gives its main material; an unknown name gives None. Asked of
+    /// the material list (`engine::material::find`), which these settings
+    /// only seed (MA15).
     pub fn material_for(&self, name: &str) -> Option<usize> {
-        crate::engine::material::find(self, name)
+        crate::engine::material::find(name)
     }
 
     pub fn conn(&self) -> Option<&Connection> {

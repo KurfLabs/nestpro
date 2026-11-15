@@ -1333,8 +1333,8 @@ fn parts_of_one_file_keep_their_own_names() {
     let (p, _) = part_from_read(&cfg, &spec, &one[0].file, &one[0].name, &one[0].part.drawing, &one[0].part.meta, &Default::default(), 0).unwrap();
     assert_eq!((p.name.as_str(), p.qty), ("BRACKET", 40));
     // Steel grades count as the material of their alias.
-    assert_eq!(material_like(&cfg, "S355J2"), Some(0));
-    assert_eq!(material_like(&cfg, "Unobtainium"), None);
+    assert_eq!(material_like("S355J2"), Some(0));
+    assert_eq!(material_like("Unobtainium"), None);
 }
 
 #[test]
@@ -5216,6 +5216,8 @@ fn files_with_only_a_material_number_open_with_the_same_material() {
         jobfile::save(j, &JobFile::new_job(&format!("DEMO-{m}"), SheetSpec { material: m, ..default_spec() })).unwrap();
         assert!(std::fs::read_to_string(j).unwrap().contains(&format!("\"material\": {m}")), "the file holds the number alone");
     }
+    // As saved before names were stored: the number alone.
+    strip_material_names(&d);
     // Every file in the folder (jobs, library, stock) and what it holds.
     let files = |d: &Path| -> Vec<(PathBuf, Vec<u8>)> {
         let mut out = vec![];
@@ -5246,13 +5248,318 @@ fn files_with_only_a_material_number_open_with_the_same_material() {
         assert!(std::fs::read(p).unwrap() == *bytes, "reading rewrote {}", p.display());
     }
 
+    // Saved again, each file has the material's id and its name (invariant 3).
+    for (m, j) in jobs.iter().enumerate() {
+        call(&mut s, "set-sheet", Some(j.to_str().unwrap()), json!({"gap": 6}));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(j).unwrap()).unwrap();
+        assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(m as u64), Some(names[m])));
+    }
+    call(&mut s, "stock", None, json!({"mode": "add", "ref": "DEMO-S0"}));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(crate::stock::Stock::file(&lib_dir)).unwrap()).unwrap();
+    let mut saved: Vec<(u64, String)> = v["items"].as_array().unwrap().iter().map(|i| (i["material"].as_u64().unwrap(), i["material_name"].as_str().unwrap().to_string())).collect();
+    saved.sort();
+    assert_eq!(saved, names.iter().enumerate().map(|(m, n)| (m as u64, n.to_string())).collect::<Vec<_>>());
+    let pid = lib.read_index().unwrap().iter().find(|e| e.kind == crate::library::Kind::Product).unwrap().id;
+    let pf = lib.load_product(pid).unwrap();
+    assert_eq!((pf.material, pf.material_name.as_str()), (2, ""), "a library part read before names keeps its number");
+    lib.save_product(&pf.part, &pf.folder, pf.material, pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id: pid, revision: pf.revision })).unwrap();
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(lib.path(crate::library::Kind::Product, pid)).unwrap()).unwrap();
+    assert_eq!((v["material"].as_u64(), v["material_name"].as_str()), (Some(2), Some("Aluminium")));
+
     // Plain numbers keep meaning the old three; a number past them is refused.
     let jp = d.join("DEMO-new.snjob");
     let jp = jp.to_str().unwrap();
     call(&mut s, "new", Some(jp), json!({"material": 2, "thickness": 3}));
     assert_eq!(call(&mut s, "info", None, json!({}))["data"]["sheet"]["material"], "Aluminium");
     let refused = err(&mut s, "set-sheet", json!({"material": 3}));
-    assert!(refused.contains("material 3: there are 3 (0-2)"), "{refused}");
+    assert!(refused.contains("There's no material 3 in the list: 0 Mild steel, 1 Stainless steel, 2 Aluminium."), "{refused}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// The material list (spec #142): a fourth material end to end.
+// ---------------------------------------------------------------------------
+
+/// Take every `material_name` out of the JSON files under `d`, as files
+/// saved before names were stored are.
+fn strip_material_names(d: &Path) {
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                m.remove("material_name");
+                m.values_mut().for_each(strip);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut todo = vec![d.to_path_buf()];
+    while let Some(p) = todo.pop() {
+        for e in std::fs::read_dir(&p).unwrap().flatten() {
+            let f = e.path();
+            if f.is_dir() {
+                todo.push(f);
+            } else if let Some(mut v) = std::fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+                strip(&mut v);
+                std::fs::write(&f, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+            }
+        }
+    }
+}
+
+fn add_demo_316(s: &mut Session) -> Value {
+    call(s, "material", None, json!({"mode": "add", "name": "DEMO 316 Stainless", "standard": "stainless", "other_names": "DEMO-316, DEMO 1.4401"}))
+}
+
+#[test]
+fn a_fourth_material_nests_only_on_its_own_sheets() {
+    // Ticket #145: DEMO 316, based on stainless, gets its own stock; a job in
+    // it, named by its name, never takes a stainless sheet.
+    let d = dir("fourth_material");
+    let jp = d.join("DEMO-316.snjob");
+    let jp = jp.to_str().unwrap();
+    let ctx = stock_ctx(&d);
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let added = add_demo_316(&mut s);
+    assert_eq!((added["data"]["material"].as_u64(), added["data"]["kind"].as_str(), added["data"]["density"].as_f64()), (Some(3), Some("stainless steel"), Some(8.0)), "{added}");
+    assert!(crate::materials::Home::Library(lib.clone()).file().is_file(), "the list is in the Library");
+    // Two stock sheets of each, the same thickness; the stainless ones bigger
+    // (largest first would take them first if the material didn't count).
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-A", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 3, "qty": 2}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-SS-A", "material": "stainless", "w": 3000, "h": 1500, "thickness": 3, "qty": 2}));
+    let l = call(&mut s, "stock", None, json!({"mode": "list", "material": "demo-316", "thickness": 3}));
+    let refs: Vec<&str> = l["data"]["sheets"].as_array().unwrap().iter().map(|i| i["ref"].as_str().unwrap()).collect();
+    assert_eq!(refs, ["DEMO-316-A"], "{l}");
+    assert_eq!(l["data"]["sheets"][0]["material"], "DEMO 316 Stainless", "{l}");
+
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3}));
+    call(&mut s, "set-sheet", None, json!({"material": "DEMO 316 Stainless"}));
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 316 Stainless"), Some(3)), "{info}");
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 20}));
+    let r = call(&mut s, "nest", None, json!({}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert!(!j.sheets.is_empty(), "{r}");
+    let used: Vec<String> = (0..j.sheets.len()).map(|k| j.format(k).stock_ref).collect();
+    assert!(used.iter().all(|r| r == "DEMO-316-A"), "only DEMO 316 sheets: {used:?} {r}");
+    assert_eq!(j.material_name, "DEMO 316 Stainless", "saved with its name");
+    let total: usize = j.sheets.iter().map(|s| s.len()).sum();
+    assert_eq!(total, 20, "{r}");
+
+    // With only stainless sheets in stock, a DEMO 316 job never falls back
+    // to them: stock only finds nothing, and auto nests on the job's own sheet.
+    call(&mut s, "stock", None, json!({"mode": "delete", "ref": "DEMO-316-A"}));
+    let refused = s.call("nest", None, &json!({"stock": "only"}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert!(refused.is_err() || j.sheets.is_empty(), "{:?}", refused.map(|r| r.json));
+    call(&mut s, "nest", None, json!({}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert!(!j.sheets.is_empty() && (0..j.sheets.len()).all(|k| j.format(k).stock_ref.is_empty()), "never a stainless stock sheet: {:?}", (0..j.sheets.len()).map(|k| j.format(k).stock_ref).collect::<Vec<_>>());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn stock_remnants_and_library_parts_of_a_new_material_keep_it() {
+    let d = dir("fourth_material_keeps");
+    let jp = d.join("DEMO-K.snjob");
+    let jp = jp.to_str().unwrap();
+    let ctx = stock_ctx(&d);
+    let lib_dir = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    add_demo_316(&mut s);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-B", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 4}));
+    call(&mut s, "new", Some(jp), json!({"w": 2000, "h": 1000, "material": "DEMO-316", "thickness": 4}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 3}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+
+    // Reopened by a new session (a new PC run): each keeps DEMO 316.
+    let mut s = Session::new(stock_ctx_again(&lib_dir));
+    let l = call(&mut s, "stock", None, json!({"mode": "list", "material": "DEMO 316 Stainless", "thickness": 4, "show_zero": true}));
+    let items = l["data"]["sheets"].as_array().unwrap();
+    assert!(items.iter().any(|i| i["ref"] == "DEMO-316-B") && items.iter().any(|i| i["kind"] != "sheet"), "the sheet and its remnant: {l}");
+    assert!(items.iter().all(|i| i["material"] == "DEMO 316 Stainless"), "{l}");
+    let text = std::fs::read_to_string(crate::stock::Stock::file(&lib_dir)).unwrap();
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert!(v["items"].as_array().unwrap().iter().all(|i| i["material"] == 3 && i["material_name"] == "DEMO 316 Stainless"), "{text}");
+    let parts = call(&mut s, "library", Some(jp), json!({"mode": "list"}));
+    assert!(parts["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "DEMO 316 Stainless"), "{parts}");
+    assert_eq!(jobfile::load(Path::new(jp)).unwrap().spec.material, 3);
+
+    // MA17: a job from another Library, where DEMO 316 has another number,
+    // finds it by its name; an unknown name keeps its number.
+    let other = d.join("DEMO-OTHER.snjob");
+    let mut j = jobfile::load(Path::new(jp)).unwrap();
+    j.spec.material = 41;
+    j.material_name = "demo 316 STAINLESS".into();
+    std::fs::write(&other, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(other.to_str().unwrap()), json!({}));
+    assert_eq!(info["data"]["sheet"]["material"], "DEMO 316 Stainless", "{info}");
+    // Another file: the session reads a job again only when its file's time
+    // changed, and two writes within one clock tick (about 16 ms on Windows)
+    // can keep the same time.
+    let unknown = d.join("DEMO-UNKNOWN.snjob");
+    j.material_name = "DEMO 904L".into();
+    std::fs::write(&unknown, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(unknown.to_str().unwrap()), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(41)), "{info}");
+    call(&mut s, "set-sheet", None, json!({"gap": 7}));
+    assert_eq!(jobfile::load(&unknown).unwrap().material_name, "DEMO 904L", "the name it came with stays");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Another session's context on the same Library folder.
+fn stock_ctx_again(lib: &Path) -> Ctx {
+    let mut c = Ctx::builtin();
+    c.library_dir = lib.to_path_buf();
+    c.cfg.stock = crate::stock::StockSettings::default();
+    c
+}
+
+#[test]
+fn two_sessions_adding_materials_at_once_both_count() {
+    // Invariant 5: each add re-reads the list under the Library's write lock.
+    let d = dir("materials_two_pcs");
+    let lib = stock_ctx(&d).library_dir;
+    let go = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let runs: Vec<_> = ["DEMO-A", "DEMO-B"]
+        .into_iter()
+        .map(|pc| {
+            let (lib, go) = (lib.clone(), go.clone());
+            std::thread::spawn(move || {
+                let mut c = stock_ctx_again(&lib);
+                c.who = Who::new("demo", pc).as_agent();
+                let mut s = Session::new(c);
+                go.wait();
+                for k in 0..5 {
+                    call(&mut s, "material", None, json!({"mode": "add", "name": format!("{pc} grade {k}"), "standard": "0010"}));
+                }
+            })
+        })
+        .collect();
+    for r in runs {
+        r.join().unwrap();
+    }
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    let ms = l["data"]["materials"].as_array().unwrap();
+    assert_eq!(ms.len(), 13, "{l}");
+    let mut ids: Vec<u64> = ms.iter().map(|m| m["material"].as_u64().unwrap()).collect();
+    ids.sort();
+    assert_eq!(ids, (0..13).collect::<Vec<_>>(), "every material its own number");
+    for pc in ["DEMO-A", "DEMO-B"] {
+        assert_eq!(ms.iter().filter(|m| m["name"].as_str().unwrap().starts_with(pc)).count(), 5, "{l}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_name_or_other_name_already_used_is_refused_naming_its_material() {
+    // Invariant 6: names and other names are unique, whatever the capitals
+    // or spaces; the refusal names the material that has it.
+    let d = dir("material_names");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    let before = std::fs::read(crate::materials::Home::Library(lib.clone()).file()).unwrap();
+    let add = |s: &mut Session, name: &str, other: &str| err(s, "material", json!({"mode": "add", "name": name, "standard": "stainless", "other_names": other}));
+    let e = add(&mut s, "demo 316 stainless", "");
+    assert!(e.contains("the name of material 3 (DEMO 316 Stainless)"), "{e}");
+    let e = add(&mut s, "  DEMO   316  STAINLESS ", "");
+    assert!(e.contains("material 3 (DEMO 316 Stainless)"), "{e}");
+    let e = add(&mut s, "Demo-316", "");
+    assert!(e.contains("another name of DEMO 316 Stainless (material 3)"), "{e}");
+    let e = add(&mut s, "DEMO 304", "DEMO-304, Stainless Steel");
+    assert!(e.contains("'Stainless Steel'") && e.contains("material 1 (Stainless steel)"), "{e}");
+    let e = add(&mut s, "DEMO 304", "aisi304");
+    assert!(e.contains("another name of Stainless steel (material 1)") && e.contains("Take it off Stainless steel first"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "DEMO 316 Stainless", "other_names": "DEMO-316, mild STEEL"}));
+    assert!(e.contains("material 0 (Mild steel)"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "stainless steel", "name": "DEMO-316"}));
+    assert!(e.contains("DEMO 316 Stainless"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "add", "name": "DEMO 2205", "standard": "duplex"}));
+    assert!(e.contains("not a standard") && e.contains("0100 Stainless steel"), "{e}");
+    assert_eq!(std::fs::read(crate::materials::Home::Library(lib.clone()).file()).unwrap(), before, "nothing refused was stored");
+    // Its own name again among its other names is no clash; the list stays clean.
+    let ok = call(&mut s, "material", None, json!({"mode": "edit", "material": "demo-316", "other_names": "DEMO-316, demo 316 stainless, DEMO-316 ", "density": 7.98}));
+    assert_eq!((ok["data"]["other_names"].clone(), ok["data"]["density"].as_f64()), (json!(["DEMO-316"]), Some(7.98)), "{ok}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn material_changes_are_refused_while_the_library_cant_be_reached() {
+    // Invariant 5: the Library's folder disappears mid-session (the share
+    // went down): a change is refused, saying what to do; reading goes on
+    // with the list read last; once it is back, changes work again.
+    let d = dir("material_unreachable");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    let e = err(&mut s, "material", json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    assert!(e.contains("can't be reached") && e.contains("The material list wasn't changed: try again once it can be reached."), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "DEMO-316", "density": 7.9}));
+    assert!(e.contains("can't be reached"), "{e}");
+    assert!(!lib.exists(), "nothing made in its place");
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["materials"].as_array().unwrap().len(), 4, "the list read last: {l}");
+    std::fs::rename(&away, &lib).unwrap();
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    assert_eq!(call(&mut s, "material", None, json!({"mode": "list"}))["data"]["materials"].as_array().unwrap().len(), 5);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn this_pcs_settings_seed_the_list_once() {
+    // MA15: the three materials as this PC's settings have them (renamed in
+    // programs, an empty row, extra other names) start the list with ids 0
+    // to 2; once stored, the settings no longer count.
+    let d = dir("material_seed");
+    let lib = stock_ctx(&d).library_dir;
+    let mut c = stock_ctx_again(&lib);
+    c.cfg = crate::settings::AppSettings { stock: c.cfg.stock.clone(), ..crate::settings::AppSettings::parse("[general]\nmaterial0 = DEMO-MS|0011\nmaterial_alias0 = DEMO-A36, demo-a36, Stainless\nmaterial1 = |\nmaterial_ref1 =\nmaterial_alias1 =\n") };
+    let mut s = Session::new(c);
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert!(l["message"].as_str().unwrap().contains("not stored yet"), "{l}");
+    let ms = l["data"]["materials"].as_array().unwrap();
+    assert_eq!(ms.iter().map(|m| m["name"].as_str().unwrap()).collect::<Vec<_>>(), ["Mild steel", "Stainless steel", "Aluminium"]);
+    assert_eq!((ms[0]["program_name"].as_str(), ms[0]["program_code"].as_str()), (Some("DEMO-MS"), Some("0011")));
+    assert_eq!(ms[0]["other_names"], json!(["DEMO-A36", "Stainless"]), "each other name once");
+    assert_eq!((ms[1]["program_name"].as_str(), ms[1]["program_code"].as_str(), ms[1]["machine_key"].as_str()), (Some(""), Some(""), Some("")), "an empty row stays empty");
+    assert_eq!(ms[1]["other_names"], json!([]));
+    assert_eq!(ms[2]["program_name"], "ALUMINIUM", "a row the file lacks is a new install's");
+    // Stored at the first change, as seeded.
+    add_demo_316(&mut s);
+    let stored: crate::engine::material::List = serde_json::from_str(&std::fs::read_to_string(crate::materials::Home::Library(lib.clone()).file()).unwrap()).unwrap();
+    assert_eq!((stored.materials.len(), stored.materials[0].program_name.as_deref()), (4, Some("DEMO-MS")));
+    // Another PC with other settings now reads the Library's list.
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["materials"][0]["program_name"], "DEMO-MS", "{l}");
+    assert_eq!(l["data"]["materials"][3]["name"], "DEMO 316 Stainless");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_pc_without_a_library_keeps_its_own_list() {
+    // MA14: no Library made or picked (this PC's own default folder holds
+    // none): the list is kept in this PC's settings folder.
+    let d = dir("material_pc");
+    let mut c = Ctx::builtin();
+    c.library_dir = crate::library::default_dir();
+    c.pc_dir = d.join("settings");
+    assert!(!crate::library::holds_library(&c.library_dir));
+    let mut s = Session::new(c);
+    add_demo_316(&mut s);
+    assert!(d.join("settings").join(crate::materials::FILE).is_file());
+    assert!(!crate::library::default_dir().exists(), "no Library made for it");
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert!(l["message"].as_str().unwrap().contains("this PC's own"), "{l}");
+    assert_eq!(l["data"]["materials"][3]["name"], "DEMO 316 Stainless");
     let _ = std::fs::remove_dir_all(&d);
 }
 

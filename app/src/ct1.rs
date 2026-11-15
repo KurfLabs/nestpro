@@ -201,14 +201,12 @@ impl Default for MachineTech {
 }
 
 static ACTIVE: std::sync::RwLock<Option<MachineTech>> = std::sync::RwLock::new(None);
-/// The machine-file keys of the app's materials (Settings → Materials →
-/// Machine table), already normalised; None = the built-in ones.
-static KEYS: std::sync::RwLock<Option<Vec<String>>> = std::sync::RwLock::new(None);
-/// Bumped whenever the machine or the material keys change (empties the cache).
+/// Bumped whenever the machine changes (empties the cache).
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// The last values picked for a material and thickness: (generation, material, thickness bits).
+/// The last values picked for a material and thickness: (generation, the
+/// material's machine-file key, thickness bits).
 #[allow(clippy::type_complexity)]
-static PICKED: std::sync::Mutex<Option<((u64, usize, u64, i32), MachineTech)>> = std::sync::Mutex::new(None);
+static PICKED: std::sync::Mutex<Option<((u64, String, u64, i32), MachineTech)>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 thread_local! {
@@ -239,23 +237,10 @@ pub fn set_thread_active(t: Option<MachineTech>) {
     LOCAL.with(|l| *l.borrow_mut() = t);
 }
 
-/// Set the machine-file key of each app material, by id
-/// (`engine::material::machine_keys`).
-pub fn set_material_keys(keys: Vec<String>) {
-    if let Ok(mut g) = KEYS.write() {
-        if g.as_ref() != Some(&keys) {
-            *g = Some(keys);
-            GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
-
-/// The machine-file key of app material `i` (its id).
+/// The machine-file key of app material `i` (its id; MTL2), from the
+/// material list.
 pub fn key_of_material(i: usize) -> String {
-    if let Some(k) = KEYS.read().ok().and_then(|g| g.as_ref().and_then(|v| v.get(i).cloned())) {
-        return k;
-    }
-    crate::engine::material::default_machine_key(i)
+    crate::engine::material::machine_key(i)
 }
 
 /// The active machine's values for a sheet: the first section of its file
@@ -268,12 +253,13 @@ pub fn for_spec(spec: &crate::nest::SheetSpec) -> MachineTech {
 /// The active machine's values for app material `material` at `thickness`
 /// mm, cut with `gas` (None: a job without a gas of its own, GS13).
 pub fn for_material(material: usize, thickness: f64, gas: Option<crate::gas::Gas>) -> MachineTech {
-    let keys = JobKeys::for_job(&key_of_material(material), thickness, gas);
+    let key = key_of_material(material);
+    let keys = JobKeys::for_job(&key, thickness, gas);
     #[cfg(test)]
     if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
         return t.for_job(&keys);
     }
-    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), material, thickness.to_bits(), keys.gas);
+    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), key, thickness.to_bits(), keys.gas);
     if let Some((k, t)) = PICKED.lock().ok().and_then(|g| g.clone()) {
         if k == id {
             return t;

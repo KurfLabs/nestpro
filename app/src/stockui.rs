@@ -89,7 +89,7 @@ impl App {
     }
 
     fn job_sheets(&self) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: crate::engine::material::program_name_or_name(&self.cfg, self.spec.material) }
+        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: crate::engine::material::program_name_or_name(self.spec.material) }
     }
 
     /// The Library folder as whoever works at this window, without setting
@@ -228,6 +228,9 @@ impl App {
             return;
         };
         let before = self.spec.clone();
+        // MA17: the sheet's material name goes with its id, also when the
+        // switch waits for the question about the nested sheets.
+        crate::engine::material::remember_read(&mut self.job_material_names, it.material, &it.material_name);
         self.spec.material = it.material;
         self.spec.thickness = it.thickness;
         self.after_material_edit(before);

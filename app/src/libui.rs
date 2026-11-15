@@ -312,13 +312,24 @@ impl App {
             saved: None,
             library: self.job_lib_id.map(|id| Record { id, revision: self.lib_read.revision }),
             library_parts: self.lib_read.parts.clone(),
+            material_name: crate::engine::material::read_name(self.spec.material, &self.job_material_names),
         }
     }
 
     /// Another library folder: the open jobs' record numbers belong to the old
     /// one, so saving would replace whatever has that number in the new one.
     /// They become new records there.
+    /// Read the material list again from where it lives (MA14); while it
+    /// can't be read the list in use stays (`first`: this PC's settings seed
+    /// it, MA15).
+    pub fn reload_materials(&mut self, first: bool) {
+        let pc_dir = crate::settings::AppSettings::file().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let _ = crate::engine::load_materials(&self.library_dir(), &pc_dir, &self.cfg, first);
+    }
+
     pub fn library_folder_changed(&mut self) {
+        // The materials are the new Library's (MA14).
+        self.reload_materials(false);
         // The holds belong to the old Library: let go of them there (CU5).
         self.release_holds();
         self.inuse.watch.done_with_all();
@@ -591,7 +602,7 @@ impl App {
                 skipped += 1;
                 continue;
             }
-            if let Ok(rec) = lib.save_product_in(p, &folder, self.spec.material, self.spec.thickness, SaveTo::New, &to) {
+            if let Ok(rec) = lib.save_product_in(p, &folder, (self.spec.material, &crate::engine::material::read_name(self.spec.material, &self.job_material_names)), self.spec.thickness, SaveTo::New, &to) {
                 // The job's part is that library part now, as saved (LB7).
                 self.lib_read.parts.insert(p.name.clone(), rec);
                 added += 1;
@@ -634,7 +645,7 @@ impl App {
         // in the same hold of the write lock as the revision check; saving
         // over one never moves it (JX19).
         let into = self.parts_folder_of_job();
-        match lib.save_product_in(&p, &folder, self.spec.material, self.spec.thickness, to, &into) {
+        match lib.save_product_in(&p, &folder, (self.spec.material, &crate::engine::material::read_name(self.spec.material, &self.job_material_names)), self.spec.thickness, to, &into) {
             Ok(rec) => {
                 self.lib_read.parts.insert(p.name.clone(), rec);
                 self.lib_refresh();
@@ -1316,7 +1327,8 @@ pub(crate) fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile
     let mut result = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 };
     result.normalise(&j.spec);
     let (folder, week) = place;
-    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder) }
+    let material_names = crate::engine::material::names_read(j.spec.material, &j.material_name);
+    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder), material_names }
 }
 
 #[cfg(test)]
