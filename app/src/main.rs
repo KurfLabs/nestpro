@@ -2786,6 +2786,7 @@ impl eframe::App for App {
             self.hold_frame(&ctx);
         }
         self.reload_note_card(&ctx);
+        self.unknown_material_card(&ctx);
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
         if self.follow_system {
@@ -3275,6 +3276,11 @@ fn main() -> eframe::Result {
             // --reload-note=ask: it has unsaved changes here, so it asks.
             if let Some(a) = std::env::args().find(|a| a == "--reload-note" || a == "--reload-note=ask") {
                 app.demo_reload_note(a.ends_with("=ask"));
+            }
+            // --unknown-material (screenshots, with --library-dir= a new,
+            // empty folder): a job whose material isn't in the list (MA30).
+            if std::env::args().any(|a| a == "--unknown-material") {
+                app.demo_unknown_material();
             }
             // --refresh-minutes=N (screenshots): the auto-refresh setting (JX8).
             if let Some(m) = std::env::args().find_map(|a| a.strip_prefix("--refresh-minutes=").and_then(|v| v.parse::<i64>().ok())) {

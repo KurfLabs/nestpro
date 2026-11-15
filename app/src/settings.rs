@@ -154,6 +154,10 @@ pub struct AppSettings {
     /// sections (a catalogue number such as 0010, or a plain name; empty = the
     /// material's name in programs). MTL2.
     pub material_refs: Vec<String>,
+    /// A new install: this PC's own material list starts with the
+    /// original's starter materials, not just the first three (MA29).
+    /// Settings saved before it keep their three.
+    pub starter_materials: bool,
     /// Appearance: "system" (follow Windows), "light" or "dark".
     pub theme: String,
     /// Ask before changing a part that has its own technology.
@@ -316,6 +320,7 @@ impl Default for AppSettings {
             materials: crate::engine::material::default_pc_programs(),
             material_aliases: crate::engine::material::default_pc_other_names(),
             material_refs: crate::engine::material::default_pc_machine_refs(),
+            starter_materials: false,
             theme: "system".into(),
             warn_tech: true,
             in_use_warn: true,
@@ -643,7 +648,7 @@ impl AppSettings {
         match Self::read_from(&Self::file()) {
             Some(s) => s,
             None => {
-                let mut s = AppSettings::default();
+                let mut s = Self::load_from(&Self::file());
                 let dir = lantek_default_dir();
                 if Path::new(&dir).join("LANTEKIN.CNI").exists() {
                     s.import_lantek(&dir);
@@ -651,6 +656,12 @@ impl AppSettings {
                 s
             }
         }
+    }
+
+    /// The settings saved in `f`; with none there, a new install's: its
+    /// material list starts with the starter materials (MA29).
+    pub fn load_from(f: &Path) -> Self {
+        Self::read_from(f).unwrap_or_else(|| AppSettings { starter_materials: true, ..AppSettings::default() })
     }
 
     /// The settings saved in `f`, None when it can't be read.
@@ -912,6 +923,7 @@ mod settings_tests {
             materials: vec![("S235".into(), "0010".into()), ("304".into(), "0100".into()), ("5052".into(), "0200".into())],
             material_aliases: vec!["A36, S275".into(), String::new(), "AL".into()],
             material_refs: vec!["10".into(), "AISI304".into(), String::new()],
+            starter_materials: true,
             theme: "dark".into(),
             warn_tech: false,
             in_use_warn: false,

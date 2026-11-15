@@ -7631,3 +7631,178 @@ fn a_grade_on_a_newer_standard_writes_that_standards_name_and_number() {
     assert_eq!((set.mat_name.as_str(), set.mat_id.as_str()), ("STEEL", "0010"));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Joining a Library, the starting list and unknown materials (spec #142,
+// ticket #150: MA28–MA31).
+// ---------------------------------------------------------------------------
+
+/// A PC with no Library (MA14): its own list in `d/settings`.
+fn pc_without_library(d: &Path) -> Session {
+    let mut c = Ctx::builtin();
+    c.library_dir = crate::library::default_dir();
+    c.pc_dir = d.join("settings");
+    assert!(!crate::library::holds_library(&c.library_dir));
+    Session::new(c)
+}
+
+/// A shop Library in `d/library` whose list has DEMO 316L as material 3.
+fn shop_library_with_316l(d: &Path) -> PathBuf {
+    let lib = stock_ctx(d).library_dir;
+    let mut shop = Session::new(stock_ctx_again(&lib));
+    call(&mut shop, "material", None, json!({"mode": "add", "name": "DEMO 316L", "standard": "stainless"}));
+    lib
+}
+
+#[test]
+fn a_pc_joining_a_library_keeps_one_mild_steel_and_both_grades() {
+    let d = dir("join_library");
+    // The PC, before it has a Library: mild steel and its own DEMO 316 (3).
+    let mut pc = pc_without_library(&d);
+    let r = call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless", "other_names": "DEMO-1.4401"}));
+    assert_eq!(r["data"]["material"].as_u64(), Some(3));
+    let jp = d.join("DEMO-PC-316.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut pc, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO 316"}));
+    assert_eq!((jobfile::load(Path::new(jp)).unwrap().spec.material, jobfile::load(Path::new(jp)).unwrap().material_name), (3, "DEMO 316".to_string()));
+    // The shop's Library, whose 3 is DEMO 316L.
+    let lib = shop_library_with_316l(&d);
+    // The PC points at it: its own list joins the Library's.
+    pc.ctx.library_dir = lib.clone();
+    let info = call(&mut pc, "info", None, json!({}));
+    assert_eq!(info["materials_joined"], "This PC's materials joined the Library's material list: added DEMO 316.", "{info}");
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 316"), Some(4)), "the open job keeps its grade: {info}");
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316"]);
+    // Every PC on the Library sees it; the job reopens on DEMO 316.
+    let mut other = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut other), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316"]);
+    let info = call(&mut other, "info", Some(jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64(), info["data"]["sheet"]["material_known"].as_bool()), (Some("DEMO 316"), Some(4), Some(true)), "{info}");
+    // A job of the PC's found only by an other name.
+    let mut j = jobfile::load(Path::new(jp)).unwrap();
+    j.material_name = "demo-1.4401".into();
+    let by_other = d.join("DEMO-PC-OTHER.snjob");
+    std::fs::write(&by_other, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut other, "info", Some(by_other.to_str().unwrap()), json!({}));
+    assert_eq!(info["data"]["sheet"]["material"], "DEMO 316", "{info}");
+    // Joining twice adds nothing: the Library renames DEMO 316, and the PC
+    // reading the list again doesn't bring its old name back.
+    call(&mut other, "material", None, json!({"mode": "edit", "material": "DEMO 316", "name": "DEMO 316 Brushed"}));
+    let again = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert!(again.get("materials_joined").is_none(), "{again}");
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316 Brushed"]);
+    // The PC's job saved before the rename still means it.
+    let info = call(&mut other, "info", Some(jp), json!({}));
+    assert_eq!(info["data"]["sheet"]["material"], "DEMO 316 Brushed", "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_pc_joins_once_the_library_can_be_reached() {
+    let d = dir("join_unreachable");
+    let mut pc = pc_without_library(&d);
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    let lib = shop_library_with_316l(&d);
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list_file).unwrap();
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    pc.ctx.library_dir = lib.clone();
+    let r = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert!(r.get("materials_joined").is_none(), "{r}");
+    assert!(!lib.exists(), "nothing made in its place");
+    std::fs::rename(&away, &lib).unwrap();
+    assert_eq!(std::fs::read(&list_file).unwrap(), before, "nothing stored while away");
+    let r = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert!(r["materials_joined"].as_str().unwrap().contains("added DEMO 316"), "{r}");
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_library_with_no_list_yet_takes_the_joining_pcs_own() {
+    let d = dir("join_no_list");
+    let mut pc = pc_without_library(&d);
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    let lib = stock_ctx(&d).library_dir;
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    assert!(!list_file.exists());
+    pc.ctx.library_dir = lib.clone();
+    let r = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert_eq!(r["materials_joined"], "This PC's materials joined the Library's material list: each was there already.", "{r}");
+    assert!(list_file.is_file(), "stored, so every PC sees the same list");
+    let mut other = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut other), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_pc_with_settings_from_before_joins_with_nothing_to_add() {
+    // Its three are the Library's first three: nothing is stored or noted.
+    let d = dir("join_old_settings");
+    let lib = shop_library_with_316l(&d);
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list_file).unwrap();
+    let mut pc = pc_without_library(&d);
+    pc.ctx.cfg = crate::settings::AppSettings { stock: pc.ctx.cfg.stock.clone(), ..crate::settings::AppSettings::parse("[general]\nmaterial0 = DEMO-MS|0011\n") };
+    pc.ctx.library_dir = lib.clone();
+    let r = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert!(r.get("materials_joined").is_none(), "{r}");
+    assert_eq!(std::fs::read(&list_file).unwrap(), before);
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_new_install_without_a_library_starts_with_the_starter_materials() {
+    let d = dir("starter_list");
+    let mut c = Ctx::builtin();
+    c.cfg = crate::settings::AppSettings::load_from(&d.join("settings").join("settings.ini"));
+    c.library_dir = crate::library::default_dir();
+    c.pc_dir = d.join("settings");
+    let mut s = Session::new(c);
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "X5CrNi + Film", "AlMg3", "Galvanized", "Copper", "Brass"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_whose_material_is_missing_says_so_and_keeps_its_name() {
+    let d = dir("unknown_material");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let jp = d.join("DEMO-904.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3}));
+    // A job from elsewhere: material 41, DEMO 904L, which this list has by
+    // neither its number nor its name.
+    let mut j = jobfile::load(&jp).unwrap();
+    j.spec.material = 41;
+    j.material_name = "DEMO 904L".into();
+    let unknown = d.join("DEMO-904-OTHER.snjob");
+    std::fs::write(&unknown, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(unknown.to_str().unwrap()), json!({}));
+    let sheet = &info["data"]["sheet"];
+    assert_eq!((sheet["material"].as_str(), sheet["material_no"].as_u64(), sheet["material_known"].as_bool()), (Some("?"), Some(41), Some(false)), "{info}");
+    assert_eq!(sheet["material_unknown"]["name"], "DEMO 904L");
+    assert_eq!(sheet["material_unknown"]["note"], "This job's material, DEMO 904L, isn't in the material list. The job keeps it (number 41) until another material is picked, or DEMO 904L is added to the list.");
+    assert!(sheet["material_unknown"]["todo"].as_str().unwrap().contains("material mode=add name=\"DEMO 904L\""), "{info}");
+    assert_eq!(info["data"]["warnings"][0], sheet["material_unknown"]["note"]);
+    // Never switched: a change saves it with its number and name.
+    call(&mut s, "set-sheet", None, json!({"gap": 7}));
+    let saved = jobfile::load(&unknown).unwrap();
+    assert_eq!((saved.spec.material, saved.material_name.as_str()), (41, "DEMO 904L"));
+    // Added to the list, the job finds it by its name.
+    let r = call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 904L"}));
+    let id = r["data"]["material"].as_u64().unwrap();
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64(), info["data"]["sheet"]["material_known"].as_bool()), (Some("DEMO 904L"), Some(id), Some(true)), "{info}");
+    assert!(info["data"]["sheet"].get("material_unknown").is_none());
+    // A file with only the number: no name to add it by.
+    let mut j = jobfile::load(&jp).unwrap();
+    j.spec.material = 42;
+    j.material_name = String::new();
+    let bare = d.join("DEMO-904-BARE.snjob");
+    std::fs::write(&bare, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(bare.to_str().unwrap()), json!({}));
+    assert_eq!(info["data"]["sheet"]["material_unknown"]["note"], "This job's material (number 42) isn't in the material list. The job keeps it until another material is picked.");
+    let _ = std::fs::remove_dir_all(&d);
+}

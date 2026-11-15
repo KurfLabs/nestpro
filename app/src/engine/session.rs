@@ -84,9 +84,29 @@ impl Session {
     /// Run an operation. `job` names the job file (needed for `new`, and when
     /// no job is open yet).
     pub fn call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
+        // The material list may have changed on another PC since (MA14);
+        // the first time this PC points at a Library its own list joins it
+        // (MA28), and a job open in this PC's numbering takes the Library's.
+        let joined = self.ctx.reload_materials();
+        if let Some(j) = self.job.as_mut() {
+            if let Some(n) = &joined {
+                j.spec.material = n.id(j.spec.material);
+            }
+            // MA30: a material added since the job was read is found by the
+            // name the job came with.
+            if !super::material::exists(j.spec.material) {
+                j.spec.material = super::material::resolve(j.spec.material, &j.material_name);
+            }
+        }
+        let mut r = self.run_call(name, job, args)?;
+        if let (Some(n), Some(o)) = (joined, r.json.as_object_mut()) {
+            o.insert("materials_joined".into(), json!(n.note()));
+        }
+        Ok(r)
+    }
+
+    fn run_call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
         let op = ops::find(name).ok_or_else(|| format!("unknown operation '{name}' — see `nestpro ops`"))?;
-        // The material list may have changed on another PC since (MA14).
-        self.ctx.reload_materials();
         let args = if args.is_null() { json!({}) } else { args.clone() };
         ops::check_args(op, &args)?;
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };

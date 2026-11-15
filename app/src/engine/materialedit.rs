@@ -50,8 +50,13 @@ impl List {
                 let Some(x) = self.materials.iter_mut().find(|x| x.id == now.id) else {
                     return Err(format!("{} is no longer in the material list (deleted meanwhile, on another PC?): undo the changes to see the list as it is now.", if was.name.trim().is_empty() { format!("Material {}", now.id) } else { was.name.trim().to_string() }));
                 };
+                let before = x.name.clone();
                 merge(x, was, now);
                 x.name = x.name.split_whitespace().collect::<Vec<_>>().join(" ");
+                // MA31: files saved before the rename keep meaning it.
+                if material::norm(&before) != material::norm(&x.name) && !before.trim().is_empty() && !self.former.iter().any(|(i, f)| *i == now.id && material::norm(f) == material::norm(&before)) {
+                    self.former.push((now.id, before));
+                }
                 edited.push(now.id);
                 done[k] = Some(Done::Edited(now.id));
             }

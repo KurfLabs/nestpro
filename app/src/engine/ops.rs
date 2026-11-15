@@ -846,8 +846,22 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
             warnings.push(format!("{}: {} of {} nested{why}", p.name, n, p.qty));
         }
     }
+    let mut sheet = spec_json(&job.spec, &ctx.blm);
+    // MA30: a material the list doesn't have is shown as unknown, with the
+    // name the job came with and what to do.
+    sheet["material_known"] = json!(super::material::exists(job.spec.material));
+    if let Some(note) = super::material::unknown_note(job.spec.material, &job.material_name) {
+        let read = job.material_name.trim();
+        let todo = if read.is_empty() {
+            "Pick another material with set-sheet material=… (see material mode=list).".to_string()
+        } else {
+            format!("Add it with material mode=add name=\"{read}\" (based on mild steel until its standard is set; the job then finds it by its name), or pick another with set-sheet material=… (see material mode=list).")
+        };
+        sheet["material_unknown"] = json!({"number": job.spec.material, "name": read, "note": note, "todo": todo});
+        warnings.insert(0, note);
+    }
     json!({
-        "job": job.name, "week": job.week, "changed_since_nest": job.stale, "sheet": spec_json(&job.spec, &ctx.blm),
+        "job": job.name, "week": job.week, "changed_since_nest": job.stale, "sheet": sheet,
         "machine": { "name": ctx.cfg.machine().name, "output": if ctx.blm.on { "BLM LC5 (Siemens 840D set)" } else { "ISO G-code" } },
         "parts": parts, "sheets": sheets,
         "totals": { "ordered": need, "nested": placed, "sheets": job.sheets.len(), "cut_len_mm": r1(tot.0), "rapid_len_mm": r1(tot.1), "pierces": tot.2, "time_s": r1(tot.3), "method": job.method },
