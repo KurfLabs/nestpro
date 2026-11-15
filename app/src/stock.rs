@@ -765,6 +765,14 @@ impl Stock {
         let mut s = Stock::load(&lib.dir)?;
         let before = s.clone();
         let out = f(&mut s)?;
+        // MA20: an item made, or given a material, in one deleted since it
+        // was picked isn't stored (invariant 4).
+        let was: std::collections::HashMap<&str, usize> = before.items.iter().map(|i| (i.reference.as_str(), i.material)).collect();
+        let mut new: Vec<usize> = s.items.iter().filter(|i| was.get(i.reference.as_str()) != Some(&i.material)).map(|i| i.material).collect();
+        new.dedup();
+        for m in new {
+            crate::materials::not_deleted(&lib.dir, m, "the stock")?;
+        }
         s.sign(&before, &lib.saved());
         s.store(&lib.dir, &lock)?;
         Ok(out)

@@ -1934,7 +1934,9 @@ impl App {
             // What Nest all will nest in, in view before nesting.
             ui.vertical(|ui| {
                 ui.add_space(8.0);
-                let mat = format!("{} · {} · {}  ▾", crate::engine::material::nearest_name(self.spec.material), self.unit().thickness(self.spec.thickness), gas_short(&engine::job_gas(&self.spec, &self.blm)));
+                // A material the list doesn't have (deleted, or from another
+                // Library) shows `?`, as every Material ▾ does (JOB-86, MA23).
+                let mat = format!("{} · {} · {}  ▾", crate::engine::material::name_or(self.spec.material, "?"), self.unit().thickness(self.spec.thickness), gas_short(&engine::job_gas(&self.spec, &self.blm)));
                 let resp = ui.add(egui::Button::new(RichText::new(mat).strong()).min_size(Vec2::new(120.0, 26.0))).on_hover_text("The job's material, thickness and gas — click to change them");
                 // Change them in place; the rest of the sheet set-up is on the Sheet tab.
                 egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {

@@ -442,6 +442,12 @@ impl Library {
                 let Ok(files) = std::fs::read_dir(sub.path()) else { continue };
                 for f in files.flatten() {
                     let p = f.path();
+                    // Only `<number>.<ext>`: an undo copy beside a record
+                    // (`7.snjob~`) or a deleted record's mark isn't the
+                    // record, and never stands in for it (MA20).
+                    if p.extension().and_then(|e| e.to_str()) != Some(kind.ext()) {
+                        continue;
+                    }
                     let Some(id) = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) else { continue };
                     let meta = f.metadata().ok();
                     let stamp = (meta.as_ref().and_then(|m| m.modified().ok()), meta.as_ref().map_or(0, |m| m.len()));
@@ -464,6 +470,15 @@ impl Library {
             }
         }
         out
+    }
+
+    /// Every record file as it is now (MA20: what uses a material is read
+    /// from the files, not the list, which says only what each was saved
+    /// with). Files whose stamp is in `known` aren't read again, so a scan
+    /// first made without the write lock is cheap to repeat under it (LB1,
+    /// LB2).
+    pub fn scan_records(&self, known: Option<&RecordScan>) -> RecordScan {
+        RecordScan(self.scan(known.map_or(&Scanned::new(), |k| &k.0)))
     }
 
     /// Re-read the index from the record files and save it. The files are
@@ -667,7 +682,7 @@ impl Library {
     /// `save_job`, a new record going into the folder `folder` while that is
     /// still there (JX15).
     pub fn save_job_in(&self, job: &JobFile, to: SaveTo, folder: Option<u64>) -> Result<Record, Refused> {
-        self.save_job_with(to, &job.name, folder, || Ok(job.clone()))
+        self.save_job_with(to, &job.name, folder, job.spec.material, || Ok(job.clone()))
     }
 
     /// Save the job `job` makes, under the name `name`, while the write lock
@@ -680,8 +695,11 @@ impl Library {
     /// is one hold of the write lock, so of two PCs saving one new name at
     /// the same moment, one is stored and the other refused. A place in the
     /// folder tree that can't be written leaves the job at the top, saved.
-    pub fn save_job_with(&self, to: SaveTo, name: &str, folder: Option<u64>, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
+    /// The job's material is `material`: refused, booking nothing, when it
+    /// was deleted from the material list since it was picked (MA20).
+    pub fn save_job_with(&self, to: SaveTo, name: &str, folder: Option<u64>, material: usize, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
         let _lock = self.lock()?;
+        crate::materials::not_deleted(&self.dir, material, "the job").map_err(Refused::Failed)?;
         // Not over a job taken over from this PC, nor under a new name over
         // one someone else has in use (an agent: not over any job in use),
         // CU9, CU11, CU12: checked first, under the lock, so nothing is
@@ -749,6 +767,7 @@ impl Library {
         let mut part = part.clone();
         part.erp.clear();
         self.store(Kind::Product, to, || Ok(part), |part, saved, rec| {
+            crate::materials::not_deleted(&self.dir, material, "the library part")?;
             let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: crate::engine::material::stored_name(material, read_name), thickness, saved: Some(saved), revision: rec.revision };
             let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
             Ok((text, move |id| product_entry(id, &pf, 0)))
@@ -822,6 +841,21 @@ impl Library {
 
 /// Record files read: (kind, number) → (stamp, line in the list).
 type Scanned = std::collections::HashMap<(u8, u64), ((Option<std::time::SystemTime>, u64), Entry)>;
+
+/// The Library's record files as one scan read them (`scan_records`).
+pub struct RecordScan(Scanned);
+
+impl RecordScan {
+    /// The saved jobs and library parts in the material, each as (record
+    /// number, name), in record order (MA20). A record is in the material
+    /// its file means once read: its number, else its saved name (MA17).
+    pub fn using_material(&self, material: usize) -> (Vec<(u64, String)>, Vec<(u64, String)>) {
+        let mut found: Vec<&Entry> = self.0.values().map(|(_, e)| e).filter(|e| e.material == material).collect();
+        found.sort_by_key(|e| (e.kind as u8, e.id));
+        let of = |k: Kind| found.iter().filter(|e| e.kind == k).map(|e| (e.id, e.name.clone())).collect::<Vec<_>>();
+        (of(Kind::Job), of(Kind::Product))
+    }
+}
 
 /// The lines of a scan, in the list's order.
 fn entries_of(s: Scanned) -> Vec<Entry> {
@@ -1342,7 +1376,7 @@ mod library_tests {
         // LB8: what a save does before writing (the window books the stock
         // there) never runs for a refused save.
         let mut booked = false;
-        let r = prog2.save_job_with(SaveTo::Read(on2.library.unwrap()), &on2.name, None, || {
+        let r = prog2.save_job_with(SaveTo::Read(on2.library.unwrap()), &on2.name, None, on2.spec.material, || {
             booked = true;
             Ok(on2.clone())
         });
