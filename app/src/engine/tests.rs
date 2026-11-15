@@ -8040,3 +8040,96 @@ fn a_job_whose_material_cant_be_told_writes_its_own_number_everywhere() {
     assert_eq!(found, 1, "the library part");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A session on a Library where DEMO Shared was the name of material 3
+/// (now DEMO Inox, stainless) and of 4 (now DEMO Cu, copper), and job
+/// `DEMO-SHARED.snjob` stored as (3, DEMO Shared): its material can't be
+/// told (MA31).
+fn shared_name_session(d: &Path) -> (PathBuf, PathBuf, Session) {
+    let lib = stock_ctx(d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    for (standard, now) in [("stainless", "DEMO Inox"), ("copper", "DEMO Cu")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": standard}));
+        call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": now}));
+    }
+    let jp = d.join("DEMO-SHARED.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3}));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    v["spec"]["material"] = json!(3);
+    v["material_name"] = json!("DEMO Shared");
+    std::fs::write(&jp, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    (lib, jp, s)
+}
+
+/// A record's stored material: (number, name).
+fn stored_material(v: &Value) -> (Option<u64>, Option<&str>) {
+    (v["material"].as_u64(), v["material_name"].as_str())
+}
+
+#[test]
+fn a_job_whose_number_is_one_of_the_former_holders_stays_unknown_through_saves() {
+    // S7 (MA31): 3 and 4 both had DEMO Shared; the file's number 3 doesn't
+    // break the tie. Open, save, reopen in a new session, save again.
+    let d = dir("unresolved_job_round_trip");
+    let (lib, jp, mut s) = shared_name_session(&d);
+    let jp = jp.to_str().unwrap();
+    for round in 0..2 {
+        let info = call(&mut s, "info", Some(jp), json!({}));
+        assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(3)), "round {round}: {info}");
+        call(&mut s, "set-sheet", None, json!({"gap": 6 + round}));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(jp).unwrap()).unwrap();
+        assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(3), Some("DEMO Shared")), "round {round}");
+        s = Session::new(stock_ctx_again(&lib));
+    }
+    // A material that has the name now is its material.
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "stainless"}));
+    let info = call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO Shared"), Some(5)), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_library_part_from_a_job_whose_material_cant_be_told_keeps_its_number_and_name() {
+    // S8: saved, read back, saved again: (3, DEMO Shared) every time.
+    let d = dir("unresolved_part_round_trip");
+    let (lib, jp, mut s) = shared_name_session(&d);
+    call(&mut s, "add-shape", Some(jp.to_str().unwrap()), json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    let l = crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc());
+    let id = l.entries().into_iter().find(|e| e.kind == crate::library::Kind::Product).map(|e| e.id).unwrap();
+    let file = l.path(crate::library::Kind::Product, id);
+    let on_disk = || serde_json::from_str::<Value>(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(stored_material(&on_disk()), (Some(3), Some("DEMO Shared")));
+    // Read back: unknown, not DEMO Inox (3).
+    let list = call(&mut s, "library", None, json!({"mode": "list"}));
+    assert!(list["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "?"), "{list}");
+    let pf = l.load_product(id).unwrap();
+    assert!(!material::exists(pf.material), "unresolved when read back");
+    // Saved again over itself, as read.
+    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
+    assert_eq!(stored_material(&on_disk()), (Some(3), Some("DEMO Shared")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_remnant_from_a_job_whose_material_cant_be_told_keeps_its_number_and_name() {
+    // S9: stored, read back, and saved again by an unrelated stock change.
+    let d = dir("unresolved_stock_round_trip");
+    let (lib, jp, mut s) = shared_name_session(&d);
+    call(&mut s, "add-shape", Some(jp.to_str().unwrap()), json!({"shape": "rectangle", "w": 200, "h": 200, "qty": 1}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let on_disk = || serde_json::from_str::<Value>(&std::fs::read_to_string(crate::stock::Stock::file(&lib)).unwrap()).unwrap();
+    let rems = |v: &Value| v["items"].as_array().unwrap().iter().filter(|i| i["material"] != 0).map(|i| (i["material"].as_u64(), i["material_name"].as_str().map(str::to_string))).collect::<Vec<_>>();
+    let first = rems(&on_disk());
+    assert!(!first.is_empty() && first.iter().all(|r| *r == (Some(3), Some("DEMO Shared".to_string()))), "{first:?}");
+    // Read back in another session: unknown, not DEMO Inox (3).
+    let mut other = Session::new(stock_ctx_again(&lib));
+    let l = call(&mut other, "stock", None, json!({"mode": "list", "show_zero": true}));
+    assert!(l["data"]["sheets"].as_array().unwrap().iter().all(|i| i["material"] == "?"), "{l}");
+    // An unrelated change saves the stock again.
+    call(&mut other, "stock", None, json!({"mode": "create", "ref": "DEMO-OTHER", "material": "mild steel", "w": 1000, "h": 500, "thickness": 3}));
+    assert_eq!(rems(&on_disk()), first);
+    let _ = std::fs::remove_dir_all(&d);
+}

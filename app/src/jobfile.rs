@@ -122,7 +122,7 @@ pub fn load(path: &std::path::Path) -> Result<JobFile, String> {
 /// MA17: the job's material as the list has it: by id, else by the name it
 /// was saved with. The file itself is left as it is until it is saved.
 pub fn with_material(mut j: JobFile) -> JobFile {
-    j.spec.material = crate::engine::material::read_job(j.spec.material, &j.material_name);
+    j.spec.material = crate::engine::material::read_material(j.spec.material, &j.material_name);
     j
 }
 

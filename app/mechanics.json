@@ -7180,7 +7180,7 @@
  {
   "name": "file's number another material has",
   "group": "materials",
-  "value": "0 to 2 always themselves; else the number when the stored name is its name, other name or former name (before a rename, or a joining PC's name); else the material with that name now; else the one material that had it before; several that had it before and none now: none (unknown, saved unchanged); else the number",
+  "value": "jobs, library parts, stock items: 0 to 2 always themselves; else the material with that name now; else the one material that had it before (a rename, or a joining PC's name), whatever the number; several that had it before and none now: none (unknown, number and name kept through every read and save); else the number",
   "source": "MA31",
   "estimated": true
  },

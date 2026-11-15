@@ -434,7 +434,7 @@ impl App {
     pub fn find_job_material(&mut self) {
         let id = self.spec.material;
         if !crate::engine::material::exists(id) {
-            let found = crate::engine::material::read_job(id, &crate::engine::material::read_name(id, &self.job_material_names));
+            let found = crate::engine::material::read_material(id, &crate::engine::material::read_name(id, &self.job_material_names));
             if found != id {
                 self.spec.material = found;
                 if let Some(j) = self.jobs.get_mut(self.cur_job) {

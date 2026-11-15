@@ -848,6 +848,7 @@ pub fn like(text: &str) -> Option<Id> {
 /// it; else the id stays, and the screens show `?` (JOB-86). A file saved
 /// before names were stored has only the id. A name no material has now
 /// and several had before (MA31) picks none: the id stays.
+#[cfg(test)]
 pub fn resolve(id: Id, name: &str) -> Id {
     resolve_read(id, name).unwrap_or(id)
 }
@@ -875,27 +876,25 @@ pub fn ambiguous(name: &str) -> bool {
 }
 
 /// MA17, MA31: the material a file's number and stored name mean; None
-/// when no material has the name now, several had it before, and the
-/// number isn't one of them (it can't be told which: the file's material
-/// is unknown).
+/// when no material has the name now and several had it before: it can't
+/// be told which, whatever the file's number is (the file's material is
+/// unknown).
 pub fn resolve_read(id: Id, name: &str) -> Option<Id> {
     let n = norm(name);
     if n.is_empty() || id < KEPT {
         return Some(id);
     }
     let l = current();
-    // The number's own names, and the names it had before (MA31), keep it.
-    let own = l.get(id).is_some_and(|m| m.names().any(|x| x == n)) || l.former.iter().any(|(i, f)| *i == id && norm(f) == n);
     // MA28: a Library's list that can't be read: only the first three are
     // known here, and this PC's names for them never stand for the
     // Library's other materials.
-    if own || l.offline {
+    if l.offline {
         return Some(id);
     }
-    // MA31: the number has another material, or none: the file is from
-    // another list (a PC that joined a Library, another Library). The
-    // material with the name now is its material; else the one that had
-    // it before; several that had it can't be told apart.
+    // MA31: the material that has the name now (its name or an other name);
+    // else the one material that had it before (a rename, or a joining PC's
+    // name); several that had it can't be told apart, and the file's own
+    // number doesn't break the tie.
     if let Some(m) = holder_now(&l, &n) {
         return Some(m);
     }
@@ -907,21 +906,24 @@ pub fn resolve_read(id: Id, name: &str) -> Option<Id> {
     }
 }
 
-/// Added to a job file's material number while the job is open, when its
-/// name can't say which material it is (MA31): no material has the number
-/// so made, so the job shows `?` (MA30), and its file gets its own number
-/// back when saved (`file_id`).
+/// Added to a file's material number while it is read (a job, a library
+/// part, a stock item), when its name can't say which material it is
+/// (MA31): no material has the number so made, so it shows `?` (MA30), and
+/// its file gets its own number and name back when saved (`file_id`,
+/// `stored_name`).
 pub const UNRESOLVED: Id = 1_000_000_000;
 
-/// The number a job's file stores for material `id` (the file's own for
-/// an unresolved one).
+/// The number a file stores for material `id` (the file's own for an
+/// unresolved one). Take the name with `stored_name` from `id` first: the
+/// file's number may be another material's.
 pub fn file_id(id: Id) -> Id {
     if id >= UNRESOLVED { id - UNRESOLVED } else { id }
 }
 
-/// MA17, MA31: a job's material from its file's number and stored name:
-/// unresolved (shown `?`, MA30) when the name can't say which.
-pub fn read_job(id: Id, name: &str) -> Id {
+/// MA17, MA31: a material from a file's number and stored name (a job, a
+/// library part, a stock item): unresolved (shown `?`, MA30) when the name
+/// can't say which.
+pub fn read_material(id: Id, name: &str) -> Id {
     let id = file_id(id);
     resolve_read(id, name).unwrap_or(UNRESOLVED + id)
 }
@@ -1510,19 +1512,32 @@ mod tests {
     }
 
     #[test]
-    fn a_renamed_material_keeps_its_files_even_when_its_old_name_is_taken_again() {
+    fn a_name_held_now_wins_and_former_names_count_only_when_one_material_had_them() {
         let mut l = list_with(&[grade("DEMO 304", 100, &[])]);
         let was = l.get(3).unwrap().clone();
         let now = Material { name: "DEMO 304 Brushed".into(), ..was.clone() };
         l.apply(&[crate::engine::materialedit::Change::Edit { was, now }], |_| Ok(Uses::default())).unwrap();
         l.add(grade("DEMO 304", 100, &[])).unwrap();
         install(l);
-        // A job saved before the rename stored (3, "DEMO 304"): still material 3.
-        assert_eq!(resolve(3, "DEMO 304"), 3);
+        // A job saved before the rename stored (3, "DEMO 304"): the material
+        // called DEMO 304 now (MA31: a name held now wins; the file's
+        // number doesn't break a tie).
+        assert_eq!(resolve(3, "DEMO 304"), 4);
+        // Its new name finds it, whatever the number.
+        assert_eq!((resolve(3, "DEMO 304 Brushed"), resolve(8, "demo 304 brushed")), (3, 3));
         // A file from elsewhere naming DEMO 304 by a number we don't have:
         // the material called that now (MA31).
         assert!(!ambiguous("DEMO 304"));
         assert_eq!(resolve(9, "DEMO 304"), 4);
+        // Once the new DEMO 304 is renamed too, the old name is a former
+        // name of two materials: it can't be told (unknown, MA31).
+        let mut l = (*current()).clone();
+        let was = l.get(4).unwrap().clone();
+        let now = Material { name: "DEMO 304 Satin".into(), ..was.clone() };
+        l.apply(&[crate::engine::materialedit::Change::Edit { was, now }], |_| Ok(Uses::default())).unwrap();
+        install(l);
+        assert!(ambiguous("DEMO 304"));
+        assert_eq!((resolve_read(3, "DEMO 304"), resolve_read(4, "DEMO 304"), resolve_read(9, "DEMO 304")), (None, None, None));
     }
 
     // -----------------------------------------------------------------------

@@ -750,7 +750,7 @@ impl Stock {
     /// name it was saved with. The file is left as it is until it is saved.
     fn with_materials(mut self) -> Stock {
         for it in self.items.iter_mut() {
-            it.material = crate::engine::material::resolve(it.material, &it.material_name);
+            it.material = crate::engine::material::read_material(it.material, &it.material_name);
             it.material_name = crate::engine::material::stored_name(it.material, &it.material_name);
         }
         self
