@@ -365,7 +365,7 @@ impl App {
                     ui.label(RichText::new("⚠ Unknown material").strong().color(th().warn_fg));
                     ui.label(RichText::new(&note).color(th().text));
                     ui.add_space(6.0);
-                    // A name more than one material has or had (MA31):
+                    // A name no material has now and several had before (MA31):
                     // adding it wouldn't say which; pick one instead.
                     if !name.is_empty() && !crate::engine::material::ambiguous(&name) {
                         add = ui.button(format!("Add {name} to the list")).on_hover_text("Adds it to the material list, based on mild steel (0010) until you set its standard and values in Settings → Materials").clicked();

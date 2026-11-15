@@ -742,7 +742,7 @@ fn spec_json(spec: &SheetSpec, base: &crate::blm::BlmSettings) -> Value {
     let gas = job_gas(spec, base);
     let mut v = json!({
         "w": spec.w, "h": spec.h, "margin": spec.margin, "gap": spec.gap,
-        "material": super::material::name_or(spec.material, "?"), "material_no": spec.material, "thickness": spec.thickness,
+        "material": super::material::name_or(spec.material, "?"), "material_no": super::material::file_id(spec.material), "thickness": spec.thickness,
         "level": spec.nest_level().name, "machine": spec.machine.label(),
         "pick": spec.pick,
     });
@@ -857,7 +857,6 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         } else {
             format!("Add it with material mode=add name=\"{read}\" (based on mild steel until its standard is set; the job then finds it by its name), or pick another with set-sheet material=… (see material mode=list).")
         };
-        sheet["material_no"] = json!(super::material::file_id(job.spec.material));
         sheet["material_unknown"] = json!({"number": super::material::file_id(job.spec.material), "name": read, "note": note, "todo": todo});
         warnings.insert(0, note);
     }

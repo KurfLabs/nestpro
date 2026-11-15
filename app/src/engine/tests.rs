@@ -7918,7 +7918,7 @@ fn two_pcs_whose_old_names_clash_leave_their_jobs_unknown_not_switched() {
         let info = call(&mut other, "info", Some(jp.to_str().unwrap()), json!({}));
         let sheet = &info["data"]["sheet"];
         assert_eq!((sheet["material"].as_str(), sheet["material_no"].as_u64(), sheet["material_known"].as_bool()), (Some("?"), Some(3), Some(false)), "{info}");
-        assert!(sheet["material_unknown"]["note"].as_str().unwrap().contains("more than one material"), "{info}");
+        assert!(sheet["material_unknown"]["note"].as_str().unwrap().contains("several materials had that name before"), "{info}");
         assert!(!sheet["material_unknown"]["todo"].as_str().unwrap().contains("material mode=add"), "adding it wouldn't say which: {info}");
         // Saved, it keeps its number and name.
         call(&mut other, "set-sheet", None, json!({"gap": 7}));
@@ -7968,5 +7968,75 @@ fn starting_offline_after_joining_never_reads_a_grade_through_this_pcs_other_nam
     std::fs::rename(&away, &lib).unwrap();
     let info = call(&mut pc, "info", None, json!({}));
     assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 304"), Some(3)), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_whose_material_cant_be_told_writes_its_own_number_everywhere() {
+    // MA31: while open, a job whose name several materials had before is
+    // unresolved; everything it writes or reports carries the file's own
+    // number (7) and name, never the stand-in the session holds.
+    let d = dir("unresolved_outputs");
+    let lib = stock_ctx(&d).library_dir;
+    let mut ctx = stock_ctx_again(&lib);
+    ctx.blm.on = true;
+    let mut s = Session::new(ctx);
+    for now in ["DEMO A", "DEMO B"] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "stainless"}));
+        call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": now}));
+    }
+    let jp = d.join("DEMO-SHARED.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3}));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    v["spec"]["material"] = json!(7);
+    v["material_name"] = json!("DEMO Shared");
+    std::fs::write(&jp, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let stand_in = (material::UNRESOLVED + 7).to_string();
+    let mut replies = vec![];
+    let info = call(&mut s, "info", Some(jp.to_str().unwrap()), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64(), info["data"]["sheet"]["material_unknown"]["number"].as_u64()), (Some("?"), Some(7), Some(7)), "{info}");
+    replies.push(info);
+    replies.push(call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 200, "qty": 1})));
+    replies.push(call(&mut s, "nest", None, json!({})));
+    replies.push(call(&mut s, "part-info", None, json!({"part": 1})));
+    replies.push(call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1})));
+    replies.push(call(&mut s, "stock-book", None, json!({"mode": "book"})));
+    replies.push(call(&mut s, "stock", None, json!({"mode": "list", "show_zero": true})));
+    replies.push(call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"})));
+    replies.push(call(&mut s, "library", None, json!({"mode": "list"})));
+    let prog = call(&mut s, "program", None, json!({"sheet": 1}));
+    let text = prog["data"].as_str().unwrap().to_string();
+    assert!(text.contains(";IDMAT=0010"), "a material not in the list is written as mild steel (JOB-86): {text}");
+    replies.push(prog);
+    for r in &replies {
+        assert!(!r.to_string().contains(&stand_in), "{r}");
+    }
+    // The job file.
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(7), Some("DEMO Shared")));
+    // The remnant it stored, and the library part saved from it.
+    let stock = std::fs::read_to_string(crate::stock::Stock::file(&lib)).unwrap();
+    let st: Value = serde_json::from_str(&stock).unwrap();
+    let rems: Vec<&Value> = st["items"].as_array().unwrap().iter().filter(|i| i["material"] != json!(null)).collect();
+    assert!(!rems.is_empty(), "{stock}");
+    assert!(rems.iter().all(|i| i["material"] == 7 && i["material_name"] == "DEMO Shared"), "{stock}");
+    let mut found = 0;
+    let mut todo = vec![lib.clone()];
+    while let Some(p) = todo.pop() {
+        for e in std::fs::read_dir(&p).unwrap().flatten() {
+            let f = e.path();
+            if f.is_dir() {
+                todo.push(f);
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap_or_default();
+            assert!(!text.contains(&stand_in), "{}", f.display());
+            if let Some(v) = serde_json::from_str::<Value>(&text).ok().filter(|v| v.get("part").is_some()) {
+                assert_eq!((v["material"].as_u64(), v["material_name"].as_str()), (Some(7), Some("DEMO Shared")), "{}", f.display());
+                found += 1;
+            }
+        }
+    }
+    assert_eq!(found, 1, "the library part");
     let _ = std::fs::remove_dir_all(&d);
 }

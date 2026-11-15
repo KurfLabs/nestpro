@@ -1618,7 +1618,7 @@ impl JobFile {
 
     /// The job's sheets as the stock's remnant generation sees them.
     pub fn stock_sheets(&self) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: material::program_name_or_name(self.spec.material) }
+        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: material::program_name_or_name(self.spec.material), read_name: self.material_name.clone() }
     }
 
     /// Bring the stock in step with the job (what the window does on save):
