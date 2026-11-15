@@ -337,9 +337,9 @@ pub static OPS: &[Op] = &[
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
     ] },
     // --- the shared Library ---
-    Op { name: "material", group: "Library", kind: Kind::Global, help: "The material list, the same on every PC that shares the Library (kept in its Sheets folder, beside the stock; on a PC with no Library, in its settings folder): list every material (its number, name, other names, standard, kind, weight per volume, name and code in programs, machine-file key, and which of those are its standard's), add one based on a standard of the catalogue (it takes the next number, never one given before), or edit one. Each name and other name means one material: one already used, whatever its capitals or spaces, is refused, naming the material that has it. Jobs, stock and library parts name a material by its name, another name or its number (0 mild steel, 1 stainless steel, 2 aluminium as always). Changes are made under the Library's write lock and refused while it can't be reached. Before the first change, the list is this PC's three materials from Settings → Materials.", args: &[
-        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "add", "edit"] },
-        a("material", Ty::Str, "edit: the material to change: its name, another name or its number"),
+    Op { name: "material", group: "Library", kind: Kind::Global, help: "The material list, the same on every PC that shares the Library (kept in its Sheets folder, beside the stock; on a PC with no Library, in its settings folder): list every material (its number, name, other names, standard, kind, weight per volume, name and code in programs, machine-file key, and which of those are its standard's), add one based on a standard of the catalogue (it takes the next number, never one given before), edit one, or delete one. Renaming (edit name=…) changes nothing else: jobs, parts and stock point at the material's number, show the new name and are left as they are until next saved. Delete is refused for 0 mild steel, 1 stainless steel and 2 aluminium (rename them instead), and while a saved job, library part, stock sheet or remnant in the Library, or the job open in this session, uses the material; the refusal counts each and names the first few. A deleted material's number is never given again. Each name and other name means one material: one already used, whatever its capitals or spaces, is refused, naming the material that has it. Jobs, stock and library parts name a material by its name, another name or its number (0 mild steel, 1 stainless steel, 2 aluminium as always). Changes are made under the Library's write lock and refused while it can't be reached. Before the first change, the list is this PC's three materials from Settings → Materials.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "add", "edit", "delete"] },
+        a("material", Ty::Str, "edit, delete: the material to change or delete: its name, another name or its number"),
         a("name", Ty::Str, "add: the new material's name (e.g. \"DEMO 316 Stainless\"); edit: its new name"),
         a("standard", Ty::Str, "add (needed), edit: the standard it is based on: its catalogue number or name (see list: standards); it gives the kind, the weight per volume and every value the material has none of its own for"),
         a("other_names", Ty::Str, "add/edit: other names it goes by, comma-separated (grades, norms, shop names); edit: replaces them all"),
@@ -1358,15 +1358,16 @@ fn set_spec_fields(spec: &mut SheetSpec, a: &Args, ctx: &Ctx) -> Result<(), Stri
     Ok(())
 }
 
-/// Run an operation that needs no job.
-pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String> {
+/// Run an operation that needs no job. `open`: the job open in the session,
+/// if any (deleting a material it uses is refused, JOB-88).
+pub fn run_global(ctx: &Ctx, name: &str, args: &Value, open: Option<&JobFile>) -> Result<Outcome, String> {
     let op = find(name).ok_or_else(|| format!("unknown operation '{name}'"))?;
     check_args(op, args)?;
     let a = Args(args);
     match op.name {
         "catalog" => Ok(Outcome::read("Choices for the operations.", catalog())),
         "stock" => stock_op(ctx, &a),
-        "material" => super::materialops::run(ctx, &a),
+        "material" => super::materialops::run(ctx, &a, open),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
         "import-xml" => import_xml(ctx, &a),
         "job-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Job),
@@ -1563,6 +1564,8 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         Some(m) => Some(material_from(&m, &ctx.cfg)?),
         None => None,
     };
+    // Picked, not yet stored: the stock change checks again under the lock (MA20).
+    crate::shared::pause("stock material picked");
     let thk = a.num("thickness")?;
     let user = || [a.str("user1").unwrap_or_default(), a.str("user2").unwrap_or_default(), a.str("user3").unwrap_or_default()];
     let qty = || -> Result<i32, String> {
@@ -1708,7 +1711,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
 pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String> {
     let op = find(name).ok_or_else(|| format!("unknown operation '{name}' — see `nestpro ops`"))?;
     if op.kind == Kind::Global {
-        return run_global(ctx, name, args);
+        return run_global(ctx, name, args, Some(job));
     }
     check_args(op, args)?;
     let a = Args(args);

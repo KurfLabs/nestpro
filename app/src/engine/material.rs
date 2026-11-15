@@ -159,6 +159,10 @@ pub struct List {
     /// file never comes to mean a material it didn't have (MA16).
     pub next_id: Id,
     pub materials: Vec<Material>,
+    /// The numbers of the materials deleted from it (MA20), so a write that
+    /// picked one before it was deleted is refused rather than saved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted: Vec<Id>,
     /// Who changed it last, and when (as SV9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<crate::shared::Saved>,
@@ -204,7 +208,7 @@ impl List {
     /// out, so a name means one material (invariant 6); a lookup finds the
     /// same material it found before, since it always took the first.
     pub fn seed(cfg: &AppSettings) -> List {
-        let mut l = List { format: FORMAT.into(), version: VERSION, next_id: OLD_THREE.len(), materials: vec![], changed: None };
+        let mut l = List { format: FORMAT.into(), version: VERSION, next_id: OLD_THREE.len(), materials: vec![], deleted: vec![], changed: None };
         for (id, b) in OLD_THREE.iter().enumerate() {
             let (pn, pc) = cfg.materials.get(id).cloned().unwrap_or_else(|| default_program(id));
             let typed = cfg.material_aliases.get(id).cloned().unwrap_or_else(|| b.other_names.to_string());
@@ -289,6 +293,76 @@ impl List {
             *x = m;
         }
         Ok(())
+    }
+}
+
+/// MA20: materials 0 to 2 (mild steel, stainless steel, aluminium) are what
+/// every file saved before the material list means (invariant 1), so they
+/// are never deleted, whatever they are called now. The original lets any
+/// unused material go (MA10); spec #142 keeps these three.
+pub const KEPT: Id = 3;
+
+/// What uses a material (MA20): the saved jobs, library parts and stock
+/// items (sheets and remnants) of the Library, and the jobs open here, each
+/// by name, in the order found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Uses {
+    /// Jobs open in this window or agent session (JOB-88), saved into the
+    /// Library or not.
+    pub open: Vec<String>,
+    pub jobs: Vec<String>,
+    pub parts: Vec<String>,
+    pub stock: Vec<String>,
+}
+
+/// How many names a refusal gives of each kind of use before counting the
+/// rest (MA20).
+pub const NAMED: usize = 3;
+
+impl Uses {
+    pub fn is_empty(&self) -> bool {
+        self.open.is_empty() && self.jobs.is_empty() && self.parts.is_empty() && self.stock.is_empty()
+    }
+
+    /// "the job open here (DEMO-7), 4 jobs (A, B, C and 1 more) and 1 stock item (S1)".
+    pub fn words(&self) -> String {
+        let few = |v: &[String]| {
+            let shown = v.iter().take(NAMED).cloned().collect::<Vec<_>>().join(", ");
+            if v.len() > NAMED { format!("{shown} and {} more", v.len() - NAMED) } else { shown }
+        };
+        let count = |v: &[String], one: &str, many: &str| (!v.is_empty()).then(|| format!("{} {} ({})", v.len(), if v.len() == 1 { one } else { many }, few(v)));
+        let open = (!self.open.is_empty()).then(|| format!("{} ({})", if self.open.len() == 1 { "the job open here" } else { "the jobs open here" }, few(&self.open)));
+        let all: Vec<String> = [open, count(&self.jobs, "job", "jobs"), count(&self.parts, "library part", "library parts"), count(&self.stock, "stock item", "stock items")].into_iter().flatten().collect();
+        match all.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
+        }
+    }
+}
+
+impl List {
+    /// MA20: take a material out of the list. Refused for materials 0 to 2,
+    /// and while anything uses it (`uses`, read under the same write lock),
+    /// saying where; nothing that uses a material is changed with it (MA10).
+    /// Its number is never given again (MA16), so a file that still names
+    /// it shows `?` and keeps its number and name (JOB-86) rather than
+    /// coming to mean another material.
+    pub fn remove(&mut self, id: Id, uses: &Uses) -> Result<Material, String> {
+        let m = self.get(id).cloned().ok_or_else(|| format!("There's no material {id} in the list."))?;
+        if id < KEPT {
+            return Err(format!(
+                "{} can't be deleted: it is one of the first three materials (0 mild steel, 1 stainless steel, 2 aluminium), which every job, part and stock sheet saved before the material list means. You can rename it (material mode=edit name=…).",
+                m.name
+            ));
+        }
+        if !uses.is_empty() {
+            return Err(format!("{} can't be deleted: it is used by {}. Give them another material first, or keep it and rename it (material mode=edit name=…).", m.name, uses.words()));
+        }
+        self.next_id = self.next_id.max(id + 1);
+        self.materials.retain(|x| x.id != id);
+        self.deleted.push(id);
+        Ok(m)
     }
 }
 
