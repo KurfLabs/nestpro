@@ -852,12 +852,13 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
     sheet["material_known"] = json!(super::material::exists(job.spec.material));
     if let Some(note) = super::material::unknown_note(job.spec.material, &job.material_name) {
         let read = job.material_name.trim();
-        let todo = if read.is_empty() {
+        let todo = if read.is_empty() || super::material::ambiguous(read) {
             "Pick another material with set-sheet material=… (see material mode=list).".to_string()
         } else {
             format!("Add it with material mode=add name=\"{read}\" (based on mild steel until its standard is set; the job then finds it by its name), or pick another with set-sheet material=… (see material mode=list).")
         };
-        sheet["material_unknown"] = json!({"number": job.spec.material, "name": read, "note": note, "todo": todo});
+        sheet["material_no"] = json!(super::material::file_id(job.spec.material));
+        sheet["material_unknown"] = json!({"number": super::material::file_id(job.spec.material), "name": read, "note": note, "todo": todo});
         warnings.insert(0, note);
     }
     json!({

@@ -738,6 +738,9 @@ impl Stock {
         let mut named = self.clone();
         for it in named.items.iter_mut() {
             it.material_name = crate::engine::material::stored_name(it.material, &it.material_name);
+            // MA31: a remnant of a job whose material is unresolved keeps
+            // the job file's own number.
+            it.material = crate::engine::material::file_id(it.material);
         }
         let text = serde_json::to_string_pretty(&named).map_err(|e| e.to_string())?;
         crate::shared::write_file(&Self::file(library_dir), text.as_bytes(), Some(lock))

@@ -365,7 +365,9 @@ impl App {
                     ui.label(RichText::new("⚠ Unknown material").strong().color(th().warn_fg));
                     ui.label(RichText::new(&note).color(th().text));
                     ui.add_space(6.0);
-                    if !name.is_empty() {
+                    // A name more than one material has or had (MA31):
+                    // adding it wouldn't say which; pick one instead.
+                    if !name.is_empty() && !crate::engine::material::ambiguous(&name) {
                         add = ui.button(format!("Add {name} to the list")).on_hover_text("Adds it to the material list, based on mild steel (0010) until you set its standard and values in Settings → Materials").clicked();
                     }
                     close = ui.small_button("✖").on_hover_text("Close this note (the material stays unknown: pick one on the Sheet tab)").clicked();
@@ -432,7 +434,7 @@ impl App {
     pub fn find_job_material(&mut self) {
         let id = self.spec.material;
         if !crate::engine::material::exists(id) {
-            let found = crate::engine::material::resolve(id, &crate::engine::material::read_name(id, &self.job_material_names));
+            let found = crate::engine::material::read_job(id, &crate::engine::material::read_name(id, &self.job_material_names));
             if found != id {
                 self.spec.material = found;
                 if let Some(j) = self.jobs.get_mut(self.cur_job) {

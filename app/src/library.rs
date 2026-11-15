@@ -763,6 +763,8 @@ impl Library {
     /// (MA17): kept while the material list doesn't have the id.
     fn store_product(&self, part: &Part, folder: &str, material: (usize, &str), thickness: f64, to: SaveTo) -> Result<Record, Refused> {
         let (material, read_name) = material;
+        // MA31: an unresolved material keeps the job file's own number.
+        let material = crate::engine::material::file_id(material);
         // A library product is reusable stock, not one order's part: its ERP orders stay with the job.
         let mut part = part.clone();
         part.erp.clear();

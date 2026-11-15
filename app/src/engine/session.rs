@@ -95,7 +95,7 @@ impl Session {
             // MA30: a material added since the job was read is found by the
             // name the job came with.
             if !super::material::exists(j.spec.material) {
-                j.spec.material = super::material::resolve(j.spec.material, &j.material_name);
+                j.spec.material = super::material::read_job(j.spec.material, &j.material_name);
             }
         }
         let mut r = self.run_call(name, job, args)?;

@@ -209,6 +209,7 @@ pub fn fallback(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings) 
     let mut l = List::seed(cfg);
     if library {
         l.materials.retain(|m| m.id < crate::engine::material::KEPT);
+        l.offline = true;
     }
     l
 }
