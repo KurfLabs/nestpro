@@ -7883,3 +7883,27 @@ fn clamps_set_inside_a_subprogram_are_refused() {
     assert!(e.as_deref().is_some_and(|e| e.contains("SetClamps")), "{e:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// Review round 3 (#126): fails without its fix.
+
+#[test]
+fn an_extra_pierce_before_the_planned_one_is_refused() {
+    // S9: after the rapid, an extra pierce with the sensor still off, then
+    // the sensor on and the planned pierce. The last pierce alone reads as
+    // the plan.
+    let d = dir("bystar_extra_pierce");
+    let mut s = bystar_job(&d, false);
+    let extra = |t: String| -> String {
+        let mut lines: Vec<String> = t.split("\r\n").map(str::to_string).collect();
+        let k = lines.iter().position(|l| l.contains("<SetSensingSensor") && l.contains("\"On\"")).unwrap();
+        let on = lines.remove(k);
+        let m = k + lines[k..].iter().position(|l| l.contains("<MoveLineTo")).unwrap();
+        lines.insert(m + 1, on);
+        lines.insert(m + 1, "        <ExecPiercing Id=\"9999\" />".into());
+        lines.join("\r\n")
+    };
+    let e = export_edited(&mut s, extra);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && (e.contains("pierced 2 time(s)") || e.contains("height sensor is off"))), "{e:?}");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -372,6 +372,10 @@ pub struct Cut {
     /// pierce is made (without a pierce: when its cut-out starts); None when
     /// the subprogram hasn't set it yet (BV37).
     pub sensor: Option<bool>,
+    /// Every pierce made for this cut (before its cut-out and inside it),
+    /// in order: where, and the height sensor as the subprogram last set it
+    /// then. The read-back counts them; opening a job uses `pierce`.
+    pub pierces: Vec<(P, Option<bool>)>,
     /// Each compensation and operation mode in force while the cut-out's
     /// moves run (its shape and a lead-out inside it), once each.
     pub corrections: Vec<Correction>,
@@ -428,6 +432,8 @@ pub struct Program {
     /// Head lifts (`ExecHighPositioning`) in the subprograms, wherever they
     /// are: after a cut-out, inside one, or before the first.
     pub lifts: usize,
+    /// Pierces in the subprograms that no cut-out follows.
+    pub stray_pierces: usize,
 }
 
 /// Commands of the format that don't change a flat nest's shape (BV1e):
@@ -461,6 +467,8 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
     let mut pierced: Option<(P, Piercing)> = None;
     // The sensor when that pierce was made (BV37).
     let mut pierced_sensor: Option<bool> = None;
+    // Every pierce since the last cut-out started, for the next one.
+    let mut pending: Vec<(P, Option<bool>)> = vec![];
     let mut lead: Option<Path> = None;
     let mut cur: Option<Cut> = None;
     let mut br = Bracket::Out;
@@ -534,6 +542,10 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
                 }
             }
             "ExecPiercing" => {
+                match cur.as_mut() {
+                    Some(cut) => cut.pierces.push((pos, sensor)),
+                    None => pending.push((pos, sensor)),
+                }
                 if let Some(cut) = cur.as_mut().filter(|c| c.pierce.is_none()) {
                     cut.pierce = Some((pos, pmode));
                     cut.sensor = sensor;
@@ -560,7 +572,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
                     _ => Side::Unknown,
                 };
                 let sensor = if pierced.is_some() { pierced_sensor } else { sensor };
-                cur = Some(Cut { mode, side, sensor, pierce: pierced.take(), lead_in: lead.take().filter(|l| !l.segs.is_empty()), path: Path { start: pos, segs: vec![] }, ..Default::default() });
+                cur = Some(Cut { mode, side, sensor, pierces: std::mem::take(&mut pending), pierce: pierced.take(), lead_in: lead.take().filter(|l| !l.segs.is_empty()), path: Path { start: pos, segs: vec![] }, ..Default::default() });
                 br = Bracket::CutOut;
                 after_cut = false;
             }
@@ -610,6 +622,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
         *p.unread.entry("cut-out without EndCutOut".into()).or_default() += 1;
         cuts.push(Cut { correction: corr, ..open });
     }
+    p.stray_pierces += pending.len();
     Ok((cuts, sensor))
 }
 

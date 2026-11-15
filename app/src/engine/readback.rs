@@ -594,6 +594,9 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
             for (c, count) in p.main_passed.iter().filter(|(c, n)| !(c.as_str() == "SetClamps Value=Off" && **n == 1)) {
                 issues.push(format!("nest {name}: {count} {c} command(s) in the main program (not planned)"));
             }
+            if p.stray_pierces > 0 {
+                issues.push(format!("nest {name}: {} pierce(s) no cut follows", p.stray_pierces));
+            }
             if p.lifts > 0 {
                 issues.push(format!("nest {name}: {} head lift(s) (ExecHighPositioning) the plan doesn't have", p.lifts));
             }
@@ -619,12 +622,17 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                     sensor = sub.sensor_end.unwrap_or(entry);
                     let mode = post.sensor_mode();
                     for c in sub.cuts.iter().filter(|_| mode != 2) {
-                        let on = c.sensor.unwrap_or(entry);
-                        let at = place(c.pierce.map(|p| p.0).or(c.lead_in.as_ref().map(|l| l.start)).unwrap_or(c.path.start));
-                        let inside = at[0] > post.tol && at[1] > post.tol && at[0] < s.spec.w - post.tol && at[1] < s.spec.h - post.tol;
-                        let exempt = mode == 1 && c.mode == Some(2);
-                        if inside != on && !(exempt && inside) {
-                            issues.push(format!("{label}: the height sensor is {} at the pierce at X{:.1} Y{:.1}, {} the sheet (BV37)", if on { "on" } else { "off" }, at[0], at[1], if inside { "inside" } else { "on the edge of" }));
+                        // At each pierce (S9: every one), else where the cut-out starts.
+                        let start = (c.lead_in.as_ref().map_or(c.path.start, |l| l.start), c.sensor);
+                        let at_each: Vec<(P, Option<bool>)> = if c.pierces.is_empty() { vec![start] } else { c.pierces.clone() };
+                        for (q, state) in at_each {
+                            let on = state.unwrap_or(entry);
+                            let at = place(q);
+                            let inside = at[0] > post.tol && at[1] > post.tol && at[0] < s.spec.w - post.tol && at[1] < s.spec.h - post.tol;
+                            let exempt = mode == 1 && c.mode == Some(2);
+                            if inside != on && !(exempt && inside) {
+                                issues.push(format!("{label}: the height sensor is {} at the pierce at X{:.1} Y{:.1}, {} the sheet (BV37)", if on { "on" } else { "off" }, at[0], at[1], if inside { "inside" } else { "on the edge of" }));
+                            }
                         }
                     }
                     let written: Vec<(Cut, &crate::bvc::Cut)> = sub.cuts.iter().map(|c| (bystar_read(c, &place).0, c)).collect();
@@ -671,10 +679,13 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                                 if got != e.pierce.as_deref() {
                                     return Some(format!("it is pierced {} where {} is planned", got.unwrap_or("not at all"), e.pierce.as_deref().unwrap_or("no pierce")));
                                 }
-                                if let Some((at, _)) = raw.pierce {
-                                    if dist(place(at), e.cut.pts[0]) > tol {
-                                        return Some("it is pierced away from its planned pierce point".into());
-                                    }
+                                // S9: as many pierces as planned, each where planned.
+                                let planned_n = usize::from(e.pierce.is_some());
+                                if raw.pierces.len() != planned_n {
+                                    return Some(format!("it is pierced {} time(s) where {planned_n} is planned", raw.pierces.len()));
+                                }
+                                if raw.pierces.iter().any(|(at, _)| dist(place(*at), e.cut.pts[0]) > tol) {
+                                    return Some("it is pierced away from its planned pierce point".into());
                                 }
                                 None
                             });
