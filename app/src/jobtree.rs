@@ -155,11 +155,14 @@ impl App {
                 return false;
             }
         }
+        // MS7: another job now: its record of programs written goes.
         if i == self.cur_job {
             self.job_name = n.to_string();
+            self.written.clear();
         }
         if let Some(j) = self.jobs.get_mut(i) {
             j.name = n.to_string();
+            j.written.clear();
         }
         self.status = format!("Job renamed to {n}.");
         true
@@ -203,6 +206,7 @@ impl App {
         self.manual_cuts = j.manual_cuts;
         self.cam_changed = j.cam_changed;
         self.held = j.held;
+        self.written = j.written;
         // The job's own file and work order, not the closed or deleted job's,
         // or Save would write this job over that one's file.
         self.job_path = j.file.as_ref().map(|l| l.path.clone());
@@ -292,6 +296,7 @@ impl App {
             sheets: j.result.sheets.clone(),
             formats: j.result.formats.clone(),
             held: j.held.clone(),
+            written: j.written.clone(),
             cut_lines: j.cut_lines.clone(),
             method: j.result.method.clone(),
             manual_cuts: j.manual_cuts.clone(),

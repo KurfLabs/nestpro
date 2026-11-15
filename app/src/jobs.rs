@@ -657,7 +657,7 @@ impl App {
                     let sel = i == self.cur_sheet;
                     p.rect_stroke(card, CornerRadius::same(10), if sel { Stroke::new(2.0, th().accent) } else { Stroke::new(1.0, th().border) }, egui::StrokeKind::Inside);
                     // Mini sheet
-                    let area = Rect::from_min_max(card.min + Vec2::new(10.0, 10.0), Pos2::new(card.right() - 10.0, card.bottom() - 34.0));
+                    let area = Rect::from_min_max(card.min + Vec2::new(10.0, 10.0), Pos2::new(card.right() - 10.0, card.bottom() - 46.0));
                     let fs = self.sheet_spec(i);
                     let s = (area.width() / fs.w as f32).min(area.height() / fs.h as f32);
                     let sw = fs.w as f32 * s;
@@ -692,8 +692,10 @@ impl App {
                         p.text(badge.center(), Align2::CENTER_CENTER, format!("×{copies}"), FontId::proportional(11.0), Color32::WHITE);
                     }
                     let (u, _, _) = self.sheet_usage(i);
-                    p.text(Pos2::new(card.left() + 12.0, card.bottom() - 16.0), Align2::LEFT_CENTER, format!("Sheet {}", i + 1), FontId::proportional(13.0), th().text_strong);
-                    p.text(Pos2::new(card.right() - 12.0, card.bottom() - 16.0), Align2::RIGHT_CENTER, format!("{} parts · {u:.0}%", sheet.len()), FontId::proportional(11.5), th().text_dim);
+                    p.text(Pos2::new(card.left() + 12.0, card.bottom() - 28.0), Align2::LEFT_CENTER, format!("Sheet {}", i + 1), FontId::proportional(13.0), th().text_strong);
+                    p.text(Pos2::new(card.right() - 12.0, card.bottom() - 28.0), Align2::RIGHT_CENTER, format!("{} parts · {u:.0}%", sheet.len()), FontId::proportional(11.5), th().text_dim);
+                    // MS6: the machine the sheet is cut on.
+                    p.text(Pos2::new(card.left() + 12.0, card.bottom() - 11.0), Align2::LEFT_CENTER, self.sheet_machine(i), FontId::proportional(11.0), th().text_dim);
                     let resp = resp.on_hover_text("Double-click to open on the nesting screen");
                     if resp.clicked() {
                         pick = Some(i);
@@ -726,7 +728,6 @@ impl App {
         let mut pick = None;
         let mut open = false;
         let un = self.unit();
-        let machine = self.machine_name();
         egui::ScrollArea::both().id_salt("sheet_list").auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
                 egui::Grid::new("sheet_grid").striped(true).num_columns(14).spacing([20.0, 5.0]).show(ui, |ui| {
@@ -762,7 +763,8 @@ impl App {
                         ui.label(un.num_dp(mx, 1));
                         ui.label(un.num_dp(my, 1));
                         ui.label(format!("{:.1}", cnc::weight_kg(self.spec.material, f.area_mm2(), self.spec.thickness)));
-                        ui.label(&machine);
+                        // MS6: each sheet's own machine.
+                        ui.label(self.sheet_machine(i));
                         ui.end_row();
                     }
                 });
@@ -788,7 +790,7 @@ impl App {
             let nest = format!("{}-{:02}", self.job_name, self.cur_sheet + 1);
             let f = self.result.format(self.cur_sheet, &self.spec);
             let sheet = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", material_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref };
-            format!("{nest} / {copies} / {machine} ({mat}) / {sheet} / {t:.4}")
+            format!("{nest} / {copies} / {} ({mat}) / {sheet} / {t:.4}", self.sheet_machine(self.cur_sheet))
         } else if let Some(p) = self.sel_part.and_then(|i| self.parts.get(i).map(|p| (i, p))) {
             let (i, part) = p;
             let base = format!("{} / {} / {machine} / {mat} / {t:.4}", part.name, part.qty);

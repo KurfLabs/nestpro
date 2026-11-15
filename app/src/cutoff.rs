@@ -313,7 +313,7 @@ impl App {
             return;
         }
         let ls = self.cfg.stock.line.clone();
-        let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::kerf::kerf_mm(&self.cur_spec()) / 2.0);
+        let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::engine::sheetmachine::kerf(&self.result.format(self.cur_sheet, &self.spec), &self.cur_spec()) / 2.0);
         if lines.is_empty() {
             self.status = format!("No remnant: less than the minimum width ({}) is left past the parts.", self.unit().len(ls.min_width, 0));
             return;
@@ -347,7 +347,7 @@ impl App {
     pub fn semi_auto_at(&mut self, mode: crate::remline::SemiMode, w: P) {
         let spec = self.cur_spec();
         let ls = self.cfg.stock.line.clone();
-        match crate::remline::semi_auto_lines(&self.parts, self.sheet_now(), spec.w, spec.h, mode, &ls, crate::kerf::kerf_mm(&spec) / 2.0, w, self.cfg.stock.min_remnant_m2) {
+        match crate::remline::semi_auto_lines(&self.parts, self.sheet_now(), spec.w, spec.h, mode, &ls, crate::engine::sheetmachine::kerf(&self.result.format(self.cur_sheet, &self.spec), &self.cur_spec()) / 2.0, w, self.cfg.stock.min_remnant_m2) {
             Ok(lines) => {
                 if lines.iter().any(|l| path_hits_part(&self.parts, self.sheet_now(), &l.pts).is_some()) {
                     self.status = "That cut would touch a part — try a larger offset.".into();
@@ -425,7 +425,7 @@ impl App {
         let ls = self.cfg.stock.line.clone();
         self.cur_sheet = i;
         if !self.cut_list().iter().any(|l| l.kind == CutKind::Remnant) {
-            let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::kerf::kerf_mm(&self.cur_spec()) / 2.0);
+            let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::engine::sheetmachine::kerf(&self.result.format(self.cur_sheet, &self.spec), &self.cur_spec()) / 2.0);
             if !lines.is_empty() && lines.iter().all(|l| path_hits_part(&self.parts, self.sheet_now(), &l.pts).is_none()) {
                 self.cut_list_mut().extend(lines);
             }
@@ -434,7 +434,8 @@ impl App {
     }
 
     pub fn exact_remnant_edge(&mut self) {
-        match exact_edge(self.sheet_now(), &self.cur_spec(), self.round_edge) {
+        // MS4: the gap to the parts with the sheet's machine's kerf.
+        match crate::engine::sheetmachine::on_sheet(&self.result.format(self.cur_sheet, &self.spec), || exact_edge(self.sheet_now(), &self.cur_spec(), self.round_edge)) {
             Some(l) => {
                 self.add_cut_line(l);
             }
@@ -458,7 +459,7 @@ impl App {
             return vec![];
         }
         let f = self.result.format(self.cur_sheet, &self.spec);
-        crate::remnant::sheet_remnants_cached(&self.parts, self.sheet_now(), &f, self.cut_list(), crate::kerf::kerf_mm(&self.cur_spec()))
+        crate::remnant::sheet_remnants_cached(&self.parts, self.sheet_now(), &f, self.cut_list(), crate::engine::sheetmachine::kerf(&self.result.format(self.cur_sheet, &self.spec), &self.cur_spec()))
     }
 
     /// (width, height, area) of the largest remnant on the current sheet.

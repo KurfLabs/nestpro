@@ -269,6 +269,9 @@ impl App {
             self.blm.gas_name = m.gas_name.clone();
             self.applied_machine = Some(m);
             self.refresh();
+        } else if crate::engine::sheetmachine::install(&self.cfg) {
+            // MS4: another machine changed: its sheets follow it.
+            self.refresh();
         }
         self.cfg.warn_tech = self.warn_tech;
         self.cfg.show_unbuilt = self.dv.show_unbuilt;
@@ -842,6 +845,20 @@ impl App {
                     ui.add(egui::Label::new(RichText::new(format!("⚠ {note}")).size(11.5).color(th().warn_fg)).wrap());
                 });
             }
+            // MS7, MAC-76: where this machine's programs go; empty = the
+            // shared export folder (Settings → Folders).
+            row(ui, "Program folder", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut m.program_dir).desired_width(280.0).hint_text("The export folder"))
+                    .on_hover_text("Where this machine's programs are written, a sub-folder per job, so each machine's PC finds only its own. Empty = the export folder in Settings → Folders.");
+                if ui.button("Browse…").clicked() {
+                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                        m.program_dir = d.display().to_string();
+                    }
+                }
+                if !m.program_dir.is_empty() && ui.small_button("✖").on_hover_text("Back to the export folder").clicked() {
+                    m.program_dir.clear();
+                }
+            });
             ui.horizontal(|ui| {
                 ui.add_space(154.0);
                 if ui.add_enabled(!active, egui::Button::new(if active { "● In use" } else { "Use this machine" })).on_hover_text("Cut the open job on this machine (the same as picking it on the Sheet tab)").clicked() {

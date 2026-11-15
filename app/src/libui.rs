@@ -302,6 +302,7 @@ impl App {
             sheets: self.result.sheets.clone(),
             formats: self.result.formats.clone(),
             held: self.held.clone(),
+            written: self.written.clone(),
             cut_lines: self.cut_lines.clone(),
             method: self.result.method.clone(),
             manual_cuts: self.manual_cuts.clone(),
@@ -1316,7 +1317,7 @@ pub(crate) fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile
     let mut result = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 };
     result.normalise(&j.spec);
     let (folder, week) = place;
-    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder) }
+    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, written: j.written, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder) }
 }
 
 #[cfg(test)]

@@ -7449,6 +7449,54 @@
   "group": "gas",
   "value": "the sheet program's gas, and the reply says the XML named another",
   "source": "MECHANICS GS18"
+ },
+ {
+  "name": "sheet's machine in the job file",
+  "group": "sheet machine",
+  "value": "the machine's name on the sheet (Settings → Machines); none = the job's machine, the active one",
+  "source": "MECHANICS MS1"
+ },
+ {
+  "name": "new sheets and Nest all",
+  "group": "sheet machine",
+  "value": "on the job's machine; Nest all says how many sheets went back (0 included for agents)",
+  "source": "MECHANICS MS2"
+ },
+ {
+  "name": "machine name when moving a sheet",
+  "group": "sheet machine",
+  "value": "matched ignoring upper/lower case and spaces; an unknown name is refused with the machine list; the machine it is on changes nothing",
+  "source": "MECHANICS MS3"
+ },
+ {
+  "name": "moved sheet's cut plan",
+  "group": "sheet machine",
+  "value": "automatic qualities, leads, cut order, kerf, joint sizes and times from the new machine; hand qualities keep their numbers, hand cut order and hand leads stay",
+  "source": "MECHANICS MS4"
+ },
+ {
+  "name": "moved sheet's material, thickness and gas",
+  "group": "sheet machine",
+  "value": "the job's; a job without a gas of its own is cut with the job's machine's gas, the new machine picking its technology record for it",
+  "source": "MECHANICS MS5"
+ },
+ {
+  "name": "cut time, simulation and verification of a sheet",
+  "group": "sheet machine",
+  "value": "its machine's; every sheet list shows it",
+  "source": "MECHANICS MS6"
+ },
+ {
+  "name": "program folder per machine",
+  "group": "sheet machine",
+  "value": "<folder>\\<job>; empty = the shared export folder; parts report in every folder written; a job's old programs removed from every machine's folder and from where its last write put them (remembered while a machine has its own folder)",
+  "source": "MECHANICS MS7"
+ },
+ {
+  "name": "sheet on a machine no longer in Settings",
+  "group": "sheet machine",
+  "value": "shown marked, planned on the job's machine, writing programs refused with the machine list",
+  "source": "MECHANICS MS8"
  }
 ]
 }

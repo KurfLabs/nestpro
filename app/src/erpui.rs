@@ -349,6 +349,7 @@ impl App {
             manual_cuts: vec![],
             cam_changed: None,
             held: Default::default(),
+            written: vec![],
             erp: Some(link),
             file: None,
             saved: None,

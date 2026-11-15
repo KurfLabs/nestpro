@@ -1,0 +1,27 @@
+;ADILAS
+;STEEL,1000,500,3
+;IDMAT=0010
+;NOMEMAT=STEEL
+;ALIASMAT=STEEL
+;IDGAS=1
+;NOMEGAS=Nitrogen
+;Postprocessor version 2.0.0
+;R220=Z16*1000+2*100+0
+R12=3
+R201=0.0    ;lunghezza barretta utensile 1
+R202=0.0    ;lunghezza barretta utensile 2
+R203=0.0    ;lunghezza barretta utensile 3
+R21=1000
+R22=500
+R23=350
+R24=150
+R523=48
+R524=50
+R500=0
+INITNEST
+ORIG(50,50,0)
+N1 CALL"/_n_wks_dir/_n_sheet_wpd/_n_DEMOTWOX1701_spf"
+ORIG(450,50,0)
+N2 CALL"/_n_wks_dir/_n_sheet_wpd/_n_DEMOTWOX1702_spf"
+ENDNEST
+RET

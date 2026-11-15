@@ -2,3 +2,5 @@
 # no shop data, personal paths or screens of the original program (AGENTS.md).
 9e076c34e32a0b0ef35c62ebf6be8b5594a4601e7bcd478b681e9eff1f327973  app/assets/icon.png
 abc383e32d684c8f6e8176b48b1231675c116bcdf1fa106652343712ea6a11a1  app/shots/bvc-opened-sheet.png
+5d754e5f3e577742588232a8a852ff1fed5753f0636bac891b03c62a385f6d74  app/shots/sheet-machines-jobs.png
+4638aa680d3fe1d6c01dbe13cef76a572c0a0b27d227ce91c770cee2552f7484  app/shots/sheet-machines-nesting.png

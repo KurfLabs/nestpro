@@ -87,6 +87,8 @@ impl Session {
         let op = ops::find(name).ok_or_else(|| format!("unknown operation '{name}' — see `nestpro ops`"))?;
         let args = if args.is_null() { json!({}) } else { args.clone() };
         ops::check_args(op, &args)?;
+        // MS4: the machines the sheets name, as the settings say now.
+        sheetmachine::install(&self.ctx.cfg);
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };
         match op.kind {
             Kind::Global => return ops::run_global(&self.ctx, name, &args).map(done),
@@ -151,6 +153,9 @@ impl Session {
         }
         if out.changed && op.kind == Kind::Write {
             self.save(Some(before))?;
+        } else if out.changed && op.name == "export" {
+            // MS7: where its programs went, remembered with the job.
+            self.save(None)?;
         }
         let mut reply = done(out);
         if let Some(p) = &self.path {
@@ -166,7 +171,13 @@ impl Session {
             // Across runs: the copy kept beside the file.
             None => jobfile::load(&backup_path(&path)).map_err(|_| "Nothing to undo.".to_string())?,
         };
+        // MS7: the record of the programs on disk is the latest, whatever
+        // step the job goes back to: undo doesn't bring back an older one.
+        let written = self.job.as_ref().map(|j| j.written.clone()).unwrap_or_default();
         let note = self.restock_for_undo(prev)?;
+        if let Some(j) = self.job.as_mut() {
+            j.written = written;
+        }
         jobfile::save(&path, self.job.as_ref().unwrap())?;
         // The copy beside the file moves one step back too, so a later run
         // can undo once more.
