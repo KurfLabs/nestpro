@@ -3165,6 +3165,11 @@ fn main() -> eframe::Result {
                 app.open_settings(sec);
                 // Screenshots of a machine's cut order scroll down to it.
                 app.setui.show_order = s == "machines-order";
+                // Screenshots of Settings → Materials with a material picked.
+                if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--settings-material=").map(str::to_string)) {
+                    // The page lists the materials in the list's order.
+                    app.setui.mat_sel = engine::material::current().materials.iter().position(|m| m.name == n);
+                }
             }
             // Load the saved "ExpertLayout" (the original does this at start, D6).
             if load_layout {

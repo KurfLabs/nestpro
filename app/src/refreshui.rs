@@ -137,6 +137,8 @@ impl App {
             return;
         }
         self.autorefresh.down = true;
+        // Settings → Materials can't change the list now (MA21).
+        self.materials_reach(Some(&e));
         if self.libui.loaded {
             self.libui.entries.clear();
             self.libui.products.clear();
@@ -161,6 +163,8 @@ impl App {
                 }
                 self.autorefresh.down = false;
                 self.status = format!("The Library on {} can be reached again.", dir.display());
+                // Settings → Materials can change the list again (MA21).
+                self.materials_reach(None);
                 true
             }
             Some(p) => {
@@ -1041,6 +1045,45 @@ mod refreshui_tests {
         assert_eq!(pc2.stockui.unreachable, None);
         assert_eq!(saved_jobs(&pc2), ["DEMO-7", "DEMO-8"]);
         assert!(pc2.job_unsaved(pc2.cur_job), "its changes still kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MA14, MA21 with LB14: the Materials page is open with a change typed
+    /// when the automatic look finds the Library gone: the page says why it
+    /// can't edit, at once, and keeps what was typed. When the automatic
+    /// look finds it back, the page can edit again and saves it.
+    #[test]
+    fn the_materials_page_follows_the_library_going_and_coming_back_by_itself() {
+        let dir = new_library("refresh_materials_page");
+        let clock = Clock::at(NOV_9_0920);
+        let mut pc2 = watching(&dir, "kim", "PROG-2", &clock, 1);
+        pc2.reload_materials(true);
+        pc2.open_settings(crate::settings_ui::Section::Materials);
+        pc2.materials_page_ready();
+        assert_eq!(pc2.setui.mat_locked, None);
+        pc2.setui.mat_draft.as_mut().unwrap().rows[1].m.name = "DEMO Inox".into();
+        let away = dir.with_extension("away");
+        let _ = std::fs::remove_dir_all(&away);
+        std::fs::rename(&dir, &away).unwrap();
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        let why = pc2.setui.mat_locked.clone().expect("the automatic look locks the page");
+        assert_eq!(why, crate::materials::cant_change(&crate::library::unreachable(&dir)));
+        pc2.materials_page_ready();
+        assert_eq!(pc2.setui.mat_locked.as_deref(), Some(why.as_str()), "still locked when drawn");
+        std::fs::rename(&away, &dir).unwrap();
+        for _ in 0..3 {
+            later(&clock, QUICK_S);
+            pc2.refresh_tick(false);
+            settle(&pc2);
+        }
+        assert_eq!(pc2.setui.mat_locked, None, "the automatic look unlocks it");
+        pc2.materials_page_ready();
+        assert_eq!(pc2.setui.mat_locked, None);
+        assert_eq!(pc2.setui.mat_draft.as_ref().unwrap().rows[1].m.name, "DEMO Inox", "what was typed stays");
+        pc2.save_materials();
+        let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
+        assert_eq!(stored.get(1).unwrap().name, "DEMO Inox");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

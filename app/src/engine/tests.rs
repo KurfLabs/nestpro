@@ -7067,3 +7067,340 @@ fn the_open_jobs_file_is_read_again_before_a_material_is_deleted() {
     assert!(e.contains("the job open here (DEMO-WIN)"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+
+// ---------------------------------------------------------------------------
+// Settings → Materials, the material list (spec #142, ticket #147: MA21, MA22).
+// The page keeps a draft (`Draft`) and Save materials stores every change of
+// it together (`crate::materials::apply`), as the `material` operation does
+// one change at a time.
+// ---------------------------------------------------------------------------
+
+use crate::engine::materialedit::{Draft, Field};
+
+/// The page's Save materials, as the window does it.
+fn save_page(s: &Session, draft: &Draft) -> Result<(), String> {
+    let changes = draft.changes()?;
+    let ctx = &s.ctx;
+    let lib = ctx.library_at();
+    let (_, l) = crate::materials::apply(&ctx.material_home(), &ctx.pc_dir, &ctx.cfg, || lib.saved(), &lib, &changes, &[])?;
+    material::install(l);
+    Ok(())
+}
+
+/// The page as it opens: the list as stored now.
+fn page(s: &Session) -> Draft {
+    s.ctx.reload_materials();
+    Draft::of(&material::current())
+}
+
+fn row_of(d: &Draft, name: &str) -> usize {
+    d.rows.iter().position(|r| r.m.name == name).unwrap_or_else(|| panic!("no row {name}"))
+}
+
+/// One material as `material mode=list` shows it.
+fn listed(s: &mut Session, name: &str) -> Value {
+    let l = call(s, "material", None, json!({"mode": "list"}));
+    l["data"]["materials"].as_array().unwrap().iter().find(|m| m["name"] == name).cloned().unwrap_or_else(|| panic!("{name} isn't listed: {l}"))
+}
+
+fn page_session(name: &str) -> (PathBuf, PathBuf, Session) {
+    let d = dir(name);
+    let lib = stock_ctx(&d).library_dir;
+    let s = Session::new(stock_ctx_again(&lib));
+    (d, lib, s)
+}
+
+#[test]
+fn adding_from_the_catalogue_takes_the_standards_name_and_follows_its_values() {
+    // MA21: any of the catalogue's 34 standards, by number or name; named
+    // as the standard unless a name is given; every value its standard's.
+    let (d, _lib, mut s) = page_session("material_from_catalogue");
+    let r = call(&mut s, "material", None, json!({"mode": "add", "standard": "0110"}));
+    let m = &r["data"];
+    assert_eq!((m["material"].as_u64(), m["name"].as_str(), m["standard"].as_str(), m["standard_kind"].as_str()), (Some(3), Some("X3CrNiMo 17-13-3"), Some("0110 X3CrNiMo 17-13-3"), Some("Stainless steel")), "{r}");
+    assert_eq!((m["kind"].as_str(), m["density"].as_f64(), m["machine_key"].as_str()), (Some("stainless steel"), Some(8.0), Some("##MATEXP0110##")), "{r}");
+    assert_eq!(m["from_standard"], json!(["density", "program_name", "program_code", "machine_ref"]), "nothing of its own yet: {r}");
+    // By name, with the shop's own name; a waterjet standard has no kind.
+    let r = call(&mut s, "material", None, json!({"mode": "add", "standard": "copper", "name": "DEMO Cu-ETP"}));
+    let m = &r["data"];
+    assert_eq!((m["name"].as_str(), m["standard"].as_str(), m["density"].as_f64(), m["standard_kind"].as_str()), (Some("DEMO Cu-ETP"), Some("0510 Copper"), Some(8.9), Some("Copper and brass")), "{r}");
+    // The list offers the whole catalogue to add from.
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["standards"].as_array().unwrap().len(), 34);
+    assert_eq!((l["data"]["standards"][9]["standard"].as_str(), l["data"]["standards"][9]["kind"].as_str()), (Some("0110 X3CrNiMo 17-13-3"), Some("Stainless steel")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_standard_whose_name_is_taken_is_refused_naming_the_material_that_has_it() {
+    // MA16 + MA21: adding from a standard whose name another material has,
+    // as its name or one of its other names, is refused; given a name of
+    // its own it is added.
+    let (d, lib, mut s) = page_session("material_standard_taken");
+    call(&mut s, "material", None, json!({"mode": "add", "standard": "0110"}));
+    let file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&file).unwrap();
+    let e = err(&mut s, "material", json!({"mode": "add", "standard": "0110"}));
+    assert!(e.contains("the name of material 3 (X3CrNiMo 17-13-3)"), "{e}");
+    // AlMg3 is one of aluminium's other names (a new install's).
+    let e = err(&mut s, "material", json!({"mode": "add", "standard": "AlMg3"}));
+    assert!(e.contains("another name of Aluminium (material 2)"), "{e}");
+    // The same from the page: nothing is stored.
+    let mut p = page(&s);
+    p.add_from_standard(210).unwrap();
+    let e = save_page(&s, &p).unwrap_err();
+    assert!(e.contains("another name of Aluminium (material 2)"), "{e}");
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing refused was stored");
+    let r = call(&mut s, "material", None, json!({"mode": "add", "standard": "AlMg3", "name": "DEMO 5754"}));
+    assert_eq!((r["data"]["name"].as_str(), r["data"]["standard"].as_str()), (Some("DEMO 5754"), Some("0210 AlMg3")), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_blank_material_needs_a_name_of_its_own_and_starts_on_the_first_standard() {
+    // MA22: no standard given, a blank material; it needs a name, which no
+    // other material may have.
+    let (d, _lib, mut s) = page_session("material_blank");
+    let e = err(&mut s, "material", json!({"mode": "add"}));
+    assert!(e.contains("needs the new material's name"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "add", "name": "  MILD   steel "}));
+    assert!(e.contains("the name of material 0 (Mild steel)"), "{e}");
+    let r = call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Blank"}));
+    assert_eq!((r["data"]["standard"].as_str(), r["data"]["density"].as_f64()), (Some("0010 RST 37-2"), Some(7.85)), "{r}");
+    assert_eq!(r["data"]["from_standard"].as_array().unwrap().len(), 4, "{r}");
+    // The page's Add blank: saved without a name, refused; with a taken one, refused.
+    let mut p = page(&s);
+    let k = p.add_blank();
+    assert_eq!(save_page(&s, &p).unwrap_err(), "A material needs a name.");
+    p.rows[k].m.name = "demo blank".into();
+    assert!(save_page(&s, &p).unwrap_err().contains("the name of material 3 (DEMO Blank)"));
+    p.rows[k].m.name = "DEMO Blank 2".into();
+    save_page(&s, &p).unwrap();
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "DEMO Blank", "DEMO Blank 2"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_blank_field_shows_the_standards_value_a_typed_one_overrides_it_and_clearing_goes_back() {
+    // MA16, MA21: on the page, a value left blank is its standard's (shown
+    // greyed in the field); one typed is the material's own; cleared, it is
+    // the standard's again.
+    let (d, _lib, mut s) = page_session("material_page_values");
+    let mut p = page(&s);
+    let k = p.add_from_standard(110).unwrap();
+    p.rows[k].m.name = "DEMO 316L".into();
+    p.rows[k].other_names = "DEMO-AISI 316L, DEMO 1.4404".into();
+    assert_eq!(p.rows[k].text(Field::Density), "", "blank");
+    assert_eq!(FIELDS_SHOWN.map(|f| p.rows[k].standard_value(f)), ["8", "STEEL", "0010", "0110"], "greyed: the standard's");
+    save_page(&s, &p).unwrap();
+    let m = listed(&mut s, "DEMO 316L");
+    assert_eq!((m["density"].as_f64(), m["machine_key"].as_str()), (Some(8.0), Some("##MATEXP0110##")), "{m}");
+
+    // Typed: its own.
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO 316L");
+    p.rows[k].set(Field::Density, "7,95");
+    p.rows[k].set(Field::MachineRef, "DEMO-KEY");
+    p.rows[k].set(Field::ProgramCode, "DEMO-0111");
+    assert!(p.changed());
+    save_page(&s, &p).unwrap();
+    let m = listed(&mut s, "DEMO 316L");
+    assert_eq!((m["density"].as_f64(), m["machine_key"].as_str(), m["program_code"].as_str()), (Some(7.95), Some("DEMO-KEY"), Some("DEMO-0111")), "{m}");
+    assert_eq!(m["from_standard"], json!(["program_name"]), "{m}");
+
+    // Cleared: the standard's again.
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO 316L");
+    assert_eq!(p.rows[k].text(Field::Density), "7.95", "its own, shown as typed");
+    p.rows[k].set(Field::Density, "");
+    p.rows[k].set(Field::MachineRef, "");
+    save_page(&s, &p).unwrap();
+    let m = listed(&mut s, "DEMO 316L");
+    assert_eq!((m["density"].as_f64(), m["machine_key"].as_str(), m["program_code"].as_str()), (Some(8.0), Some("##MATEXP0110##"), Some("DEMO-0111")), "{m}");
+    // A density that isn't one is refused, naming the material.
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO 316L");
+    p.rows[k].set(Field::Density, "heavy");
+    let e = save_page(&s, &p).unwrap_err();
+    assert!(e.starts_with("DEMO 316L: density heavy"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+const FIELDS_SHOWN: [Field; 4] = [Field::Density, Field::ProgramName, Field::ProgramCode, Field::MachineRef];
+
+#[test]
+fn save_materials_stores_every_change_of_the_page_together_or_none() {
+    // MA21: a rename, a new material from a standard, a blank one and a
+    // deletion are stored together; a page with one name taken stores none.
+    let (d, lib, mut s) = page_session("material_page_save");
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Old", "standard": "stainless"}));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Gone", "standard": "stainless"}));
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO Old");
+    p.rows[k].m.name = "DEMO Renamed".into();
+    let k = p.add_from_standard(300).unwrap();
+    p.rows[k].m.name = "DEMO G90".into();
+    let k = p.add_blank();
+    p.rows[k].m.name = "DEMO Old".into(); // the name the rename frees
+    let k = row_of(&p, "DEMO Gone");
+    let lib_ = s.ctx.library_at();
+    p.delete(k, |id| crate::engine::materialedit::check_delete(&material::current(), id, |id| crate::materials::uses(&lib_, id, &[]))).unwrap();
+    assert!(p.rows[k].delete, "marked, not gone until saved");
+    assert_eq!(material_names(&mut s).len(), 5, "nothing stored before Save");
+    save_page(&s, &p).unwrap();
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "DEMO Renamed", "DEMO G90", "DEMO Old"]);
+    assert_eq!(listed(&mut s, "DEMO Old")["material"].as_u64(), Some(6), "a new number: 4 was deleted and is never given again");
+
+    // Two materials swap names in one save.
+    let mut p = page(&s);
+    let (a, b) = (row_of(&p, "DEMO Renamed"), row_of(&p, "DEMO Old"));
+    p.rows[a].m.name = "DEMO Old".into();
+    p.rows[b].m.name = "DEMO Renamed".into();
+    save_page(&s, &p).unwrap();
+    assert_eq!((listed(&mut s, "DEMO Old")["material"].as_u64(), listed(&mut s, "DEMO Renamed")["material"].as_u64()), (Some(3), Some(6)));
+
+    // One name taken: nothing of the page is stored.
+    let file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&file).unwrap();
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO G90");
+    p.rows[k].m.name = "DEMO Z275".into();
+    let k = p.add_from_standard(10).unwrap();
+    p.rows[k].other_names = "DEMO-S1, aisi304".into();
+    let e = save_page(&s, &p).unwrap_err();
+    assert!(e.contains("'aisi304' is already another name of Stainless steel (material 1)"), "{e}");
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing stored");
+    assert!(material_names(&mut s).contains(&"DEMO G90".to_string()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn deleting_on_the_page_is_refused_for_the_first_three_and_for_what_is_used() {
+    // MA20 on the page: the refusal is shown and nothing is marked; a new
+    // material not saved yet just goes.
+    let (d, _lib, mut s) = page_session("material_page_delete");
+    add_demo_316(&mut s);
+    library_job_in(&mut s, &d, "DEMO-J1", "DEMO-316");
+    let mut p = page(&s);
+    let lib = s.ctx.library_at();
+    let check = |id| crate::engine::materialedit::check_delete(&material::current(), id, |id| crate::materials::uses(&lib, id, &[]));
+    let k = row_of(&p, "Mild steel");
+    let e = p.delete(k, check).unwrap_err();
+    assert!(e.contains("Mild steel can't be deleted: it is one of the first three materials"), "{e}");
+    let k = row_of(&p, "DEMO 316 Stainless");
+    let e = p.delete(k, check).unwrap_err();
+    assert!(e.contains("DEMO 316 Stainless can't be deleted: it is used by 1 job (DEMO-J1)"), "{e}");
+    assert!(!p.changed(), "nothing marked");
+    let k = p.add_blank();
+    p.delete(k, check).unwrap();
+    assert_eq!(p.rows.len(), 4, "the new row went");
+    assert!(!p.changed());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn undo_changes_after_several_edits_gives_back_the_list_as_stored() {
+    let (d, lib, mut s) = page_session("material_page_undo");
+    add_demo_316(&mut s);
+    let file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&file).unwrap();
+    let fresh = page(&s);
+    let mut p = fresh.clone();
+    let k = row_of(&p, "Stainless steel");
+    p.rows[k].m.name = "DEMO Inox".into();
+    p.rows[k].set(Field::ProgramName, "DEMO");
+    p.rows[k].other_names.clear();
+    p.add_from_standard(510).unwrap();
+    p.add_blank();
+    let k = row_of(&p, "DEMO 316 Stainless");
+    p.delete(k, |_| Ok(())).unwrap();
+    assert!(p.changed());
+    assert_eq!(p.changes().unwrap().len(), 4);
+    // Undo changes: the page reads the list again.
+    let p = page(&s);
+    assert_eq!(p, fresh);
+    assert!(!p.changed());
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing stored");
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316 Stainless"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_page_says_why_it_cant_edit_while_the_library_cant_be_reached() {
+    // MA14 + invariant 5: the page shows why; a save is refused and stores
+    // nothing; once the Library is back it saves.
+    let (d, lib, mut s) = page_session("material_page_unreachable");
+    add_demo_316(&mut s);
+    let home = s.ctx.material_home();
+    assert_eq!(crate::materials::can_change(&home), Ok(()));
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO 316 Stainless");
+    p.rows[k].m.name = "DEMO 316L".into();
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    let why = crate::materials::can_change(&home).unwrap_err();
+    assert!(why.contains("can't be reached") && why.contains("The material list can't be changed until it can be reached"), "{why}");
+    let e = save_page(&s, &p).unwrap_err();
+    assert!(e.contains("The material list wasn't changed: try again once it can be reached."), "{e}");
+    assert!(!lib.exists(), "nothing made in its place");
+    std::fs::rename(&away, &lib).unwrap();
+    save_page(&s, &p).unwrap();
+    assert!(material_names(&mut s).contains(&"DEMO 316L".to_string()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn try_a_name_finds_any_material_of_the_list_by_an_other_name() {
+    // The page's Try a name looks over the whole list (MA6, MA16).
+    let (d, _lib, s) = page_session("material_try_name");
+    let mut p = page(&s);
+    let k = p.add_from_standard(110).unwrap();
+    p.rows[k].m.name = "DEMO 316L".into();
+    p.rows[k].other_names = "DEMO-AISI 316L".into();
+    save_page(&s, &p).unwrap();
+    let id = s.ctx.cfg.material_for("  demo-aisi   316l ");
+    assert_eq!(id.map(|i| material::name_or(i, "?")).as_deref(), Some("DEMO 316L"));
+    assert_eq!(s.ctx.cfg.material_for("aisi304"), Some(1));
+    assert_eq!(s.ctx.cfg.material_for("DEMO-NOTHING"), None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn two_pcs_changing_different_values_of_one_material_both_count() {
+    // Invariant 5: a save takes only what its page changed, so another PC's
+    // change to another value meanwhile stays.
+    let (d, lib, mut s) = page_session("material_page_two_pcs");
+    add_demo_316(&mut s);
+    let other = Session::new(stock_ctx_again(&lib));
+    let mut a = page(&s);
+    let mut b = page(&other);
+    let k = row_of(&a, "DEMO 316 Stainless");
+    a.rows[k].set(Field::Density, "7.98");
+    b.rows[k].other_names = "DEMO-316, DEMO-1.4401, DEMO-316S".into();
+    save_page(&s, &a).unwrap();
+    save_page(&other, &b).unwrap();
+    let m = listed(&mut s, "DEMO 316 Stainless");
+    assert_eq!((m["density"].as_f64(), m["other_names"].clone()), (Some(7.98), json!(["DEMO-316", "DEMO-1.4401", "DEMO-316S"])), "{m}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_pages_kind_is_the_group_the_material_picker_puts_a_material_in() {
+    // MA21 + MA23: Settings → Materials and every Material ▾ name a
+    // material's kind the same way, from one engine function.
+    let (d, _lib, mut s) = page_session("material_page_kinds");
+    for (name, std) in [("DEMO 5754", "0210"), ("DEMO G90", "0300"), ("DEMO CuZn37", "0590"), ("DEMO Ti", "0400"), ("DEMO S355", "0040")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    let l = material::current();
+    for g in material::choose(&l, "") {
+        for c in g.choices {
+            let m = l.get(c.id).unwrap();
+            assert_eq!(crate::engine::catalogue::kind_name(m.standard), g.group.label(), "{}", m.name);
+        }
+    }
+    let kind = |n: &str| crate::engine::catalogue::kind_name(l.materials.iter().find(|m| m.name == n).unwrap().standard);
+    assert_eq!([kind("Aluminium"), kind("DEMO 5754"), kind("DEMO G90"), kind("DEMO CuZn37"), kind("DEMO Ti"), kind("DEMO S355")], ["Aluminium", "Aluminium", "Galvanized", "Copper and brass", "Other", "Carbon steel"]);
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -74,19 +74,40 @@ impl Standard {
     }
 }
 
+/// The standard numbered `number`: one of the first three (MA18), else the
+/// catalogue's (MA22), else mild steel's, as an unknown number always was.
 pub fn standard(number: u32) -> &'static Standard {
-    STANDARDS.iter().find(|s| s.number == number).unwrap_or(&STANDARDS[0])
+    STANDARDS.iter().find(|s| s.number == number).or_else(|| super::catalogue::standards().iter().find(|s| s.number == number)).unwrap_or(&STANDARDS[0])
 }
 
-/// The standard a text names: its catalogue number ("100", "0100"), its
-/// name or the start of it, or its kind, without case.
+/// The standard a text names (MA21): a catalogue number ("110", "0110");
+/// one of the first three by its name, the start of it or its kind, as
+/// before ("stainless"); else a catalogue standard by its name or its
+/// name in the catalogue's file, or the start of one name only; without
+/// case.
 pub fn standard_from(text: &str) -> Result<&'static Standard, String> {
+    use super::catalogue::{CATALOGUE, entry};
     let t = norm(text);
-    let found = t.parse::<u32>().ok().and_then(|n| STANDARDS.iter().find(|s| s.number == n)).or_else(|| {
+    let found = t.parse::<u32>().ok().filter(|&n| STANDARDS.iter().any(|s| s.number == n) || entry(n).is_some()).map(standard).or_else(|| {
         let by_name: Vec<_> = STANDARDS.iter().filter(|s| norm(s.name) == t || norm(s.name).starts_with(&t) || s.kind.label() == t).collect();
         (by_name.len() == 1).then(|| by_name[0])
+    }).or_else(|| {
+        let exact: Vec<_> = CATALOGUE.iter().filter(|e| norm(e.name) == t || norm(e.file_name) == t).collect();
+        let starts: Vec<_> = CATALOGUE.iter().filter(|e| norm(e.name).starts_with(&t)).collect();
+        match (exact.as_slice(), starts.as_slice()) {
+            ([e], _) | ([], [e]) => Some(standard(e.number)),
+            _ => None,
+        }
     });
-    found.filter(|_| !t.is_empty()).ok_or_else(|| format!("'{}' is not a standard. The standards: {}.", text.trim(), STANDARDS.iter().map(|s| s.label()).collect::<Vec<_>>().join(", ")))
+    found.filter(|_| !t.is_empty()).ok_or_else(|| {
+        format!(
+            "'{}' is not a standard. The standards: {}, or any of the catalogue's {} by its number or name: {}.",
+            text.trim(),
+            STANDARDS.iter().map(|s| s.label()).collect::<Vec<_>>().join(", "),
+            CATALOGUE.len(),
+            CATALOGUE.iter().map(|e| e.label()).collect::<Vec<_>>().join(", ")
+        )
+    })
 }
 
 /// One of the shop's materials (MA16). A value left out (None) is its

@@ -337,11 +337,11 @@ pub static OPS: &[Op] = &[
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
     ] },
     // --- the shared Library ---
-    Op { name: "material", group: "Library", kind: Kind::Global, help: "The material list, the same on every PC that shares the Library (kept in its Sheets folder, beside the stock; on a PC with no Library, in its settings folder): list every material (its number, name, other names, standard, kind, weight per volume, name and code in programs, machine-file key, and which of those are its standard's), add one based on a standard of the catalogue (it takes the next number, never one given before), edit one, or delete one. Renaming (edit name=…) changes nothing else: jobs, parts and stock point at the material's number, show the new name and are left as they are until next saved. Delete is refused for 0 mild steel, 1 stainless steel and 2 aluminium (rename them instead), and while a saved job, library part, stock sheet or remnant in the Library, or the job open in this session, uses the material; the refusal counts each and names the first few. A deleted material's number is never given again. Each name and other name means one material: one already used, whatever its capitals or spaces, is refused, naming the material that has it. Jobs, stock and library parts name a material by its name, another name or its number (0 mild steel, 1 stainless steel, 2 aluminium as always). Changes are made under the Library's write lock and refused while it can't be reached. Before the first change, the list is this PC's three materials from Settings → Materials.", args: &[
+    Op { name: "material", group: "Library", kind: Kind::Global, help: "The material list, the same on every PC that shares the Library (kept in its Sheets folder, beside the stock; on a PC with no Library, in its settings folder): list every material (its number, name, other names, standard, kind, weight per volume, name and code in programs, machine-file key, and which of those are its standard's), add one from a standard of the material catalogue (its 34 standards are in list: standards; the material is named as the standard unless a name is given, and its weight per volume, machine-file key and name and code in programs are the standard's until it has its own) or a blank one (a name only, on standard 0010), each taking the next number, never one given before; edit one, or delete one. Settings → Materials does the same, all of a page's changes saved together. Renaming (edit name=…) changes nothing else: jobs, parts and stock point at the material's number, show the new name and are left as they are until next saved. Delete is refused for 0 mild steel, 1 stainless steel and 2 aluminium (rename them instead), and while a saved job, library part, stock sheet or remnant in the Library, or the job open in this session, uses the material; the refusal counts each and names the first few. A deleted material's number is never given again. Each name and other name means one material: one already used, whatever its capitals or spaces, is refused, naming the material that has it. Jobs, stock and library parts name a material by its name, another name or its number (0 mild steel, 1 stainless steel, 2 aluminium as always). Changes are made under the Library's write lock and refused while it can't be reached. Before the first change, the list is this PC's three materials from Settings → Materials.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "add", "edit", "delete"] },
         a("material", Ty::Str, "edit, delete: the material to change or delete: its name, another name or its number"),
-        a("name", Ty::Str, "add: the new material's name (e.g. \"DEMO 316 Stainless\"); edit: its new name"),
-        a("standard", Ty::Str, "add (needed), edit: the standard it is based on: its catalogue number or name (see list: standards); it gives the kind, the weight per volume and every value the material has none of its own for"),
+        a("name", Ty::Str, "add: the new material's name (e.g. \"DEMO 316 Stainless\"; needed without a standard, else the standard's name); edit: its new name"),
+        a("standard", Ty::Str, "add, edit: the standard of the catalogue it is based on: its number (e.g. 0110) or name (see list: standards; \"mild steel\", \"stainless\" and \"aluminium\" as always); it gives the kind, the weight per volume and every value the material has none of its own for. add without it: a blank material"),
         a("other_names", Ty::Str, "add/edit: other names it goes by, comma-separated (grades, norms, shop names); edit: replaces them all"),
         a("density", Ty::Num, "add/edit: its own weight per volume, g/cm³ (\"standard\" or empty: its standard's)"),
         a("program_name", Ty::Str, "add/edit: its own name in machine programs (\"standard\": its standard's)"),
@@ -3253,6 +3253,17 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Contours/All Marks", "part-cut-order"),
     ("Contours/All Cut", "part-cut-order"),
     ("Contours/All Contours of one Quality", "part-cut-order"),
+    // --- Settings → Materials (MA21): the page saves what the material
+    // operation changes one at a time ---
+    ("Settings → Materials/Add from standard", "material"),
+    ("Settings → Materials/Add blank", "material"),
+    ("Settings → Materials/Delete", "material"),
+    ("Settings → Materials/Keep", "material"),
+    ("Settings → Materials/Save materials", "material"),
+    ("Settings → Materials/Undo changes", "material"),
+    ("Settings → Materials/Reset to defaults", "material"),
+    ("Settings → Materials/Try again", "material"),
+    ("Settings → Materials/Use standard", "material"),
 ];
 
 #[cfg(test)]
@@ -3272,6 +3283,14 @@ mod parity {
             for line in text.lines() {
                 if let Some(g) = quoted_after(line, "ribbon_group(ui, ") {
                     group = g;
+                }
+                // A Settings page's buttons: page_button(ui, "<page>", "<label>", …).
+                if let Some(rest) = line.split_once("page_button(ui, \"").map(|x| x.1) {
+                    if let Some((page, rest)) = rest.split_once('"') {
+                        if let Some(label) = rest.strip_prefix(", \"").and_then(|l| l.split_once('"')).map(|x| x.0) {
+                            out.push((format!("Settings → {page}/{label}"), file.clone()));
+                        }
+                    }
                 }
                 for call in ["ribbon_button(ui, Icon::", "ribbon_button_ex(ui, Icon::", "dropdown(ui, Icon::", "ribbon_small(ui, Icon::", "menu_item(ui, Icon::"] {
                     if let Some(rest) = line.split_once(call).map(|x| x.1) {

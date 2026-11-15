@@ -7,6 +7,7 @@
 //! `render.rs` draws a sheet or a part to PNG/SVG so an agent can look at it.
 
 pub mod arrange;
+pub mod catalogue;
 pub mod contours;
 pub mod cutorder;
 pub mod folderops;
@@ -14,6 +15,7 @@ pub mod imports;
 pub mod inuse;
 pub mod librarycheck;
 pub mod material;
+pub mod materialedit;
 pub mod materialops;
 pub mod ops;
 pub mod pattern;

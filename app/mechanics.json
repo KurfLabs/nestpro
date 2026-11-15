@@ -7101,6 +7101,20 @@
   "estimated": true
  },
  {
+  "name": "Settings → Materials",
+  "group": "materials",
+  "value": "every material with its kind (the Material ▾'s group, MA23), standard and other names; add from any of the catalogue's 34 standards (named as it, values blank = the standard's) or blank; edit every value, a blank one shows its standard's greyed, an empty one of its own what it means (kept as stored), Use standard goes back; delete refused at once as MA20, else marked; Save materials stores all changes together under the write lock, all or none, only the values changed; Undo changes throws them away; no Library reachable: says why, can't change, looked at again on reopening and when the Library is looked at again, unsaved edits kept",
+  "source": "MA21",
+  "estimated": true
+ },
+ {
+  "name": "catalogue standards beyond the first three",
+  "group": "materials",
+  "value": "kind from the catalogue (steels and none as mild steel), its density (7.85 when none), its number as machine table key, programs STEEL 0010 until ticket #149; the first three keep MA18's values (0010 weighs 7.85); a blank material is on 0010",
+  "source": "MA22",
+  "estimated": true
+ },
+ {
   "name": "material picker groups",
   "group": "materials",
   "value": "Carbon steel, Stainless steel, Aluminium, Galvanized, Copper and brass, Other",

@@ -7,7 +7,8 @@
 //! Library can't be reached. A PC with no Library keeps the same file in its
 //! own settings folder. The rules over the list are in `engine::material`.
 
-use crate::engine::material::{Id, List, Material, Uses};
+use crate::engine::material::{Id, List, Uses};
+use crate::engine::materialedit::{Change, Done};
 use crate::shared::{Saved, WriteLock};
 use std::path::{Path, PathBuf};
 
@@ -121,30 +122,78 @@ pub fn update<T>(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings,
     Ok((out, l))
 }
 
-/// MA20: delete material `id` from the list in `home`, unless something
-/// uses it: a saved job or library part of the Library `lib`, a sheet or
-/// remnant of its stock, or one of the jobs `open` in this window or agent
-/// session (JOB-88). What uses it is read under the same write lock as the
-/// change (invariant 4, 5), after a first read without it so the lock stays
-/// short (LB2): a job saved in it at the same moment on another PC either
-/// counts or comes after. Refused, saying where it is used, and nothing is
-/// changed. Gives the material deleted and the list as stored.
-pub fn delete(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved, lib: &crate::library::Library, id: Id, open: &[&crate::jobfile::JobFile]) -> Result<(Material, List), String> {
-    // The first three are kept whatever uses them: no need to look.
-    let first = (id >= crate::engine::material::KEPT).then(|| lib.scan_records(None));
-    update(home, pc_dir, cfg, by, |l| {
-        let mut uses = Uses::default();
-        if l.get(id).is_some() && id >= crate::engine::material::KEPT {
-            let (jobs, parts) = lib.scan_records(first.as_ref()).using_material(id);
-            let stock = crate::stock::Stock::load(&lib.dir).map_err(|e| format!("The sheet stock can't be read ({e}), so it can't be told whether a stock sheet uses the material: it wasn't deleted."))?;
-            uses.stock = stock.items.iter().filter(|i| i.material == id).map(|i| i.reference.clone()).collect();
-            // A job open here that is also a saved job counts once, as saved.
-            uses.open = open.iter().filter(|j| j.spec.material == id && !j.library.is_some_and(|r| jobs.iter().any(|x| x.0 == r.id))).map(|j| j.name.clone()).collect();
-            uses.jobs = jobs.into_iter().map(|x| x.1).collect();
-            uses.parts = parts.into_iter().map(|x| x.1).collect();
-        }
-        l.remove(id, &uses)
+/// A job open in this window or agent session, as what uses a material
+/// counts it (JOB-88).
+#[derive(Clone, Debug)]
+pub struct Open {
+    pub name: String,
+    pub material: Id,
+    /// Its record in the Library, when it is a saved job.
+    pub record: Option<u64>,
+}
+
+impl From<&crate::jobfile::JobFile> for Open {
+    fn from(j: &crate::jobfile::JobFile) -> Open {
+        Open { name: j.name.clone(), material: j.spec.material, record: j.library.map(|r| r.id) }
+    }
+}
+
+/// MA20: what uses material `id`: the saved jobs and library parts of the
+/// Library `lib` (read from `scan`), the sheets and remnants of its stock,
+/// and the jobs `open` here. A job open here that is also a saved job
+/// counts once, as saved.
+fn uses_in(lib: &crate::library::Library, scan: &crate::library::RecordScan, id: Id, open: &[Open]) -> Result<Uses, String> {
+    let (jobs, parts) = scan.using_material(id);
+    let stock = crate::stock::Stock::load(&lib.dir).map_err(|e| format!("The sheet stock can't be read ({e}), so it can't be told whether a stock sheet uses the material: it wasn't deleted."))?;
+    Ok(Uses {
+        stock: stock.items.iter().filter(|i| i.material == id).map(|i| i.reference.clone()).collect(),
+        open: open.iter().filter(|j| j.material == id && !j.record.is_some_and(|r| jobs.iter().any(|x| x.0 == r))).map(|j| j.name.clone()).collect(),
+        jobs: jobs.into_iter().map(|x| x.1).collect(),
+        parts: parts.into_iter().map(|x| x.1).collect(),
     })
+}
+
+/// MA20, looked at now (no lock): what uses material `id`, for the page to
+/// refuse a deletion before it is marked. Saving looks again under the lock.
+pub fn uses(lib: &crate::library::Library, id: Id, open: &[Open]) -> Result<Uses, String> {
+    uses_in(lib, &lib.scan_records(None), id, open)
+}
+
+/// MA21: make `changes` to the list in `home` together, under its write
+/// lock, all or none (`List::apply`). A deletion is refused while anything
+/// uses the material (MA20): a saved job or library part of the Library
+/// `lib`, a sheet or remnant of its stock, or one of the jobs `open` in this
+/// window or agent session (JOB-88). What uses it is read under the same
+/// write lock as the change (invariant 4, 5), after a first read without it
+/// so the lock stays short (LB2): a job saved in it at the same moment on
+/// another PC either counts or comes after. On a refusal nothing is
+/// changed. Gives what each change did and the list as stored.
+pub fn apply(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved, lib: &crate::library::Library, changes: &[Change], open: &[Open]) -> Result<(Vec<Done>, List), String> {
+    // The first three are kept whatever uses them: no need to look.
+    let deletes = changes.iter().any(|c| matches!(c, Change::Delete(id) if *id >= crate::engine::material::KEPT));
+    let first = deletes.then(|| lib.scan_records(None));
+    update(home, pc_dir, cfg, by, |l| {
+        let mut scan = None;
+        l.apply(changes, |id| {
+            let s = scan.get_or_insert_with(|| lib.scan_records(first.as_ref()));
+            uses_in(lib, s, id, open)
+        })
+    })
+}
+
+/// MA14: whether the list in `home` can be changed now, or why not (what
+/// Settings → Materials says above the list): the Library can't be reached
+/// or holds no Library. A PC with no Library can always change its own.
+pub fn can_change(home: &Home) -> Result<(), String> {
+    match home {
+        Home::Library(d) => crate::library::usable(d).map_err(|e| cant_change(&e)),
+        Home::Pc(_) => Ok(()),
+    }
+}
+
+/// Why the list can't be changed, from why the Library can't be used.
+pub fn cant_change(why: &str) -> String {
+    format!("{why} The material list can't be changed until it can be reached: the list shown is the one read last.")
 }
 
 /// MA20, invariant 4: a write that gives a job, library part or stock item
