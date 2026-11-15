@@ -101,7 +101,7 @@ pub fn run(ctx: &Ctx, a: &Args, open: Option<&crate::jobfile::JobFile>) -> Resul
                     // MA12: the catalogue a material is added from.
                     "standards": CATALOGUE.iter().map(|e| {
                         let s = material::standard(e.number);
-                        json!({"standard": e.label(), "number": format!("{:04}", e.number), "name": e.name, "category": if e.waterjet { "waterjet" } else { "punching" }, "kind": e.kind, "density": s.density, "catalogue_density": e.density, "program_name": s.program.0, "program_code": s.program.1, "machine_ref": s.machine_ref()})
+                        json!({"standard": e.label(), "number": format!("{:04}", e.number), "name": e.name, "category": if e.waterjet { "waterjet" } else { "punching" }, "kind": catalogue::kind_name(e.number), "catalogue_kind": e.kind, "density": s.density, "catalogue_density": e.density, "program_name": s.program.0, "program_code": s.program.1, "machine_ref": s.machine_ref()})
                     }).collect::<Vec<_>>(),
                     "stored_in": home.file().display().to_string(),
                 }),

@@ -63,7 +63,7 @@ impl Section {
             Section::Connections => "Databases to open",
             Section::Machines => "How programs are written",
             Section::Nesting => "Units (mm / inch), part gap, moving parts",
-            Section::Materials => "Names and codes in programs",
+            Section::Materials => "The shop's material list",
             Section::Folders => "Imports and exports",
             Section::Integrations => "Fulcrum and other systems",
             Section::About => "Version and files",
@@ -143,6 +143,10 @@ pub struct SettingsUi {
     /// Materials page: why the list can't be changed now (MA14), looked at
     /// when the page is read and on Try again; None: it can.
     pub mat_locked: Option<String>,
+    /// Materials page: look again whether the list can be changed before
+    /// it is next drawn (set on opening it and when the Library is looked
+    /// at again).
+    pub mat_recheck: bool,
     /// Materials page: the last result of Save or Delete (true: done), shown
     /// by the buttons.
     pub mat_note: Option<(bool, String)>,
@@ -268,6 +272,8 @@ impl App {
         self.setui.sel_machine = self.cfg.active_machine;
         // Read the machine files again: they may have changed.
         self.setui.order_file = None;
+        // The Materials page looks again whether the list can be changed (MA21).
+        self.setui.mat_recheck = true;
     }
 
     /// Apply the settings: the active machine's post library and BLM post
@@ -357,12 +363,18 @@ impl App {
                             ui.painter().text(r.left_top() + egui::vec2(44.0, 26.0), egui::Align2::LEFT_TOP, s.hint(), egui::FontId::proportional(11.0), t.text_dim);
                             if resp.clicked() {
                                 self.setui.section = s;
+                                self.setui.mat_recheck = true;
                             }
                             ui.add_space(2.0);
                         }
                         }
                         ui.add_space(12.0);
-                        ui.label(RichText::new("Changes are saved automatically").size(11.5).color(th().text_dim)).on_hover_text(AppSettings::file().display().to_string());
+                        if self.setui.section == Section::Materials {
+                            // MA21: the material list is kept only by Save materials.
+                            ui.label(RichText::new("Kept only by Save materials").size(11.5).color(th().text_dim));
+                        } else {
+                            ui.label(RichText::new("Changes are saved automatically").size(11.5).color(th().text_dim)).on_hover_text(AppSettings::file().display().to_string());
+                        }
                     });
                     ui.separator();
                     let out = egui::ScrollArea::vertical().id_salt("settings_body").auto_shrink([false, false]).show(ui, |ui| ui.vertical(|ui| {
@@ -1139,21 +1151,31 @@ impl App {
     /// Settings → Materials: the material list (MA21). The page edits a copy
     /// of the list (`Draft`); Save materials stores every change together
     /// under the Library's write lock, Undo changes throws them away.
-    fn settings_materials(&mut self, ui: &mut egui::Ui) {
-        use crate::engine::catalogue::{self, CATALOGUE};
-        use crate::engine::materialedit::{Draft, Field};
-        let t = th();
-        let (home, _) = self.material_home();
-        // The list as stored; read again when nothing is typed and another PC
-        // (or an agent) changed it.
+    /// The Materials page before it is drawn: its draft (the list as
+    /// stored, read again when nothing is typed and another PC or an agent
+    /// changed it), and whether the list can be changed now (MA14, MA21),
+    /// looked at again when the page is opened, when the Library was looked
+    /// at again or changed, and after a refused save. Unsaved changes stay.
+    pub fn materials_page_ready(&mut self) {
         let list = crate::engine::material::current();
         match self.setui.mat_draft.as_mut() {
             Some(d) => d.follow(&list),
             None => {
-                self.setui.mat_draft = Some(Draft::of(&list));
-                self.setui.mat_locked = crate::materials::can_change(&home).err();
+                self.setui.mat_draft = Some(crate::engine::materialedit::Draft::of(&list));
+                self.setui.mat_recheck = true;
             }
         }
+        if std::mem::take(&mut self.setui.mat_recheck) {
+            self.setui.mat_locked = crate::materials::can_change(&self.material_home().0).err();
+        }
+    }
+
+    fn settings_materials(&mut self, ui: &mut egui::Ui) {
+        use crate::engine::catalogue::{self, CATALOGUE};
+        use crate::engine::materialedit::Field;
+        let t = th();
+        let (home, _) = self.material_home();
+        self.materials_page_ready();
         if self.setui.mat_add == 0 {
             self.setui.mat_add = 100;
         }
@@ -1260,11 +1282,19 @@ impl App {
                         ui.label(RichText::new(catalogue::kind_name(r.m.standard)).color(t.text_dim));
                     });
                     let field = |ui: &mut egui::Ui, r: &mut crate::engine::materialedit::Row, label: &str, f: Field, w: f32, unit: &str| {
-                        let hint = r.standard_value(f);
+                        // Blank: the standard's value, grey; an empty value of
+                        // its own: what is really used (MA15, MA21).
+                        let hint = r.hint(f);
+                        let mut typed = r.text(f).to_string();
                         row(ui, label, |ui| {
-                            ui.add(egui::TextEdit::singleline(r.text(f)).desired_width(w).hint_text(if hint.is_empty() { "empty".to_string() } else { hint }));
+                            if ui.add(egui::TextEdit::singleline(&mut typed).desired_width(w).hint_text(if hint.is_empty() { "empty".to_string() } else { hint })).changed() {
+                                r.set(f, &typed);
+                            }
                             if !unit.is_empty() {
                                 ui.label(RichText::new(unit).color(t.text_dim));
+                            }
+                            if r.is_own(f) && page_button(ui, "Materials", "Use standard", true).on_hover_text(format!("Use the standard's value: {}", r.standard_value(f))).clicked() {
+                                r.use_standard(f);
                             }
                         });
                     };
@@ -1491,5 +1521,44 @@ mod settings_ui_tests {
         assert_eq!(conn_string(&c), "DRIVER=SQL SERVER;SERVER=srv;DATABASE=DB;User ID=u;Password=••••••");
         c.windows = true;
         assert_eq!(conn_string(&c), "Provider=sqloledb;Data Source=srv;Initial Catalog=DB;Persist Security Info=False;Integrated Security=SSPI");
+    }
+
+    #[test]
+    fn the_materials_page_looks_again_whether_it_can_edit_and_keeps_what_was_typed() {
+        // MA14, MA21: the page was opened with the Library in reach, then the
+        // Library went away. Opening the page again (or the window looking
+        // at the Library again) says why it can't edit; the edit typed
+        // before stays, and is saved once the Library is back.
+        use crate::libui::libui_tests::{new_library, window};
+        use crate::shared::Clock;
+        let dir = new_library("materials_page_reach");
+        let mut a = window(&dir, "demo", "DEMO-PC", &Clock::pc());
+        a.reload_materials(true);
+        a.open_settings(Section::Materials);
+        a.materials_page_ready();
+        assert_eq!(a.setui.mat_locked, None);
+        a.setui.mat_draft.as_mut().unwrap().rows[1].m.name = "DEMO Inox".into();
+        let away = dir.with_extension("away");
+        let _ = std::fs::remove_dir_all(&away);
+        std::fs::rename(&dir, &away).unwrap();
+        a.materials_page_ready();
+        assert_eq!(a.setui.mat_locked, None, "not looked at again every frame");
+        // Settings opened again: it looks again.
+        a.setui.open = false;
+        a.open_settings(Section::Materials);
+        a.materials_page_ready();
+        let why = a.setui.mat_locked.clone().expect("the page says why it can't edit");
+        assert!(why.contains("can't be reached"), "{why}");
+        assert_eq!(a.setui.mat_draft.as_ref().unwrap().rows[1].m.name, "DEMO Inox", "what was typed stays");
+        // Back again, found when the window looks at the Library again.
+        std::fs::rename(&away, &dir).unwrap();
+        a.lib_refresh();
+        a.materials_page_ready();
+        assert_eq!(a.setui.mat_locked, None);
+        a.save_materials();
+        assert_eq!(crate::engine::material::name(1).as_deref(), Some("DEMO Inox"));
+        let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
+        assert_eq!(stored.get(1).unwrap().name, "DEMO Inox");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

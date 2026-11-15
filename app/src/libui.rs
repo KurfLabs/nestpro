@@ -280,6 +280,8 @@ impl App {
             }
         }
         self.libui.loaded = true;
+        // Settings → Materials looks again whether its list can be changed (MA21).
+        self.setui.mat_recheck = true;
     }
 
     /// Look for the Library again (Try again).
@@ -330,6 +332,7 @@ impl App {
     pub fn library_folder_changed(&mut self) {
         // The materials are the new Library's (MA14).
         self.reload_materials(false);
+        self.setui.mat_recheck = true;
         // The holds belong to the old Library: let go of them there (CU5).
         self.release_holds();
         self.inuse.watch.done_with_all();

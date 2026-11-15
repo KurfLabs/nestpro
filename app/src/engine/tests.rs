@@ -7124,7 +7124,7 @@ fn adding_from_the_catalogue_takes_the_standards_name_and_follows_its_values() {
     // By name, with the shop's own name; a waterjet standard has no kind.
     let r = call(&mut s, "material", None, json!({"mode": "add", "standard": "copper", "name": "DEMO Cu-ETP"}));
     let m = &r["data"];
-    assert_eq!((m["name"].as_str(), m["standard"].as_str(), m["density"].as_f64(), m["standard_kind"].as_str()), (Some("DEMO Cu-ETP"), Some("0510 Copper"), Some(8.9), Some("—")), "{r}");
+    assert_eq!((m["name"].as_str(), m["standard"].as_str(), m["density"].as_f64(), m["standard_kind"].as_str()), (Some("DEMO Cu-ETP"), Some("0510 Copper"), Some(8.9), Some("Copper and brass")), "{r}");
     // The list offers the whole catalogue to add from.
     let l = call(&mut s, "material", None, json!({"mode": "list"}));
     assert_eq!(l["data"]["standards"].as_array().unwrap().len(), 34);
@@ -7191,7 +7191,7 @@ fn a_blank_field_shows_the_standards_value_a_typed_one_overrides_it_and_clearing
     let k = p.add_from_standard(110).unwrap();
     p.rows[k].m.name = "DEMO 316L".into();
     p.rows[k].other_names = "DEMO-AISI 316L, DEMO 1.4404".into();
-    assert_eq!(p.rows[k].text(Field::Density).as_str(), "", "blank");
+    assert_eq!(p.rows[k].text(Field::Density), "", "blank");
     assert_eq!(FIELDS_SHOWN.map(|f| p.rows[k].standard_value(f)), ["8", "STEEL", "0010", "0110"], "greyed: the standard's");
     save_page(&s, &p).unwrap();
     let m = listed(&mut s, "DEMO 316L");
@@ -7200,9 +7200,9 @@ fn a_blank_field_shows_the_standards_value_a_typed_one_overrides_it_and_clearing
     // Typed: its own.
     let mut p = page(&s);
     let k = row_of(&p, "DEMO 316L");
-    *p.rows[k].text(Field::Density) = "7,95".into();
-    *p.rows[k].text(Field::MachineRef) = "DEMO-KEY".into();
-    *p.rows[k].text(Field::ProgramCode) = "DEMO-0111".into();
+    p.rows[k].set(Field::Density, "7,95");
+    p.rows[k].set(Field::MachineRef, "DEMO-KEY");
+    p.rows[k].set(Field::ProgramCode, "DEMO-0111");
     assert!(p.changed());
     save_page(&s, &p).unwrap();
     let m = listed(&mut s, "DEMO 316L");
@@ -7212,16 +7212,16 @@ fn a_blank_field_shows_the_standards_value_a_typed_one_overrides_it_and_clearing
     // Cleared: the standard's again.
     let mut p = page(&s);
     let k = row_of(&p, "DEMO 316L");
-    assert_eq!(p.rows[k].text(Field::Density).as_str(), "7.95", "its own, shown as typed");
-    p.rows[k].text(Field::Density).clear();
-    p.rows[k].text(Field::MachineRef).clear();
+    assert_eq!(p.rows[k].text(Field::Density), "7.95", "its own, shown as typed");
+    p.rows[k].set(Field::Density, "");
+    p.rows[k].set(Field::MachineRef, "");
     save_page(&s, &p).unwrap();
     let m = listed(&mut s, "DEMO 316L");
     assert_eq!((m["density"].as_f64(), m["machine_key"].as_str(), m["program_code"].as_str()), (Some(8.0), Some("##MATEXP0110##"), Some("DEMO-0111")), "{m}");
     // A density that isn't one is refused, naming the material.
     let mut p = page(&s);
     let k = row_of(&p, "DEMO 316L");
-    *p.rows[k].text(Field::Density) = "heavy".into();
+    p.rows[k].set(Field::Density, "heavy");
     let e = save_page(&s, &p).unwrap_err();
     assert!(e.starts_with("DEMO 316L: density heavy"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
@@ -7309,7 +7309,7 @@ fn undo_changes_after_several_edits_gives_back_the_list_as_stored() {
     let mut p = fresh.clone();
     let k = row_of(&p, "Stainless steel");
     p.rows[k].m.name = "DEMO Inox".into();
-    *p.rows[k].text(Field::ProgramName) = "DEMO".into();
+    p.rows[k].set(Field::ProgramName, "DEMO");
     p.rows[k].other_names.clear();
     p.add_from_standard(510).unwrap();
     p.add_blank();
@@ -7376,11 +7376,31 @@ fn two_pcs_changing_different_values_of_one_material_both_count() {
     let mut a = page(&s);
     let mut b = page(&other);
     let k = row_of(&a, "DEMO 316 Stainless");
-    *a.rows[k].text(Field::Density) = "7.98".into();
+    a.rows[k].set(Field::Density, "7.98");
     b.rows[k].other_names = "DEMO-316, DEMO-1.4401, DEMO-316S".into();
     save_page(&s, &a).unwrap();
     save_page(&other, &b).unwrap();
     let m = listed(&mut s, "DEMO 316 Stainless");
     assert_eq!((m["density"].as_f64(), m["other_names"].clone()), (Some(7.98), json!(["DEMO-316", "DEMO-1.4401", "DEMO-316S"])), "{m}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_pages_kind_is_the_group_the_material_picker_puts_a_material_in() {
+    // MA21 + MA23: Settings → Materials and every Material ▾ name a
+    // material's kind the same way, from one engine function.
+    let (d, _lib, mut s) = page_session("material_page_kinds");
+    for (name, std) in [("DEMO 5754", "0210"), ("DEMO G90", "0300"), ("DEMO CuZn37", "0590"), ("DEMO Ti", "0400"), ("DEMO S355", "0040")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    let l = material::current();
+    for g in material::choose(&l, "") {
+        for c in g.choices {
+            let m = l.get(c.id).unwrap();
+            assert_eq!(crate::engine::catalogue::kind_name(m.standard), g.group.label(), "{}", m.name);
+        }
+    }
+    let kind = |n: &str| crate::engine::catalogue::kind_name(l.materials.iter().find(|m| m.name == n).unwrap().standard);
+    assert_eq!([kind("Aluminium"), kind("DEMO 5754"), kind("DEMO G90"), kind("DEMO CuZn37"), kind("DEMO Ti"), kind("DEMO S355")], ["Aluminium", "Aluminium", "Galvanized", "Copper and brass", "Other", "Carbon steel"]);
     let _ = std::fs::remove_dir_all(&d);
 }

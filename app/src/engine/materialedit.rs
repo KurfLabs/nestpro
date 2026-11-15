@@ -119,6 +119,16 @@ impl Field {
         }
     }
 
+    /// Whether the material has a value of its own here (an empty one too).
+    fn is_own(self, m: &Material) -> bool {
+        match self {
+            Field::Density => m.density.is_some(),
+            Field::ProgramName => m.program_name.is_some(),
+            Field::ProgramCode => m.program_code.is_some(),
+            Field::MachineRef => m.machine_ref.is_some(),
+        }
+    }
+
     fn clear(self, m: &mut Material) {
         match self {
             Field::Density => m.density = None,
@@ -151,7 +161,12 @@ pub struct Row {
     /// `other_names`, standard; the four fields as typed in `texts`).
     pub m: Material,
     pub other_names: String,
-    pub texts: [String; 4],
+    /// The four fields as shown (`Field` order): the material's own value,
+    /// or empty when it has none.
+    texts: [String; 4],
+    /// Whether each field is the material's own value (an empty one
+    /// counts: an old setting can give one, MA15), else its standard's.
+    own: [bool; 4],
     /// Marked to be deleted when the page is saved.
     pub delete: bool,
     /// Tells rows apart while the page is open (new rows have no id).
@@ -160,31 +175,70 @@ pub struct Row {
 
 impl Row {
     fn of(m: &Material, key: u64) -> Row {
-        Row { was: Some(m.clone()), m: m.clone(), other_names: m.other_names.join(", "), texts: FIELDS.map(|f| f.own(m)), delete: false, key }
+        Row { was: Some(m.clone()), m: m.clone(), other_names: m.other_names.join(", "), texts: FIELDS.map(|f| f.own(m)), own: FIELDS.map(|f| f.is_own(m)), delete: false, key }
     }
 
     fn new(m: Material, key: u64) -> Row {
         Row { was: None, ..Row::of(&m, key) }
     }
 
-    pub fn text(&mut self, f: Field) -> &mut String {
-        &mut self.texts[f.at()]
+    /// A field as shown: the material's own value, or empty.
+    pub fn text(&self, f: Field) -> &str {
+        &self.texts[f.at()]
     }
 
-    /// The material as the row says, or why it can't be: a value typed
-    /// differently from the one shown becomes its own; one cleared is its
-    /// standard's again; one left alone stays as it was (an empty value of
-    /// its own too, MA15).
+    /// Whether the field is the material's own value (an empty one too),
+    /// rather than its standard's.
+    pub fn is_own(&self, f: Field) -> bool {
+        self.own[f.at()]
+    }
+
+    /// The field as typed: a value is the material's own; typed empty, the
+    /// standard's again (MA21).
+    pub fn set(&mut self, f: Field, text: &str) {
+        self.texts[f.at()] = text.to_string();
+        self.own[f.at()] = !text.trim().is_empty();
+    }
+
+    /// Use the standard's value in this field (an empty value of the
+    /// material's own goes too).
+    pub fn use_standard(&mut self, f: Field) {
+        self.set(f, "");
+    }
+
+    /// The grey text an empty field shows: the standard's value when it is
+    /// the standard's; what is really used when it is an empty value of the
+    /// material's own (MA15).
+    pub fn hint(&self, f: Field) -> String {
+        if !self.is_own(f) {
+            return self.standard_value(f);
+        }
+        if !self.text(f).trim().is_empty() {
+            return self.text(f).to_string();
+        }
+        match f {
+            Field::MachineRef => {
+                let p = self.material().map(|m| m.program().0).unwrap_or_default();
+                if p.trim().is_empty() { "empty: no key".to_string() } else { format!("empty: the name in programs ({})", p.trim()) }
+            }
+            _ => "empty".to_string(),
+        }
+    }
+
+    /// The material as the row says, or why it can't be: each field its
+    /// own value or its standard's as the row has it; a field left as it
+    /// was read stays exactly as stored (an empty value of its own too,
+    /// MA15).
     pub fn material(&self) -> Result<Material, String> {
         let mut m = self.m.clone();
         m.other_names = material::split_names(&self.other_names);
         let shown = self.was.as_ref().unwrap_or(&self.m);
         for f in FIELDS {
             let typed = &self.texts[f.at()];
-            if *typed == f.own(shown) {
+            if *typed == f.own(shown) && self.is_own(f) == f.is_own(shown) {
                 continue;
             }
-            if typed.trim().is_empty() {
+            if !self.is_own(f) {
                 f.clear(&mut m);
                 continue;
             }
@@ -315,6 +369,7 @@ impl Draft {
         for r in self.rows.iter_mut().filter(|r| !r.is_new() && r.m.id < KEPT) {
             if let Some(d) = defaults.get(r.m.id) {
                 r.texts = FIELDS.map(|f| f.own(d));
+                r.own = FIELDS.map(|f| f.is_own(d));
                 r.other_names = d.other_names.join(", ");
             }
         }
@@ -343,21 +398,30 @@ mod tests {
     use crate::settings::AppSettings;
 
     #[test]
-    fn a_value_left_alone_stays_as_it_was_even_an_empty_one_of_its_own() {
-        // MA15: a PC's settings can give a material an empty value of its own
-        // (aluminium's machine table key here); the page shows it blank, and
-        // saving another change keeps it empty rather than the standard's.
+    fn an_empty_value_of_its_own_is_shown_as_what_is_used_kept_as_it_is_and_can_go_back_to_the_standards() {
+        // MA15, MA21: a PC's old settings can give a material an empty value
+        // of its own (aluminium's machine table key here, so the machine
+        // file is looked up by its name in programs). The page shows that,
+        // not the standard's key; saving other changes leaves it exactly as
+        // stored; Use standard (or typing and clearing) gives the standard's.
         let l = List::seed(&AppSettings::parse("[general]\nmaterial_ref2 =\n"));
         let mut d = Draft::of(&l);
-        assert_eq!(d.rows[2].m.machine_ref.as_deref(), Some(""));
-        assert_eq!(d.rows[2].text(Field::MachineRef).as_str(), "");
+        let r = &d.rows[2];
+        assert_eq!((r.m.machine_ref.as_deref(), r.text(Field::MachineRef), r.is_own(Field::MachineRef)), (Some(""), "", true));
+        assert_eq!(r.hint(Field::MachineRef), "empty: the name in programs (ALUMINIUM)", "what is really used, not the standard's 0200");
+        assert_eq!(d.rows[1].hint(Field::MachineRef), "0100", "an own key shows itself; a blank one would show the standard's");
+        // Left alone while another value changes: stored as it was.
         d.rows[2].m.name = "DEMO Alu".into();
         let Change::Edit { now, .. } = &d.changes().unwrap()[0] else { panic!() };
         assert_eq!((now.name.as_str(), now.machine_ref.as_deref()), ("DEMO Alu", Some("")));
-        // Typed and cleared again: the standard's.
-        *d.rows[2].text(Field::MachineRef) = "DEMO".into();
-        d.rows[2].text(Field::MachineRef).clear();
-        assert_eq!(d.rows[2].material().unwrap().machine_ref.as_deref(), Some(""), "back as shown: left alone");
-        assert!(d.rows[2].standard_value(Field::MachineRef) == "0200");
+        // Use standard: its standard's key, shown grey.
+        d.rows[2].use_standard(Field::MachineRef);
+        assert_eq!((d.rows[2].material().unwrap().machine_ref, d.rows[2].hint(Field::MachineRef)), (None, "0200".to_string()));
+        // Typed and cleared: the standard's too, never the empty value again.
+        let mut d = Draft::of(&l);
+        d.rows[2].set(Field::MachineRef, "DEMO");
+        d.rows[2].set(Field::MachineRef, "");
+        assert_eq!(d.rows[2].material().unwrap().machine_ref, None);
+        assert!(d.rows[2].changed());
     }
 }

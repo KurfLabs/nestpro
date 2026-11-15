@@ -88,9 +88,9 @@ impl Entry {
     }
 
     /// "Stainless steel · 8 kg/dm³" (what the page's standard picker shows
-    /// beside the name).
+    /// beside the name): its kind as `kind_name` gives it, and its weight.
     pub fn details(&self) -> String {
-        let kind = self.kind.unwrap_or(if self.waterjet { "waterjet" } else { "no kind" });
+        let kind = kind_name(self.number);
         match self.density {
             Some(d) => format!("{kind} · {d} kg/dm³"),
             None => format!("{kind} · no weight given"),
@@ -109,10 +109,10 @@ pub fn label(number: u32) -> String {
     entry(number).map_or_else(|| format!("{number:04}, not in the catalogue"), Entry::label)
 }
 
-/// The kind a material's standard gives, as the page shows it: the
-/// catalogue's ("Carbon Steel", "Aluminium alloy"), "—" for one with none.
+/// The kind a material's standard gives, as Settings → Materials shows
+/// it: the group the Material ▾ puts it in (MA23), so both agree.
 pub fn kind_name(number: u32) -> &'static str {
-    entry(number).and_then(|e| e.kind).unwrap_or("—")
+    super::material::group_of(number).label()
 }
 
 /// MA22 (estimated): the values a catalogue standard other than the app's

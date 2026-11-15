@@ -3263,6 +3263,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Settings → Materials/Undo changes", "material"),
     ("Settings → Materials/Reset to defaults", "material"),
     ("Settings → Materials/Try again", "material"),
+    ("Settings → Materials/Use standard", "material"),
 ];
 
 #[cfg(test)]
