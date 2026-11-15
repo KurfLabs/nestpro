@@ -83,10 +83,10 @@ pub struct Op {
 
 impl Op {
     /// Changes a file: the job, the sheet stock (`stock`), the Library's job
-    /// or part folders (`job-folders`, `part-folders`) or a test Library
-    /// folder (`library-check`).
+    /// or part folders (`job-folders`, `part-folders`), a test Library
+    /// folder (`library-check`) or the settings (`machine-switches`).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check" | "job-folders" | "part-folders")
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check" | "job-folders" | "part-folders" | "machine-switches")
     }
 
     /// MCP tool name (underscores).
@@ -367,6 +367,10 @@ pub static OPS: &[Op] = &[
     // --- reference ---
     Op { name: "catalog", group: "Reference", kind: Kind::Global, help: "Choices the other operations take: shapes, materials, thicknesses, nesting levels, machine types, lead/joint types, qualities, text kinds and fields, layer roles.", args: &[] },
     Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, its gas as saved (the gas a new job starts with; gas_note when its number and name aren't one of the list's pairs, written as saved until a gas is picked in Settings → Machines), the sheet and hole order changed for it in Settings → Machines (order_changes), and the active machine's technology (CT1) values, with how it orders the parts on a sheet (sheet_order: start corner, columns or rows, zig-zag, zones) and a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits); for each, where the value comes from (Settings → Machines, the machine file or the default) and what the machine file alone gives.", args: &[] },
+    Op { name: "machine-switches", group: "Reference", kind: Kind::Global, help: "A ByStar Fiber laser's post (BV61): every switch of the original's ByStar Fiber post with its value, its default, where the value comes from (set in Settings, the post file, or the default) and whether programs follow it yet (written / not yet / no effect), the post files, the machine tolerance and program unit, and the technology table's ByStar Fiber columns (each quality's operation mode and pierce, used with B015 / B014). With set, mode or pierce it changes them and saves the settings: set=\"B015=1, C004=P\" (a value equal to the file's or the default takes the change out; key=file gives the file's value back), mode=\"3=4, 7=6\" (quality=operation mode), pierce=\"0=Normal, 3=\" (0 = marking; empty = no pierce; Normal, Fine, Drilled or NoTime), ps1 / cf1 = the post files (empty = built-in defaults).", args: &[
+        r("machine", Ty::Str, "The machine's name in Settings → Machines (a ByStar Fiber laser)"), a("set", Ty::Str, "Switches to change: \"B015=1, C004=P\""), a("mode", Ty::Str, "Operation modes to change: \"quality=mode, …\""),
+        a("pierce", Ty::Str, "Pierce modes to change: \"quality=Normal|Fine|Drilled|NoTime|(empty), …\" (0 = marking)"), a("ps1", Ty::Str, "The post's parameter file (.ps1); empty = none"), a("cf1", Ty::Str, "The post library (.CF1); empty = none"),
+    ] },
 ];
 
 pub fn find(name: &str) -> Option<&'static Op> {
@@ -1182,8 +1186,91 @@ fn machines(ctx: &Ctx) -> Value {
             "note": "These are the machine's own values; a job's material and thickness may pick a section of the file instead (machine-tech).",
         },
         "post": { "extension": ctx.post.file_name("JOB", 1) },
-        "note": "Settings are changed in the app (Settings window), not by agents. The sheet and hole order are changed per machine in Settings → Machines, and a change wins over the machine file (order_changes; each value's `from` says where it comes from). A job is put on a machine's process with set-sheet machine=<does> (MK1).",
+        "note": "Settings are changed in the app (Settings window), not by agents, except a ByStar Fiber laser's post switches (machine-switches). The sheet and hole order are changed per machine in Settings → Machines, and a change wins over the machine file (order_changes; each value's `from` says where it comes from). A job is put on a machine's process with set-sheet machine=<does> (MK1).",
     })
+}
+
+/// BV61: read, and with set / mode / pierce / ps1 / cf1 change, a ByStar
+/// Fiber laser's post in `cfg`. The bool says whether anything changed.
+pub fn machine_switches_on(cfg: &mut AppSettings, a: &Args) -> Result<(Outcome, bool), String> {
+    use crate::bystar::{Post, Status, PIERCES, SWITCHES};
+    let name = a.need_str("machine")?;
+    let i = sheetmachine::find(cfg, &name).ok_or_else(|| format!("No machine \"{name}\" in Settings → Machines ({}).", sheetmachine::machine_list(cfg)))?;
+    if cfg.machines[i].output != crate::settings::Output::ByStar {
+        let list: Vec<String> = cfg.machines.iter().filter(|m| m.output == crate::settings::Output::ByStar).map(|m| m.name.clone()).collect();
+        return Err(format!(
+            "{} writes {} programs, not ByStar Fiber laser ones, so it has no ByStar Fiber post. {}",
+            cfg.machines[i].name,
+            cfg.machines[i].output.key(),
+            if list.is_empty() { "No machine in Settings → Machines is a ByStar Fiber laser.".to_string() } else { format!("The ByStar Fiber lasers: {}.", list.join(", ")) }
+        ));
+    }
+    let before = cfg.machines[i].bystar.clone();
+    let mname = cfg.machines[i].name.clone();
+    let m = &mut cfg.machines[i].bystar;
+    let pairs = |text: &str| -> Result<Vec<(String, String)>, String> {
+        text.split(',').filter(|p| !p.trim().is_empty()).map(|p| p.split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).ok_or_else(|| format!("\"{}\" isn't key=value", p.trim()))).collect()
+    };
+    if let Some(v) = a.str("ps1") {
+        m.ps1 = v.trim().to_string();
+    }
+    if let Some(v) = a.str("cf1") {
+        m.cf1 = v.trim().to_string();
+    }
+    if let Some(t) = a.str("set") {
+        for (k, v) in pairs(&t)? {
+            if v.eq_ignore_ascii_case("file") {
+                let key = crate::bystar::switch(&k).ok_or_else(|| format!("{k} isn't one of the post's switches (B000–B050, C001–C013, R000–R007)"))?.key;
+                m.set.remove(key);
+            } else {
+                m.set_switch(&k, &v)?;
+            }
+        }
+    }
+    let quality = |k: &str, from: u8| -> Result<u8, String> { k.parse::<u8>().ok().filter(|q| (from..=12).contains(q)).ok_or_else(|| format!("quality \"{k}\": {from}–12")) };
+    if let Some(t) = a.str("mode") {
+        for (k, v) in pairs(&t)? {
+            let q = quality(&k, 1)?;
+            let mode: i64 = v.parse().map_err(|_| format!("mode for quality {q}: \"{v}\" isn't a whole number"))?;
+            if mode == crate::bystar::seed_mode(q as usize) { m.modes.remove(&q) } else { m.modes.insert(q, mode) };
+        }
+    }
+    if let Some(t) = a.str("pierce") {
+        for (k, v) in pairs(&t)? {
+            let q = quality(&k, 0)?;
+            let p = PIERCES.iter().find(|p| p.eq_ignore_ascii_case(&v)).map(|p| p.to_string());
+            let p = match (p, v.is_empty()) {
+                (Some(p), _) => p,
+                (None, true) => String::new(),
+                (None, false) => return Err(format!("pierce for quality {q}: \"{v}\" isn't one of {} (or empty for no pierce)", PIERCES.join(", "))),
+            };
+            if p == crate::bystar::seed_pierce(q as usize) { m.pierces.remove(&q) } else { m.pierces.insert(q, p) };
+        }
+    }
+    let changed = *m != before;
+    let post = Post::load(m);
+    let list: Vec<Value> = SWITCHES
+        .iter()
+        .map(|d| {
+            json!({
+                "switch": d.key, "what": d.what, "value": post.raw(d.key), "default": d.default,
+                "from": post.from.get(d.key).copied().unwrap_or("default"),
+                "programs": match d.status { Status::Built => "written", Status::Later => "not yet", Status::NoEffect => "no effect" },
+                "rule": d.rule,
+            })
+        })
+        .collect();
+    let table: Vec<Value> = (0..=12usize).map(|q| json!({"quality": if q == 0 { json!("marking") } else { json!(q) }, "mode": if q == 0 { 2 } else { post.modes[q] }, "pierce": post.pierces[q]})).collect();
+    let data = json!({
+        "machine": mname, "ps1": m.ps1, "cf1": m.cf1, "tolerance": post.tol, "unit_mm": post.unit,
+        "file_error": post.file_error, "switches": list, "technology": table,
+    });
+    let msg = if changed {
+        format!("{}: post changed ({} switch(es) set here); saved in the settings.", mname, m.set.len())
+    } else {
+        format!("{}: ByStar Fiber post, {} switch(es) set here.", mname, m.set.len())
+    };
+    Ok((Outcome::read(msg, data), changed))
 }
 
 // ---------------------------------------------------------------------------
@@ -1375,6 +1462,13 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
         "catalog" => Ok(Outcome::read("Choices for the operations.", catalog())),
         "stock" => stock_op(ctx, &a),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
+        "machine-switches" => {
+            if ["set", "mode", "pierce", "ps1", "cf1"].iter().any(|k| a.str(k).is_some()) {
+                return Err("machine-switches changes the settings only in a session (nestpro mcp, or one nestpro command); here it can only read them.".into());
+            }
+            let mut c = ctx.cfg.clone();
+            machine_switches_on(&mut c, &a).map(|(o, _)| o)
+        }
         "import-xml" => import_xml(ctx, &a),
         "job-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Job),
         "part-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Product),
@@ -3101,7 +3195,10 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             if !stops.is_empty() {
                 return Err(stop_refusal(s + 1, &stops));
             }
-            let text = if let Some(b) = out.blm.as_ref().filter(|b| b.on) {
+            let text = if out.bystar.is_some() {
+                // MS6, BV59: the ByStar Fiber laser's cut program, read back.
+                bystar_program(&job.name, s, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &f, out)?
+            } else if let Some(b) = out.blm.as_ref().filter(|b| b.on) {
                 let (set, issues) = sheetmachine::on_sheet(&f, || {
                     let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), b);
                     let issues = readback::check_set(&set, &job.parts, &job.sheets[s], &plans[s], job.cuts(s));

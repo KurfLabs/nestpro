@@ -7091,3 +7091,565 @@ fn a_link_named_after_the_job_doesnt_lead_the_record_into_another_jobs_folder() 
     assert!(d.join("iso-programs").join("DEMO-TWO").join("DEMOTWOX1.CNC").is_file(), "this job's own program is written");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Writing ByStar Fiber laser programs (.bvc, BV21–BV62), made-up jobs.
+// ---------------------------------------------------------------------------
+
+/// A made-up plate `name`, 200 × 100 mm: two Ø20 holes, a 40 × 10 slot
+/// (two half circles and two straights) and, with `near`, a Ø6 hole 2 mm
+/// from the left edge.
+fn plate_with_holes_and_slot(d: &Path, near: bool, name: &str) -> PathBuf {
+    let sq = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n200\n20\n0\n10\n200\n20\n100\n10\n0\n20\n100\n";
+    let hole = |x: f64, y: f64, r: f64| format!("0\nCIRCLE\n8\n0\n10\n{x}\n20\n{y}\n30\n0\n40\n{r}\n");
+    let slot = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n80\n20\n45\n10\n120\n20\n45\n42\n1\n10\n120\n20\n55\n10\n80\n20\n55\n42\n1\n";
+    let extra = if near { hole(5.0, 50.0, 3.0) } else { String::new() };
+    let dxf = d.join(format!("{name}.dxf"));
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{sq}{}{}{slot}{extra}0\nENDSEC\n0\nEOF\n", hole(40.0, 50.0, 10.0), hole(160.0, 50.0, 10.0))).unwrap();
+    dxf
+}
+
+/// Made-up machines in `d`: "Demo BLM laser" (LC5 set) and "Demo ByStar
+/// Fiber laser", each writing into its own program folder; the job's
+/// machine is the ByStar Fiber laser when `on_bystar`.
+fn bystar_settings(d: &Path, on_bystar: bool) -> crate::settings::AppSettings {
+    let folder = |n: &str| d.join(n).to_string_lossy().into_owned();
+    let blm = crate::settings::Machine { name: "Demo BLM laser".into(), output: crate::settings::Output::BlmSiemens, program_dir: folder("blm-programs"), ..Default::default() };
+    let bystar = crate::settings::Machine { name: "Demo ByStar Fiber laser".into(), output: crate::settings::Output::ByStar, program_dir: folder("bystar-programs"), ..Default::default() };
+    crate::settings::AppSettings {
+        lantek_dir: std::env::temp_dir().join("nestpro_test_no_lantek").to_string_lossy().into_owned(),
+        export_dir: d.join("shared").to_string_lossy().into_owned(),
+        machines: vec![blm, bystar],
+        active_machine: if on_bystar { 1 } else { 0 },
+        ..Default::default()
+    }
+}
+
+/// A session with a made-up job DEMO-BVC on the ByStar Fiber laser: a
+/// 1000 × 500 × 3 mm mild steel sheet with the plates DEMO-001 placed
+/// upright, DEMO-002 turned 90° and DEMO-003 turned 180° (one of each, so
+/// each part is cut one way), automatic leads.
+fn bystar_job(d: &Path, near: bool) -> Session {
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(d, true);
+    let job = d.join("DEMO-BVC.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    for n in ["DEMO-001", "DEMO-002", "DEMO-003"] {
+        call(&mut s, "import-drawing", None, json!({"path": plate_with_holes_and_slot(d, near, n).to_str().unwrap(), "qty": 1}));
+    }
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 400, "y": 50, "angle": 90}));
+    call(&mut s, "place", None, json!({"part": 3, "x": 600, "y": 300, "angle": 180}));
+    s
+}
+
+/// The job's ByStar Fiber programs folder.
+fn bystar_dir(d: &Path, job: &str) -> PathBuf {
+    d.join("bystar-programs").join(job)
+}
+
+/// Every command of a cut program as (name, attributes), in order.
+fn ccp_commands(text: &str) -> Vec<(String, Vec<(String, String)>)> {
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let body = l.strip_prefix('<')?.strip_suffix("/>")?.trim();
+            let (name, rest) = body.split_once(' ').unwrap_or((body, ""));
+            let mut attrs = vec![];
+            let mut r = rest;
+            while let Some((k, v)) = r.split_once("=\"") {
+                let (val, after) = v.split_once('"').unwrap();
+                attrs.push((k.trim().to_string(), val.to_string()));
+                r = after;
+            }
+            Some((name.to_string(), attrs))
+        })
+        .collect()
+}
+
+fn attr<'a>(c: &'a (String, Vec<(String, String)>), k: &str) -> Option<&'a str> {
+    c.1.iter().find(|a| a.0 == k).map(|a| a.1.as_str())
+}
+
+/// The commands of one contour, from where its operation mode or rapid
+/// starts to its `SetToolCorrection None`: the `n`-th BeginCutOut's.
+fn contour_block(cmds: &[(String, Vec<(String, String)>)], n: usize) -> Vec<String> {
+    let at = cmds.iter().enumerate().filter(|c| c.1 .0 == "BeginCutOut").nth(n).unwrap().0;
+    let mut start = cmds[..at].iter().rposition(|c| c.0 == "MoveLineTo").unwrap();
+    while start > 0 && matches!(cmds[start - 1].0.as_str(), "SetOperationMode" | "SetSensingSensor" | "SetToolCorrection") && attr(&cmds[start - 1], "Value") != Some("None") {
+        start -= 1;
+    }
+    let end = at + cmds[at..].iter().position(|c| c.0 == "SetToolCorrection" && attr(c, "Value") == Some("None")).unwrap();
+    cmds[start..=end].iter().map(|c| c.0.clone()).collect()
+}
+
+/// Every cut-out of a `.bvc` on its sheets (its shape, leads left out, BV7), as points.
+fn bvc_cuts(bytes: &[u8]) -> Vec<Vec<P>> {
+    let b = crate::bvc::read(bytes).unwrap();
+    let mut out = vec![];
+    for n in &b.nests {
+        for call in &n.program.calls {
+            let (sn, cs) = call.rotation.to_radians().sin_cos();
+            let place = |q: P| [call.x + q[0] * cs - q[1] * sn, call.y + q[0] * sn + q[1] * cs];
+            for c in &n.program.subs[call.sub].cuts {
+                let mut v: Vec<P> = vec![];
+                v.extend(c.path.points().into_iter().map(place));
+                out.push(v);
+            }
+        }
+    }
+    out.sort_by(|a, b| (a[0][0], a[0][1]).partial_cmp(&(b[0][0], b[0][1])).unwrap());
+    out
+}
+
+/// Is every point of `a` within `tol` of the path through `b`?
+fn on_path(a: &[P], b: &[P], tol: f64) -> bool {
+    let seg = |p: P, u: P, v: P| {
+        let (dx, dy) = (v[0] - u[0], v[1] - u[1]);
+        let l = dx * dx + dy * dy;
+        let t = if l == 0.0 { 0.0 } else { (((p[0] - u[0]) * dx + (p[1] - u[1]) * dy) / l).clamp(0.0, 1.0) };
+        (p[0] - u[0] - t * dx).hypot(p[1] - u[1] - t * dy)
+    };
+    a.iter().all(|&p| b.windows(2).any(|w| seg(p, w[0], w[1]) <= tol))
+}
+
+#[test]
+fn a_bystar_job_writes_a_bvc_that_opens_back_to_the_same_parts_placements_qualities_and_cuts() {
+    let d = dir("bystar_round_trip");
+    // The drawing's own arcs are point lists (ARC_CHORD_ERR); the file's are true arcs.
+    const TOL: f64 = 0.125;
+    let mut s = bystar_job(&d, true);
+    // One hole cut at quality 4, picked by hand: it must come back as 4.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "quality": 4}));
+    let r = call(&mut s, "export", None, json!({}));
+    let out = bystar_dir(&d, "DEMO-BVC");
+    let bvc = out.join("DEMOBVCX1.bvc");
+    // BV21: the .bvc, its loose cut program and job file (B010 off).
+    for f in ["DEMOBVCX1.bvc", "DEMOBVCX1.ccp", "JobInfo.xml", "parts.csv"] {
+        assert!(out.join(f).is_file(), "{f} missing: {r}");
+    }
+    let bytes = std::fs::read(&bvc).unwrap();
+    let ccp = std::fs::read_to_string(out.join("DEMOBVCX1.ccp")).unwrap();
+    // BV53: UTF-8 without BOM, CRLF line ends, no namespace.
+    assert!(ccp.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<CuttingControlProgram MeasurementSystem=\"Metric\" Thickness=\"3\">\r\n"), "{}", &ccp[..200]);
+    assert!(!ccp.contains("xmlns") && ccp.lines().count() == ccp.matches("\r\n").count());
+    let cmds = ccp_commands(&ccp);
+    // Full-circle holes are written as arcs under a full turn (no B018
+    // split needed); the slot's half circles and the holes' long arcs (180–360°) stay whole.
+    let sweeps: Vec<f64> = cmds.iter().filter(|c| c.0 == "ArcTo").map(|c| attr(c, "SweepAngle").unwrap().parse().unwrap()).collect();
+    assert!(sweeps.iter().all(|s: &f64| s.abs() < 360.0), "{sweeps:?}");
+    assert!(sweeps.iter().any(|s| s.abs() > 180.0), "an arc of 180–360° stays one ArcTo: {sweeps:?}");
+    // BV56: each part placed by position and rotation, whole numbers (BV52).
+    let calls: Vec<(String, String, String)> = cmds.iter().filter(|c| c.0 == "CallSubProgram").map(|c| (attr(c, "X").unwrap().into(), attr(c, "Y").unwrap().into(), attr(c, "Rotation").unwrap().into())).collect();
+    let mut rots: Vec<&str> = calls.iter().map(|c| c.2.as_str()).collect();
+    rots.sort();
+    assert_eq!(rots, vec!["0", "180", "90"], "{calls:?}");
+    assert!(calls.iter().all(|c| !c.0.contains('.') && !c.1.contains('.')), "{calls:?}");
+
+    // Opened again (#124's reader): the same part, placements, qualities.
+    let back = d.join("BACK.snjob");
+    let r = call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": bvc.to_str().unwrap()}));
+    assert!(!r["message"].as_str().unwrap().contains("different ways"), "{r}");
+    let orig = jobfile::load(&d.join("DEMO-BVC.snjob")).unwrap();
+    let again = jobfile::load(&back).unwrap();
+    let names: Vec<(&str, u32)> = again.parts.iter().map(|p| (p.name.as_str(), p.qty)).collect();
+    assert_eq!(names, vec![("DEMO-001", 1), ("DEMO-002", 1), ("DEMO-003", 1)]);
+    assert_eq!(again.sheets.len(), 1);
+    let mut a: Vec<&Placed> = orig.sheets[0].iter().collect();
+    let mut b: Vec<&Placed> = again.sheets[0].iter().collect();
+    for v in [&mut a, &mut b] {
+        v.sort_by(|p, q| (p.x, p.y).partial_cmp(&(q.x, q.y)).unwrap());
+    }
+    for (p, q) in a.iter().zip(&b) {
+        assert!((p.x - q.x).abs() < 0.01 && (p.y - q.y).abs() < 0.01 && p.turns == q.turns, "{p:?} vs {q:?}");
+        let ring = |mut v: Vec<P>| {
+            v.push(v[0]);
+            v
+        };
+        let (po, ph) = crate::nest::placed_shape(&orig.parts, p);
+        let (qo, qh) = crate::nest::placed_shape(&again.parts, q);
+        let (po, qo) = (ring(po), ring(qo));
+        let (ph, qh): (Vec<Vec<P>>, Vec<Vec<P>>) = (ph.into_iter().map(ring).collect(), qh.into_iter().map(ring).collect());
+        assert!(on_path(&po, &qo, TOL) && on_path(&qo, &po, TOL), "outline");
+        assert_eq!(ph.len(), qh.len());
+        for h in &ph {
+            assert!(qh.iter().any(|g| on_path(h, g, TOL) && on_path(g, h, TOL)), "a hole is missing: {:?} in {:?}", &h[..3], qh.iter().map(|g| (g.len(), g[0])).collect::<Vec<_>>());
+        }
+    }
+    let quals = |j: &JobFile| {
+        let mut q: Vec<usize> = j.plans()[0].contours.iter().map(|c| c.quality).collect();
+        q.sort();
+        q
+    };
+    assert_eq!(quals(&again), quals(&orig));
+    assert!(quals(&orig).contains(&4));
+    // Written again from the opened job (its name is the file's): the same
+    // cut-outs (its leads are planned again by the machine, BV18).
+    assert_eq!(again.name, "DEMO-BVC");
+    call(&mut s, "export", None, json!({}));
+    let twice = std::fs::read(bystar_dir(&d, "DEMO-BVC").join("DEMOBVCX1.bvc")).unwrap();
+    let (c1, c2) = (bvc_cuts(&bytes), bvc_cuts(&twice));
+    assert_eq!(c1.len(), c2.len());
+    for x in &c1 {
+        assert!(c2.iter().any(|y| on_path(x, y, TOL) && on_path(y, x, TOL)), "a cut isn't written again: {:?}", &x[..2]);
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Change switches of the ByStar Fiber laser through the agents' operation.
+fn switches(s: &mut Session, set: &str) -> Value {
+    call(s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "set": set}))
+}
+
+/// The cut program sheet `k` (from 1) gets, as the `program` operation shows it.
+fn bystar_program_text(s: &mut Session, k: usize) -> String {
+    call(s, "program", None, json!({"sheet": k}))["data"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_bystar_contour_is_written_in_bv29_order_with_the_bv33_pierce() {
+    let d = dir("bystar_order");
+    let mut s = bystar_job(&d, false);
+    let cmds = ccp_commands(&bystar_program_text(&mut s, 1));
+    // BV29: the first contour of the program: mode, sensor (BV37: on for
+    // the first pierce inside the sheet), compensation, rapid, lead-in with
+    // the pierce (BV33 default: Fine), cut-out, lead-out inside it, end.
+    let first = contour_block(&cmds, 0);
+    let head: Vec<&str> = first.iter().map(String::as_str).take(8).collect();
+    assert_eq!(head, vec!["SetOperationMode", "SetSensingSensor", "SetToolCorrection", "MoveLineTo", "BeginLeadIn", "SetPiercingMode", "ExecPiercing", "LineTo"], "{first:?}");
+    let at = |n: &str| first.iter().position(|c| c == n).unwrap();
+    assert!(at("EndLeadIn") < at("BeginCutOut") && at("BeginCutOut") < at("BeginLeadOut") && at("BeginLeadOut") < at("EndLeadOut") && at("EndLeadOut") < at("EndCutOut"), "{first:?}");
+    assert_eq!(first.last().map(String::as_str), Some("SetToolCorrection"));
+    let pierce = cmds.iter().find(|c| c.0 == "SetPiercingMode").unwrap();
+    assert_eq!(attr(pierce, "Value"), Some("Fine"));
+    // BV30: the holes are Interior, the outline Exterior; the outline last.
+    let sides: Vec<&str> = cmds.iter().filter(|c| c.0 == "BeginCutOut").take(4).map(|c| attr(c, "Contour").unwrap()).collect();
+    assert_eq!(sides, vec!["Interior", "Interior", "Interior", "Exterior"]);
+    // BV51: the mode only when it changes: one per subprogram here.
+    let modes = cmds.iter().filter(|c| c.0 == "SetOperationMode").count();
+    assert_eq!(modes, 3, "one per part");
+
+    // B011: compensation after the rapid; B040: at the cut-out start.
+    switches(&mut s, "B011=1");
+    let b = contour_block(&ccp_commands(&bystar_program_text(&mut s, 1)), 0);
+    assert_eq!(&b[2..4], ["MoveLineTo", "SetToolCorrection"], "{b:?}");
+    switches(&mut s, "B011=0, B040=1");
+    let b = contour_block(&ccp_commands(&bystar_program_text(&mut s, 1)), 0);
+    let at = |n: &str| b.iter().position(|c| c == n).unwrap();
+    assert_eq!(at("SetToolCorrection") + 1, at("BeginCutOut"), "{b:?}");
+    switches(&mut s, "B040=0");
+
+    // Without leads: the cut-out right after the rapid and no pierce at
+    // all (BV29); B044 pierces before the cut-out; B024 puts the lead-in
+    // bracket and the pierce at every start.
+    call(&mut s, "leads", None, json!({"mode": "delete"}));
+    let b = contour_block(&ccp_commands(&bystar_program_text(&mut s, 1)), 0);
+    assert_eq!(b[..5], ["SetOperationMode", "SetSensingSensor", "SetToolCorrection", "MoveLineTo", "BeginCutOut"], "{b:?}");
+    assert!(!b.iter().any(|c| c.contains("Pierc")), "{b:?}");
+    switches(&mut s, "B044=1");
+    let b = contour_block(&ccp_commands(&bystar_program_text(&mut s, 1)), 0);
+    assert_eq!(b[3..7], ["MoveLineTo", "SetPiercingMode", "ExecPiercing", "BeginCutOut"], "{b:?}");
+    switches(&mut s, "B044=0, B024=1");
+    let b = contour_block(&ccp_commands(&bystar_program_text(&mut s, 1)), 0);
+    assert_eq!(b[3..9], ["MoveLineTo", "BeginLeadIn", "SetPiercingMode", "ExecPiercing", "EndLeadIn", "BeginCutOut"], "{b:?}");
+    // B006 splits a contour's first move when it has no lead-in.
+    switches(&mut s, "B024=0, B006=2");
+    let cmds = ccp_commands(&bystar_program_text(&mut s, 1));
+    let k = cmds.iter().position(|c| c.0 == "BeginCutOut" && attr(c, "Contour") == Some("Exterior")).unwrap();
+    let (mv, a, b2) = (&cmds[k - 1], &cmds[k + 1], &cmds[k + 2]);
+    let xy = |c: &(String, Vec<(String, String)>)| [attr(c, "X").unwrap().parse::<f64>().unwrap(), attr(c, "Y").unwrap().parse::<f64>().unwrap()];
+    assert_eq!((a.0.as_str(), b2.0.as_str()), ("LineTo", "LineTo"));
+    let (p0, p1) = (xy(mv), xy(a));
+    assert!(((p1[0] - p0[0]).hypot(p1[1] - p0[1]) - 2.0).abs() < 1e-6, "{mv:?} {a:?}");
+    // Every one of these was read back and exported.
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn each_cut_quality_gets_the_bv32_operation_mode_with_the_table_switch_off_and_on() {
+    let d = dir("bystar_modes");
+    let mut s = bystar_job(&d, false);
+    let modes = |s: &mut Session| -> Vec<i64> {
+        let cmds = ccp_commands(&bystar_program_text(s, 1));
+        cmds.iter().filter(|c| c.0 == "SetOperationMode").map(|c| attr(c, "Value").unwrap().parse().unwrap()).collect()
+    };
+    let b015_off = [0, 1, 3, 4, 5, 6, 7, 0, 0, 0, 0, 0];
+    // B015 on with the table changed: quality q is mode 20 + q.
+    let table: Vec<String> = (1..=12).map(|q| format!("{q}={}", 20 + q)).collect();
+    for q in 1..=12usize {
+        // Every contour of every part at quality q: one mode per part.
+        for p in 1..=3 {
+            call(&mut s, "contour-tech", None, json!({"part": p, "contours": "1,2,3,4", "quality": q}));
+        }
+        switches(&mut s, "B015=0");
+        assert_eq!(modes(&mut s), vec![b015_off[q - 1]; 3], "quality {q}, B015 off");
+        // B015 on with the seed table: the same.
+        switches(&mut s, "B015=1");
+        assert_eq!(modes(&mut s), vec![b015_off[q - 1]; 3], "quality {q}, B015 on, seed table");
+        call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "mode": table.join(", ")}));
+        assert_eq!(modes(&mut s), vec![20 + q as i64; 3], "quality {q}, B015 on, table changed");
+        call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "mode": (1..=12).map(|q| format!("{q}={}", crate::bystar::seed_mode(q))).collect::<Vec<_>>().join(",")}));
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_bvc_that_doesnt_read_back_as_planned_is_refused_and_leaves_no_files() {
+    let d = dir("bystar_fault");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "export", None, json!({}));
+    let out = bystar_dir(&d, "DEMO-BVC");
+    assert!(out.join("DEMOBVCX1.bvc").is_file());
+    // A writer fault: the first cut written 0.5 mm off its plan.
+    crate::bystar::FAULT.with(|f| f.set(0.5));
+    let e = err(&mut s, "export", json!({}));
+    let p = s.call("program", None, &json!({"sheet": 1})).err();
+    crate::bystar::FAULT.with(|f| f.set(0.0));
+    assert!(e.contains("wouldn't cut what's planned") && e.contains("mm from"), "{e}");
+    assert!(p.is_some_and(|p| p.contains("wouldn't cut what's planned")), "the CNC pane refuses it too");
+    // Nothing new, and the job's earlier programs are gone (BL39); only the
+    // earlier parts report stays.
+    let left: Vec<String> = std::fs::read_dir(&out).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(left, vec!["parts.csv"]);
+    assert!(e.contains("No program of this job is left"), "{e}");
+    // A first write that doesn't read back leaves no file at all.
+    let d2 = dir("bystar_fault_first");
+    let mut s = bystar_job(&d2, false);
+    crate::bystar::FAULT.with(|f| f.set(-0.3));
+    let e = err(&mut s, "export", json!({}));
+    crate::bystar::FAULT.with(|f| f.set(0.0));
+    assert!(e.contains("wouldn't cut what's planned"), "{e}");
+    assert!(!bystar_dir(&d2, "DEMO-BVC").exists() && !d2.join("shared").exists());
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&d2);
+}
+
+#[test]
+fn a_job_with_sheets_on_a_blm_and_a_bystar_writes_one_set_and_one_bvc_each_in_its_folder() {
+    let d = dir("bystar_two_machines");
+    let mut s = bystar_job(&d, false);
+    // A second sheet, moved to the BLM.
+    call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 50, "y": 50}));
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM laser"}));
+    let r = call(&mut s, "export", None, json!({}));
+    let per = r["data"]["machines"].as_array().unwrap();
+    assert_eq!(per.len(), 2, "{r}");
+    let names = |dir: PathBuf| -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(names(bystar_dir(&d, "DEMO-BVC")), vec!["DEMOBVCX1.bvc", "DEMOBVCX1.ccp", "JobInfo.xml", "parts.csv"]);
+    let blm = names(d.join("blm-programs").join("DEMO-BVC"));
+    assert!(blm.iter().any(|f| f.ends_with(".zip")) && blm.iter().any(|f| f.ends_with(".XML")) && !blm.iter().any(|f| f.ends_with(".bvc")), "{blm:?}");
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Demo ByStar Fiber laser (sheet 1): DEMOBVCX1.ccp, JobInfo.xml, DEMOBVCX1.bvc") && m.contains("Demo BLM laser (sheet 2)"), "{m}");
+    // The .bvc holds sheet 1 only.
+    let b = crate::bvc::read(&std::fs::read(bystar_dir(&d, "DEMO-BVC").join("DEMOBVCX1.bvc")).unwrap()).unwrap();
+    assert_eq!((b.nests.len(), b.nests[0].program.calls.len()), (1, 3));
+    // Moved back, the BLM's programs go (MS7) and the .bvc holds both sheets.
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo ByStar Fiber laser"}));
+    call(&mut s, "export", None, json!({}));
+    assert!(names(d.join("blm-programs").join("DEMO-BVC")).iter().all(|f| f == "parts.csv"));
+    assert_eq!(names(bystar_dir(&d, "DEMO-BVC")), vec!["DEMOBVCX1.bvc", "DEMOBVCX1.ccp", "DEMOBVCX2.bvc", "DEMOBVCX2.ccp", "JobInfo.xml", "parts.csv"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn identical_sheets_fold_into_one_nest_and_b017_puts_every_nest_in_one_bvc() {
+    let d = dir("bystar_nests");
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    let job = d.join("DEMO-NESTS.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_holes_and_slot(&d, false, "DEMO-001").to_str().unwrap(), "qty": 3}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    // Sheets 1 and 2 the same, sheet 3 another nest.
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 300, "y": 200}));
+    call(&mut s, "export", None, json!({}));
+    let out = bystar_dir(&d, "DEMO-NESTS");
+    let b1 = crate::bvc::read(&std::fs::read(out.join("DEMONESTSX1.bvc")).unwrap()).unwrap();
+    assert_eq!((b1.nests.len(), b1.nests[0].plan.multiplicity), (1, 2), "sheets 1 and 2 are one nest run twice");
+    let b3 = crate::bvc::read(&std::fs::read(out.join("DEMONESTSX3.bvc")).unwrap()).unwrap();
+    assert_eq!((b3.nests.len(), b3.nests[0].plan.multiplicity), (1, 1));
+    assert!(!out.join("DEMONESTSX2.bvc").exists());
+    // The loose job file is the last program's (BV21).
+    let info = std::fs::read_to_string(out.join("JobInfo.xml")).unwrap();
+    assert!(info.contains("Name=\"DEMONESTSX3\"") && !info.contains("Name=\"DEMONESTSX1\""), "{info}");
+    // B017: every nest in the first program's .bvc, one job file for all;
+    // B010: no loose files.
+    switches(&mut s, "B017=1, B010=1");
+    call(&mut s, "export", None, json!({}));
+    let mut files: Vec<String> = std::fs::read_dir(&out).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    files.sort();
+    assert_eq!(files, vec!["DEMONESTSX1.bvc", "parts.csv"]);
+    let all = crate::bvc::read(&std::fs::read(out.join("DEMONESTSX1.bvc")).unwrap()).unwrap();
+    let runs: Vec<(String, i64)> = all.nests.iter().map(|n| (n.plan.name.clone(), n.plan.multiplicity)).collect();
+    assert_eq!(runs, vec![("DEMONESTSX1".to_string(), 2), ("DEMONESTSX3".to_string(), 1)]);
+    // Opened again: three sheets.
+    let back = d.join("BACK.snjob");
+    call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": out.join("DEMONESTSX1.bvc").to_str().unwrap()}));
+    assert_eq!(jobfile::load(&back).unwrap().sheets.len(), 3);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_inch_bystar_program_is_written_in_inches_only_with_the_inch_post_library() {
+    let d = dir("bystar_inch");
+    let mut s = bystar_job(&d, false);
+    // BV25: B001 alone only changes the text, so the numbers would be read
+    // 25.4 times too big: the read-back refuses it.
+    switches(&mut s, "B001=1");
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("wouldn't cut what's planned"), "{e}");
+    // With the post library's inch output unit (CF1 A006 = 25.4) it is right.
+    let cf1 = d.join("DEMO-INCH.CF1");
+    std::fs::write(&cf1, "A005 0.005 ; tolerance\nA006 25.4 ; inch\n").unwrap();
+    call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "cf1": cf1.to_str().unwrap()}));
+    call(&mut s, "export", None, json!({}));
+    let ccp = std::fs::read_to_string(bystar_dir(&d, "DEMO-BVC").join("DEMOBVCX1.ccp")).unwrap();
+    assert!(ccp.contains("MeasurementSystem=\"Imperial\" Thickness=\"0.118110236\"") && ccp.contains("SheetWidth=\"39.37007874\""), "{}", &ccp[..300]);
+    let info = std::fs::read_to_string(bystar_dir(&d, "DEMO-BVC").join("JobInfo.xml")).unwrap();
+    assert!(info.contains("MeasurementSystem=\"Metric\"") && info.contains("Thickness=\"3\""), "the job file stays metric: {info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn bystar_switches_change_the_frame_names_and_job_file() {
+    let d = dir("bystar_frame");
+    let mut s = bystar_job(&d, false);
+    switches(&mut s, "C004=P, B016=1, B041=1, B021=1, B029=1, B030=1, B039=2");
+    call(&mut s, "export", None, json!({}));
+    let out = bystar_dir(&d, "DEMO-BVC");
+    let ccp = std::fs::read_to_string(out.join("DEMOBVCX1.ccp")).unwrap();
+    let cmds = ccp_commands(&ccp);
+    assert!(ccp.contains("ToolArrangement=\"Vertical\""));
+    assert!(ccp.contains("<SubProgram Id=\"1\" Name=\"P1\" PartNumber=\"P1\""), "C004, B016");
+    assert!(!cmds.iter().any(|c| c.0 == "SetSensingSensor"), "B039 = 2: no sensor switching at contour starts");
+    let call1 = cmds.iter().find(|c| c.0 == "CallSubProgram").unwrap();
+    assert!(attr(call1, "X").unwrap().contains('.') || attr(call1, "X").unwrap().parse::<f64>().is_ok(), "{call1:?}");
+    let info = std::fs::read_to_string(out.join("JobInfo.xml")).unwrap();
+    assert!(info.contains("<ResidualSheetInfos />") && info.contains("<BigPartInfos />") && info.contains("SubProgramName=\"P1\""), "{info}");
+    // The job file: the material as programs name it (Settings → Materials),
+    // thickness, the job's gas, the parts.
+    assert!(info.contains("Material=\"STEEL\"") && info.contains("ProcessGas=\"Nitrogen\"") && info.contains("<PartInfo Id=\"1\" Name=\"DEMO-001\" Quantity=\"1\" />"), "{info}");
+    // The ids count up in writing order from 1 (BV24).
+    let ids: Vec<usize> = ccp.lines().filter_map(|l| l.split("Id=\"").nth(1)?.split('"').next()?.parse().ok()).collect();
+    assert_eq!(ids, (1..=ids.len()).collect::<Vec<_>>());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_empty_technology_table_pierce_writes_no_pierce() {
+    let d = dir("bystar_table");
+    let mut s = bystar_job(&d, false);
+    let all_empty: Vec<String> = (0..=12).map(|q| format!("{q}=")).collect();
+    call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "set": "B014=1", "pierce": all_empty.join(", ")}));
+    let cmds = ccp_commands(&bystar_program_text(&mut s, 1));
+    assert!(!cmds.iter().any(|c| c.0 == "SetPiercingMode" || c.0 == "ExecPiercing"), "BV33: no pierce commands at all");
+    call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "pierce": "3=Drilled"}));
+    let cmds = ccp_commands(&bystar_program_text(&mut s, 1));
+    assert!(cmds.iter().filter(|c| c.0 == "SetPiercingMode").all(|c| attr(c, "Value") == Some("Drilled")));
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn machine_switches_reads_and_sets_a_bystar_post_and_refuses_what_isnt_one() {
+    let d = dir("bystar_switch_op");
+    let mut s = bystar_job(&d, false);
+    let r = call(&mut s, "machine-switches", None, json!({"machine": "demo bystar FIBER laser"}));
+    let sw = r["data"]["switches"].as_array().unwrap();
+    assert_eq!(sw.len(), crate::bystar::SWITCHES.len());
+    let b013 = sw.iter().find(|v| v["switch"] == "B013").unwrap();
+    assert_eq!((b013["value"].as_str(), b013["from"].as_str(), b013["programs"].as_str()), (Some("0.2"), Some("default"), Some("not yet")));
+    let r = switches(&mut s, "b015=1");
+    assert_eq!(r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "B015").unwrap()["from"], json!("set"));
+    // Saved with the settings.
+    let saved = crate::settings::AppSettings::read_from(&crate::settings::AppSettings::file()).unwrap();
+    assert!(saved.machines.iter().any(|m| m.bystar.set.get("B015").map(String::as_str) == Some("1")));
+    switches(&mut s, "B015=file");
+    assert!(err(&mut s, "machine-switches", json!({"machine": "Demo BLM laser", "set": "B015=1"})).contains("Demo ByStar Fiber laser"));
+    assert!(err(&mut s, "machine-switches", json!({"machine": "Demo plasma"})).contains("Demo BLM laser"));
+    assert!(err(&mut s, "machine-switches", json!({"machine": "Demo ByStar Fiber laser", "set": "B099=1"})).contains("isn't one of the post's switches"));
+    assert!(err(&mut s, "machine-switches", json!({"machine": "Demo ByStar Fiber laser", "pierce": "3=Hard"})).contains("Normal, Fine, Drilled, NoTime"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_bystar_sheet_with_what_its_programs_cant_carry_yet_is_refused() {
+    let d = dir("bystar_refused");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "remnant", None, json!({"sheet": 1, "mode": "line", "x": 900}));
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("remnant or cut-off lines") && e.contains("nothing was exported"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_opened_bvc_goes_on_the_bystar_laser_or_says_to_add_one() {
+    let d = dir("bystar_open");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "export", None, json!({}));
+    let bvc = bystar_dir(&d, "DEMO-BVC").join("DEMOBVCX1.bvc");
+    // The job's machine is the BLM: the sheets go on the ByStar Fiber laser.
+    s.ctx.cfg.active_machine = 0;
+    let back = d.join("ON-BYSTAR.snjob");
+    call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": bvc.to_str().unwrap()}));
+    let j = jobfile::load(&back).unwrap();
+    assert!(j.formats.iter().all(|f| f.machine == "Demo ByStar Fiber laser"), "{:?}", j.formats);
+    // The job's machine is the ByStar Fiber laser: no name stored (MS1).
+    s.ctx.cfg.active_machine = 1;
+    let back = d.join("ON-JOBS.snjob");
+    call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": bvc.to_str().unwrap()}));
+    assert!(jobfile::load(&back).unwrap().formats.iter().all(|f| f.machine.is_empty()));
+    // No ByStar Fiber laser: on the job's machine, with a note.
+    s.ctx.cfg.machines.retain(|m| m.output != crate::settings::Output::ByStar);
+    s.ctx.cfg.active_machine = 0;
+    let back = d.join("NO-BYSTAR.snjob");
+    let r = call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": bvc.to_str().unwrap()}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("no ByStar Fiber laser in Settings → Machines") && m.contains("Demo BLM laser") && m.contains("add one"), "{m}");
+    assert!(jobfile::load(&back).unwrap().formats.iter().all(|f| f.machine.is_empty()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_mark_is_written_in_mode_2_without_a_pierce_and_b036_is_refused_until_built() {
+    let d = dir("bystar_marks");
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    let job = d.join("DEMO-MARK.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let cmds = ccp_commands(&bystar_program_text(&mut s, 1));
+    // BV29–BV32: marking first, mode 2, Unknown, compensation Right, no pierce.
+    let b = contour_block(&cmds, 0);
+    assert_eq!(b[..5], ["SetOperationMode", "SetSensingSensor", "SetToolCorrection", "MoveLineTo", "BeginCutOut"], "{b:?}");
+    let k = cmds.iter().position(|c| c.0 == "BeginCutOut").unwrap();
+    assert_eq!(attr(&cmds[k], "Contour"), Some("Unknown"));
+    assert_eq!(attr(cmds.iter().find(|c| c.0 == "SetOperationMode").unwrap(), "Value"), Some("2"));
+    assert_eq!(attr(cmds.iter().find(|c| c.0 == "SetToolCorrection").unwrap(), "Value"), Some("Right"));
+    // B031: marks uncompensated; B039 = 1: the sensor isn't switched on for them.
+    switches(&mut s, "B031=1, B039=1");
+    let b = contour_block(&ccp_commands(&bystar_program_text(&mut s, 1)), 0);
+    assert_eq!(b[..3], ["SetOperationMode", "MoveLineTo", "BeginCutOut"], "{b:?}");
+    call(&mut s, "export", None, json!({}));
+    // Opened again, the mark is a mark.
+    let back = d.join("BACK.snjob");
+    call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": bystar_dir(&d, "DEMO-MARK").join("DEMOMARKX1.bvc").to_str().unwrap()}));
+    let j = jobfile::load(&back).unwrap();
+    assert!(j.parts[0].custom.as_ref().unwrap().contours.iter().any(|c| c.state == crate::dxf::ContourState::Mark));
+    // B036 (new marking treatment) isn't written yet: a sheet with marking is refused.
+    call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "set": "B036=1"}));
+    call(&mut s, "import-program", Some(d.join("AGAIN.snjob").to_str().unwrap()), json!({"path": bystar_dir(&d, "DEMO-MARK").join("DEMOMARKX1.bvc").to_str().unwrap()}));
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("B036") && e.contains("marking"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}

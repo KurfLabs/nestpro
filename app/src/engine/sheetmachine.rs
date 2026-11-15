@@ -310,6 +310,9 @@ pub struct Output {
     /// Its BLM set settings with the job's name, material, thickness and gas
     /// filled in; `on` = it writes LC5 sets.
     pub blm: Option<crate::blm::BlmSettings>,
+    /// BV59: a ByStar Fiber laser's post, when the machine writes `.bvc`
+    /// files; None for the others.
+    pub bystar: Option<crate::bystar::Post>,
 }
 
 /// Each sheet's output, every machine's (to clear a job's old programs from
@@ -346,11 +349,11 @@ pub fn targets(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, formats: &[S
         _ => shared.to_path_buf(),
     };
     let job_m = cfg.machines.get(cfg.active_machine);
-    let job_all = Output { machine: cfg.machine().name, base: configured(job_m), post: post.clone(), blm: Some(blm_for(spec, base, job_name, cfg)) };
+    let job_all = Output { machine: cfg.machine().name, base: configured(job_m), post: post.clone(), blm: Some(blm_for(spec, base, job_name, cfg)), bystar: job_m.and_then(bystar_post) };
     let other_all = |i: usize| {
         let m = &cfg.machines[i];
         let b = crate::blm::BlmSettings { gas_id: base.gas_id, gas_name: base.gas_name.clone(), ..blm_base(m) };
-        Output { machine: m.name.clone(), base: configured(Some(m)), post: post_of(m), blm: Some(blm_for(spec, &b, job_name, cfg)) }
+        Output { machine: m.name.clone(), base: configured(Some(m)), post: post_of(m), blm: Some(blm_for(spec, &b, job_name, cfg)), bystar: bystar_post(m) }
     };
     // MS7, MAC-79: a folder an agent names takes what is written.
     let to = |o: Output| match dir {
@@ -379,6 +382,11 @@ pub fn targets(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, formats: &[S
     let refusal = (!unknown.is_empty()).then(|| unknown_refusal(cfg, &unknown));
     let remember = cfg.machines.iter().any(|m| !m.program_dir.trim().is_empty());
     Targets { sheets, all, unknown, refusal, remember, earlier: vec![] }
+}
+
+/// BV59: the post of machine `m` when it is a ByStar Fiber laser.
+pub fn bystar_post(m: &settings::Machine) -> Option<crate::bystar::Post> {
+    (m.output == settings::Output::ByStar).then(|| crate::bystar::Post::load(&m.bystar))
 }
 
 /// MS8: the refusal for writing a job with a sheet on a machine that isn't in

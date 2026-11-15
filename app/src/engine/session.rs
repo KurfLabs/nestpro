@@ -90,6 +90,15 @@ impl Session {
         // MS4: the machines the sheets name, as the settings say now.
         sheetmachine::install(&self.ctx.cfg);
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };
+        // BV61: a ByStar Fiber laser's post switches are changed here and saved.
+        if op.name == "machine-switches" {
+            let (o, changed) = ops::machine_switches_on(&mut self.ctx.cfg, &ops::Args(&args))?;
+            if changed {
+                self.ctx.cfg.save().map_err(|e| format!("The switches changed but the settings couldn't be saved: {e}"))?;
+                sheetmachine::install(&self.ctx.cfg);
+            }
+            return Ok(done(Outcome { changed, ..o }));
+        }
         match op.kind {
             Kind::Global => return ops::run_global(&self.ctx, name, &args).map(done),
             Kind::Create => {
