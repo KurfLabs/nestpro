@@ -292,6 +292,132 @@ impl List {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Picking a material: the Material ▾ everywhere (MA23).
+// ---------------------------------------------------------------------------
+
+/// The kinds a Material ▾ groups materials under, in the order it shows
+/// them (MA23).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    CarbonSteel,
+    Stainless,
+    Aluminium,
+    Galvanized,
+    CopperBrass,
+    Other,
+}
+
+impl Group {
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::CarbonSteel => "Carbon steel",
+            Group::Stainless => "Stainless steel",
+            Group::Aluminium => "Aluminium",
+            Group::Galvanized => "Galvanized",
+            Group::CopperBrass => "Copper and brass",
+            Group::Other => "Other",
+        }
+    }
+}
+
+/// MA23 (estimated): the group of a standard, from the catalogue's kind for
+/// its number (MA11, MA12): Carbon Steel 0010–0080; Stainless steel 0100,
+/// 0110 and the film-covered stainless 3060; Aluminium alloy 0200, 0210;
+/// Steel, the zinc-coated 0300 and 0310, as Galvanized; copper 0510 and
+/// brass 0590. Every other number (the waterjet entries, which have no
+/// kind, and numbers the catalogue doesn't have) is Other.
+pub fn group_of(standard: u32) -> Group {
+    match standard {
+        10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 => Group::CarbonSteel,
+        100 | 110 | 3060 => Group::Stainless,
+        200 | 210 => Group::Aluminium,
+        300 | 310 => Group::Galvanized,
+        510 | 590 => Group::CopperBrass,
+        _ => Group::Other,
+    }
+}
+
+/// One material a Material ▾ offers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub id: Id,
+    pub name: String,
+    /// The other name the typed text was found in, when the name itself
+    /// doesn't hold it ("DEMO 316 Stainless — AISI 316").
+    pub matched: Option<String>,
+}
+
+/// One group of a Material ▾: its kind and its materials.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choices {
+    pub group: Group,
+    pub choices: Vec<Choice>,
+}
+
+/// A text as typed text is matched: `norm`, and accented letters as plain
+/// ones ("brossé" → "brosse").
+pub fn fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in norm(s).chars() {
+        match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
+            'ç' | 'ć' | 'č' => out.push('c'),
+            'ď' | 'đ' => out.push('d'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => out.push('e'),
+            'ğ' => out.push('g'),
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => out.push('i'),
+            'ł' | 'ľ' | 'ĺ' => out.push('l'),
+            'ñ' | 'ń' | 'ň' => out.push('n'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => out.push('o'),
+            'ř' | 'ŕ' => out.push('r'),
+            'ś' | 'š' | 'ş' => out.push('s'),
+            'ť' | 'ţ' => out.push('t'),
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' => out.push('u'),
+            'ý' | 'ÿ' => out.push('y'),
+            'ź' | 'ż' | 'ž' => out.push('z'),
+            'ß' => out.push_str("ss"),
+            'æ' => out.push_str("ae"),
+            'œ' => out.push_str("oe"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// MA23: what a Material ▾ offers for a typed text: the materials whose
+/// name, or one of whose other names, holds every word typed (in any order,
+/// ignoring case, spaces and accents), grouped by kind in `Group` order and
+/// by name within a kind. Nothing typed offers every material; a kind none
+/// of them is in isn't shown.
+pub fn choose(list: &List, text: &str) -> Vec<Choices> {
+    let words: Vec<String> = fold(text).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect();
+    let holds = |s: &str| {
+        let s = fold(s);
+        words.iter().all(|w| s.contains(w.as_str()))
+    };
+    let mut found: Vec<(Group, String, Choice)> = vec![];
+    for m in &list.materials {
+        let matched = if holds(&m.name) {
+            None
+        } else if let Some(o) = m.other_names.iter().find(|o| holds(o)) {
+            Some(o.clone())
+        } else {
+            continue;
+        };
+        found.push((group_of(m.standard), fold(&m.name), Choice { id: m.id, name: m.name.clone(), matched }));
+    }
+    found.sort_by(|a, b| (a.0, &a.1, a.2.id).cmp(&(b.0, &b.1, b.2.id)));
+    let mut out: Vec<Choices> = vec![];
+    for (g, _, c) in found {
+        match out.last_mut() {
+            Some(last) if last.group == g => last.choices.push(c),
+            _ => out.push(Choices { group: g, choices: vec![c] }),
+        }
+    }
+    out
+}
+
 fn used_by(m: &Material, n: &str) -> String {
     if norm(&m.name) == n { format!("the name of material {} ({})", m.id, m.name) } else { format!("another name of {} (material {})", m.name, m.id) }
 }
@@ -645,6 +771,121 @@ mod tests {
         assert_eq!(machine_key(3), "##MATEXP0100##");
         assert_eq!(resolve(9, "demo-316"), 3, "a file from another Library finds it by name");
         assert_eq!((resolve(1, "DEMO 316"), resolve(9, "")), (1, 9), "the id first; an id alone stays");
+    }
+
+    /// A made-up shop list: the old three, then grades on several standards
+    /// (0300 galvanized, 0510 copper, 0590 brass, 0400 titanium, and a number
+    /// the catalogue doesn't have).
+    fn demo_list() -> List {
+        let mut l = List::seed(&AppSettings::parse(""));
+        let mut add = |name: &str, std: u32, other: &[&str]| {
+            l.add(Material { id: 0, name: name.into(), other_names: other.iter().map(|s| s.to_string()).collect(), standard: std, density: None, program_name: None, program_code: None, machine_ref: None }).unwrap()
+        };
+        add("DEMO 316 Stainless", 100, &["DEMO-AISI 316"]);
+        add("DEMO 304 Stainless", 100, &[]);
+        add("DEMO A36", 10, &[]);
+        add("DEMO 5052 Aluminium", 210, &["DEMO-AlMg2.5"]);
+        add("DEMO Galvanized G90", 300, &[]);
+        add("DEMO Copper", 510, &[]);
+        add("DEMO Brass", 590, &[]);
+        add("DEMO Titanium", 400, &[]);
+        add("DEMO Mystery", 9999, &[]);
+        l
+    }
+
+    /// The groups and their materials' names, as the Material ▾ shows them.
+    fn shown(groups: &[Choices]) -> Vec<(&'static str, Vec<String>)> {
+        groups.iter().map(|g| (g.group.label(), g.choices.iter().map(|c| c.name.clone()).collect())).collect()
+    }
+
+    #[test]
+    fn the_material_list_groups_every_material_by_its_standards_kind() {
+        // MA23: with nothing typed, every material, grouped by the kind of
+        // its standard (MA12) in a fixed order, by name within a kind;
+        // a kind with one material is a group of one; empty kinds aren't shown.
+        let g = choose(&demo_list(), "");
+        assert_eq!(
+            shown(&g),
+            vec![
+                ("Carbon steel", vec!["DEMO A36".to_string(), "Mild steel".into()]),
+                ("Stainless steel", vec!["DEMO 304 Stainless".into(), "DEMO 316 Stainless".into(), "Stainless steel".into()]),
+                ("Aluminium", vec!["Aluminium".into(), "DEMO 5052 Aluminium".into()]),
+                ("Galvanized", vec!["DEMO Galvanized G90".into()]),
+                ("Copper and brass", vec!["DEMO Brass".into(), "DEMO Copper".into()]),
+                ("Other", vec!["DEMO Mystery".into(), "DEMO Titanium".into()]),
+            ]
+        );
+        assert!(g.iter().flat_map(|g| &g.choices).all(|c| c.matched.is_none()), "nothing typed, no other name shown");
+        assert_eq!(g[0].choices[1].id, 0, "each choice carries its material's id");
+    }
+
+    #[test]
+    fn the_old_three_are_three_groups_of_one() {
+        let g = choose(&List::seed(&AppSettings::parse("")), "");
+        assert_eq!(shown(&g), vec![("Carbon steel", vec!["Mild steel".to_string()]), ("Stainless steel", vec!["Stainless steel".into()]), ("Aluminium", vec!["Aluminium".into()])]);
+    }
+
+    #[test]
+    fn typing_filters_by_name_without_case_or_extra_spaces() {
+        let g = choose(&demo_list(), "  demo   316 ");
+        assert_eq!(shown(&g), vec![("Stainless steel", vec!["DEMO 316 Stainless".to_string()])]);
+        // Every word typed, in any order.
+        assert_eq!(shown(&choose(&demo_list(), "STAINLESS 304")), vec![("Stainless steel", vec!["DEMO 304 Stainless".to_string()])]);
+        assert!(choose(&demo_list(), "DEMO-NOTHING").is_empty(), "nothing matches: no groups");
+        assert!(choose(&demo_list(), "   ").iter().map(|g| g.choices.len()).sum::<usize>() == 12, "only spaces: everything");
+    }
+
+    #[test]
+    fn an_other_name_finds_its_material_and_says_which_matched() {
+        // Neither name holds "aisi": both are found by an other name.
+        let g = choose(&demo_list(), "aisi 316");
+        assert_eq!(shown(&g), vec![("Stainless steel", vec!["DEMO 316 Stainless".to_string(), "Stainless steel".into()])]);
+        let by = |n: &str| g[0].choices.iter().find(|c| c.name == n).unwrap().matched.clone();
+        assert_eq!(by("DEMO 316 Stainless").as_deref(), Some("DEMO-AISI 316"));
+        assert_eq!(by("Stainless steel").as_deref(), Some("AISI316"), "the first other name holding every word");
+        // A name that matches shows no other name.
+        assert_eq!(choose(&demo_list(), "copper")[0].choices[0].matched, None);
+        // Only an other name matches: "AlMg2.5" is no material's name.
+        assert_eq!(shown(&choose(&demo_list(), "almg2.5")), vec![("Aluminium", vec!["DEMO 5052 Aluminium".to_string()])]);
+    }
+
+    #[test]
+    fn accents_are_ignored_both_ways() {
+        let mut l = demo_list();
+        l.add(Material { id: 0, name: "DEMO Acier inoxydable brossé".into(), other_names: vec![], standard: 100, density: None, program_name: None, program_code: None, machine_ref: None }).unwrap();
+        assert_eq!(shown(&choose(&l, "brosse")), vec![("Stainless steel", vec!["DEMO Acier inoxydable brossé".to_string()])]);
+        assert_eq!(shown(&choose(&l, "MYSTÉRY")), vec![("Other", vec!["DEMO Mystery".to_string()])]);
+    }
+
+    #[test]
+    fn a_standard_the_catalogue_lacks_is_other() {
+        assert_eq!(group_of(9999), Group::Other);
+        assert_eq!(group_of(400), Group::Other, "the waterjet entries have no kind");
+        assert_eq!((group_of(10), group_of(80), group_of(110), group_of(3060), group_of(200), group_of(310), group_of(590)), (Group::CarbonSteel, Group::CarbonSteel, Group::Stainless, Group::Stainless, Group::Aluminium, Group::Galvanized, Group::CopperBrass));
+    }
+
+    #[test]
+    fn a_deleted_material_is_not_offered() {
+        let mut l = demo_list();
+        let gone = l.materials.iter().position(|m| m.name == "DEMO Galvanized G90").unwrap();
+        let id = l.materials.remove(gone).id;
+        let g = choose(&l, "");
+        assert!(g.iter().all(|g| g.group != Group::Galvanized), "its kind had only it");
+        assert!(g.iter().flat_map(|g| &g.choices).all(|c| c.id != id));
+    }
+
+    #[test]
+    fn a_long_list_keeps_every_material_in_name_order() {
+        let mut l = List::seed(&AppSettings::parse(""));
+        for k in (0..300).rev() {
+            l.add(Material { id: 0, name: format!("DEMO-{k:03}"), other_names: vec![], standard: [10, 100, 200, 300][k % 4], density: None, program_name: None, program_code: None, machine_ref: None }).unwrap();
+        }
+        let g = choose(&l, "");
+        assert_eq!(g.iter().map(|g| g.choices.len()).sum::<usize>(), 303);
+        assert_eq!(g[3].group, Group::Galvanized);
+        assert_eq!(g[3].choices.first().map(|c| c.name.as_str()), Some("DEMO-003"));
+        assert_eq!(g[3].choices.last().map(|c| c.name.as_str()), Some("DEMO-299"));
+        assert_eq!(choose(&l, "demo-15").iter().map(|g| g.choices.len()).sum::<usize>(), 10, "DEMO-150 to DEMO-159 (not DEMO-015)");
     }
 
     #[test]

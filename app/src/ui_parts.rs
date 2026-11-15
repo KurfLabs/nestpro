@@ -1941,11 +1941,9 @@ impl App {
                     let before = self.spec.clone();
                     ui.set_min_width(300.0);
                     ui.label(RichText::new("Material").strong());
-                    ui.horizontal_wrapped(|ui| {
-                        for k in crate::engine::material::ids() {
-                            ui.selectable_value(&mut self.spec.material, k, crate::engine::material::name_or(k, "?"));
-                        }
-                    });
+                    // MA23: the same grouped, searchable list as every Material ▾.
+                    let in_stock = self.materials_in_stock(ui.ctx());
+                    crate::matpick::list(ui, "home", &mut self.spec.material, &in_stock, 300.0, 220.0);
                     ui.add_space(4.0);
                     ui.label(RichText::new("Thickness").strong());
                     crate::units::thickness_inline(ui, &mut self.spec.thickness, self.cfg.nesting.units);
@@ -2161,11 +2159,9 @@ impl App {
             form(ui, |ui| {
                 form_row(ui, |ui| {
                     form_field(ui, "Material", |ui| {
-                        egui::ComboBox::from_id_salt("mat").width(118.0).selected_text(crate::engine::material::name_or(self.spec.material, "?")).show_ui(ui, |ui| {
-                            for k in crate::engine::material::ids() {
-                                cost_changed |= ui.selectable_value(&mut self.spec.material, k, crate::engine::material::name_or(k, "?")).changed();
-                            }
-                        });
+                        // MA23: grouped by kind, filtered as you type.
+                        let in_stock = self.materials_in_stock(ui.ctx());
+                        cost_changed |= crate::matpick::combo(ui, "sheet_tab", &mut self.spec.material, 118.0, &in_stock);
                     });
                     // Typed (decimal, fraction, gauge, either unit) or picked
                     // from the common ones (TH1, TH2).
@@ -2393,6 +2389,24 @@ impl App {
         let on = crate::engine::stockflow::nest_on(&self.spec, &self.stock_use(), grouped);
         ctx.data_mut(|d| d.insert_temp(id, Memo(key, now, on.clone())));
         on
+    }
+
+    /// MA23: how many sheets and remnants of each material Nest all could
+    /// take at the job's thickness, for the Material ▾ (read again at most
+    /// every 3 s, as `nest_on`).
+    pub(crate) fn materials_in_stock(&self, ctx: &egui::Context) -> Vec<(usize, i32)> {
+        type Key = (u64, bool, usize, usize, String);
+        #[derive(Clone)]
+        struct Memo(Key, f64, Vec<(usize, i32)>);
+        let key: Key = (self.spec.thickness.to_bits(), self.cfg.stock.use_stock, self.held.len(), crate::engine::material::count(), self.library_dir().display().to_string());
+        let now = ctx.input(|i| i.time);
+        let id = egui::Id::unique("materials_in_stock_memo");
+        if let Some(m) = ctx.data(|d| d.get_temp::<Memo>(id)).filter(|m| m.0 == key && now - m.1 < 3.0) {
+            return m.2;
+        }
+        let n = crate::engine::stockflow::in_stock_by_material(&self.spec, &self.stock_use());
+        ctx.data_mut(|d| d.insert_temp(id, Memo(key, now, n.clone())));
+        n
     }
 
     /// The ▾ list beside the sheet size: *Any size in stock* when the stock

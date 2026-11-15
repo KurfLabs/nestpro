@@ -47,6 +47,7 @@ mod importui;
 mod inuseui;
 mod jobfile;
 mod materials;
+mod matpick;
 mod jobs;
 mod libui;
 mod library;
@@ -3657,6 +3658,16 @@ fn main() -> eframe::Result {
             // --sheet-tab (screenshots): the Sheet tab, e.g. its machine-table line.
             if std::env::args().any(|a| a == "--sheet-tab") {
                 app.tab = Tab::Sheet;
+            }
+            // --material-open=<picker>[:<text>] (screenshots): a Material ▾
+            // open (sheet_tab, new_sheet), with <text> typed in its find
+            // box; --material-find=<text> types in the stock shelf's.
+            if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--material-open=").map(str::to_string)) {
+                let (salt, text) = v.split_once(':').unwrap_or((v.as_str(), ""));
+                crate::matpick::open_for_shot(&cc.egui_ctx, salt, text);
+            }
+            if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--material-find=").map(str::to_string)) {
+                crate::matpick::type_for_shot(&cc.egui_ctx, "shelf", &v);
             }
             if want_jobs {
                 app.workspace = Workspace::Jobs;

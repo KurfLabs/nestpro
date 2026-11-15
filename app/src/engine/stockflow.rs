@@ -269,6 +269,27 @@ impl NestOn {
 /// What Nest all will nest on for this job (see `NestOn`). `grouped`: Group
 /// by attribute is on and the parts have several groups. Reads the stock
 /// file, so the window asks only when something changed.
+/// MA23: how many sheets and remnants Nest all could take at the job's
+/// thickness, for each material that has some (in the list's order): the
+/// counts a Material ▾ shows beside each material, as `nest_on` counts them
+/// for the job's own (what the job holds counts as free; locked items and
+/// what the criteria leave out don't count; a picked size doesn't narrow
+/// it). Nothing while the stock isn't used or can't be read.
+pub fn in_stock_by_material(spec: &SheetSpec, u: &StockUse) -> Vec<(super::material::Id, i32)> {
+    if !u.st.use_stock || crate::library::usable(&u.dir).is_err() {
+        return vec![];
+    }
+    let Ok(stock) = Stock::load(&u.dir) else { return vec![] };
+    super::material::ids()
+        .into_iter()
+        .filter_map(|m| {
+            let s = SheetSpec { material: m, ..spec.clone() };
+            let n: i32 = usable_items(&stock, &s, u, &[]).iter().map(|i| i.qty.max(0)).sum();
+            (n > 0).then_some((m, n))
+        })
+        .collect()
+}
+
 pub fn nest_on(spec: &SheetSpec, u: &StockUse, grouped: bool) -> NestOn {
     let picked = spec.pick == SheetPick::Size;
     let none = |mode| NestOn { mode, sheets: 0, remnants: 0, sizes: vec![], picked };
