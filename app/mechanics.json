@@ -7110,7 +7110,7 @@
  {
   "name": "catalogue standards beyond the first three",
   "group": "materials",
-  "value": "kind from the catalogue (steels and none as mild steel), its density (7.85 when none), its number as machine table key, programs STEEL 0010 until ticket #149; the first three keep MA18's values (0010 weighs 7.85); a blank material is on 0010",
+  "value": "kind from the catalogue (steels and none as mild steel), its density (7.85 when none), its number as machine table key, programs with its name and number (MA25); the first three keep MA18's values (0010 weighs 7.85); a blank material is on 0010",
   "source": "MA22",
   "estimated": true
  },
@@ -7126,6 +7126,34 @@
   "group": "materials",
   "value": "every word typed in the name or one other name; any order, case, spaces or accents",
   "source": "MA23",
+  "estimated": true
+ },
+ {
+  "name": "machine-file key of a material",
+  "group": "materials",
+  "value": "its own key, else its standard's catalogue number; its own key the file has no section for: the machine's own values (MTL6), not the standard's sections; empty: the name in programs; a number not in the list: none (only * fits)",
+  "source": "MA24",
+  "estimated": true
+ },
+ {
+  "name": "name and code in programs of a material",
+  "group": "materials",
+  "value": "its own (empty written empty), else its standard's: STEEL 0010, STAINLESS 0100, ALUMINIUM 0200 for the first three; other catalogue standards their name as shown and their four-digit number (Galvanized 0300); never the name shown; a number not in the list STEEL 0010",
+  "source": "MA25",
+  "estimated": true
+ },
+ {
+  "name": "material weight per volume in weights",
+  "group": "materials",
+  "value": "sheets, remnants (real area) and parts: area x thickness x its own density, else its standard's (0010 7.85, 0100 8.0, 0200 2.70, others the catalogue's, 7.85 where none); a number not in the list as aluminium",
+  "source": "MA26",
+  "estimated": true
+ },
+ {
+  "name": "standard not in the catalogue",
+  "group": "materials",
+  "value": "as mild steel: 0010 sections, 7.85, STEEL 0010, mild steel's kind; shown under Other",
+  "source": "MA27",
   "estimated": true
  },
  {
