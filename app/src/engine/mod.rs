@@ -1473,13 +1473,18 @@ fn program_dirs(job_name: &str, t: &sheetmachine::Targets) -> Vec<PathBuf> {
 }
 
 /// MS7: whether a file the job's record names may be removed as one of its
-/// programs: it sits in the job's own folder (`<folder>\<job>`) and is named
+/// programs: it sits in the job's own folder (`<folder>\<job>`, the folder it
+/// really is, links followed) and is named
 /// as this job's program for a sheet (1–999) on one of the machines, with
 /// that machine's program extension (the LC5 set's `.zip` / `.XML`, else the
 /// post's). Anything else the record names (a file the job file was edited
 /// to list, a program of another job) is never removed, only forgotten.
 fn is_job_program(f: &Path, job_name: &str, t: &sheetmachine::Targets) -> bool {
-    let job_dir = f.parent().and_then(|d| d.file_name()).is_some_and(|d| d.to_string_lossy().eq_ignore_ascii_case(&safe_name(job_name)));
+    // The folder the file really is in, not as spelled: a link named after
+    // this job may lead to another job's folder. A folder that can't be
+    // resolved isn't this job's (the entry is forgotten).
+    let real = f.parent().and_then(|d| std::fs::canonicalize(d).ok());
+    let job_dir = real.as_deref().and_then(Path::file_name).is_some_and(|d| d.to_string_lossy().eq_ignore_ascii_case(&safe_name(job_name)));
     let Some(name) = f.file_name().map(|n| n.to_string_lossy().to_string()) else { return false };
     if !job_dir {
         return false;

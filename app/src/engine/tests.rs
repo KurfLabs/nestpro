@@ -7071,3 +7071,23 @@ fn undo_keeps_the_record_of_the_programs_on_disk() {
     assert_eq!(written_names(&job), vec!["DEMOTWOX1.CNC", "DEMOTWOX2.CNC"]);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_link_named_after_the_job_doesnt_lead_the_record_into_another_jobs_folder() {
+    // MS7: the record names the job's folder through a link that really is
+    // another job's folder; the program there is that job's and stays.
+    let d = dir("sheet_machine_record_link");
+    let (mut s, job) = two_machine_job(&d, false);
+    let other = d.join("iso-programs").join("OTHER");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("DEMOTWOX1.CNC"), "the other job's program").unwrap();
+    std::fs::create_dir_all(d.join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink(&other, d.join("elsewhere").join("DEMO-TWO")).unwrap();
+    set_written(&mut s, &job, &[d.join("elsewhere").join("DEMO-TWO").join("DEMOTWOX1.CNC")]);
+    call(&mut s, "export", None, json!({}));
+    assert_eq!(std::fs::read_to_string(other.join("DEMOTWOX1.CNC")).unwrap(), "the other job's program");
+    assert_eq!(written_names(&job), vec!["DEMOTWOX1.CNC", "DEMOTWOX2.CNC"]);
+    assert!(d.join("iso-programs").join("DEMO-TWO").join("DEMOTWOX1.CNC").is_file(), "this job's own program is written");
+    let _ = std::fs::remove_dir_all(&d);
+}
