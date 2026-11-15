@@ -7477,7 +7477,7 @@
  {
   "name": "moved sheet's material, thickness and gas",
   "group": "sheet machine",
-  "value": "the job's; a job without a gas of its own is cut with the job's machine's gas",
+  "value": "the job's; a job without a gas of its own is cut with the job's machine's gas, the new machine picking its technology record for it",
   "source": "MECHANICS MS5"
  },
  {
@@ -7489,7 +7489,7 @@
  {
   "name": "program folder per machine",
   "group": "sheet machine",
-  "value": "<folder>\\<job>; empty = the shared export folder; parts report in every folder written; a job's old programs removed from every machine's folder",
+  "value": "<folder>\\<job>; empty = the shared export folder; parts report in every folder written; a job's old programs removed from every machine's folder and from where its last write put them (remembered while a machine has its own folder)",
   "source": "MECHANICS MS7"
  },
  {

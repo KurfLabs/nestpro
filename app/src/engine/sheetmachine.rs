@@ -24,12 +24,14 @@ pub struct MachineUse {
 }
 
 impl MachineUse {
-    fn load(m: &settings::Machine, lantek_dir: &str) -> MachineUse {
+    /// Machine `m`, its technology record picked with `gas` (number, name)
+    /// for a job without a gas of its own (MS5).
+    fn load(m: &settings::Machine, gas: (u32, &str), lantek_dir: &str) -> MachineUse {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         MachineUse {
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             machine: m.clone(),
-            tech: crate::ct1::MachineTech::for_machine(m, lantek_dir),
+            tech: crate::ct1::MachineTech::for_machine(&settings::Machine { gas_id: gas.0, gas_name: gas.1.to_string(), ..m.clone() }, lantek_dir),
             post: load_post(m),
             adi: crate::blm::AdiParams::from_files(&m.blm_ps1, &m.blm_cf1),
         }
@@ -79,7 +81,10 @@ pub fn install(cfg: &AppSettings) -> bool {
     if installed().is_some_and(|m| m.key == key) {
         return false;
     }
-    let list = cfg.machines.iter().map(|m| Arc::new(MachineUse::load(m, &cfg.lantek_dir))).collect();
+    // MS5: a job without a gas of its own is cut with the job's machine's
+    // gas on every machine, so each machine picks its records for that gas.
+    let job = cfg.machine();
+    let list = cfg.machines.iter().map(|m| Arc::new(MachineUse::load(m, (job.gas_id, &job.gas_name), &cfg.lantek_dir))).collect();
     put(Arc::new(Machines { key, job: cfg.active_machine.min(cfg.machines.len().saturating_sub(1)), list }));
     true
 }
@@ -140,6 +145,12 @@ fn other_use(f: &SheetFormat) -> Option<Arc<MachineUse>> {
     let ms = installed()?;
     let i = ms.list.iter().position(|m| same_name(&m.machine.name, &f.machine))?;
     (i != ms.job).then(|| ms.list[i].clone())
+}
+
+/// The kerf a sheet of format `f` (`spec` with its size) is cut with: its
+/// machine's (MS4; remnants, remnant lines and stock follow it).
+pub fn kerf(f: &SheetFormat, spec: &SheetSpec) -> f64 {
+    on_sheet(f, || crate::kerf::kerf_mm(spec))
 }
 
 /// Machine `m`'s post library: as loaded (`install`), else read now.
@@ -219,8 +230,13 @@ pub fn move_sheet(cfg: &AppSettings, parts: &[Part], sheets: &[Vec<Placed>], for
     let from_name = shown(cfg, &formats[k]);
     let one = |formats: &[SheetFormat]| plans(parts, &sheets[k..=k], &formats[k..=k], spec, manual.get(k).map(std::slice::from_ref).unwrap_or(&[]));
     let before = one(formats);
+    let kerf0 = kerf(&formats[k], &spec.for_format(&formats[k]));
     formats[k].machine = if to == cfg.active_machine { String::new() } else { to_name.clone() };
     let after = one(formats);
+    // MS4, ST12: remnants stored from the sheet with the old kerf are made again.
+    if kerf(&formats[k], &spec.for_format(&formats[k])) != kerf0 {
+        crate::engine::stockflow::remnants_outdated(&mut formats[k]);
+    }
     let (t0, t1) = (before.first().map_or(0.0, |p| p.seconds), after.first().map_or(0.0, |p| p.seconds));
     let mut said = vec![format!("Sheet {} moved from {from_name} to {to_name}: its automatic cut qualities, leads, cut order and kerf come from {to_name}'s tables now", k + 1)];
     let hand = hand_qualities(parts, &sheets[k]);
@@ -306,29 +322,43 @@ pub struct Targets {
     pub unknown: Vec<(usize, String)>,
     /// MS8: why nothing may be written, when a sheet's machine is unknown.
     pub refusal: Option<String>,
+    /// MS7: a machine has a program folder of its own, so the job remembers
+    /// where its programs went (`JobFile::written`) to clear them later.
+    pub remember: bool,
+    /// The program files the job's last write remembered (`JobFile::written`):
+    /// cleared with the rest when this write doesn't make them again (MS7).
+    pub earlier: Vec<PathBuf>,
 }
 
 /// MS7: where and how each sheet of a job is written. The job's machine
 /// writes with `post` and `base` (its BLM switches, the session's or the
 /// window's, which may differ from Settings); another machine with its own.
 /// Each machine's programs go in its program folder, empty = `shared` (the
-/// export folder); `dir`, a folder an agent names, takes them all (MAC-79).
+/// export folder); `dir`, a folder an agent names, takes them all (MAC-79),
+/// while the old programs are still looked for in the machines' own folders
+/// (`all`).
 /// The job's gas stays the job's on every machine (MS5): a job without one
 /// is cut with the job's machine's.
 #[allow(clippy::too_many_arguments)]
 pub fn targets(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, formats: &[SheetFormat], n: usize, post: &crate::post::PostConfig, base: &crate::blm::BlmSettings, shared: &Path, dir: Option<&Path>) -> Targets {
-    let folder = |m: Option<&settings::Machine>| match (dir, m) {
-        (Some(d), _) => d.to_path_buf(),
-        (None, Some(m)) if !m.program_dir.trim().is_empty() => PathBuf::from(m.program_dir.trim()),
+    let configured = |m: Option<&settings::Machine>| match m {
+        Some(m) if !m.program_dir.trim().is_empty() => PathBuf::from(m.program_dir.trim()),
         _ => shared.to_path_buf(),
     };
     let job_m = cfg.machines.get(cfg.active_machine);
-    let job_out = Output { machine: cfg.machine().name, base: folder(job_m), post: post.clone(), blm: Some(blm_for(spec, base, job_name, cfg)) };
-    let other = |i: usize| {
+    let job_all = Output { machine: cfg.machine().name, base: configured(job_m), post: post.clone(), blm: Some(blm_for(spec, base, job_name, cfg)) };
+    let other_all = |i: usize| {
         let m = &cfg.machines[i];
         let b = crate::blm::BlmSettings { gas_id: base.gas_id, gas_name: base.gas_name.clone(), ..blm_base(m) };
-        Output { machine: m.name.clone(), base: folder(Some(m)), post: post_of(m), blm: Some(blm_for(spec, &b, job_name, cfg)) }
+        Output { machine: m.name.clone(), base: configured(Some(m)), post: post_of(m), blm: Some(blm_for(spec, &b, job_name, cfg)) }
     };
+    // MS7, MAC-79: a folder an agent names takes what is written.
+    let to = |o: Output| match dir {
+        Some(d) => Output { base: d.to_path_buf(), ..o },
+        None => o,
+    };
+    let job_out = to(job_all.clone());
+    let other = |i: usize| to(other_all(i));
     let mut unknown = vec![];
     let sheets = (0..n)
         .map(|k| match sheet_on(cfg, &format_at(formats, spec, k)) {
@@ -340,9 +370,15 @@ pub fn targets(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, formats: &[S
             }
         })
         .collect();
-    let all = (0..cfg.machines.len()).map(|i| if i == cfg.active_machine { job_out.clone() } else { other(i) }).chain(std::iter::once(job_out.clone())).collect();
+    // EXP1, MS7: every machine's own folder (and the shared one), whatever
+    // `dir` says, and the folder `dir` names too.
+    let mut all: Vec<Output> = (0..cfg.machines.len()).map(|i| if i == cfg.active_machine { job_all.clone() } else { other_all(i) }).chain(std::iter::once(Output { base: shared.to_path_buf(), ..job_all.clone() })).collect();
+    if dir.is_some() {
+        all.extend((0..cfg.machines.len()).map(|i| if i == cfg.active_machine { job_out.clone() } else { other(i) }));
+    }
     let refusal = (!unknown.is_empty()).then(|| unknown_refusal(cfg, &unknown));
-    Targets { sheets, all, unknown, refusal }
+    let remember = cfg.machines.iter().any(|m| !m.program_dir.trim().is_empty());
+    Targets { sheets, all, unknown, refusal, remember, earlier: vec![] }
 }
 
 /// MS8: the refusal for writing a job with a sheet on a machine that isn't in

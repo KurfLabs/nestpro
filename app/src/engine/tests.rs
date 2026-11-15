@@ -6602,10 +6602,15 @@ fn a_job_saved_before_sheets_had_their_machine_writes_the_programs_it_wrote_befo
 /// writes into its own program folder unless `shared`; the export folder is
 /// `d/shared`.
 fn two_machine_settings(d: &Path, shared: bool) -> crate::settings::AppSettings {
+    two_machine_settings_with(d, shared, "")
+}
+
+/// `two_machine_settings` with `extra` codes in the BLM's mild steel section.
+fn two_machine_settings_with(d: &Path, shared: bool, extra: &str) -> crate::settings::AppSettings {
     let leads = |v: f64| (0..8).map(|k| format!("Z{:03} {v}\nZ{:03} {v}\nZ{:03} {v}\nZ{:03} {v}\n", 68 + 6 * k, 69 + 6 * k, 72 + 6 * k, 73 + 6 * k)).collect::<String>();
     let blm_dir = d.join("blm-post");
     std::fs::create_dir_all(&blm_dir).unwrap();
-    let ct1 = format!("# Demo BLM laser\nA058 1500\nA926 \"<HIDE>\"\nZ000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ010 0\nZ011 5\nZ012 0\nZ010 5\nZ011 12\nZ012 1\nZ010 12\nZ011 99999\nZ012 2\n{}Z999 0\n", leads(9.0));
+    let ct1 = format!("# Demo BLM laser\nA058 1500\nA926 \"<HIDE>\"\nZ000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ010 0\nZ011 5\nZ012 0\nZ010 5\nZ011 12\nZ012 1\nZ010 12\nZ011 99999\nZ012 2\n{extra}{}Z999 0\n", leads(9.0));
     std::fs::write(blm_dir.join("DEMO.CT1"), ct1).unwrap();
     let folder = |n: &str| if shared { String::new() } else { d.join(n).to_string_lossy().into_owned() };
     let iso = crate::settings::Machine { name: "Demo ISO laser".into(), program_dir: folder("iso-programs"), ..Default::default() };
@@ -6624,8 +6629,13 @@ fn two_machine_settings(d: &Path, shared: bool) -> crate::settings::AppSettings 
 /// place; leads automatic, the Ø6 hole at quality 4 picked by hand, and the
 /// Ø16 hole picked first by hand on sheet 2.
 fn two_machine_job(d: &Path, shared: bool) -> (Session, PathBuf) {
+    two_machine_job_on(d, two_machine_settings(d, shared))
+}
+
+/// `two_machine_job` on the settings `cfg`.
+fn two_machine_job_on(d: &Path, cfg: crate::settings::AppSettings) -> (Session, PathBuf) {
     let mut s = Session::new(Ctx::builtin());
-    s.ctx.cfg = two_machine_settings(d, shared);
+    s.ctx.cfg = cfg;
     let job = d.join("DEMO-TWO.snjob");
     call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
     call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(d).to_str().unwrap(), "qty": 2, "layers": "MARK=mark"}));
@@ -6859,5 +6869,119 @@ fn a_machines_program_folder_survives_a_restart_and_old_settings_have_none() {
     assert!(!cfg.to_text().contains("program_dir"));
     let old = crate::settings::AppSettings::parse("[machine]\nname = Demo laser\noutput = iso\n");
     assert_eq!(old.machines[0].program_dir, "");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Review round 1 of #125: each case reproduced through the operations.
+
+/// The files of a folder, sorted (none when it isn't there).
+fn files_in(p: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(p).map(|r| r.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect()).unwrap_or_default();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_program_written_for_a_machine_since_deleted_doesnt_stay_in_its_folder() {
+    // MS7, MS8: the job remembers where its programs went; deleting the BLM
+    // machine in Settings doesn't leave its LC5 set runnable in its folder.
+    let d = dir("sheet_machine_deleted_folder");
+    let (mut s, job) = two_machine_job(&d, false);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM laser"}));
+    call(&mut s, "export", None, json!({}));
+    let blm = d.join("blm-programs").join("DEMO-TWO");
+    assert_eq!(files_in(&blm), vec!["DEMOTWOX2.XML", "DEMOTWOX2.zip", "parts.csv"]);
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    assert_eq!(saved["written"].as_array().map(Vec::len), Some(3), "{}", saved["written"]);
+    s.ctx.cfg.machines.truncate(1);
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("sheet 2 is on \"Demo BLM laser\""), "{e}");
+    assert_eq!(files_in(&blm), vec!["parts.csv"], "no LC5 set left to run");
+    assert_eq!(files_in(&d.join("iso-programs").join("DEMO-TWO")), vec!["parts.csv"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_moved_sheet_of_a_job_without_its_own_gas_is_cut_with_the_jobs_machines_gas() {
+    // MS5: the BLM is saved with oxygen, the job's machine with nitrogen; a
+    // job without a gas of its own is cut with nitrogen on both, as if it
+    // had picked nitrogen.
+    let d = dir("sheet_machine_gas");
+    let (mut s, job) = two_machine_job(&d, false);
+    // Saved before jobs carried a gas: none of its own.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    v["spec"].as_object_mut().unwrap().remove("gas");
+    std::fs::write(&job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    s.open(&job).unwrap();
+    assert_eq!(info_gas(&mut s).2, "machine");
+    std::fs::write(d.join("blm-post").join("DEMO.TT1"), GAS_TABLE).unwrap();
+    std::fs::write(d.join("blm-post").join("DEMO.TM1"), GAS_TIMES).unwrap();
+    s.ctx.cfg.machines[1].pick_gas(crate::gas::Gas::Oxygen);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM laser"}));
+    let sheet2 = |s: &mut Session| {
+        let t = call(s, "info", None, json!({}))["data"]["sheets"][1]["time_s"].as_f64().unwrap();
+        (call(s, "program", None, json!({"sheet": 2}))["data"].as_str().unwrap().to_string(), t)
+    };
+    let none = sheet2(&mut s);
+    call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    let nitrogen = sheet2(&mut s);
+    call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let oxygen = sheet2(&mut s);
+    assert_ne!(nitrogen.1, oxygen.1, "the table cuts the two gases at different speeds");
+    assert_eq!(none.1, nitrogen.1, "the job's machine's nitrogen picks the BLM's record");
+    assert_eq!(none.0, nitrogen.0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_export_into_a_folder_an_agent_names_still_clears_the_machines_folders() {
+    // MS7: `dir` takes what is written; the job's old programs in the
+    // machines' folders go as for any write.
+    let d = dir("sheet_machine_trial");
+    let (mut s, _job) = two_machine_job(&d, true);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 1, "machine": "Demo BLM laser"}));
+    call(&mut s, "export", None, json!({}));
+    let shared = d.join("shared").join("DEMO-TWO");
+    assert!(shared.join("DEMOTWOX1.zip").is_file());
+    call(&mut s, "sheet-machine", None, json!({"sheet": 1, "machine": "Demo ISO laser"}));
+    call(&mut s, "export", None, json!({"dir": d.join("trial").to_str().unwrap()}));
+    assert_eq!(files_in(&d.join("trial").join("DEMO-TWO")), vec!["DEMOTWOX1.CNC", "DEMOTWOX2.CNC", "parts.csv"]);
+    assert!(!shared.join("DEMOTWOX1.zip").exists() && !shared.join("DEMOTWOX1.XML").exists(), "{:?}", files_in(&shared));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_remnant_a_moved_sheet_cuts_off_is_measured_with_its_machines_kerf() {
+    // MS4: the BLM cuts a 50 mm kerf here (cutter radius 25 mm); the
+    // remnant line and the remnant info agree on its size.
+    let d = dir("sheet_machine_kerf");
+    let (mut s, _job) = two_machine_job_on(&d, two_machine_settings_with(&d, false, "Z004 25\n"));
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM laser"}));
+    let r = call(&mut s, "remnant", None, json!({"sheet": 2, "mode": "auto"}));
+    let info = call(&mut s, "info", None, json!({}));
+    let rem = &info["data"]["sheets"][1]["remnant"];
+    let said = format!("about {:.0} × {:.0} mm", rem["w"].as_f64().unwrap(), rem["h"].as_f64().unwrap());
+    assert!(r["message"].as_str().unwrap().contains(&said), "{r}\n{said}");
+    // On the job's machine (0.3 mm kerf) the same line leaves more.
+    call(&mut s, "remnant", None, json!({"sheet": 1, "mode": "auto"}));
+    let info = call(&mut s, "info", None, json!({}));
+    let w = |k: usize| info["data"]["sheets"][k]["remnant"]["w"].as_f64().unwrap();
+    assert!(w(0) > w(1) + 20.0, "{} vs {}", w(0), w(1));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn two_spellings_of_one_program_folder_keep_each_others_programs() {
+    // MAC-79: the ISO's folder and the BLM's are the same folder spelled two
+    // ways; neither machine's write removes the other's program.
+    let d = dir("sheet_machine_spelling");
+    let mut cfg = two_machine_settings(&d, false);
+    std::fs::create_dir_all(d.join("x")).unwrap();
+    cfg.machines[0].program_dir = d.join("programs").to_string_lossy().into_owned();
+    cfg.machines[1].program_dir = d.join("x").join("..").join("programs").to_string_lossy().into_owned();
+    let (mut s, _job) = two_machine_job_on(&d, cfg);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM laser"}));
+    call(&mut s, "export", None, json!({}));
+    assert_eq!(files_in(&d.join("programs").join("DEMO-TWO")), vec!["DEMOTWOX1.CNC", "DEMOTWOX2.XML", "DEMOTWOX2.zip", "parts.csv"]);
     let _ = std::fs::remove_dir_all(&d);
 }

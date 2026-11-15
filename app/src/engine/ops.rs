@@ -856,7 +856,9 @@ fn program_name(job: &JobFile, t: &sheetmachine::Targets, ctx: &Ctx, k: usize) -
 /// Where and how each sheet of the job is written (MS7): the session's post
 /// and BLM switches for the job's machine; `dir` takes every machine's.
 fn targets(job: &JobFile, ctx: &Ctx, dir: Option<&Path>) -> sheetmachine::Targets {
-    sheetmachine::targets(&ctx.cfg, &job.name, &job.spec, &job.formats, job.sheets.len(), &ctx.post, &ctx.blm, &ctx.export_dir(), dir)
+    let mut t = sheetmachine::targets(&ctx.cfg, &job.name, &job.spec, &job.formats, job.sheets.len(), &ctx.post, &ctx.blm, &ctx.export_dir(), dir);
+    t.earlier = job.written.clone();
+    t
 }
 
 fn part_info(job: &JobFile, i: usize) -> Value {
@@ -2469,7 +2471,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             job.cuts_mut(s).clear();
             job.sheet_changed(s);
             if ctx.cfg.stock.lines_after_nesting {
-                if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[s], &job.spec_at(s), &ctx.cfg.stock.line) {
+                // MS4: the sheet's machine's kerf.
+                if let Some(lines) = sheetmachine::on_sheet(&job.format(s), || auto_remnant_lines(&job.parts, &job.sheets[s], &job.spec_at(s), &ctx.cfg.stock.line)) {
                     job.cuts_mut(s).extend(lines);
                 }
             }
@@ -3001,10 +3004,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let s = sheet_idx(job, &a)?;
             let sp = job.spec_at(s);
             let (parts, sheet) = (job.parts.clone(), job.sheets[s].clone());
+            let round = a.bool("round")?.unwrap_or(true);
             match a.need_str("mode")?.as_str() {
                 "auto" => {
                     let ls = &ctx.cfg.stock.line;
-                    let lines = crate::remline::auto_lines(&parts, &sheet, &sp, ls, crate::kerf::kerf_mm(&sp) / 2.0);
+                    // MS4: the sheet's machine's kerf.
+                    let lines = crate::remline::auto_lines(&parts, &sheet, &sp, ls, sheetmachine::kerf(&job.format(s), &sp) / 2.0);
                     if lines.is_empty() {
                         return Err(format!("No remnant: less than the minimum width ({:.0} mm) is left past the parts.", ls.min_width));
                     }
@@ -3012,7 +3017,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
                 mode => {
                     let line = match mode {
-                        "exact" => cutoff::exact_edge(&sheet, &sp, a.bool("round")?.unwrap_or(true)).ok_or("No remnant worth keeping between the parts and the sheet edge.")?,
+                        "exact" => sheetmachine::on_sheet(&job.format(s), || cutoff::exact_edge(&sheet, &sp, round)).ok_or("No remnant worth keeping between the parts and the sheet edge.")?,
                         "line" => match (a.num("x")?, a.num("y")?) {
                             (Some(x), None) => classify_path(vec![[x, 0.0], [x, sp.h]], &sp),
                             (None, Some(y)) => classify_path(vec![[0.0, y], [sp.w, y]], &sp),
@@ -3023,7 +3028,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     add_cut_line(&parts, &sheet, job.cuts_mut(s), line)?;
                 }
             }
-            let m = match remnant_info(&job.parts, &job.sheets[s], &job.format(s), job.cuts(s), crate::kerf::kerf_mm(&job.spec_at(s))) {
+            let m = match remnant_info(&job.parts, &job.sheets[s], &job.format(s), job.cuts(s), sheetmachine::kerf(&job.format(s), &job.spec_at(s))) {
                 Some((w, h, ar)) => format!("Remnant line added on sheet {} — remnant about {w:.0} × {h:.0} mm ({:.2} m²), cut last.", s + 1, ar / 1e6),
                 None => "Cut line added — it is cut after the parts.".into(),
             };
@@ -3132,6 +3137,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let per: Vec<Value> = ex.machines.iter().map(|m| json!({"machine": m.machine, "folder": m.dir.display().to_string(), "sheets": m.sheets, "files": m.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>()})).collect();
             let mut o = Outcome::read(export_note(&ex, job.sheets.len(), &job.spec, &ctx.blm, crate::units::LenUnit::Mm), json!({ "machines": per }));
             o.files = ex.files;
+            // MS7: where its programs are now, kept with the job (saved by
+            // the session; no undo step).
+            if job.written != ex.written {
+                job.written = ex.written;
+                o.changed = true;
+            }
             Ok(o)
         }
         "render" => Err("render is handled by the session".into()),

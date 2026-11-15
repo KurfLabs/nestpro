@@ -153,6 +153,9 @@ impl Session {
         }
         if out.changed && op.kind == Kind::Write {
             self.save(Some(before))?;
+        } else if out.changed && op.name == "export" {
+            // MS7: where its programs went, remembered with the job.
+            self.save(None)?;
         }
         let mut reply = done(out);
         if let Some(p) = &self.path {

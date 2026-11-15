@@ -369,7 +369,7 @@ impl App {
         }
         // A cut is drawn at least as wide as the real kerf at this zoom.
         let px_per_mm = (to_s([1.0, 0.0]).x - to_s([0.0, 0.0]).x).abs();
-        let kerf_px = (crate::kerf::kerf_mm(&self.cur_spec()) as f32 * px_per_mm).max(2.4);
+        let kerf_px = (crate::engine::sheetmachine::kerf(&self.result.format(self.cur_sheet, &self.spec), &self.cur_spec()) as f32 * px_per_mm).max(2.4);
         let Some((cur, head)) = paint_progress(painter, &ops, sim.t, to_s, kerf_px) else { return };
         // Follow the head: if it leaves the middle of the view, bring it back.
         let h = to_s(head);

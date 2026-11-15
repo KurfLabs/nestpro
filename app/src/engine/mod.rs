@@ -1404,6 +1404,10 @@ pub struct Exported {
     pub warning: Option<String>,
     /// MS7: what went to each machine, in the order of its first sheet.
     pub machines: Vec<MachineFiles>,
+    /// MS7: the program files to remember with the job (`JobFile::written`),
+    /// so the next write clears them wherever they are: those written, when
+    /// a machine has a program folder of its own; else none.
+    pub written: Vec<PathBuf>,
 }
 
 /// The programs one machine got from an export, and where (MS7).
@@ -1425,13 +1429,16 @@ pub fn safe_name(s: &str) -> String {
 /// a sheet that's gone, or the other program format) are removed, so nobody
 /// runs a sheet that no longer exists (EXP1).
 fn remove_stale_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, kept: &[PathBuf]) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
     let blm_job = blm.map_or(job_name, |b| b.job.as_str());
     // One locked file doesn't keep the others: every one is tried.
     let mut first_error = None;
     for k in 1..=999 {
         let nest = crate::blm::nest_name(blm_job, k);
         for f in [dir.join(post.file_name(job_name, k)), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML"))] {
-            if !kept.contains(&f) && f.is_file() {
+            if f.is_file() && !kept.contains(&same_file(&f)) {
                 if let Err(e) = std::fs::remove_file(&f) {
                     first_error.get_or_insert(e);
                 }
@@ -1465,10 +1472,34 @@ fn program_dirs(job_name: &str, t: &sheetmachine::Targets) -> Vec<PathBuf> {
     v
 }
 
+/// A file as the folder it is in resolves (a link, another spelling of the
+/// same folder, MAC-79): two spellings of one file give the same. A file or
+/// folder that isn't there yet keeps its spelling.
+fn same_file(p: &Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    match (p.parent().and_then(|d| std::fs::canonicalize(d).ok()), p.file_name()) {
+        (Some(d), Some(n)) => d.join(n),
+        _ => p.to_path_buf(),
+    }
+}
+
 /// EXP1, MS7: remove the job's programs that aren't `kept` from every
-/// machine's folder, by every machine's file names. Every one is tried.
+/// machine's folder, by every machine's file names, and the files its last
+/// write remembered (`Targets::earlier`, wherever they are: the folder of a
+/// machine since deleted, or one an agent named). Every one is tried.
 fn remove_all_stale(job_name: &str, t: &sheetmachine::Targets, kept: &[PathBuf]) -> std::io::Result<()> {
+    let kept: Vec<PathBuf> = kept.iter().map(|k| same_file(k)).collect();
+    let kept = kept.as_slice();
     let mut first_error = None;
+    for f in &t.earlier {
+        if f.is_file() && !kept.contains(&same_file(f)) {
+            if let Err(e) = std::fs::remove_file(f) {
+                first_error.get_or_insert(e);
+            }
+        }
+    }
     let mut done: Vec<(PathBuf, &crate::post::PostConfig, Option<&crate::blm::BlmSettings>)> = vec![];
     for o in t.sheets.iter().chain(&t.all) {
         let d = o.base.join(safe_name(job_name));
@@ -1490,7 +1521,7 @@ fn remove_all_stale(job_name: &str, t: &sheetmachine::Targets, kept: &[PathBuf])
 #[allow(clippy::too_many_arguments)]
 pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, bridge: f64) -> Result<Exported, String> {
     let out = sheetmachine::Output { machine: blm.map_or(String::new(), |b| b.machine.clone()), base: base.to_path_buf(), post: post.clone(), blm: blm.cloned() };
-    let t = sheetmachine::Targets { sheets: vec![out.clone(); sheets.len()], all: vec![out], unknown: vec![], refusal: None };
+    let t = sheetmachine::Targets { sheets: vec![out.clone(); sheets.len()], all: vec![out], unknown: vec![], refusal: None, remember: false, earlier: vec![] };
     export_to(job_name, parts, sheets, formats, plans, job_spec, cuts, marks, &t, bridge)
 }
 
@@ -1606,7 +1637,8 @@ pub fn export_to(job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats
             None => o,
         });
     }
-    Ok(Exported { dir: machines.first().map_or_else(|| dir_of(0), |m| m.dir.clone()), files, warning, machines })
+    let written = if t.remember { machines.iter().flat_map(|m| m.files.iter().cloned()).collect() } else { vec![] };
+    Ok(Exported { dir: machines.first().map_or_else(|| dir_of(0), |m| m.dir.clone()), files, warning, machines, written })
 }
 
 /// Drop the empty sheets (and their formats, cut lines and hand cuts), except
@@ -1642,7 +1674,7 @@ pub fn drop_empty_sheets(sheets: &mut Vec<Vec<Placed>>, formats: &mut Vec<SheetF
 
 impl JobFile {
     pub fn new_job(name: &str, spec: SheetSpec) -> JobFile {
-        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() }
+        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), written: vec![] }
     }
 
     pub fn plans(&self) -> Vec<SheetPlan> {
