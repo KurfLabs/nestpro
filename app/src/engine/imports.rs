@@ -209,17 +209,58 @@ fn bvc_cut_lines(paths: &[Vec<P>], w: f64, h: f64) -> Vec<CutLine> {
         .collect()
 }
 
+/// GS18: the gas a job opened from an LC5 program set takes, and what to
+/// say about it. The set names its gas in the sheet program's header
+/// (`;IDGAS=` number, `;NOMEGAS=` name), else in its XML job sheet (`GasId`,
+/// `GasName`); a number and name that are a pair the LC5 list writes (GS2)
+/// give the job that gas. None when the set names no gas (empty, GS2), none
+/// at all, or a pair off the list: the job keeps a new job's gas (GS12),
+/// `new_job`, and the note says so. When the sheet program and the XML name
+/// different gases, the sheet program's wins: it is what the machine runs
+/// (FEATURES MAC-71).
+pub fn program_gas(program: Option<&(String, String)>, xml: Option<&(String, String)>, new_job: &crate::gas::JobGas) -> (Option<crate::gas::Gas>, Vec<String>) {
+    let listed = |p: &(String, String)| p.0.trim().parse::<u32>().ok().and_then(|n| crate::gas::Gas::listed(n, p.1.trim()));
+    let words = |p: &(String, String)| match (listed(p), p.0.trim(), p.1.trim()) {
+        (Some(g), ..) => g.label(),
+        (None, "", "") => "no gas".to_string(),
+        (None, n, name) => format!("gas {n} \"{name}\""),
+    };
+    let mut notes = vec![];
+    if let (Some(p), Some(x)) = (program, xml) {
+        if (p.0.trim(), p.1.trim()) != (x.0.trim(), x.1.trim()) {
+            notes.push(format!("the sheet program names {} and its XML job sheet {}: the job takes the sheet program's", words(p), words(x)));
+        }
+    }
+    let named = program.or(xml);
+    let gas = named.and_then(listed);
+    if gas.is_none() {
+        let said = match named.filter(|p| !(p.0.trim().is_empty() && p.1.trim().is_empty())) {
+            Some(p) => format!("the programs name {}, which isn't one of the LC5's gases ({})", words(p), crate::gas::program_words()),
+            None => "the programs name no gas".to_string(),
+        };
+        let then = if new_job.own { format!("so the job starts with the machine's gas, {}", new_job.shown()) } else { format!("so the job has none of its own and is cut with the machine's: {}", new_job.shown()) };
+        notes.push(format!("{said}, {then}"));
+    }
+    (gas, notes)
+}
+
 /// Open a BLM LC5 program set (`<NEST>.zip`, its `.XML`, or a Lantek `.nxp`
-/// list) or a ByStar Fiber job (`.bvc`) as an editable nesting: each part
-/// subprogram a part, each call a placed part, the file's sheet, material and
-/// thickness over `base`, and cut-offs back as remnant lines (edge to edge) or
-/// free cuts.
+/// list) or a ByStar Fiber job (`.bvc`, `bvc_job`) as an editable nesting.
+/// An LC5 set: each part subprogram a part, each call a placed part, and
+/// cut-offs back as remnant lines (edge to edge) or free cuts. The sheet is a
+/// new job's (`with_prefs` over `base`, GS12) with the header's sheet,
+/// material and thickness and the set's gas (GS18).
 pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) -> Result<ProgramJob, String> {
     if is_bvc(path) {
         return bvc_job(cfg, base, path, color0);
     }
     let im = crate::progimport::open(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
-    let mut spec = base.clone();
+    let mut spec = with_prefs(base, cfg);
+    let m = cfg.machine();
+    let (gas, gas_notes) = program_gas(im.gas.as_ref(), im.xml_gas.as_ref(), &crate::gas::JobGas::of(spec.gas, m.gas_id, &m.gas_name));
+    if gas.is_some() {
+        spec.gas = gas;
+    }
     if im.sheet_w > 0.0 && im.sheet_h > 0.0 {
         spec.w = im.sheet_w;
         spec.h = im.sheet_h;
@@ -260,8 +301,10 @@ pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usi
             })
         })
         .collect();
+    let mut notes = im.notes;
+    notes.extend(gas_notes);
     // One sheet of the job's size: no sheet formats, as before (`JobFile::formats`).
-    Ok(ProgramJob { name: im.name, spec, parts, sheets: vec![sheet], formats: vec![], cuts: vec![cuts], nests: 1, notes: im.notes })
+    Ok(ProgramJob { name: im.name, spec, parts, sheets: vec![sheet], formats: vec![], cuts: vec![cuts], nests: 1, notes })
 }
 
 /// Is this file a ByStar Fiber job: a `.bvc`, or a zip holding a job file
@@ -277,13 +320,15 @@ pub fn is_bvc(path: &Path) -> bool {
 /// machine of `base`: its parts with their contours, cut qualities, marks,
 /// cut starts and joints, quantities, material and thickness, and every nest
 /// as a sheet (or as many identical sheets as it is run) with its parts where
-/// they sit and its cut-offs as remnant lines.
+/// they sit and its cut-offs as remnant lines. The sheet is a new job's
+/// (`with_prefs` over `base`, GS12) with the file's sheet, material and
+/// thickness.
 pub fn bvc_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) -> Result<ProgramJob, String> {
     let fail = |e: String| format!("Couldn't open {}: {e}", path.display());
     let bytes = std::fs::read(path).map_err(|e| fail(e.to_string()))?;
     let b = crate::bvc::read(&bytes).map_err(fail)?;
     let n = crate::bvc::nesting(&b, color0).map_err(fail)?;
-    let mut spec = base.clone();
+    let mut spec = with_prefs(base, cfg);
     if let Some(s) = n.sheets.first().filter(|s| s.w > 0.0 && s.h > 0.0) {
         spec.w = s.w;
         spec.h = s.h;
@@ -297,7 +342,7 @@ pub fn bvc_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) 
         notes.push(format!("material \"{}\" taken as {}", n.material, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?")));
     }
     if !n.gas.is_empty() {
-        // JOB-74: the job keeps no gas of its own yet (MAC-39).
+        // JOB-74: the file's gas isn't taken; the job keeps a new job's gas (GS12).
         notes.push(format!("gas {} (the job's gas comes from the machine)", n.gas));
     }
     if n.inch {
