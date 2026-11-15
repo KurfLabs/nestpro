@@ -6824,3 +6824,95 @@ fn deleting_a_material_is_refused_while_the_library_cant_be_reached() {
     delete_material(&mut s, "DEMO 2205").unwrap();
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn an_undo_copy_beside_a_library_job_is_never_read_as_the_job() {
+    // #146 review S1: the record scan reads only `<number>.snjob`. An agent
+    // changed a Library job's material from mild steel to DEMO 316 on the
+    // record file itself, leaving its undo copy (`1.snjob~`, mild steel)
+    // beside it; a stray copy with no record (`2.snjob~`) is no job either.
+    let d = dir("material_delete_undo_copy");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    let jp = d.join("DEMO-B.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    let l = crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc());
+    let record = l.path(crate::library::Kind::Job, 1);
+    call(&mut s, "set-sheet", Some(record.to_str().unwrap()), json!({"material": "DEMO-316"}));
+    let undo = backup_path(&record);
+    assert_eq!(jobfile::load(&undo).unwrap().spec.material, 0, "the undo copy is the mild steel job");
+    std::fs::copy(&undo, backup_path(&l.path(crate::library::Kind::Job, 2))).unwrap();
+    let jobs: Vec<(u64, usize)> = l.rescan().iter().filter(|e| e.kind == crate::library::Kind::Job).map(|e| (e.id, e.material)).collect();
+    assert_eq!(jobs, [(1, 3)], "only the record, as it is now");
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let e = delete_material(&mut s, "DEMO-316").unwrap_err();
+    assert!(e.contains("1 job (DEMO-B)"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_stock_sheet_whose_material_is_deleted_before_it_is_stored_is_refused() {
+    // #146 review S2: this session picks DEMO 2205 for a new stock sheet;
+    // before it takes the Library's write lock, another session deletes
+    // DEMO 2205 (nothing used it yet). The sheet is refused under the lock.
+    let d = dir("material_delete_race_stock");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let other = lib.clone();
+    let mut once = true;
+    crate::shared::hooks::set(move |step| {
+        if step == "stock material picked" && std::mem::take(&mut once) {
+            let lib = other.clone();
+            std::thread::spawn(move || delete_material(&mut Session::new(stock_ctx_again(&lib)), "DEMO 2205").unwrap()).join().unwrap();
+        }
+    });
+    let r = s.call("stock", None, &json!({"mode": "create", "ref": "DEMO-2205-A", "material": "DEMO 2205", "w": 2000, "h": 1000, "thickness": 3}));
+    crate::shared::hooks::clear();
+    let e = r.map(|r| r.json).unwrap_err();
+    assert!(e.contains("DEMO 2205 (material 3) was deleted from the material list") && e.contains("Nothing was saved"), "{e}");
+    assert!(crate::stock::Stock::load(&lib).unwrap().items.iter().all(|i| i.material != 3), "no sheet in the deleted material");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_or_library_part_in_a_material_deleted_elsewhere_isnt_saved_into_the_library() {
+    // #146 review S2: a job open in one session (a file outside the
+    // Library) can't be seen by another, which deletes its material
+    // (JOB-88). Saving the job or one of its parts into the Library is then
+    // refused under the lock, so no Library record is in a deleted material.
+    let d = dir("material_delete_race_library");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = d.join("DEMO-LATE.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "DEMO 2205", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 50, "qty": 1, "name": "DEMO-LATE-P"}));
+    delete_material(&mut Session::new(stock_ctx_again(&lib)), "DEMO 2205").unwrap();
+    for args in [json!({"mode": "save-job"}), json!({"mode": "save-part", "parts": "1"})] {
+        let e = s.call("library", Some(jp.to_str().unwrap()), &args).map(|r| r.json).unwrap_err();
+        assert!(e.contains("was deleted from the material list") && e.contains("Nothing was saved"), "{args}: {e}");
+    }
+    assert!(crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc()).rescan().is_empty(), "nothing saved");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_open_jobs_file_is_read_again_before_a_material_is_deleted() {
+    // #146 review S3: the window changed the open job's material to DEMO
+    // 2205 in its file after this session read it.
+    let d = dir("material_delete_open_job_changed");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = d.join("DEMO-WIN.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    let mut j = jobfile::load(&jp).unwrap();
+    j.spec.material = 3;
+    jobfile::save(&jp, &j).unwrap();
+    let e = delete_material(&mut s, "DEMO 2205").unwrap_err();
+    assert!(e.contains("the job open here (DEMO-WIN)"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}

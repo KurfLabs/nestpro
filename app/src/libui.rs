@@ -426,7 +426,7 @@ impl App {
         let mut stock_note = String::new();
         let name = self.job_name.clone();
         let folder = self.jobs.get(self.cur_job).and_then(|j| j.lib_folder);
-        let r = lib.save_job_with(to, &name, folder, || {
+        let r = lib.save_job_with(to, &name, folder, self.spec.material, || {
             // Overwrite (LB9): their sheets go back to stock and their unused
             // remnants come out, then this job is booked as a new one. Done
             // once: saving again after a failure books only what changed.

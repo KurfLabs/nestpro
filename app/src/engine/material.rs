@@ -159,6 +159,10 @@ pub struct List {
     /// file never comes to mean a material it didn't have (MA16).
     pub next_id: Id,
     pub materials: Vec<Material>,
+    /// The numbers of the materials deleted from it (MA20), so a write that
+    /// picked one before it was deleted is refused rather than saved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted: Vec<Id>,
     /// Who changed it last, and when (as SV9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<crate::shared::Saved>,
@@ -204,7 +208,7 @@ impl List {
     /// out, so a name means one material (invariant 6); a lookup finds the
     /// same material it found before, since it always took the first.
     pub fn seed(cfg: &AppSettings) -> List {
-        let mut l = List { format: FORMAT.into(), version: VERSION, next_id: OLD_THREE.len(), materials: vec![], changed: None };
+        let mut l = List { format: FORMAT.into(), version: VERSION, next_id: OLD_THREE.len(), materials: vec![], deleted: vec![], changed: None };
         for (id, b) in OLD_THREE.iter().enumerate() {
             let (pn, pc) = cfg.materials.get(id).cloned().unwrap_or_else(|| default_program(id));
             let typed = cfg.material_aliases.get(id).cloned().unwrap_or_else(|| b.other_names.to_string());
@@ -357,6 +361,7 @@ impl List {
         }
         self.next_id = self.next_id.max(id + 1);
         self.materials.retain(|x| x.id != id);
+        self.deleted.push(id);
         Ok(m)
     }
 }

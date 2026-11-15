@@ -1564,6 +1564,8 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         Some(m) => Some(material_from(&m, &ctx.cfg)?),
         None => None,
     };
+    // Picked, not yet stored: the stock change checks again under the lock (MA20).
+    crate::shared::pause("stock material picked");
     let thk = a.num("thickness")?;
     let user = || [a.str("user1").unwrap_or_default(), a.str("user2").unwrap_or_default(), a.str("user3").unwrap_or_default()];
     let qty = || -> Result<i32, String> {

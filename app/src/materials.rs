@@ -147,6 +147,21 @@ pub fn delete(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by
     })
 }
 
+/// MA20, invariant 4: a write that gives a job, library part or stock item
+/// material `id`, checked under the write lock of the Library in
+/// `library_dir` (which the caller holds): refused when the Library's list
+/// has deleted the material since this PC picked it, so nothing is saved
+/// in a material that is gone. A number the list never gave (a file from
+/// another Library) isn't refused: it keeps its number and name (MA17).
+pub fn not_deleted(library_dir: &Path, id: Id, what: &str) -> Result<(), String> {
+    let deleted = read(&Home::Library(library_dir.to_path_buf()).file())?.is_some_and(|l| l.deleted.contains(&id) && l.get(id).is_none());
+    if !deleted {
+        return Ok(());
+    }
+    let which = crate::engine::material::name(id).map_or_else(|| format!("Material {id}"), |n| format!("{n} (material {id})"));
+    Err(format!("{which} was deleted from the material list after it was picked, so {what} can't be saved in it: pick another material (see material mode=list), or add it again with material mode=add. Nothing was saved."))
+}
+
 fn store(home: &Home, l: &List, lock: &WriteLock) -> Result<(), String> {
     let text = serde_json::to_string_pretty(l).map_err(|e| e.to_string())?;
     crate::shared::write_file(&home.file(), text.as_bytes(), Some(lock))
