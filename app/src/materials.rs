@@ -7,7 +7,7 @@
 //! Library can't be reached. A PC with no Library keeps the same file in its
 //! own settings folder. The rules over the list are in `engine::material`.
 
-use crate::engine::material::List;
+use crate::engine::material::{Id, List, Material, Uses};
 use crate::shared::{Saved, WriteLock};
 use std::path::{Path, PathBuf};
 
@@ -119,6 +119,47 @@ pub fn update<T>(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings,
     l.changed = Some(by());
     store(home, &l, &lock)?;
     Ok((out, l))
+}
+
+/// MA20: delete material `id` from the list in `home`, unless something
+/// uses it: a saved job or library part of the Library `lib`, a sheet or
+/// remnant of its stock, or one of the jobs `open` in this window or agent
+/// session (JOB-88). What uses it is read under the same write lock as the
+/// change (invariant 4, 5), after a first read without it so the lock stays
+/// short (LB2): a job saved in it at the same moment on another PC either
+/// counts or comes after. Refused, saying where it is used, and nothing is
+/// changed. Gives the material deleted and the list as stored.
+pub fn delete(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved, lib: &crate::library::Library, id: Id, open: &[&crate::jobfile::JobFile]) -> Result<(Material, List), String> {
+    // The first three are kept whatever uses them: no need to look.
+    let first = (id >= crate::engine::material::KEPT).then(|| lib.scan_records(None));
+    update(home, pc_dir, cfg, by, |l| {
+        let mut uses = Uses::default();
+        if l.get(id).is_some() && id >= crate::engine::material::KEPT {
+            let (jobs, parts) = lib.scan_records(first.as_ref()).using_material(id);
+            let stock = crate::stock::Stock::load(&lib.dir).map_err(|e| format!("The sheet stock can't be read ({e}), so it can't be told whether a stock sheet uses the material: it wasn't deleted."))?;
+            uses.stock = stock.items.iter().filter(|i| i.material == id).map(|i| i.reference.clone()).collect();
+            // A job open here that is also a saved job counts once, as saved.
+            uses.open = open.iter().filter(|j| j.spec.material == id && !j.library.is_some_and(|r| jobs.iter().any(|x| x.0 == r.id))).map(|j| j.name.clone()).collect();
+            uses.jobs = jobs.into_iter().map(|x| x.1).collect();
+            uses.parts = parts.into_iter().map(|x| x.1).collect();
+        }
+        l.remove(id, &uses)
+    })
+}
+
+/// MA20, invariant 4: a write that gives a job, library part or stock item
+/// material `id`, checked under the write lock of the Library in
+/// `library_dir` (which the caller holds): refused when the Library's list
+/// has deleted the material since this PC picked it, so nothing is saved
+/// in a material that is gone. A number the list never gave (a file from
+/// another Library) isn't refused: it keeps its number and name (MA17).
+pub fn not_deleted(library_dir: &Path, id: Id, what: &str) -> Result<(), String> {
+    let deleted = read(&Home::Library(library_dir.to_path_buf()).file())?.is_some_and(|l| l.deleted.contains(&id) && l.get(id).is_none());
+    if !deleted {
+        return Ok(());
+    }
+    let which = crate::engine::material::name(id).map_or_else(|| format!("Material {id}"), |n| format!("{n} (material {id})"));
+    Err(format!("{which} was deleted from the material list after it was picked, so {what} can't be saved in it: pick another material (see material mode=list), or add it again with material mode=add. Nothing was saved."))
 }
 
 fn store(home: &Home, l: &List, lock: &WriteLock) -> Result<(), String> {

@@ -7087,6 +7087,34 @@
   "estimated": true
  },
  {
+  "name": "rename material",
+  "group": "materials",
+  "value": "no file rewritten; files point at the number and show the new name, saved with it next save",
+  "source": "MA19",
+  "estimated": true
+ },
+ {
+  "name": "delete material",
+  "group": "materials",
+  "value": "never 0-2; refused while a saved job, library part, stock item or the open job uses it, naming the first 3 of each",
+  "source": "MA20",
+  "estimated": true
+ },
+ {
+  "name": "material picker groups",
+  "group": "materials",
+  "value": "Carbon steel, Stainless steel, Aluminium, Galvanized, Copper and brass, Other",
+  "source": "MA23",
+  "estimated": true
+ },
+ {
+  "name": "material picker find",
+  "group": "materials",
+  "value": "every word typed in the name or one other name; any order, case, spaces or accents",
+  "source": "MA23",
+  "estimated": true
+ },
+ {
   "name": "material from a name outside",
   "group": "materials",
   "value": "name or other name; then name or code in programs (first in the list); then the longest grade other name; then the longest name held (3 characters or more); else unchanged",
