@@ -199,10 +199,11 @@ pub struct Job {
     /// goes into (JX15): the folder of the library job it was opened or
     /// copied from. None: by its folder's name.
     pub lib_folder: Option<u64>,
-    /// The material name the job was opened with (MA17): saved back while
-    /// the material list doesn't have its material, so the job keeps its id
-    /// and name (invariant 3).
-    pub material_name: String,
+    /// The material names the job read, by id (MA17): the one it was
+    /// opened with, and that of a stock sheet whose material it took. Saved
+    /// back with the job's material while the list doesn't have it, so the
+    /// job keeps its id and name (invariant 3).
+    pub material_names: engine::material::ReadNames,
 }
 
 pub struct App {
@@ -446,8 +447,8 @@ pub struct App {
     pub round_edge: bool,
     /// The open job's ERP/MES link (see Job::erp).
     pub erp_job: Option<integrations::ErpJob>,
-    /// The open job's material name as it was opened (`Job::material_name`).
-    pub job_material_name: String,
+    /// The open job's material names as read (`Job::material_names`).
+    pub job_material_names: engine::material::ReadNames,
     /// ERP/MES window and background requests (erpui.rs).
     pub erp: erpui::ErpUi,
 }
@@ -523,7 +524,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
     let p = |name: &str, shape, w, h, qty, color| Part { name: name.into(), shape, w, h, qty, rotate: true, color, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let mk = |week: &str, name: &str, parts: Vec<Part>, spec: SheetSpec| {
         let result = nest::nest(&parts, &spec);
-        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_name: String::new() }
+        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![] }
     };
     let mut steel5 = spec.clone();
     steel5.thickness = 5.0;
@@ -548,7 +549,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
             file: None,
             saved: None,
             lib_folder: None,
-            material_name: String::new(),
+            material_names: vec![],
             held: Default::default(),
             erp: None,
         },
@@ -731,7 +732,7 @@ impl App {
             cut_drag: None,
             round_edge: true,
             erp_job: None,
-            job_material_name: String::new(),
+            job_material_names: vec![],
             erp: Default::default(),
         };
         // The material list (MA14): the Library's, or this PC's own.
@@ -762,7 +763,7 @@ impl App {
             j.held = self.held.clone();
             j.file = self.job_link.clone();
             j.erp = self.erp_job.clone();
-            j.material_name = self.job_material_name.clone();
+            j.material_names = self.job_material_names.clone();
         }
     }
 
@@ -790,7 +791,7 @@ impl App {
         self.job_path = j.file.as_ref().map(|l| l.path.clone());
         self.job_link = j.file;
         self.erp_job = j.erp;
-        self.job_material_name = j.material_name;
+        self.job_material_names = j.material_names;
         self.ghost = None;
         self.sel_cut = None;
         self.cur_sheet = 0;
@@ -844,7 +845,7 @@ impl App {
             file: None,
             saved: None,
             lib_folder: None,
-            material_name: String::new(),
+            material_names: vec![],
             erp: None,
         });
         let i = self.jobs.len() - 1;
@@ -928,7 +929,7 @@ impl App {
             library: None,
             // The library parts it read, and at which revision (LB7).
             library_parts: self.lib_read.parts.clone(),
-            material_name: self.job_material_name.clone(),
+            material_name: engine::material::read_name(self.spec.material, &self.job_material_names),
         };
         match jobfile::save(path, &j) {
             Ok(()) => {
@@ -968,7 +969,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let tried = 0;
-        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, parts: j.library_parts }, lib_folder: None, material_name: j.material_name.clone() });
+        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, parts: j.library_parts }, lib_folder: None, material_names: engine::material::names_read(j.spec.material, &j.material_name) });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -1142,7 +1143,7 @@ impl App {
             return;
         };
         self.store_job();
-        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_name: String::new() });
+        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![] });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.status = format!("Created job {} — add products, then nest.", self.job_name);
@@ -3097,7 +3098,7 @@ fn main() -> eframe::Result {
             // Without the example jobs: one empty job (not for screenshots).
             if load_layout && !app.cfg.examples {
                 let spec = app.spec.clone();
-                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_name: String::new() }];
+                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![] }];
                 app.cur_job = 0;
                 app.job_name = "New job".into();
                 app.parts.clear();
@@ -3963,6 +3964,20 @@ mod job_tests {
         let saved = jobfile::load(&out).unwrap();
         assert_eq!((saved.spec.material, saved.material_name.as_str()), (41, "DEMO 904L"));
         assert_eq!(a.current_jobfile().material_name, "DEMO 904L", "the Library save's job");
+        // Taking a stock sheet in another material the list doesn't have:
+        // the job takes the sheet's material and its name, never the name
+        // it was opened with.
+        let lib = dir.join("library");
+        crate::library::create(&lib).unwrap();
+        a.cfg.library_dir = lib.display().to_string();
+        let mut it = stock::Item::sheet("DEMO-2205-S1", 42, 4.0, 2000.0, 1000.0, 1);
+        it.material_name = "DEMO 2205".into();
+        stock::Stock::update(&a.library_at(), |s| s.add_sheet(it, true)).unwrap();
+        a.use_stock_switching("DEMO-2205-S1");
+        assert_eq!(a.spec.material, 42, "{}", a.status);
+        a.save_job_to(&out);
+        let saved = jobfile::load(&out).unwrap();
+        assert_eq!((saved.spec.material, saved.material_name.as_str()), (42, "DEMO 2205"));
         // A job in a material the list has is saved with the list's name.
         a.spec.material = 1;
         a.save_job_to(&out);

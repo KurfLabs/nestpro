@@ -228,6 +228,9 @@ impl App {
             return;
         };
         let before = self.spec.clone();
+        // MA17: the sheet's material name goes with its id, also when the
+        // switch waits for the question about the nested sheets.
+        crate::engine::material::remember_read(&mut self.job_material_names, it.material, &it.material_name);
         self.spec.material = it.material;
         self.spec.thickness = it.thickness;
         self.after_material_edit(before);

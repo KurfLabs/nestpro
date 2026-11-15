@@ -312,7 +312,7 @@ impl App {
             saved: None,
             library: self.job_lib_id.map(|id| Record { id, revision: self.lib_read.revision }),
             library_parts: self.lib_read.parts.clone(),
-            material_name: self.job_material_name.clone(),
+            material_name: crate::engine::material::read_name(self.spec.material, &self.job_material_names),
         }
     }
 
@@ -602,7 +602,7 @@ impl App {
                 skipped += 1;
                 continue;
             }
-            if let Ok(rec) = lib.save_product_in(p, &folder, (self.spec.material, &self.job_material_name), self.spec.thickness, SaveTo::New, &to) {
+            if let Ok(rec) = lib.save_product_in(p, &folder, (self.spec.material, &crate::engine::material::read_name(self.spec.material, &self.job_material_names)), self.spec.thickness, SaveTo::New, &to) {
                 // The job's part is that library part now, as saved (LB7).
                 self.lib_read.parts.insert(p.name.clone(), rec);
                 added += 1;
@@ -645,7 +645,7 @@ impl App {
         // in the same hold of the write lock as the revision check; saving
         // over one never moves it (JX19).
         let into = self.parts_folder_of_job();
-        match lib.save_product_in(&p, &folder, (self.spec.material, &self.job_material_name), self.spec.thickness, to, &into) {
+        match lib.save_product_in(&p, &folder, (self.spec.material, &crate::engine::material::read_name(self.spec.material, &self.job_material_names)), self.spec.thickness, to, &into) {
             Ok(rec) => {
                 self.lib_read.parts.insert(p.name.clone(), rec);
                 self.lib_refresh();
@@ -1327,7 +1327,8 @@ pub(crate) fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile
     let mut result = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 };
     result.normalise(&j.spec);
     let (folder, week) = place;
-    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder), material_name: j.material_name }
+    let material_names = crate::engine::material::names_read(j.spec.material, &j.material_name);
+    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder), material_names }
 }
 
 #[cfg(test)]

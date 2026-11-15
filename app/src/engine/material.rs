@@ -471,6 +471,29 @@ pub fn stored_name(id: Id, read: &str) -> String {
     name(id).unwrap_or_else(|| read.to_string())
 }
 
+/// The names materials not in the list were read with, by id (MA17): a job
+/// in the window keeps the one it was opened with, and the one of a stock
+/// sheet whose material it took, so each is saved back with its own id only.
+pub type ReadNames = Vec<(Id, String)>;
+
+/// The names read for `id` and `name` (nothing for an empty name).
+pub fn names_read(id: Id, name: &str) -> ReadNames {
+    if name.trim().is_empty() { vec![] } else { vec![(id, name.to_string())] }
+}
+
+/// Remember `name` as read for `id` (an empty name changes nothing).
+pub fn remember_read(read: &mut ReadNames, id: Id, name: &str) {
+    if !name.trim().is_empty() {
+        read.retain(|x| x.0 != id);
+        read.push((id, name.to_string()));
+    }
+}
+
+/// The name read for `id`, or empty when none was read for it.
+pub fn read_name(id: Id, read: &[(Id, String)]) -> String {
+    read.iter().rev().find(|x| x.0 == id).map(|x| x.1.clone()).unwrap_or_default()
+}
+
 /// What the list is, as text that changes when it does (to know when an
 /// import's preview must be read again).
 pub fn fingerprint() -> String {
