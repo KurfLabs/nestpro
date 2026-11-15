@@ -368,8 +368,9 @@ pub struct Cut {
     pub lift: bool,
     /// Points along the path where height sensing was switched off / on (BV14).
     pub sensing: Vec<(P, bool)>,
-    /// The height sensor as its subprogram last set it before this cut-out
-    /// starts; None when the subprogram hasn't set it yet (BV37).
+    /// The height sensor as its subprogram last set it when this cut's
+    /// pierce is made (without a pierce: when its cut-out starts); None when
+    /// the subprogram hasn't set it yet (BV37).
     pub sensor: Option<bool>,
     /// Each compensation and operation mode in force while the cut-out's
     /// moves run (its shape and a lead-out inside it), once each.
@@ -419,8 +420,14 @@ pub struct Program {
     /// Commands it knows but doesn't use for the nest (tube, sorting, dwell…).
     pub unread: BTreeMap<String, usize>,
     /// Commands of the format it passes over (they don't change a flat
-    /// nest's shape), by name: a read-back refuses those it didn't plan.
+    /// nest's shape), by name, in the subprograms: a read-back refuses those
+    /// it didn't plan.
     pub passed: BTreeMap<String, usize>,
+    /// The same in the main program; `SetClamps` with its value.
+    pub main_passed: BTreeMap<String, usize>,
+    /// Head lifts (`ExecHighPositioning`) in the subprograms, wherever they
+    /// are: after a cut-out, inside one, or before the first.
+    pub lifts: usize,
 }
 
 /// Commands of the format that don't change a flat nest's shape (BV1e):
@@ -452,6 +459,8 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
     let mut cuts: Vec<Cut> = vec![];
     let (mut pos, mut mode, mut corr, mut pmode) = ([0.0, 0.0], None, Correction::None, Piercing::Normal);
     let mut pierced: Option<(P, Piercing)> = None;
+    // The sensor when that pierce was made (BV37).
+    let mut pierced_sensor: Option<bool> = None;
     let mut lead: Option<Path> = None;
     let mut cur: Option<Cut> = None;
     let mut br = Bracket::Out;
@@ -527,8 +536,10 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
             "ExecPiercing" => {
                 if let Some(cut) = cur.as_mut().filter(|c| c.pierce.is_none()) {
                     cut.pierce = Some((pos, pmode));
+                    cut.sensor = sensor;
                 } else {
                     pierced = Some((pos, pmode));
+                    pierced_sensor = sensor;
                     after_cut = false;
                 }
             }
@@ -548,6 +559,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
                     "Exterior" => Side::Exterior,
                     _ => Side::Unknown,
                 };
+                let sensor = if pierced.is_some() { pierced_sensor } else { sensor };
                 cur = Some(Cut { mode, side, sensor, pierce: pierced.take(), lead_in: lead.take().filter(|l| !l.segs.is_empty()), path: Path { start: pos, segs: vec![] }, ..Default::default() });
                 br = Bracket::CutOut;
                 after_cut = false;
@@ -582,6 +594,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
                 }
             }
             "ExecHighPositioning" => {
+                p.lifts += 1;
                 if let Some(cut) = cuts.last_mut().filter(|_| cur.is_none()) {
                     cut.lift = true;
                 }
@@ -644,7 +657,8 @@ pub fn parse_program(text: &str) -> Result<Program, String> {
                     p.calls.push(Call { sub, x: coord(c, "X")? * k, y: coord(c, "Y")? * k, rotation });
                 }
                 "LineTo" | "ArcTo" | "MoveLineTo" | "MoveArcTo" | "CornerTransitionTo" => *p.unread.entry("move in the main program".into()).or_default() += 1,
-                n if is_known(n) => *p.passed.entry(n.to_string()).or_default() += 1,
+                "SetClamps" => *p.main_passed.entry(format!("SetClamps Value={}", c.attr("Value").unwrap_or(""))).or_default() += 1,
+                n if is_known(n) => *p.main_passed.entry(n.to_string()).or_default() += 1,
                 n => *p.unknown.entry(n.to_string()).or_default() += 1,
             }
         }

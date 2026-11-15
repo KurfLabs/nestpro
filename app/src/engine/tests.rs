@@ -7826,3 +7826,60 @@ fn the_read_back_refuses_a_height_sensor_left_on_at_the_edge() {
     assert!(e.as_deref().is_some_and(|e| e.contains("height sensor is on")), "{e:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// Review round 2 (#126): each test fails without its fix.
+
+/// Export with the cut program's text changed by `edit`: the refusal, or None.
+fn export_edited(s: &mut Session, edit: fn(String) -> String) -> Option<String> {
+    crate::bystar::EDIT.with(|e| e.set(Some(edit)));
+    let e = s.call("export", None, &json!({})).err();
+    crate::bystar::EDIT.with(|e| e.set(None));
+    e
+}
+
+/// `t` with `line` put in after the first cut-out's first move.
+fn inside_first_cut_out(t: &str, line: &str) -> String {
+    let k = t.find("<BeginCutOut").unwrap();
+    let k = k + t[k..].find("\r\n").unwrap() + 2;
+    let k = k + t[k..].find("\r\n").unwrap() + 2;
+    format!("{}        {line}\r\n{}", &t[..k], &t[k..])
+}
+
+#[test]
+fn the_sensor_switched_on_after_the_pierce_is_refused() {
+    // S6: `SetSensingSensor On` moved to just after the first `ExecPiercing`.
+    let d = dir("bystar_sensor_after_pierce");
+    let mut s = bystar_job(&d, false);
+    let late = |t: String| -> String {
+        let mut lines: Vec<String> = t.split("\r\n").map(str::to_string).collect();
+        let k = lines.iter().position(|l| l.contains("<SetSensingSensor") && l.contains("\"On\"")).unwrap();
+        let on = lines.remove(k);
+        let p = lines.iter().position(|l| l.contains("<ExecPiercing")).unwrap();
+        lines.insert(p + 1, on);
+        lines.join("\r\n")
+    };
+    let e = export_edited(&mut s, late);
+    assert!(e.as_deref().is_some_and(|e| e.contains("height sensor is off")), "{e:?}");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_head_lift_inside_a_cut_out_is_refused() {
+    // S7: an `ExecHighPositioning` inside a cut-out.
+    let d = dir("bystar_lift_inside");
+    let mut s = bystar_job(&d, false);
+    let e = export_edited(&mut s, |t| inside_first_cut_out(&t, "<ExecHighPositioning Id=\"9999\" />"));
+    assert!(e.as_deref().is_some_and(|e| e.contains("head lift")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn clamps_set_inside_a_subprogram_are_refused() {
+    // S8: `SetClamps` is only planned once, in the main program, Off.
+    let d = dir("bystar_clamps_inside");
+    let mut s = bystar_job(&d, false);
+    let e = export_edited(&mut s, |t| inside_first_cut_out(&t, "<SetClamps Id=\"9999\" Value=\"On\" />"));
+    assert!(e.as_deref().is_some_and(|e| e.contains("SetClamps")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

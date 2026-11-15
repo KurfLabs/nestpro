@@ -586,9 +586,16 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
             // Commands the reader skipped or passed over: none is planned
             // (the main program's clamps aside).
             for (what, m) in [("unknown", &p.unknown), ("not read", &p.unread), ("not planned", &p.passed)] {
-                for (c, count) in m.iter().filter(|(c, _)| !(what == "not planned" && c.as_str() == "SetClamps")) {
+                for (c, count) in m {
                     issues.push(format!("nest {name}: {count} {c} command(s) ({what})"));
                 }
+            }
+            // The main program sets up the clamps once (BV23), nothing else.
+            for (c, count) in p.main_passed.iter().filter(|(c, n)| !(c.as_str() == "SetClamps Value=Off" && **n == 1)) {
+                issues.push(format!("nest {name}: {count} {c} command(s) in the main program (not planned)"));
+            }
+            if p.lifts > 0 {
+                issues.push(format!("nest {name}: {} head lift(s) (ExecHighPositioning) the plan doesn't have", p.lifts));
             }
             // BV59: each sheet the nest stands for is compared with it.
             for &k in ks {
