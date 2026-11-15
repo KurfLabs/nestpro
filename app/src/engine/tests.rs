@@ -8119,10 +8119,12 @@ fn a_job_whose_number_is_one_of_the_former_holders_stays_unknown_through_saves()
         assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(3), Some("DEMO Shared")), "round {round}");
         s = Session::new(stock_ctx_again(&lib));
     }
-    // A material that has the name now is its material.
+    // Even once a material has the name now, the number's material had it
+    // before a rename here and a joining PC brought it for another: it
+    // still can't be told (MA31 step 2).
     call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "stainless"}));
     let info = call(&mut s, "info", Some(jp), json!({}));
-    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO Shared"), Some(5)), "{info}");
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(3)), "{info}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -8169,5 +8171,83 @@ fn a_remnant_from_a_job_whose_material_cant_be_told_keeps_its_number_and_name() 
     // An unrelated change saves the stock again.
     call(&mut other, "stock", None, json!({"mode": "create", "ref": "DEMO-OTHER", "material": "mild steel", "w": 1000, "h": 500, "thickness": 3}));
     assert_eq!(rems(&on_disk()), first);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_joining_pcs_name_the_library_shows_now_still_leaves_a_renamed_number_unknown() {
+    // S10 (MA28, MA31): the Library's 3 was renamed from DEMO Shared and its
+    // 4 is called DEMO Shared now. A PC joins with its own 3, DEMO Shared,
+    // taken as the Library's 4. The PC's job (3, DEMO Shared) could be the
+    // Library's job from before the rename or the PC's: it opens unknown, and
+    // it, a library part saved from it and a remnant it stores keep
+    // (3, DEMO Shared) through every read and save, in fresh sessions.
+    let d = dir("join_shown_name");
+    let lib = stock_ctx(&d).library_dir;
+    let mut shop = Session::new(stock_ctx_again(&lib));
+    call(&mut shop, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "stainless"}));
+    call(&mut shop, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": "DEMO Inox"}));
+    call(&mut shop, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "copper"}));
+    let mut pc = pc_without_library(&d.join("pc"));
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "copper"}));
+    let jp = d.join("DEMO-PC-SHARED.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut pc, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO Shared"}));
+    pc.ctx.library_dir = lib.clone();
+    call(&mut pc, "material", None, json!({"mode": "list"}));
+    let fresh = || Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut fresh()), ["Mild steel", "Stainless steel", "Aluminium", "DEMO Inox", "DEMO Shared"], "the PC's grade is the Library's 4");
+    let unknown = |s: &mut Session, job: Option<&str>| {
+        let info = call(s, "info", job, json!({}));
+        assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(3)), "{info}");
+        let u = &info["data"]["sheet"]["material_unknown"];
+        assert!(u["note"].as_str().unwrap().contains("can't be told") && !u["todo"].as_str().unwrap().contains("material mode=add"), "adding DEMO Shared wouldn't say which: {info}");
+    };
+    let job_on_disk = || -> (Option<u64>, Option<String>) {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(jp).unwrap()).unwrap();
+        (v["spec"]["material"].as_u64(), v["material_name"].as_str().map(str::to_string))
+    };
+    let kept = (Some(3), Some("DEMO Shared".to_string()));
+    // The job: open, save, reopen in a fresh session, save again.
+    for round in 0..2 {
+        let mut s = fresh();
+        unknown(&mut s, Some(jp));
+        call(&mut s, "set-sheet", None, json!({"gap": 6 + round}));
+        assert_eq!(job_on_disk(), kept, "round {round}");
+    }
+    // A library part saved from it, read back and saved again.
+    let mut s = fresh();
+    call(&mut s, "add-shape", Some(jp), json!({"shape": "rectangle", "w": 200, "h": 200, "qty": 1}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    let l = crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc());
+    let id = l.entries().into_iter().find(|e| e.kind == crate::library::Kind::Product).map(|e| e.id).unwrap();
+    let part_on_disk = || -> (Option<u64>, Option<String>) {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(l.path(crate::library::Kind::Product, id)).unwrap()).unwrap();
+        (v["material"].as_u64(), v["material_name"].as_str().map(str::to_string))
+    };
+    assert_eq!(part_on_disk(), kept);
+    let mut s2 = fresh();
+    let list = call(&mut s2, "library", Some(jp), json!({"mode": "list"}));
+    assert!(list["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "?"), "{list}");
+    let pf = l.load_product(id).unwrap();
+    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
+    assert_eq!(part_on_disk(), kept);
+    // A remnant it stores, read back in a fresh session and saved again by
+    // an unrelated stock change.
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let rems = || -> Vec<(Option<u64>, Option<String>)> {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(crate::stock::Stock::file(&lib)).unwrap()).unwrap();
+        v["items"].as_array().unwrap().iter().filter(|i| i["material"] != 0).map(|i| (i["material"].as_u64(), i["material_name"].as_str().map(str::to_string))).collect()
+    };
+    assert!(!rems().is_empty() && rems().iter().all(|r| *r == kept), "{:?}", rems());
+    let mut s3 = fresh();
+    let st = call(&mut s3, "stock", None, json!({"mode": "list", "show_zero": true}));
+    assert!(st["data"]["sheets"].as_array().unwrap().iter().all(|i| i["material"] == "?"), "{st}");
+    call(&mut s3, "stock", None, json!({"mode": "create", "ref": "DEMO-MS", "material": "mild steel", "w": 1000, "h": 500, "thickness": 3}));
+    assert!(rems().iter().all(|r| *r == kept), "{:?}", rems());
+    assert_eq!(job_on_disk(), kept);
+    unknown(&mut fresh(), Some(jp));
     let _ = std::fs::remove_dir_all(&d);
 }

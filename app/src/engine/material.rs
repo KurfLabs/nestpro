@@ -443,10 +443,12 @@ impl List {
         // read by number.
         for &(from, to) in same.iter().chain(&added).filter(|x| x.0 >= KEPT) {
             let pc_names = pc.get(from).map(|m| m.name.clone()).into_iter().chain(pc.former.iter().filter(|f| f.0 == from).map(|f| f.1.clone()));
+            // Kept even when the Library's material shows that name now: a
+            // rename here of another material from the same name must not
+            // decide a PC file (MA31 step 2).
             for n in pc_names.collect::<Vec<_>>() {
                 let k = norm(&n);
-                let shown = list.get(to).is_some_and(|x| x.names().any(|y| y == k));
-                if !k.is_empty() && !shown && !list.joined.iter().any(|(i, f)| *i == to && norm(f) == k) {
+                if !k.is_empty() && !list.joined.iter().any(|(i, f)| *i == to && norm(f) == k) {
                     list.joined.push((to, n));
                 }
             }
@@ -875,10 +877,19 @@ fn former_holders(l: &List, n: &str) -> Vec<Id> {
 }
 
 /// MA31: a name no material has now and several materials had before: it
-/// means none of them when a file is read.
+/// means none of them when a file is read (unless the file's number keeps
+/// it, `cant_tell`).
+#[cfg(test)]
 pub fn ambiguous(name: &str) -> bool {
     let (l, n) = (current(), norm(name));
     holder_now(&l, &n).is_none() && former_holders(&l, &n).len() > 1
+}
+
+/// MA31: a file whose number and stored name can't say which material it
+/// is: adding a material by that name wouldn't settle it; one is picked by
+/// hand.
+pub fn cant_tell(id: Id, name: &str) -> bool {
+    resolve_read(file_id(id), name).is_none()
 }
 
 /// MA17, MA31: the material a file's number and stored name mean; None
@@ -899,20 +910,20 @@ pub fn resolve_read(id: Id, name: &str) -> Option<Id> {
     }
     // MA31, in order: the number's material has the name now; the number's
     // material had it before a rename on this list (renaming touches no
-    // file, spec #142 user story 17), unless a joining PC brought that name
-    // for another material (its file could be either, so the number doesn't
-    // decide); the material that has the name now; the one material that
-    // had it before (a rename here, or a joining PC's name, which is in that
-    // PC's numbering and so never lets the number pick); several that had
-    // it can't be told apart.
+    // file, spec #142 user story 17) — but when a joining PC brought that
+    // name for another material the file could be this list's from before
+    // the rename or that PC's, so it can't be told: no material is picked,
+    // not even the one with the name now; the material that has the name
+    // now; the one material that had it before (a rename here, or a joining
+    // PC's name, which is in that PC's numbering and so never lets the
+    // number pick); several that had it can't be told apart.
     let now = holder_now(&l, &n);
     if now == Some(id) {
         return Some(id);
     }
-    let renamed_here = l.get(id).is_some() && l.former.iter().any(|(i, f)| *i == id && norm(f) == n);
-    let joined_elsewhere = l.joined.iter().any(|(i, f)| *i != id && norm(f) == n && l.get(*i).is_some());
-    if renamed_here && !joined_elsewhere {
-        return Some(id);
+    if l.get(id).is_some() && l.former.iter().any(|(i, f)| *i == id && norm(f) == n) {
+        let joined_elsewhere = l.joined.iter().any(|(i, f)| *i != id && norm(f) == n && l.get(*i).is_some());
+        return if joined_elsewhere { None } else { Some(id) };
     }
     if let Some(m) = now {
         return Some(m);
@@ -958,8 +969,8 @@ pub fn unknown_note(id: Id, read: &str) -> Option<String> {
     let r = read.split_whitespace().collect::<Vec<_>>().join(" ");
     Some(if r.is_empty() {
         format!("This job's material (number {id}) isn't in the material list. The job keeps it until another material is picked.")
-    } else if ambiguous(&r) {
-        format!("This job's material, {r} (number {id}), can't be told: no material is called that now, and several materials had that name before. The job keeps it until another material is picked.")
+    } else if cant_tell(id, &r) {
+        format!("This job's material, {r} (number {id}), can't be told: several materials had that name before, and the number doesn't say which. The job keeps it until another material is picked.")
     } else {
         format!("This job's material, {r}, isn't in the material list. The job keeps it (number {id}) until another material is picked, or {r} is added to the list.")
     })
@@ -1437,7 +1448,8 @@ mod tests {
         let j = lib.merge(&pc);
         assert_eq!(names(&j.list), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316"]);
         assert_eq!((j.added.len(), j.same.last()), (0, Some(&(3, 3))));
-        assert_eq!(j.list, lib, "nothing changed");
+        assert_eq!(j.list.materials, lib.materials, "nothing added");
+        assert_eq!(j.list.joined, [(3, "demo 316".to_string())], "the PC's name, kept as it had it (MA31)");
     }
 
     #[test]
@@ -1450,7 +1462,7 @@ mod tests {
         assert_eq!(j.list.materials, lib.materials, "nothing added");
         assert_eq!(j.same[3..], [(3, 4), (4, 4)], "both are the Library's DEMO 316");
         // MA31: the PC's name goes with it, unseen, so the PC's jobs find it.
-        assert_eq!((j.list.joined.as_slice(), j.list.former.len()), (&[(4, "DEMO Inox 316".to_string())][..], 0));
+        assert_eq!((j.list.joined.as_slice(), j.list.former.len()), (&[(4, "DEMO Inox 316".to_string()), (4, "DEMO 1.4404".to_string())][..], 0));
     }
 
     #[test]

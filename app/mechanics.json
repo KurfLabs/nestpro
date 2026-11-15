@@ -7159,7 +7159,7 @@
  {
   "name": "joining a Library",
   "group": "materials",
-  "value": "the Library's list wins; 0 to 2 the same by number; another PC material is the Library material one of its names (name or other name) belongs to, else added with its values and the Library's next number; the PC's name and former names go with it as joined names, kept apart from renames on the list; a Library with no list takes the PC's, stored; once per Library (materials-joined.json); under the write lock, retried while out of reach; started offline after joining: 0 to 2 only, no name finds another number",
+  "value": "the Library's list wins; 0 to 2 the same by number; another PC material is the Library material one of its names (name or other name) belongs to, else added with its values and the Library's next number; the PC's name (always, even when the Library's material shows it) and former names go with it as joined names, kept apart from renames on the list; a Library with no list takes the PC's, stored; once per Library (materials-joined.json); under the write lock, retried while out of reach; started offline after joining: 0 to 2 only, no name finds another number",
   "source": "MA28",
   "estimated": true
  },
@@ -7180,7 +7180,7 @@
  {
   "name": "file's number another material has",
   "group": "materials",
-  "value": "jobs, library parts, stock items: 0 to 2 always themselves; else (1) the number's material has the name now; (2) the number's material had it before a rename on this list (not when a joining PC brought it for another material); (3) the material with that name now; (4) the one material that had it before (a rename here, or a joining PC's name), whatever the number; (5) several and none now: unknown, number and name kept through every read and save; (6) else the number",
+  "value": "jobs, library parts, stock items: 0 to 2 always themselves; else (1) the number's material has the name now; (2) the number's material had it before a rename on this list (when a joining PC brought it for another material: unknown, kept); (3) the material with that name now; (4) the one material that had it before (a rename here, or a joining PC's name), whatever the number; (5) several and none now: unknown, number and name kept through every read and save; (6) else the number",
   "source": "MA31",
   "estimated": true
  },
