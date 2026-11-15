@@ -91,7 +91,7 @@ impl Session {
         ops::check_args(op, &args)?;
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };
         match op.kind {
-            Kind::Global => return ops::run_global(&self.ctx, name, &args).map(done),
+            Kind::Global => return ops::run_global(&self.ctx, name, &args, self.job.as_ref()).map(done),
             Kind::Create => {
                 let p = job_path(job.ok_or_else(|| format!("{name} needs the job file to make (job)"))?);
                 let force = ops::Args(&args).bool("force")?.unwrap_or(false);

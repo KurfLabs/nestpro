@@ -6586,3 +6586,241 @@ fn picking_the_gas_on_the_sheet_tab_moves_the_joints_as_set_sheet_does() {
     assert!(r["message"].as_str().unwrap().ends_with(&pick.note), "{r}\n{}", pick.note);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Renaming and deleting materials (spec #142, ticket #146: MA19, MA20).
+// ---------------------------------------------------------------------------
+
+/// A job in `material` saved into the Library under `name`, from a job file
+/// in `d` that the session then closes (only the Library record is left).
+fn library_job_in(s: &mut Session, d: &Path, name: &str, material: &str) {
+    let jp = d.join(format!("{name}.snjob"));
+    call(s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": material, "thickness": 3}));
+    call(s, "library", None, json!({"mode": "save-job"}));
+    std::fs::remove_file(&jp).unwrap();
+}
+
+fn delete_material(s: &mut Session, which: &str) -> Result<Value, String> {
+    s.call("material", None, &json!({"mode": "delete", "material": which})).map(|r| r.json)
+}
+
+fn material_names(s: &mut Session) -> Vec<String> {
+    call(s, "material", None, json!({"mode": "list"}))["data"]["materials"].as_array().unwrap().iter().map(|m| m["name"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn a_renamed_material_shows_its_new_name_and_no_file_changes_until_saved() {
+    // MA19: files point at the material's number, so renaming DEMO 316
+    // rewrites nothing; a job and a stock sheet reopened show the new name.
+    let d = dir("material_rename");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-A", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 3}));
+    let jp = d.join("DEMO-R1.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "DEMO-316", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    let stock_file = crate::stock::Stock::file(&lib);
+    let record = crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc()).path(crate::library::Kind::Job, 1);
+    let files = [PathBuf::from(jp), stock_file.clone(), record.clone()];
+    let bytes = |fs: &[PathBuf]| fs.iter().map(|f| std::fs::read(f).unwrap()).collect::<Vec<_>>();
+    let before = bytes(&files);
+
+    // A rename onto another material's name or other name is refused (invariant 6).
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "DEMO 316 Stainless", "name": "stainless STEEL"}));
+    assert!(e.contains("material 1 (Stainless steel)"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "DEMO 316 Stainless", "name": "AISI304"}));
+    assert!(e.contains("another name of Stainless steel"), "{e}");
+    // Only the capitals: allowed (MA9).
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Stainless", "name": "DEMO 316 STAINLESS"}));
+    let r = call(&mut s, "material", None, json!({"mode": "edit", "material": "demo-316", "name": "DEMO 316L Stainless"}));
+    assert_eq!((r["data"]["material"].as_u64(), r["data"]["name"].as_str()), (Some(3), Some("DEMO 316L Stainless")), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("renamed"), "{r}");
+    assert_eq!(bytes(&files), before, "renaming rewrote nothing");
+
+    // Reopened by another session (another PC): the new name everywhere.
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let info = call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 316L Stainless"), Some(3)), "{info}");
+    let l = call(&mut s, "stock", None, json!({"mode": "list", "material": "DEMO 316L Stainless", "thickness": 3}));
+    assert_eq!((l["data"]["sheets"][0]["ref"].as_str(), l["data"]["sheets"][0]["material"].as_str()), (Some("DEMO-316-A"), Some("DEMO 316L Stainless")), "{l}");
+    let lj = call(&mut s, "library", None, json!({"mode": "list"}));
+    assert!(lj["data"].as_array().unwrap().iter().any(|e| e["kind"] == "job" && e["material"] == "DEMO 316L Stainless"), "{lj}");
+    let parts = info["data"]["parts"].clone();
+    assert_eq!(bytes(&files), before, "opening and listing rewrote nothing");
+
+    // Saved again: the new name goes in beside the same number; nothing else moved.
+    call(&mut s, "set-sheet", None, json!({"gap": 6}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert_eq!((j.spec.material, j.material_name.as_str(), j.parts.len()), (3, "DEMO 316L Stainless", 1));
+    assert_eq!(call(&mut s, "info", None, json!({}))["data"]["parts"], parts);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_a_job_and_a_stock_sheet_use_cant_be_deleted_and_the_refusal_names_both() {
+    // MA20, invariant 4.
+    let d = dir("material_delete_used");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-A", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 3}));
+    library_job_in(&mut s, &d, "DEMO-J1", "DEMO-316");
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list_file).unwrap();
+    let e = delete_material(&mut s, "DEMO 316 Stainless").unwrap_err();
+    assert!(e.contains("DEMO 316 Stainless can't be deleted"), "{e}");
+    assert!(e.contains("1 job (DEMO-J1)") && e.contains("1 stock item (DEMO-316-A)"), "{e}");
+    assert!(!e.contains("library part"), "nothing it doesn't use: {e}");
+    assert_eq!(std::fs::read(&list_file).unwrap(), before, "nothing changed");
+    assert!(material_names(&mut s).contains(&"DEMO 316 Stainless".to_string()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_first_three_materials_are_never_deleted() {
+    // MA20: 0 mild steel, 1 stainless steel and 2 aluminium are what files
+    // saved before the list mean (invariant 1), by name or by number.
+    let d = dir("material_delete_old_three");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    for which in ["Mild steel", "1", "aluminum", "0"] {
+        let e = delete_material(&mut s, which).unwrap_err();
+        assert!(e.contains("can't be deleted") && e.contains("first three materials") && e.contains("rename"), "{which}: {e}");
+    }
+    // Renamed, it is still kept.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "0", "name": "DEMO Mild"}));
+    assert!(delete_material(&mut s, "DEMO Mild").unwrap_err().contains("first three materials"));
+    assert_eq!(material_names(&mut s), ["DEMO Mild", "Stainless steel", "Aluminium"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_nothing_uses_is_deleted_by_name_or_number_and_its_number_never_comes_back() {
+    let d = dir("material_delete_unused");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let e = delete_material(&mut s, "DEMO 9999").unwrap_err();
+    assert!(e.contains("'DEMO 9999' isn't in the list"), "{e}");
+    let r = delete_material(&mut s, "demo 2205").unwrap();
+    assert!(r["message"].as_str().unwrap().contains("Deleted material DEMO 2205 (4)"), "{r}");
+    let r = delete_material(&mut s, "3").unwrap();
+    assert!(r["message"].as_str().unwrap().contains("DEMO 316 Stainless (3)"), "{r}");
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium"]);
+    let e = delete_material(&mut s, "3").unwrap_err();
+    assert!(e.contains("There's no material 3"), "{e}");
+    // MA16: a number is never given twice.
+    let a = call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 316 Stainless", "standard": "stainless"}));
+    assert_eq!(a["data"]["material"].as_u64(), Some(5), "{a}");
+    // Its name is free again, and so is a deleted material's other name.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Stainless", "other_names": "DEMO-316"}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_used_only_by_a_remnant_a_library_part_or_a_library_job_is_kept() {
+    // MA20: each of them alone stops the delete.
+    let d = dir("material_delete_each_user");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    // A remnant left from a sheet that is gone from stock.
+    add_demo_316(&mut s);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-B", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 4}));
+    let jp = d.join("DEMO-REM.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "material": "DEMO-316", "thickness": 4}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 3}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    call(&mut s, "stock", None, json!({"mode": "delete", "ref": "DEMO-316-B"}));
+    std::fs::remove_file(&jp).unwrap();
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let rem = call(&mut s, "stock", None, json!({"mode": "list", "material": "DEMO-316", "show_zero": true}));
+    let rem = rem["data"]["sheets"].as_array().unwrap();
+    assert!(rem.len() == 1 && rem[0]["kind"] != "sheet", "only the remnant: {rem:?}");
+    let e = delete_material(&mut s, "DEMO-316").unwrap_err();
+    assert!(e.contains(&format!("1 stock item ({})", rem[0]["ref"].as_str().unwrap())) && !e.contains("job"), "{e}");
+
+    // A library part whose job was never saved into the Library.
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = d.join("DEMO-PART.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "DEMO 2205", "thickness": 2}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 50, "qty": 1, "name": "DEMO-BRACKET"}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    std::fs::remove_file(&jp).unwrap();
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let e = delete_material(&mut s, "DEMO 2205").unwrap_err();
+    assert!(e.contains("1 library part (DEMO-BRACKET)") && !e.contains("stock item") && !e.contains("job"), "{e}");
+
+    // A job in the Library's jobs only.
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 904", "standard": "stainless"}));
+    library_job_in(&mut s, &d, "DEMO-J2", "DEMO 904");
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let e = delete_material(&mut s, "DEMO 904").unwrap_err();
+    assert!(e.contains("1 job (DEMO-J2)") && !e.contains("stock item") && !e.contains("library part"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_job_open_in_the_session_keeps_its_material_and_a_job_file_elsewhere_shows_a_question_mark() {
+    // JOB-88 (estimated): the job open here counts as a use, saved into the
+    // Library or not. A job file outside the Library that nothing has open
+    // can't be seen: once its material is gone it keeps its number and
+    // name, and shows `?` (JOB-86).
+    let d = dir("material_delete_open_job");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = d.join("DEMO-OPEN.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "DEMO 2205", "thickness": 3}));
+    let e = delete_material(&mut s, "DEMO 2205").unwrap_err();
+    assert!(e.contains("the job open here (DEMO-OPEN)"), "{e}");
+    let before = std::fs::read(jp).unwrap();
+    let mut s = Session::new(stock_ctx_again(&lib));
+    delete_material(&mut s, "DEMO 2205").unwrap();
+    let info = call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(3)), "{info}");
+    assert_eq!(std::fs::read(jp).unwrap(), before, "the file is left as it was");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_with_many_users_names_the_first_few_and_counts_the_rest() {
+    let d = dir("material_delete_many");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    for k in 1..=5 {
+        call(&mut s, "stock", None, json!({"mode": "create", "ref": format!("DEMO-S{k}"), "material": "DEMO-316", "w": 2000, "h": 1000, "thickness": k}));
+    }
+    for k in 1..=4 {
+        library_job_in(&mut s, &d, &format!("DEMO-J{k}"), "DEMO-316");
+    }
+    let e = delete_material(&mut s, "DEMO-316").unwrap_err();
+    assert!(e.contains("4 jobs (DEMO-J1, DEMO-J2, DEMO-J3 and 1 more)"), "{e}");
+    assert!(e.contains("5 stock items (DEMO-S1, DEMO-S2, DEMO-S3 and 2 more)"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn deleting_a_material_is_refused_while_the_library_cant_be_reached() {
+    // Invariant 5: nothing changed, nothing made in its place.
+    let d = dir("material_delete_unreachable");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    let e = delete_material(&mut s, "DEMO 2205").unwrap_err();
+    assert!(e.contains("can't be reached") && e.contains("The material list wasn't changed"), "{e}");
+    assert!(!lib.exists(), "nothing made in its place");
+    std::fs::rename(&away, &lib).unwrap();
+    assert_eq!(material_names(&mut s).len(), 4, "still there");
+    delete_material(&mut s, "DEMO 2205").unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}

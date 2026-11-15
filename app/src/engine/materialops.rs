@@ -1,7 +1,7 @@
-//! The agents' `material` operation: the material list (MA14–MA16), level
-//! with Settings → Materials — list it, add a material based on a standard,
-//! edit one. Every change goes through the same rules and write lock as the
-//! window's.
+//! The agents' `material` operation: the material list (MA14–MA16, MA19,
+//! MA20), level with Settings → Materials — list it, add a material based on
+//! a standard, edit (rename) one, delete one nothing uses. Every change goes
+//! through the same rules and write lock as the window's.
 
 use super::material::{self, Material, STANDARDS};
 use super::ops::{Args, Outcome};
@@ -71,7 +71,8 @@ fn apply(a: &Args, m: &mut Material) -> Result<(), String> {
     Ok(())
 }
 
-pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
+/// `open`: the job open in this session, which keeps its material (JOB-88).
+pub fn run(ctx: &Ctx, a: &Args, open: Option<&crate::jobfile::JobFile>) -> Result<Outcome, String> {
     let home = ctx.material_home();
     let mode = a.str("mode").unwrap_or_default();
     match mode.as_str() {
@@ -101,6 +102,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         "edit" => {
             let which = a.str("material").ok_or("material mode=edit needs the material to change (material: its name, another name or its number; see material mode=list)")?;
             let id = super::ops::material_from(&which, &ctx.cfg)?;
+            let before = material::name_or(id, "?");
             let (_, l) = crate::materials::update(&home, &ctx.pc_dir, &ctx.cfg, || ctx.library_at().saved(), |l| {
                 let mut m = l.get(id).cloned().ok_or_else(|| format!("Material {id} isn't in {} list any more: see material mode=list.", home.label()))?;
                 apply(a, &mut m)?;
@@ -108,8 +110,25 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             })?;
             material::install(l.clone());
             let m = l.get(id).cloned().unwrap();
-            Ok(done(format!("Material {} ({}) changed.", m.name, m.id), material_json(&m)))
+            // MA19: renaming changes nothing else. Files point at the number,
+            // so every job, part and stock item in it shows the new name, and
+            // takes it into its file only when it is next saved.
+            let msg = if m.name != before {
+                format!("Material {} renamed {}. Jobs, library parts and stock that use it show the new name; their files point at its number ({}) and are left as they are until next saved.", before, m.name, m.id)
+            } else {
+                format!("Material {} ({}) changed.", m.name, m.id)
+            };
+            Ok(done(msg, material_json(&m)))
         }
-        m => Err(format!("material mode={m}: list, add or edit")),
+        "delete" => {
+            let which = a.str("material").ok_or("material mode=delete needs the material to delete (material: its name, another name or its number; see material mode=list)")?;
+            let id = super::ops::material_from(&which, &ctx.cfg)?;
+            let lib = ctx.library_at();
+            let open: Vec<&crate::jobfile::JobFile> = open.into_iter().collect();
+            let (m, l) = crate::materials::delete(&home, &ctx.pc_dir, &ctx.cfg, || lib.saved(), &lib, id, &open)?;
+            material::install(l);
+            Ok(done(format!("Deleted material {} ({}) from {} list. Its number is never given to another material.", m.name, m.id, home.label()), material_json(&m)))
+        }
+        m => Err(format!("material mode={m}: list, add, edit or delete")),
     }
 }

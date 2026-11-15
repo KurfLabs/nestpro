@@ -466,6 +466,15 @@ impl Library {
         out
     }
 
+    /// Every record file as it is now (MA20: what uses a material is read
+    /// from the files, not the list, which says only what each was saved
+    /// with). Files whose stamp is in `known` aren't read again, so a scan
+    /// first made without the write lock is cheap to repeat under it (LB1,
+    /// LB2).
+    pub fn scan_records(&self, known: Option<&RecordScan>) -> RecordScan {
+        RecordScan(self.scan(known.map_or(&Scanned::new(), |k| &k.0)))
+    }
+
     /// Re-read the index from the record files and save it. The files are
     /// read first without the write lock (that can take a while on a big
     /// Library on the share), then only those written since are read again
@@ -822,6 +831,21 @@ impl Library {
 
 /// Record files read: (kind, number) → (stamp, line in the list).
 type Scanned = std::collections::HashMap<(u8, u64), ((Option<std::time::SystemTime>, u64), Entry)>;
+
+/// The Library's record files as one scan read them (`scan_records`).
+pub struct RecordScan(Scanned);
+
+impl RecordScan {
+    /// The saved jobs and library parts in the material, each as (record
+    /// number, name), in record order (MA20). A record is in the material
+    /// its file means once read: its number, else its saved name (MA17).
+    pub fn using_material(&self, material: usize) -> (Vec<(u64, String)>, Vec<(u64, String)>) {
+        let mut found: Vec<&Entry> = self.0.values().map(|(_, e)| e).filter(|e| e.material == material).collect();
+        found.sort_by_key(|e| (e.kind as u8, e.id));
+        let of = |k: Kind| found.iter().filter(|e| e.kind == k).map(|e| (e.id, e.name.clone())).collect::<Vec<_>>();
+        (of(Kind::Job), of(Kind::Product))
+    }
+}
 
 /// The lines of a scan, in the list's order.
 fn entries_of(s: Scanned) -> Vec<Entry> {

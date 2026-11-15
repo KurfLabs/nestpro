@@ -7085,6 +7085,20 @@
   "value": "0010 mild steel 7.85, 0100 stainless steel 8.0, 0200 aluminium 2.70",
   "source": "MA18",
   "estimated": true
+ },
+ {
+  "name": "rename material",
+  "group": "materials",
+  "value": "no file rewritten; files point at the number and show the new name, saved with it next save",
+  "source": "MA19",
+  "estimated": true
+ },
+ {
+  "name": "delete material",
+  "group": "materials",
+  "value": "never 0-2; refused while a saved job, library part, stock item or the open job uses it, naming the first 3 of each",
+  "source": "MA20",
+  "estimated": true
  }
 ]
 }
