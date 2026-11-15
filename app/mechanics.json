@@ -7159,7 +7159,7 @@
  {
   "name": "joining a Library",
   "group": "materials",
-  "value": "the Library's list wins; 0 to 2 the same by number; another PC material is the Library material one of its names (name or other name) belongs to, else added with its values and the Library's next number; a Library with no list takes the PC's, stored; once per Library (materials-joined.json); under the write lock, retried while out of reach",
+  "value": "the Library's list wins; 0 to 2 the same by number; another PC material is the Library material one of its names (name or other name) belongs to, else added with its values and the Library's next number; the PC's name and former names go with it as former names; a Library with no list takes the PC's, stored; once per Library (materials-joined.json); under the write lock, retried while out of reach; started offline after joining: 0 to 2 only",
   "source": "MA28",
   "estimated": true
  },
@@ -7180,7 +7180,7 @@
  {
   "name": "file's number another material has",
   "group": "materials",
-  "value": "0 to 2 always themselves; else the number when the stored name is its name, other name or former name, else the material with that name (or former name), else the number",
+  "value": "0 to 2 always themselves; else the number when the stored name is its name, other name or former name (before a rename, or a joining PC's name), else the material with that name (or former name), else the number",
   "source": "MA31",
   "estimated": true
  },

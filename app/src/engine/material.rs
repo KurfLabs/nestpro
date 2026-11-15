@@ -426,6 +426,21 @@ impl List {
                 added.push((m.id, id));
             }
         }
+        // MA31: the PC's name for each material it brought, and its names
+        // before a rename, go with it as former names of the Library's
+        // number, so a PC job saved under one of them still finds it (they
+        // aren't names the list shows, invariant 6). The first three are
+        // read by number.
+        for &(from, to) in same.iter().chain(&added).filter(|x| x.0 >= KEPT) {
+            let pc_names = pc.get(from).map(|m| m.name.clone()).into_iter().chain(pc.former.iter().filter(|f| f.0 == from).map(|f| f.1.clone()));
+            for n in pc_names.collect::<Vec<_>>() {
+                let k = norm(&n);
+                let shown = list.get(to).is_some_and(|x| x.names().any(|y| y == k));
+                if !k.is_empty() && !shown && !list.former.iter().any(|(i, f)| *i == to && norm(f) == k) {
+                    list.former.push((to, n));
+                }
+            }
+        }
         Joined { list, added, same }
     }
 }
@@ -1345,8 +1360,10 @@ mod tests {
         let pc = list_with(&[grade("DEMO Inox 316", 100, &["DEMO 316"]), grade("DEMO 1.4404", 100, &[])]);
         let lib = list_with(&[grade("DEMO 304", 100, &[]), grade("DEMO 316", 100, &["DEMO 1.4404"])]);
         let j = lib.merge(&pc);
-        assert_eq!(j.list, lib, "nothing added");
+        assert_eq!(j.list.materials, lib.materials, "nothing added");
         assert_eq!(j.same[3..], [(3, 4), (4, 4)], "both are the Library's DEMO 316");
+        // MA31: the PC's name goes with it, unseen, so the PC's jobs find it.
+        assert_eq!(j.list.former, [(4, "DEMO Inox 316".to_string())]);
     }
 
     #[test]

@@ -193,16 +193,24 @@ pub fn join(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: 
 
 /// The list to answer from when a window or session starts while the list
 /// can't be read (the Library is out of reach): this PC's own while it
-/// hasn't joined the Library yet (its jobs are still in its numbering),
-/// else the one its settings seed (MA15).
+/// hasn't joined the Library yet (its jobs are still in its numbering).
+/// Otherwise only the first three, as this PC's settings seed them (MA15):
+/// every other number is the Library's, which can't be read now, so it is
+/// unknown (`?`, MA30) and keeps its number and name, never taken as one of
+/// this PC's own (MA28).
 pub fn fallback(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings) -> List {
+    let library = matches!(home, Home::Library(_));
     let joined = matches!(home, Home::Library(d) if has_joined(pc_dir, d));
     if !joined {
         if let Ok(Some(l)) = own_list(pc_dir, cfg) {
             return l;
         }
     }
-    List::seed(cfg)
+    let mut l = List::seed(cfg);
+    if library {
+        l.materials.retain(|m| m.id < crate::engine::material::KEPT);
+    }
+    l
 }
 
 /// Re-read the list, change it and store it, all under the write lock of
