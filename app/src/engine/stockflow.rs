@@ -503,11 +503,6 @@ pub struct JobSheets<'a> {
     pub material_name: String,
 }
 
-/// The material's name from the settings (the built-in name when none is set).
-pub fn material_name(cfg: &crate::settings::AppSettings, m: usize) -> String {
-    cfg.materials.get(m).map(|x| x.0.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| crate::cnc::MATERIALS[m.min(crate::cnc::MATERIALS.len() - 1)].to_string())
-}
-
 /// What a reference format can use for a remnant of sheet `i` (RF4–RF5).
 fn ref_values(j: &JobSheets, f: &SheetFormat, i: usize, parent: Option<&Item>, o: &crate::stock::Outline) -> stock::RefValues {
     let (l, w) = o.size();
@@ -1103,7 +1098,7 @@ mod tests {
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let st = StockSettings { keep_completed: true, auto_remnant_ref: true, remnant_ref_format: "R".into(), ..Default::default() };
         let parts = [part];
         let store = |sheet: Placed, formats: &mut Vec<SheetFormat>| {
@@ -1148,7 +1143,7 @@ mod tests {
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let st = StockSettings { remnants_on_save: true, auto_remnant_ref: true, remnant_ref_format: "R".into(), ..Default::default() };
         let parts = [part];
         let line = |x: f64| vec![CutLine { pts: vec![[x, 0.0], [x, 500.0]], kind: CutKind::Remnant }];
@@ -1183,7 +1178,7 @@ mod tests {
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let st = StockSettings { remnants_on_save: true, ..Default::default() };
         let parts = [part];
         let line = |x: f64| vec![CutLine { pts: vec![[x, 0.0], [x, 500.0]], kind: CutKind::Remnant }];
@@ -1219,7 +1214,7 @@ mod tests {
         let line = [CutLine { pts: vec![[900.0, 0.0], [900.0, 500.0]], kind: CutKind::Remnant }];
         assert_eq!(sheet_fingerprint(&line, &[p]), sheet_fingerprint(&line, &[moved]), "a remnant line alone decides");
         let part = Part { name: "R".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let st = StockSettings { keep_completed: true, ..Default::default() };
         let stock = Stock::default();
         let parts = [part];

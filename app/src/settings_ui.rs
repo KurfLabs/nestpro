@@ -283,8 +283,9 @@ impl App {
         }
     }
 
-    fn shot_mode_now(&self) -> bool {
-        std::env::args().any(|a| a == "--screenshot")
+    /// A screenshot run (--screenshot), which never saves the settings.
+    pub(crate) fn shot_mode_now(&self) -> bool {
+        self.shot.is_some() || std::env::args().any(|a| a == "--screenshot")
     }
 
     pub fn settings_window(&mut self, ctx: &egui::Context) {
@@ -811,6 +812,36 @@ impl App {
                     ui.radio_value(&mut m.output, o, title);
                 }
             });
+            // GS17: the machine's gas, a pick from the list: the gas a new
+            // job starts with (GS12). A saved number and name that aren't the
+            // list's pair stay as saved until a gas is picked; nothing is
+            // written by just looking.
+            row(ui, "Gas", |ui| {
+                let shown = m.gas().map_or_else(|| format!("{} \"{}\" (as saved)", m.gas_id, m.gas_name), |g| g.name().to_string());
+                let mut picked = None;
+                egui::ComboBox::from_id_salt("machine_gas")
+                    .width(180.0)
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        for g in crate::gas::Gas::ALL {
+                            let what = if g.program_name() == g.name() { format!("Gas {} in the LC5 program", g.number()) } else { format!("Gas {} in the LC5 program, written {}", g.number(), g.program_name()) };
+                            if ui.selectable_label(m.gas() == Some(g), g.name()).on_hover_text(what).clicked() {
+                                picked = Some(g);
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("The gas a new job on this machine starts with; each job keeps its own, picked on the Sheet tab. Jobs saved before jobs carried a gas are cut with this one.");
+                if let Some(g) = picked {
+                    m.pick_gas(g);
+                }
+            });
+            if let Some(note) = m.gas_mismatch() {
+                ui.horizontal(|ui| {
+                    ui.add_space(154.0);
+                    ui.add(egui::Label::new(RichText::new(format!("⚠ {note}")).size(11.5).color(th().warn_fg)).wrap());
+                });
+            }
             ui.horizontal(|ui| {
                 ui.add_space(154.0);
                 if ui.add_enabled(!active, egui::Button::new(if active { "● In use" } else { "Use this machine" })).on_hover_text("Cut the open job on this machine (the same as picking it on the Sheet tab)").clicked() {
@@ -889,10 +920,6 @@ impl App {
                 let a = crate::blm::AdiParams::from_files(&m.blm_ps1, &m.blm_cf1);
                 row(ui, "Values in use", |ui| {
                     ui.label(RichText::new(format!("overrun −{} / +{} mm · CORNER ≤ {}° · arcs within {} mm", a.trim_neg, a.trim_pos, a.corner_deg, a.arc_tol)).size(12.0));
-                });
-                row(ui, "Gas id / name", |ui| {
-                    ui.add(egui::DragValue::new(&mut m.gas_id).range(0..=99));
-                    ui.add(egui::TextEdit::singleline(&mut m.gas_name).desired_width(140.0));
                 });
             });
         }
@@ -1091,22 +1118,13 @@ impl App {
                 );
                 ui.label(RichText::new("Also called (comma-separated)").strong());
                 ui.end_row();
-                for (i, m) in crate::cnc::MATERIALS.iter().enumerate() {
-                    if self.cfg.materials.len() <= i {
-                        self.cfg.materials.push(crate::settings::default_materials()[i].clone());
-                    }
-                    if self.cfg.material_aliases.len() <= i {
-                        self.cfg.material_aliases.push(crate::settings::default_material_aliases()[i].clone());
-                    }
-                    if self.cfg.material_refs.len() <= i {
-                        self.cfg.material_refs.push(crate::settings::default_material_refs()[i].clone());
-                    }
-                    ui.label(*m);
-                    let (n, id) = &mut self.cfg.materials[i];
-                    ui.add(egui::TextEdit::singleline(n).desired_width(160.0));
-                    ui.add(egui::TextEdit::singleline(id).desired_width(80.0));
-                    ui.add(egui::TextEdit::singleline(&mut self.cfg.material_refs[i]).desired_width(80.0).hint_text("name"));
-                    ui.add(egui::TextEdit::singleline(&mut self.cfg.material_aliases[i]).desired_width(320.0));
+                for i in crate::engine::material::ids() {
+                    ui.label(crate::engine::material::name_or(i, "?"));
+                    let row = crate::engine::material::pc_row(&mut self.cfg, i);
+                    ui.add(egui::TextEdit::singleline(row.program_name).desired_width(160.0));
+                    ui.add(egui::TextEdit::singleline(row.program_code).desired_width(80.0));
+                    ui.add(egui::TextEdit::singleline(row.machine_ref).desired_width(80.0).hint_text("name"));
+                    ui.add(egui::TextEdit::singleline(row.other_names).desired_width(320.0));
                     ui.end_row();
                 }
             });
@@ -1116,7 +1134,7 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut self.setui.mat_probe).desired_width(140.0).hint_text("e.g. S355"));
                 if !self.setui.mat_probe.trim().is_empty() {
                     let t = match self.cfg.material_for(&self.setui.mat_probe) {
-                        Some(k) => format!("→ {}", crate::cnc::MATERIALS[k]),
+                        Some(k) => format!("→ {}", crate::engine::material::name_or(k, "?")),
                         None => "→ not a known material".into(),
                     };
                     ui.label(RichText::new(t).size(11.5));
@@ -1124,9 +1142,7 @@ impl App {
             });
             ui.add_space(6.0);
             if ui.button("Reset to defaults").clicked() {
-                self.cfg.materials = crate::settings::default_materials();
-                self.cfg.material_aliases = crate::settings::default_material_aliases();
-                self.cfg.material_refs = crate::settings::default_material_refs();
+                crate::engine::material::reset_pc(&mut self.cfg);
             }
         });
     }
