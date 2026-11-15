@@ -186,9 +186,14 @@ pub fn apply(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by:
 /// or holds no Library. A PC with no Library can always change its own.
 pub fn can_change(home: &Home) -> Result<(), String> {
     match home {
-        Home::Library(d) => crate::library::usable(d).map_err(|e| format!("{e} The material list can't be changed until it can be reached: the list shown is the one read last.")),
+        Home::Library(d) => crate::library::usable(d).map_err(|e| cant_change(&e)),
         Home::Pc(_) => Ok(()),
     }
+}
+
+/// Why the list can't be changed, from why the Library can't be used.
+pub fn cant_change(why: &str) -> String {
+    format!("{why} The material list can't be changed until it can be reached: the list shown is the one read last.")
 }
 
 /// MA20, invariant 4: a write that gives a job, library part or stock item

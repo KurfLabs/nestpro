@@ -1170,6 +1170,16 @@ impl App {
         }
     }
 
+    /// The window's automatic look at the Library found it gone (`Some`,
+    /// why) or back (`None`): the Materials page follows at once, without
+    /// looking at the Library again itself; what was typed stays (MA14,
+    /// MA21). A PC with no Library keeps its own list and can always edit.
+    pub(crate) fn materials_reach(&mut self, unreachable: Option<&str>) {
+        if let crate::materials::Home::Library(_) = self.material_home().0 {
+            self.setui.mat_locked = unreachable.map(crate::materials::cant_change);
+        }
+    }
+
     fn settings_materials(&mut self, ui: &mut egui::Ui) {
         use crate::engine::catalogue::{self, CATALOGUE};
         use crate::engine::materialedit::Field;
@@ -1391,7 +1401,7 @@ impl App {
     /// lock of the list (MA14, MA21); refused (and kept for another try)
     /// when a name is taken, a material is used, or the Library can't be
     /// reached, with nothing stored.
-    fn save_materials(&mut self) {
+    pub(crate) fn save_materials(&mut self) {
         let Some(d) = self.setui.mat_draft.clone() else { return };
         let (home, pc_dir) = self.material_home();
         let open = self.open_material_jobs();
