@@ -204,7 +204,9 @@ impl App {
             self.empty_sheet_kept = Some(0);
         } else {
             self.result.normalise(&self.spec);
-            self.result.formats[self.cur_sheet] = f;
+            // MS2: the sheet keeps its machine.
+            let machine = self.result.formats[self.cur_sheet].machine.clone();
+            self.result.formats[self.cur_sheet] = SheetFormat { machine, ..f };
         }
         let i = self.cur_sheet;
         let misfits = self.result.sheets[i].iter().filter(|p| !self.fits_sheet(p, i)).count();

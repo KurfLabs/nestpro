@@ -87,6 +87,8 @@ impl Session {
         let op = ops::find(name).ok_or_else(|| format!("unknown operation '{name}' — see `nestpro ops`"))?;
         let args = if args.is_null() { json!({}) } else { args.clone() };
         ops::check_args(op, &args)?;
+        // MS4: the machines the sheets name, as the settings say now.
+        sheetmachine::install(&self.ctx.cfg);
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };
         match op.kind {
             Kind::Global => return ops::run_global(&self.ctx, name, &args).map(done),

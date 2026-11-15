@@ -188,7 +188,7 @@ mod tests {
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 300.0, h: 300.0, turns: 0, mirror: false, spin: Default::default() }];
         // L-shaped remnant sheet; cut off the right part at x = 400.
         let l = Outline { outer: vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [600.0, 1000.0], [600.0, 400.0], [0.0, 400.0]], holes: vec![] };
-        let f = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 };
+        let f = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0, machine: String::new() };
         let line = CutLine { pts: vec![[400.0, 0.0], [400.0, 1000.0]], kind: CutKind::Remnant };
         let r = sheet_remnants(&parts, &sheet, &f, &[line], 0.3, 0.1, false);
         assert_eq!(r.len(), 1);

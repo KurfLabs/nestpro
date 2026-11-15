@@ -1183,9 +1183,10 @@ impl App {
         };
         // Same parts in the same places on the same kind of sheet (a remnant
         // or another stock size is a different sheet).
+        // A sheet on another machine is another program (MS6).
         let fmt = |i: usize| {
             let f = self.result.format(i, &self.spec);
-            ((f.w * 10.0).round() as i64, (f.h * 10.0).round() as i64, f.stock_ref)
+            ((f.w * 10.0).round() as i64, (f.h * 10.0).round() as i64, f.stock_ref.clone(), engine::sheetmachine::shown(&self.cfg, &f))
         };
         let mut groups: Vec<(usize, usize, Vec<(usize, i64, i64, u8, bool, i64)>)> = vec![];
         for (i, s) in self.result.sheets.iter().enumerate() {
@@ -1755,10 +1756,13 @@ impl App {
 
     /// The program file name shown and written for a sheet.
     pub fn cnc_name(&self, sheet: usize) -> String {
-        if self.blm.on {
-            format!("{}.zip", blm::nest_name(&self.job_name, sheet))
-        } else {
-            self.post.file_name(&self.job_name, sheet)
+        // MS7: with the sheet's machine's output (sheets from 1).
+        let t = self.targets(None);
+        match t.sheets.get(sheet.wrapping_sub(1)) {
+            Some(o) if o.blm.as_ref().is_some_and(|b| b.on) => format!("{}.zip", blm::nest_name(&self.job_name, sheet)),
+            Some(o) => o.post.file_name(&self.job_name, sheet),
+            None if self.blm.on => format!("{}.zip", blm::nest_name(&self.job_name, sheet)),
+            None => self.post.file_name(&self.job_name, sheet),
         }
     }
 
@@ -1799,16 +1803,13 @@ impl App {
 
     pub fn export(&mut self) {
         // Nothing nested: engine::export says so (and removes the job's old programs).
-        // Settings → Folders, or Documents\Sheet Nesting.
-        let base = if !self.cfg.export_dir.is_empty() {
-            PathBuf::from(&self.cfg.export_dir)
-        } else {
-            library::documents_dir()
-        };
-        // Every sheet's program (or BLM LC5 set) and the CSV parts report.
-        let blm = self.blm_now();
+        // Each machine's program folder, else Settings → Folders, else
+        // Documents\Sheet Nesting (MS7).
+        engine::sheetmachine::install(&self.cfg);
+        let t = self.targets(None);
+        // Every sheet's program (or BLM LC5 set) with its machine, and the CSV parts report.
         let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
-        let res = engine::export(&base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &self.post, Some(&blm), self.cfg.stock.line.edge_offset);
+        let res = engine::export_to(&self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &t, self.cfg.stock.line.edge_offset);
         let n = self.result.sheets.len();
         self.status = match res {
             Ok(ex) => {
@@ -1836,6 +1837,8 @@ impl App {
         // nobody loses it without knowing (Ctrl+Z brings it back).
         let lost_order = self.manual_cuts.iter().filter(|s| !s.is_empty()).count();
         let lost_lines: usize = self.cut_lines.iter().map(|s| s.len()).sum();
+        // MS2: sheets on another machine go back to the job's.
+        let moved_back = engine::sheetmachine::moved_count(&self.cfg, &self.result.formats[..self.result.formats.len().min(self.result.sheets.len())]);
         self.result = engine::nest_all(&self.parts, &self.spec, self.group_nest, Some(&self.stock_use()));
         self.manual_cuts.clear();
         self.ssim = None;
@@ -1874,6 +1877,43 @@ impl App {
         if !lost.is_empty() {
             self.status += &format!(" Removed {} — Ctrl+Z brings them back.", lost.join(" and "));
         }
+        self.status += &engine::sheetmachine::moved_back_note(&self.cfg, moved_back);
+    }
+
+    /// MS3, MS4: move sheet `k` to the machine named `name` (Settings →
+    /// Machines); its automatic cut plan follows that machine, what was set
+    /// by hand stays. One undo step; moving it where it is changes nothing.
+    pub fn move_sheet_to(&mut self, k: usize, name: &str) {
+        engine::sheetmachine::install(&self.cfg);
+        let before = self.result.formats.clone();
+        self.result.normalise(&self.spec);
+        match engine::sheetmachine::move_sheet(&self.cfg, &self.parts, &self.result.sheets, &mut self.result.formats, &self.spec, &self.manual_cuts, k, name) {
+            Ok(m) => {
+                if m.changed {
+                    let after = std::mem::replace(&mut self.result.formats, before);
+                    self.checkpoint();
+                    self.result.formats = after;
+                    self.ssim = None;
+                    self.mark_cam_changed();
+                    self.refresh();
+                }
+                self.status = m.message;
+            }
+            Err(e) => {
+                self.result.formats = before;
+                self.status = e;
+            }
+        }
+    }
+
+    /// The machine sheet `k` is cut on, as the sheet lists show it (MS6).
+    pub fn sheet_machine(&self, k: usize) -> String {
+        engine::sheetmachine::shown(&self.cfg, &self.result.format(k, &self.spec))
+    }
+
+    /// Where and how each sheet is written (MS7).
+    pub fn targets(&self, dir: Option<&std::path::Path>) -> engine::sheetmachine::Targets {
+        engine::sheetmachine::targets(&self.cfg, &self.job_name, &self.spec, &self.result.formats, self.result.sheets.len(), &self.post, &self.blm, &self.export_dir(), dir)
     }
 
     /// Nest only the sheet on screen again (RN1): the parts already on it, on
@@ -1933,6 +1973,8 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
+        // MS4: the machines the sheets name, as the settings say now.
+        engine::sheetmachine::install(&self.cfg);
         // Empty sheets go, except one just added with Add nesting while it is shown.
         let keep = self.empty_sheet_kept.filter(|&k| k == self.cur_sheet);
         // Per-sheet cut lines and hand cuts go with their sheet, so later
@@ -1949,7 +1991,12 @@ impl App {
         self.plans = engine::plans(&self.parts, &self.result.sheets, &self.result.formats, &self.spec, &self.manual_cuts);
         self.overlaps = self.result.sheets.get(self.cur_sheet).map_or(vec![], |s| engine::overlapping(&self.parts, s, &self.cur_spec()));
         self.program = match (self.result.sheets.get(self.cur_sheet), self.plans.get(self.cur_sheet)) {
-            (Some(s), Some(pl)) => engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.remnant_marks(self.cur_sheet), &self.post, self.cfg.stock.line.edge_offset),
+            (Some(s), Some(pl)) => {
+                // MS6: the program of the sheet's machine's post.
+                let f = self.result.format(self.cur_sheet, &self.spec);
+                let post = self.targets(None).sheets.get(self.cur_sheet).map_or_else(|| self.post.clone(), |o| o.post.clone());
+                engine::sheetmachine::on_sheet(&f, || engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.remnant_marks(self.cur_sheet), &post, self.cfg.stock.line.edge_offset))
+            }
             _ => "( NO SHEET NESTED )".into(),
         };
     }
@@ -3647,6 +3694,26 @@ fn main() -> eframe::Result {
             if std::env::args().any(|a| a == "--sheet-tab") {
                 app.tab = Tab::Sheet;
             }
+            // --sheet-machines-demo (screenshots only, never saved): two
+            // made-up machines and the demo job nested with its last sheet
+            // moved to the second (MS6).
+            if app.shot.is_some() && std::env::args().any(|a| a == "--sheet-machines-demo") {
+                app.cfg.machines = vec![
+                    settings::Machine { name: "Demo fiber (ISO)".into(), ..Default::default() },
+                    settings::Machine { name: "Demo BLM laser".into(), output: settings::Output::BlmSiemens, ..Default::default() },
+                ];
+                app.cfg.active_machine = 0;
+                app.apply_settings(true);
+                // The first example job with two sheets or more.
+                if let Some(k) = (0..app.jobs.len()).find(|&k| app.jobs[k].result.sheets.len() > 1) {
+                    if k != app.cur_job {
+                        app.open_job(k);
+                    }
+                }
+                let last = app.result.sheets.len().saturating_sub(1);
+                app.move_sheet_to(last, "Demo BLM laser");
+                app.select_sheet(last);
+            }
             if want_jobs {
                 app.workspace = Workspace::Jobs;
             }
@@ -4392,5 +4459,37 @@ mod screenshot_settings_tests {
         let now = settings::AppSettings::read_from(&file).unwrap();
         assert_eq!(now.recent_jobs.first(), Some(&job.display().to_string()));
         assert_eq!((now.machines[0].gas_id, now.machines[0].gas_name.as_str()), (1, "Nitrogen"), "the machine's gas as saved");
+    }
+}
+
+#[cfg(test)]
+mod sheet_machine_tests {
+    use super::*;
+
+    #[test]
+    fn the_window_moves_a_sheet_to_another_machine_in_one_undo_step() {
+        // MS3, MS6: the window's Sheet machine pick goes through the engine;
+        // the sheet lists show it; Ctrl+Z puts it back.
+        let mut a = App::new(None);
+        a.cfg.machines = vec![
+            settings::Machine { name: "Demo ISO laser".into(), ..Default::default() },
+            settings::Machine { name: "Demo BLM laser".into(), output: settings::Output::BlmSiemens, ..Default::default() },
+        ];
+        a.cfg.active_machine = 0;
+        let r = Part { name: "DEMO-001".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        a.parts = vec![r];
+        let at = |x: f64| Placed { part: 0, x, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
+        a.result = NestResult { sheets: vec![vec![at(100.0)], vec![at(100.0)]], formats: vec![nest::SheetFormat::rect(2000.0, 1000.0); 2], method: String::new(), tried: 0 };
+        a.refresh();
+        assert_eq!(a.sheet_groups().len(), 1, "two identical sheets on one machine are one row");
+        a.move_sheet_to(1, "demo blm LASER");
+        assert!(a.status.starts_with("Sheet 2 moved from Demo ISO laser to Demo BLM laser"), "{}", a.status);
+        assert_eq!((a.sheet_machine(0), a.sheet_machine(1)), ("Demo ISO laser".to_string(), "Demo BLM laser".to_string()));
+        assert_eq!(a.sheet_groups().len(), 2, "on two machines they are two programs");
+        assert_eq!(a.cnc_name(2), format!("{}.zip", blm::nest_name(&a.job_name, 2)));
+        a.move_sheet_to(1, "Demo plasma");
+        assert!(a.status.contains("Demo ISO laser (the job's), Demo BLM laser"), "{}", a.status);
+        a.undo();
+        assert_eq!(a.sheet_machine(1), "Demo ISO laser");
     }
 }

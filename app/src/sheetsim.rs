@@ -379,7 +379,7 @@ impl App {
         }
         if sim.window {
             let w = Rect::from_min_size(Pos2::new(rect.left() + 12.0, rect.bottom() - 132.0), Vec2::new(560.0f32.min(rect.width() - 24.0), 120.0));
-            let cutter = crate::kerf::cutter_radius(&crate::ct1::for_spec(&self.cur_spec()));
+            let cutter = crate::engine::sheetmachine::on_sheet(&self.result.format(self.cur_sheet, &self.spec), || crate::kerf::cutter_radius(&crate::ct1::for_spec(&self.cur_spec())));
             if sim_window(ui, "sim_window", w, &mut sim.t, total, &ops[cur], head, cutter) {
                 sim.running = false;
             }

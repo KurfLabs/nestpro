@@ -2484,6 +2484,14 @@ impl App {
             if ribbon_button(ui, Icon::Next, "Next\nsheet", false, self.cur_sheet + 1 < n).on_hover_text("Show the next sheet").clicked() {
                 self.select_sheet(self.cur_sheet + 1);
             }
+            // MS3: move the sheet on screen to another machine.
+            let on = if n > 0 { self.sheet_machine(self.cur_sheet) } else { String::new() };
+            let resp = ribbon_button(ui, Icon::Toolpath, "Sheet\nmachine", false, n > 0).on_hover_text(format!(
+                "The machine this sheet is cut on: {on}. Pick another to send this sheet there; its automatic cut plan follows that machine, what you set by hand stays. Nest all puts every sheet back on the job's machine."
+            ));
+            if let Some(name) = self.machine_menu(&resp) {
+                self.move_sheet_to(self.cur_sheet, &name);
+            }
         });
     }
 
@@ -2491,6 +2499,7 @@ impl App {
         let mut pick_sheet = None;
         let mut pick_part = None;
         let mut renest = None;
+        let mut move_to: Option<(usize, String)> = None;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             egui::CollapsingHeader::new(RichText::new(&self.job_name).strong())
@@ -2501,7 +2510,8 @@ impl App {
                         ui.label(RichText::new("No sheets — press Nest all").weak());
                     }
                     for (i, s) in self.result.sheets.iter().enumerate() {
-                        let title = format!("{}W {}", i + 1, self.sheet_label(i, 3));
+                        // MS6: each sheet with its machine.
+                        let title = format!("{}W {} · {}", i + 1, self.sheet_machine(i), self.sheet_label(i, 3));
                         let txt = if i == self.cur_sheet {
                             RichText::new(title).background_color(th().accent_soft)
                         } else {
@@ -2534,6 +2544,15 @@ impl App {
                                 renest = Some(i);
                                 ui.close();
                             }
+                            ui.menu_button("Cut on machine", |ui| {
+                                for m in &self.cfg.machines {
+                                    let on = engine::sheetmachine::same_name(&self.sheet_machine(i), &m.name);
+                                    if ui.radio(on, &m.name).clicked() {
+                                        move_to = Some((i, m.name.clone()));
+                                        ui.close();
+                                    }
+                                }
+                            });
                         });
                     }
                 });
@@ -2548,6 +2567,28 @@ impl App {
             self.select_sheet(i);
             self.renest_sheet();
         }
+        if let Some((i, name)) = move_to {
+            self.select_sheet(i);
+            self.move_sheet_to(i, &name);
+        }
+    }
+
+    /// The machines of Settings → Machines under a ribbon button, the sheet
+    /// on screen's ticked; the one picked (MS3).
+    fn machine_menu(&self, resp: &egui::Response) -> Option<String> {
+        let mut pick = None;
+        let on = self.sheet_machine(self.cur_sheet);
+        egui::Popup::menu(resp).show(|ui| {
+            ui.label(RichText::new(format!("Sheet {} is cut on", self.cur_sheet + 1)).strong().color(th().text_strong));
+            for (k, m) in self.cfg.machines.iter().enumerate() {
+                let job = if k == self.cfg.active_machine { " (the job's)" } else { "" };
+                if ui.radio(engine::sheetmachine::same_name(&on, &m.name), format!("{}{job}", m.name)).clicked() {
+                    pick = Some(m.name.clone());
+                    ui.close();
+                }
+            }
+        });
+        pick
     }
 
     pub fn props_body(&mut self, ui: &mut egui::Ui) {

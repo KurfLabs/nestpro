@@ -216,9 +216,38 @@ thread_local! {
     static LOCAL: std::cell::RefCell<Option<MachineTech>> = const { std::cell::RefCell::new(None) };
 }
 
+thread_local! {
+    /// MS4, MS6: the machine a sheet on another machine than the job's is
+    /// worked out on (`with_machine`), with its id; None = the active one.
+    static SHEET_MACHINE: std::cell::RefCell<Option<(u64, MachineTech)>> = const { std::cell::RefCell::new(None) };
+    /// Its last section pick: (id, generation, material, thickness bits, gas).
+    #[allow(clippy::type_complexity)]
+    static SHEET_PICKED: std::cell::RefCell<Option<((u64, u64, usize, u64, i32), MachineTech)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with machine `t` (known by `id`) as the active one, on this
+/// thread only: a sheet cut on another machine than the job's is planned,
+/// timed and written with that machine's tables (MS4, MS6). The active
+/// machine is back afterwards, also when `f` panics.
+pub fn with_machine<R>(id: u64, t: &MachineTech, f: impl FnOnce() -> R) -> R {
+    struct Back(Option<(u64, MachineTech)>);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            let prev = self.0.take();
+            SHEET_MACHINE.with(|s| *s.borrow_mut() = prev);
+        }
+    }
+    let prev = SHEET_MACHINE.with(|s| s.borrow_mut().replace((id, t.clone())));
+    let _back = Back(prev);
+    f()
+}
+
 /// The active machine's technology (set when settings are applied): its own
 /// values, before any material × thickness section.
 pub fn active() -> MachineTech {
+    if let Some(t) = SHEET_MACHINE.with(|s| s.borrow().as_ref().map(|x| x.1.clone())) {
+        return t;
+    }
     #[cfg(test)]
     if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
         return t;
@@ -277,6 +306,17 @@ pub fn for_spec(spec: &crate::nest::SheetSpec) -> MachineTech {
 /// mm, cut with `gas` (None: a job without a gas of its own, GS13).
 pub fn for_material(material: usize, thickness: f64, gas: Option<crate::gas::Gas>) -> MachineTech {
     let keys = JobKeys::for_job(&key_of_material(material), thickness, gas);
+    if let Some((mid, t)) = SHEET_MACHINE.with(|s| s.borrow().clone()) {
+        let id = (mid, GENERATION.load(std::sync::atomic::Ordering::SeqCst), material, thickness.to_bits(), keys.gas);
+        if let Some((k, t)) = SHEET_PICKED.with(|p| p.borrow().clone()) {
+            if k == id {
+                return t;
+            }
+        }
+        let t = t.for_job(&keys);
+        SHEET_PICKED.with(|p| *p.borrow_mut() = Some((id, t.clone())));
+        return t;
+    }
     #[cfg(test)]
     if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
         return t.for_job(&keys);

@@ -68,6 +68,9 @@ pub struct Machine {
     /// the machine file's (CO16, CO17). Empty = the file's (settings saved
     /// before them have none).
     pub order: crate::ct1::OrderChanges,
+    /// MS7, MAC-76: the folder this machine's programs go in (`<folder>\<job>`);
+    /// empty = the shared export folder (settings saved before have none).
+    pub program_dir: String,
 }
 
 impl Machine {
@@ -108,7 +111,7 @@ impl Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default() }
+        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default(), program_dir: String::new() }
     }
 }
 
@@ -500,6 +503,10 @@ impl AppSettings {
             if !m.order.is_empty() {
                 s += &format!("order = {}\n", serde_json::to_string(&m.order).unwrap_or_default());
             }
+            // MS7: only a machine with its own program folder writes one.
+            if !m.program_dir.is_empty() {
+                s += &format!("program_dir = {}\n", esc(&m.program_dir));
+            }
         }
         for i in &self.integrations {
             s += &format!(
@@ -667,6 +674,7 @@ impl AppSettings {
                             // Each value on its own: one that can't be read or
                             // taken is left out, the others kept (CO16).
                             "order" => m.order = crate::ct1::OrderChanges::read(&v),
+                            "program_dir" => m.program_dir = v,
                             _ => {}
                         }
                     }
