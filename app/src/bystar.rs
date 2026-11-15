@@ -588,6 +588,11 @@ thread_local! {
     /// A writer fault for the read-back's tests: the first contour line
     /// written is moved this far in X (mm).
     pub static FAULT: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// A writer fault: the cut program's text is changed by this before it
+    /// is zipped.
+    pub static EDIT: std::cell::Cell<Option<fn(String) -> String>> = const { std::cell::Cell::new(None) };
+    /// A writer fault: every sheet folds into the first nest.
+    pub static FOLD_ALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn fault() -> f64 {
@@ -866,10 +871,12 @@ fn subprograms(s: &SheetIn, post: &Post) -> (Vec<(Vec<Cmd>, usize, usize)>, Vec<
         let mut probe = State { mode: st.mode, sensor: st.sensor };
         let mut ff = first_fault;
         let cmds = part_commands(s.plan, i + 1, &f, post, s.spec.w, s.spec.h, &mut probe, &mut ff);
+        // BV37: the sensor is as the call leaves it, whether its subprogram
+        // is new or one written before with the same commands.
+        st = probe;
         let k = match variants.iter().position(|v| v.1 == pl.part && v.0 == cmds) {
             Some(k) => k,
             None => {
-                st = probe;
                 first_fault = ff;
                 variants.push((cmds, pl.part, 0));
                 variants.len() - 1
@@ -962,6 +969,10 @@ pub fn cut_program(s: &SheetIn, post: &Post) -> Ccp {
         line(&mut t, 2, &c, next());
     }
     t.push_str("  </ControlCommands>\r\n</CuttingControlProgram>\r\n");
+    #[cfg(test)]
+    if let Some(f) = EDIT.with(|e| e.get()) {
+        t = f(t);
+    }
     Ccp { text: t, subs, extent }
 }
 
@@ -998,7 +1009,8 @@ pub fn unsupported(s: &SheetIn, post: &Post) -> Vec<String> {
     }
     // BV60: a switch the writer doesn't follow yet, changed, that would
     // change this sheet's program.
-    if !s.plan.marks.is_empty() {
+    // A contour in the B026 marking quality is marking too (BV30–BV33).
+    if !s.plan.marks.is_empty() || s.plan.contours.iter().any(|c| c.punch.is_none() && post.is_marking(c.quality)) {
         for k in ["B012", "B036"] {
             if post.changed(k) {
                 add(format!("switch {k} is changed, and the sheet has marking, which this writer doesn't write that way yet; set {k} back to {}", switch(k).map_or("0", |d| d.default)));
@@ -1152,7 +1164,11 @@ pub fn write(job: &JobText, sheets: &[SheetIn], sheet_nos: &[usize], post: &Post
     for (i, s) in sheets.iter().enumerate() {
         let ccp = cut_program(s, post);
         let size = [s.spec.w, s.spec.h];
-        match nests.iter_mut().find(|n| n.ccp.text == ccp.text && n.size == size) {
+        #[cfg(test)]
+        let all = FOLD_ALL.with(|f| f.get());
+        #[cfg(not(test))]
+        let all = false;
+        match nests.iter_mut().find(|n| all || (n.ccp.text == ccp.text && n.size == size)) {
             Some(n) => n.sheets.push(i),
             None => nests.push(Nest { name: program_name(&job.name, sheet_nos[i]), sheets: vec![i], ccp, seconds: s.plan.seconds, size }),
         }

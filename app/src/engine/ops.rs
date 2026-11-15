@@ -1207,7 +1207,10 @@ pub fn machine_switches_on(cfg: &mut AppSettings, a: &Args) -> Result<(Outcome, 
     }
     let before = cfg.machines[i].bystar.clone();
     let mname = cfg.machines[i].name.clone();
-    let m = &mut cfg.machines[i].bystar;
+    // Every change is made on a copy, which replaces the machine's post only
+    // when all of them were taken.
+    let mut post_copy = before.clone();
+    let m = &mut post_copy;
     let pairs = |text: &str| -> Result<Vec<(String, String)>, String> {
         text.split(',').filter(|p| !p.trim().is_empty()).map(|p| p.split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).ok_or_else(|| format!("\"{}\" isn't key=value", p.trim()))).collect()
     };
@@ -1248,6 +1251,8 @@ pub fn machine_switches_on(cfg: &mut AppSettings, a: &Args) -> Result<(Outcome, 
         }
     }
     let changed = *m != before;
+    cfg.machines[i].bystar = post_copy.clone();
+    let m = &post_copy;
     let post = Post::load(m);
     let list: Vec<Value> = SWITCHES
         .iter()

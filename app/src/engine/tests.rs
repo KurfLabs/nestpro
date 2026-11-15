@@ -7653,3 +7653,176 @@ fn a_mark_is_written_in_mode_2_without_a_pierce_and_b036_is_refused_until_built(
     assert!(e.contains("B036") && e.contains("marking"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// Review round 1 (#126): each test fails without its fix.
+
+/// BV37 as the machine runs the program: the height sensor's state at each
+/// cut-out's start, with its pierce point (the last rapid) on the sheet, the
+/// calls followed in order from the sensor off.
+fn sensor_at_cuts(ccp: &str) -> Vec<(P, bool)> {
+    let cmds = ccp_commands(ccp);
+    // Each subprogram's commands, by name.
+    let mut subs: Vec<(String, Vec<(String, Vec<(String, String)>)>)> = vec![];
+    let mut cur: Option<usize> = None;
+    for l in ccp.lines() {
+        let l = l.trim();
+        if let Some(r) = l.strip_prefix("<SubProgram ") {
+            let name = r.split("Name=\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+            subs.push((name, vec![]));
+            cur = Some(subs.len() - 1);
+        } else if l.starts_with("</SubProgram>") {
+            cur = None;
+        } else if let (Some(k), Some(c)) = (cur, ccp_commands(l).into_iter().next()) {
+            subs[k].1.push(c);
+        }
+    }
+    let mut on = false;
+    let mut out = vec![];
+    for c in cmds.iter().filter(|c| c.0 == "CallSubProgram") {
+        let sub = &subs.iter().find(|s| Some(s.0.as_str()) == attr(c, "SubProgramName")).unwrap().1;
+        let (x, y, r): (f64, f64, f64) = (attr(c, "X").unwrap().parse().unwrap(), attr(c, "Y").unwrap().parse().unwrap(), attr(c, "Rotation").unwrap().parse().unwrap());
+        let (sn, cs) = r.to_radians().sin_cos();
+        let mut at = [0.0, 0.0];
+        for k in sub {
+            match k.0.as_str() {
+                "SetSensingSensor" => on = attr(k, "Value") == Some("On"),
+                "MoveLineTo" => {
+                    let (px, py): (f64, f64) = (attr(k, "X").unwrap().parse().unwrap(), attr(k, "Y").unwrap().parse().unwrap());
+                    at = [x + px * cs - py * sn, y + px * sn + py * cs];
+                }
+                "BeginCutOut" => out.push((at, on)),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_reused_subprogram_leaves_the_height_sensor_as_its_commands_do() {
+    // S1: four copies cut inside the sheet, at its edge, inside, at its
+    // edge: each edge pierce has the sensor off, each inside one on (BV37).
+    let d = dir("bystar_sensor_reuse");
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    let job = d.join("DEMO-SENSOR.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "set-sheet", None, json!({"margin": 0}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 50, "qty": 4, "name": "DEMO-001"}));
+    call(&mut s, "leads", None, json!({"mode": "delete"}));
+    // Cut in order of X: inside, edge, inside, edge.
+    for (x, y) in [(100, 200), (300, 0), (500, 200), (900, 0)] {
+        call(&mut s, "place", None, json!({"part": 1, "x": x, "y": y}));
+    }
+    let ccp = bystar_program_text(&mut s, 1);
+    let at = sensor_at_cuts(&ccp);
+    let inside = |p: P| p[0] > 0.005 && p[1] > 0.005 && p[0] < 1000.0 - 0.005 && p[1] < 500.0 - 0.005;
+    assert_eq!(at.len(), 4, "{ccp}");
+    assert!(at.iter().any(|a| inside(a.0)) && at.iter().any(|a| !inside(a.0)), "{at:?}");
+    assert!(ccp.matches("<SubProgram ").count() < 4, "a subprogram is reused: {ccp}");
+    for (p, on) in &at {
+        assert_eq!(*on, inside(*p), "the sensor at the pierce at {p:?}: {at:?}");
+    }
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_contour_in_the_b026_marking_quality_counts_as_marking_for_b036() {
+    // S2: no drawn mark, but a contour cut in the marking quality B026.
+    let d = dir("bystar_b026_b036");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "quality": 4}));
+    switches(&mut s, "B026=4, B036=1");
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("B036") && e.contains("marking"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_read_back_refuses_compensation_switched_on_late_and_commands_the_plan_doesnt_have() {
+    // S3: compensation only set after the cutting moves, just before the
+    // cut-out ends.
+    let d = dir("bystar_inforce");
+    let mut s = bystar_job(&d, false);
+    let late = |t: String| -> String {
+        let mut lines: Vec<String> = t.split("\r\n").map(str::to_string).collect();
+        let k = lines.iter().position(|l| l.contains("<SetToolCorrection") && !l.contains("\"None\"")).unwrap();
+        let comp = lines.remove(k);
+        let e = k + lines[k..].iter().position(|l| l.contains("<EndCutOut")).unwrap();
+        lines.insert(e, comp);
+        lines.join("\r\n")
+    };
+    crate::bystar::EDIT.with(|e| e.set(Some(late)));
+    let e = s.call("export", None, &json!({})).err();
+    crate::bystar::EDIT.with(|e| e.set(None));
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("compensation")), "{e:?}");
+    // An unplanned micro-joint, and a command the plan doesn't have.
+    for extra in ["<ExecMicrojoint Id=\"9999\" />", "<ExecDwell Id=\"9999\" />"] {
+        thread_local!(static EXTRA: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) });
+        EXTRA.with(|x| *x.borrow_mut() = extra.to_string());
+        let add = |t: String| -> String {
+            let k = t.find("<BeginCutOut").unwrap();
+            let k = k + t[k..].find("\r\n").unwrap() + 2;
+            let k = k + t[k..].find("\r\n").unwrap() + 2;
+            format!("{}        {}\r\n{}", &t[..k], EXTRA.with(|x| x.borrow().clone()), &t[k..])
+        };
+        crate::bystar::EDIT.with(|e| e.set(Some(add)));
+        let e = s.call("export", None, &json!({})).err();
+        crate::bystar::EDIT.with(|e| e.set(None));
+        assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned")), "{extra}: {e:?}");
+    }
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn every_planned_sheet_of_a_folded_nest_is_compared() {
+    // S4: a writer that folds sheet 2 into sheet 1's nest though sheet 2
+    // has other placements.
+    let d = dir("bystar_fold");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 300, "y": 200}));
+    crate::bystar::FOLD_ALL.with(|f| f.set(true));
+    let e = s.call("export", None, &json!({})).err();
+    crate::bystar::FOLD_ALL.with(|f| f.set(false));
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("sheet 2")), "{e:?}");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_refused_machine_switches_change_changes_nothing() {
+    // S5: B015 is good, B099 isn't a switch: neither is kept.
+    let d = dir("bystar_switch_atomic");
+    let mut s = bystar_job(&d, false);
+    let e = err(&mut s, "machine-switches", json!({"machine": "Demo ByStar Fiber laser", "set": "B015=1, B099=1"}));
+    assert!(e.contains("B099"), "{e}");
+    let r = call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser"}));
+    let b015 = r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "B015").unwrap().clone();
+    assert_eq!((b015["value"].as_str(), b015["from"].as_str()), (Some("0"), Some("default")), "{b015}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_read_back_refuses_a_height_sensor_left_on_at_the_edge() {
+    // S1: the read-back follows the sensor through the calls (BV37).
+    let d = dir("bystar_sensor_readback");
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    let job = d.join("DEMO-SENSOR.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "set-sheet", None, json!({"margin": 0}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 50, "qty": 2, "name": "DEMO-001"}));
+    call(&mut s, "leads", None, json!({"mode": "delete"}));
+    for (x, y) in [(100, 200), (300, 0)] {
+        call(&mut s, "place", None, json!({"part": 1, "x": x, "y": y}));
+    }
+    call(&mut s, "export", None, json!({}));
+    let no_off = |t: String| t.split("\r\n").filter(|l| !l.contains("Value=\"Off\"") || !l.contains("SetSensingSensor")).collect::<Vec<_>>().join("\r\n");
+    crate::bystar::EDIT.with(|e| e.set(Some(no_off)));
+    let e = s.call("export", None, &json!({})).err();
+    crate::bystar::EDIT.with(|e| e.set(None));
+    assert!(e.as_deref().is_some_and(|e| e.contains("height sensor is on")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

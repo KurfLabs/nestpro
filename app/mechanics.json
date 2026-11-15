@@ -7587,7 +7587,7 @@
  {
   "name": "read-back compares",
   "group": "ByStar Fiber writer",
-  "value": "sheet size, thickness, run count; every cut both ways with compensation, mode, cut-out side, pierce mode and point, part named",
+  "value": "sheet size, thickness, run count; every planned sheet once, each sheet of a fold compared; every cut both ways with the compensation and mode in force during its moves, cut-out side, pierce mode and point, part named; the height sensor through the calls; no unplanned command",
   "source": "MECHANICS BV59"
  },
  {

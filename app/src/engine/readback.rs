@@ -535,14 +535,33 @@ pub struct BystarSheet<'a> {
 /// BV59, BV60: read every `.bvc` of a write back with the reader (`bvc.rs`,
 /// which shares nothing with the writer) and compare it with the plan: each
 /// nest's sheet, run count and thickness, and every part's every cut with
-/// its planned path both ways, its compensation, operation mode, cut-out
-/// side and pierce. `files` are the `.bvc` files as they will be written
+/// its planned path both ways, the compensation and operation mode in force
+/// while it runs, its cut-out side and pierce; each planned sheet once (every
+/// sheet of a folded nest compared); the height sensor through the calls
+/// (BV37); no command the plan doesn't have. `files` are the `.bvc` files as they will be written
 /// (name, bytes, the nests in it); `nests` are (program name, the sheets it
 /// cuts). Empty = they cut the plan.
 pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<usize>)], sheets: &[BystarSheet], thickness: f64, post: &crate::bystar::Post) -> Vec<String> {
     use crate::bvc::Piercing;
     let tol = tolerance();
     let mut issues = vec![];
+    // Every planned sheet is cut by exactly one nest (its run count is
+    // checked against the sheets that nest stands for, each compared below).
+    let mut seen = vec![0usize; sheets.len()];
+    for (_, _, in_it) in files {
+        for &n in in_it {
+            for &k in nests.get(n).map_or(&[][..], |x| x.1.as_slice()) {
+                if let Some(c) = seen.get_mut(k) {
+                    *c += 1;
+                }
+            }
+        }
+    }
+    for (k, c) in seen.iter().enumerate() {
+        if *c != 1 {
+            issues.push(format!("sheet {} is in {c} nest(s) of the files, not one", sheets[k].sheet_no));
+        }
+    }
     for (file, bytes, in_it) in files {
         let read = match crate::bvc::read(bytes) {
             Ok(r) => r,
@@ -560,79 +579,121 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                 issues.push(format!("{file}: nest {name} isn't in its job file"));
                 continue;
             };
-            let Some(s) = sheets.get(ks[0]) else { continue };
-            let label = format!("sheet {}", s.sheet_no);
             if nest.plan.multiplicity != ks.len() as i64 {
-                issues.push(format!("{label}: nest {name} is run {} time(s), but {} identical sheet(s) are planned", nest.plan.multiplicity, ks.len()));
+                issues.push(format!("nest {name} is run {} time(s), but {} identical sheet(s) are planned", nest.plan.multiplicity, ks.len()));
             }
             let p = &nest.program;
-            if (p.sheet[0] - s.spec.w).abs() > 0.001 || (p.sheet[1] - s.spec.h).abs() > 0.001 {
-                issues.push(format!("{label}: the program's sheet reads {:.3} × {:.3} mm, the plan's is {} × {} mm", p.sheet[0], p.sheet[1], s.spec.w, s.spec.h));
+            // Commands the reader skipped or passed over: none is planned
+            // (the main program's clamps aside).
+            for (what, m) in [("unknown", &p.unknown), ("not read", &p.unread), ("not planned", &p.passed)] {
+                for (c, count) in m.iter().filter(|(c, _)| !(what == "not planned" && c.as_str() == "SetClamps")) {
+                    issues.push(format!("nest {name}: {count} {c} command(s) ({what})"));
+                }
             }
-            if (p.thickness - thickness).abs() > 0.001 {
-                issues.push(format!("{label}: the program's thickness reads {:.3} mm, the sheet is {thickness} mm", p.thickness));
-            }
-            let name_of = |i: usize| s.sheet.get(i).and_then(|pl| s.parts.get(pl.part)).map_or("?", |p| p.name.as_str());
-            let mut planned: Vec<Option<Vec<Want>>> = (0..s.sheet.len()).map(|i| Some(bystar_wanted(s.plan, i + 1, post)).filter(|w| !w.is_empty())).collect();
-            for call in &p.calls {
-                let sub = &p.subs[call.sub];
-                let (sn, cs) = call.rotation.to_radians().sin_cos();
-                let place = move |q: P| [call.x + q[0] * cs - q[1] * sn, call.y + q[0] * sn + q[1] * cs];
-                let written: Vec<(Cut, &crate::bvc::Cut)> = sub.cuts.iter().map(|c| (bystar_read(c, &place).0, c)).collect();
-                let Some(first) = written.first().and_then(|w| w.0.pts.first()).copied() else {
-                    issues.push(format!("{label}: subprogram {} cuts nothing", sub.name));
-                    continue;
-                };
-                let fails = |want: &[Want]| -> Option<String> {
-                    if want.len() != written.len() {
-                        return Some(format!("it is written with {} cuts, but {} are planned", written.len(), want.len()));
+            // BV59: each sheet the nest stands for is compared with it.
+            for &k in ks {
+                let Some(s) = sheets.get(k) else { continue };
+                let label = format!("sheet {}", s.sheet_no);
+                if (p.sheet[0] - s.spec.w).abs() > 0.001 || (p.sheet[1] - s.spec.h).abs() > 0.001 {
+                    issues.push(format!("{label}: the program's sheet reads {:.3} × {:.3} mm, the plan's is {} × {} mm", p.sheet[0], p.sheet[1], s.spec.w, s.spec.h));
+                }
+                if (p.thickness - thickness).abs() > 0.001 {
+                    issues.push(format!("{label}: the program's thickness reads {:.3} mm, the sheet is {thickness} mm", p.thickness));
+                }
+                let name_of = |i: usize| s.sheet.get(i).and_then(|pl| s.parts.get(pl.part)).map_or("?", |p| p.name.as_str());
+                let mut planned: Vec<Option<Vec<Want>>> = (0..s.sheet.len()).map(|i| Some(bystar_wanted(s.plan, i + 1, post)).filter(|w| !w.is_empty())).collect();
+                // BV37: the height sensor as the calls leave it, from off.
+                let mut sensor = false;
+                for call in &p.calls {
+                    let sub = &p.subs[call.sub];
+                    let (sn, cs) = call.rotation.to_radians().sin_cos();
+                    let place = move |q: P| [call.x + q[0] * cs - q[1] * sn, call.y + q[0] * sn + q[1] * cs];
+                    let entry = sensor;
+                    sensor = sub.sensor_end.unwrap_or(entry);
+                    let mode = post.sensor_mode();
+                    for c in sub.cuts.iter().filter(|_| mode != 2) {
+                        let on = c.sensor.unwrap_or(entry);
+                        let at = place(c.pierce.map(|p| p.0).or(c.lead_in.as_ref().map(|l| l.start)).unwrap_or(c.path.start));
+                        let inside = at[0] > post.tol && at[1] > post.tol && at[0] < s.spec.w - post.tol && at[1] < s.spec.h - post.tol;
+                        let exempt = mode == 1 && c.mode == Some(2);
+                        if inside != on && !(exempt && inside) {
+                            issues.push(format!("{label}: the height sensor is {} at the pierce at X{:.1} Y{:.1}, {} the sheet (BV37)", if on { "on" } else { "off" }, at[0], at[1], if inside { "inside" } else { "on the edge of" }));
+                        }
                     }
-                    written.iter().zip(want).enumerate().find_map(|(k, ((w, raw), e))| {
-                        let m = compare(w, &e.cut, tol).or_else(|| {
-                            if raw.mode != Some(e.mode) {
-                                return Some(format!("it is written in operation mode {} where {} is planned", raw.mode.map_or("none".into(), |m| m.to_string()), e.mode));
-                            }
-                            if raw.side != e.side {
-                                return Some(format!("its cut-out is written {:?} where {:?} is planned", raw.side, e.side));
-                            }
-                            let got = raw.pierce.map(|p| match p.1 {
-                                Piercing::Normal => "Normal",
-                                Piercing::Fine => "Fine",
-                                Piercing::Drilled => "Drilled",
-                                Piercing::NoTime => "NoTime",
-                            });
-                            if got != e.pierce.as_deref() {
-                                return Some(format!("it is pierced {} where {} is planned", got.unwrap_or("not at all"), e.pierce.as_deref().unwrap_or("no pierce")));
-                            }
-                            if let Some((at, _)) = raw.pierce {
-                                if dist(place(at), e.cut.pts[0]) > tol {
-                                    return Some("it is pierced away from its planned pierce point".into());
+                    let written: Vec<(Cut, &crate::bvc::Cut)> = sub.cuts.iter().map(|c| (bystar_read(c, &place).0, c)).collect();
+                    let Some(first) = written.first().and_then(|w| w.0.pts.first()).copied() else {
+                        issues.push(format!("{label}: subprogram {} cuts nothing", sub.name));
+                        continue;
+                    };
+                    let fails = |want: &[Want]| -> Option<String> {
+                        if want.len() != written.len() {
+                            return Some(format!("it is written with {} cuts, but {} are planned", written.len(), want.len()));
+                        }
+                        written.iter().zip(want).enumerate().find_map(|(k, ((w, raw), e))| {
+                            let m = compare(w, &e.cut, tol).or_else(|| {
+                                if raw.mode != Some(e.mode) {
+                                    return Some(format!("it is written in operation mode {} where {} is planned", raw.mode.map_or("none".into(), |m| m.to_string()), e.mode));
                                 }
-                            }
-                            None
-                        });
-                        m.map(|m| format!("cut {}: {m}", k + 1))
-                    })
-                };
-                let starts: Vec<usize> = (0..planned.len()).filter(|&i| planned[i].as_ref().is_some_and(|e| dist(e[0].cut.pts[0], first) <= START_TOL)).collect();
-                let Some(&i) = starts.iter().find(|&&i| fails(planned[i].as_deref().unwrap_or(&[])).is_none()).or(starts.first()) else {
-                    issues.push(format!("{label}: subprogram {} is placed at X{:.1} Y{:.1}, where no part is planned", sub.name, call.x, call.y));
-                    continue;
-                };
-                if let Some(m) = fails(planned[i].as_deref().unwrap_or(&[])) {
-                    issues.push(format!("{label}, part {} (sheet position {}): {m}", name_of(i), i + 1));
+                                // S3: what is in force while the cut-out's moves run.
+                                let want = match e.cut.comp {
+                                    Some("Left") => crate::bvc::Correction::Left,
+                                    Some("Right") => crate::bvc::Correction::Right,
+                                    _ => crate::bvc::Correction::None,
+                                };
+                                if let Some(c) = raw.corrections.iter().find(|c| **c != want) {
+                                    return Some(format!("its cut-out runs with compensation {c:?} where {want:?} is planned"));
+                                }
+                                if let Some(m) = raw.modes.iter().find(|m| **m != Some(e.mode)) {
+                                    return Some(format!("its cut-out runs in operation mode {} where {} is planned", m.map_or("none".into(), |m| m.to_string()), e.mode));
+                                }
+                                if !raw.joints.is_empty() {
+                                    return Some(format!("it has {} micro-joint(s) the plan doesn't have", raw.joints.len()));
+                                }
+                                if raw.lift {
+                                    return Some("it lifts the head where the plan doesn't".into());
+                                }
+                                if raw.side != e.side {
+                                    return Some(format!("its cut-out is written {:?} where {:?} is planned", raw.side, e.side));
+                                }
+                                let got = raw.pierce.map(|p| match p.1 {
+                                    Piercing::Normal => "Normal",
+                                    Piercing::Fine => "Fine",
+                                    Piercing::Drilled => "Drilled",
+                                    Piercing::NoTime => "NoTime",
+                                });
+                                if got != e.pierce.as_deref() {
+                                    return Some(format!("it is pierced {} where {} is planned", got.unwrap_or("not at all"), e.pierce.as_deref().unwrap_or("no pierce")));
+                                }
+                                if let Some((at, _)) = raw.pierce {
+                                    if dist(place(at), e.cut.pts[0]) > tol {
+                                        return Some("it is pierced away from its planned pierce point".into());
+                                    }
+                                }
+                                None
+                            });
+                            m.map(|m| format!("cut {}: {m}", k + 1))
+                        })
+                    };
+                    let starts: Vec<usize> = (0..planned.len()).filter(|&i| planned[i].as_ref().is_some_and(|e| dist(e[0].cut.pts[0], first) <= START_TOL)).collect();
+                    let Some(&i) = starts.iter().find(|&&i| fails(planned[i].as_deref().unwrap_or(&[])).is_none()).or(starts.first()) else {
+                        issues.push(format!("{label}: subprogram {} is placed at X{:.1} Y{:.1}, where no part is planned", sub.name, call.x, call.y));
+                        continue;
+                    };
+                    if let Some(m) = fails(planned[i].as_deref().unwrap_or(&[])) {
+                        issues.push(format!("{label}, part {} (sheet position {}): {m}", name_of(i), i + 1));
+                    }
+                    // The job file must name the part this subprogram cuts.
+                    let part_id = nest.plan.parts.iter().find(|pp| pp.sub.eq_ignore_ascii_case(&sub.name)).map(|pp| pp.part_id);
+                    let named = part_id.and_then(|id| read.job.parts.iter().find(|q| q.id == id)).map(|q| q.name.as_str());
+                    if named != Some(name_of(i)) {
+                        issues.push(format!("{label}: the job file says subprogram {} cuts part {}, but it cuts {}", sub.name, named.unwrap_or("(none)"), name_of(i)));
+                    }
+                    planned[i] = None;
                 }
-                // The job file must name the part this subprogram cuts.
-                let part_id = nest.plan.parts.iter().find(|pp| pp.sub.eq_ignore_ascii_case(&sub.name)).map(|pp| pp.part_id);
-                let named = part_id.and_then(|id| read.job.parts.iter().find(|q| q.id == id)).map(|q| q.name.as_str());
-                if named != Some(name_of(i)) {
-                    issues.push(format!("{label}: the job file says subprogram {} cuts part {}, but it cuts {}", sub.name, named.unwrap_or("(none)"), name_of(i)));
-                }
-                planned[i] = None;
-            }
-            for (i, left) in planned.iter().enumerate() {
-                if left.is_some() {
-                    issues.push(format!("{label}, part {} (sheet position {}) isn't in the cut program", name_of(i), i + 1));
+                for (i, left) in planned.iter().enumerate() {
+                    if left.is_some() {
+                        issues.push(format!("{label}, part {} (sheet position {}) isn't in the cut program", name_of(i), i + 1));
+                    }
                 }
             }
         }

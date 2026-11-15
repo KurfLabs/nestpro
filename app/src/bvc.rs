@@ -368,6 +368,13 @@ pub struct Cut {
     pub lift: bool,
     /// Points along the path where height sensing was switched off / on (BV14).
     pub sensing: Vec<(P, bool)>,
+    /// The height sensor as its subprogram last set it before this cut-out
+    /// starts; None when the subprogram hasn't set it yet (BV37).
+    pub sensor: Option<bool>,
+    /// Each compensation and operation mode in force while the cut-out's
+    /// moves run (its shape and a lead-out inside it), once each.
+    pub corrections: Vec<Correction>,
+    pub modes: Vec<Option<i64>>,
 }
 
 impl Cut {
@@ -382,6 +389,9 @@ impl Cut {
 pub struct Sub {
     pub name: String,
     pub cuts: Vec<Cut>,
+    /// The height sensor as the subprogram leaves it; None when it never
+    /// sets it (BV37).
+    pub sensor_end: Option<bool>,
 }
 
 /// A subprogram placed on the sheet: turned `rotation` degrees
@@ -408,6 +418,9 @@ pub struct Program {
     pub unknown: BTreeMap<String, usize>,
     /// Commands it knows but doesn't use for the nest (tube, sorting, dwell…).
     pub unread: BTreeMap<String, usize>,
+    /// Commands of the format it passes over (they don't change a flat
+    /// nest's shape), by name: a read-back refuses those it didn't plan.
+    pub passed: BTreeMap<String, usize>,
 }
 
 /// Commands of the format that don't change a flat nest's shape (BV1e):
@@ -435,7 +448,7 @@ enum Bracket {
 /// `BeginCutOut`/`EndCutOut` are the cut, moves in the lead brackets (or,
 /// without brackets, between the pierce and the cut-out, or after it) are its
 /// leads, never part of its shape.
-fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
+fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<bool>), String> {
     let mut cuts: Vec<Cut> = vec![];
     let (mut pos, mut mode, mut corr, mut pmode) = ([0.0, 0.0], None, Correction::None, Piercing::Normal);
     let mut pierced: Option<(P, Piercing)> = None;
@@ -444,6 +457,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
     let mut br = Bracket::Out;
     // Whether the last cut-out's lead-out may still follow (no pierce since).
     let mut after_cut = false;
+    let mut sensor: Option<bool> = None;
     for c in &cmds.kids {
         let xy = |c: &El| -> Result<P, String> { Ok([coord(c, "X")? * k, coord(c, "Y")? * k]) };
         let mv = match c.name.as_str() {
@@ -464,6 +478,14 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
             _ => None,
         };
         if let Some(s) = mv {
+            if let (Bracket::CutOut | Bracket::LeadOutIn, Some(c)) = (br, cur.as_mut()) {
+                if !c.corrections.contains(&corr) {
+                    c.corrections.push(corr);
+                }
+                if !c.modes.contains(&mode) {
+                    c.modes.push(mode);
+                }
+            }
             match br {
                 Bracket::CutOut => cur.as_mut().unwrap().path.segs.push(s),
                 Bracket::LeadOutIn => cur.as_mut().unwrap().lead_out.get_or_insert(Path { start: pos, segs: vec![] }).segs.push(s),
@@ -526,7 +548,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
                     "Exterior" => Side::Exterior,
                     _ => Side::Unknown,
                 };
-                cur = Some(Cut { mode, side, pierce: pierced.take(), lead_in: lead.take().filter(|l| !l.segs.is_empty()), path: Path { start: pos, segs: vec![] }, ..Default::default() });
+                cur = Some(Cut { mode, side, sensor, pierce: pierced.take(), lead_in: lead.take().filter(|l| !l.segs.is_empty()), path: Path { start: pos, segs: vec![] }, ..Default::default() });
                 br = Bracket::CutOut;
                 after_cut = false;
             }
@@ -554,6 +576,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
             },
             "SetSensingSensor" => {
                 let on = choice(c, "Value", &["Off", "On"], "On")? == "On";
+                sensor = Some(on);
                 if let Some(cut) = cur.as_mut() {
                     cut.sensing.push((pos, on));
                 }
@@ -564,7 +587,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
                 }
             }
             "CallSubProgram" => *p.unread.entry("subprogram called from a subprogram".into()).or_default() += 1,
-            n if PASSED_OVER.contains(&n) => {}
+            n if PASSED_OVER.contains(&n) => *p.passed.entry(n.to_string()).or_default() += 1,
             n if TUBE.contains(&n) => *p.unread.entry(n.to_string()).or_default() += 1,
             n => *p.unknown.entry(n.to_string()).or_default() += 1,
         }
@@ -574,7 +597,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
         *p.unread.entry("cut-out without EndCutOut".into()).or_default() += 1;
         cuts.push(Cut { correction: corr, ..open });
     }
-    Ok(cuts)
+    Ok((cuts, sensor))
 }
 
 /// Read a cut program (`.ccp`): its unit, thickness and sheet, each
@@ -601,11 +624,11 @@ pub fn parse_program(text: &str) -> Result<Program, String> {
             return Err(format!("it has two subprograms named '{name}'"));
         }
         seen.push(name.to_lowercase());
-        let cuts = match s.kid("ControlCommands") {
+        let (cuts, sensor_end) = match s.kid("ControlCommands") {
             Some(cmds) => read_cuts(cmds, k, &mut p).map_err(|e| format!("subprogram '{name}': {e}"))?,
-            None => vec![],
+            None => (vec![], None),
         };
-        p.subs.push(Sub { name, cuts });
+        p.subs.push(Sub { name, cuts, sensor_end });
     }
     if let Some(main) = root.kid("ControlCommands") {
         for c in &main.kids {
@@ -621,7 +644,7 @@ pub fn parse_program(text: &str) -> Result<Program, String> {
                     p.calls.push(Call { sub, x: coord(c, "X")? * k, y: coord(c, "Y")? * k, rotation });
                 }
                 "LineTo" | "ArcTo" | "MoveLineTo" | "MoveArcTo" | "CornerTransitionTo" => *p.unread.entry("move in the main program".into()).or_default() += 1,
-                n if is_known(n) => {}
+                n if is_known(n) => *p.passed.entry(n.to_string()).or_default() += 1,
                 n => *p.unknown.entry(n.to_string()).or_default() += 1,
             }
         }
