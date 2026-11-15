@@ -171,7 +171,13 @@ impl Session {
             // Across runs: the copy kept beside the file.
             None => jobfile::load(&backup_path(&path)).map_err(|_| "Nothing to undo.".to_string())?,
         };
+        // MS7: the record of the programs on disk is the latest, whatever
+        // step the job goes back to: undo doesn't bring back an older one.
+        let written = self.job.as_ref().map(|j| j.written.clone()).unwrap_or_default();
         let note = self.restock_for_undo(prev)?;
+        if let Some(j) = self.job.as_mut() {
+            j.written = written;
+        }
         jobfile::save(&path, self.job.as_ref().unwrap())?;
         // The copy beside the file moves one step back too, so a later run
         // can undo once more.

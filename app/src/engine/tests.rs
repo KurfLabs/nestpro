@@ -6985,3 +6985,89 @@ fn two_spellings_of_one_program_folder_keep_each_others_programs() {
     assert_eq!(files_in(&d.join("programs").join("DEMO-TWO")), vec!["DEMOTWOX1.CNC", "DEMOTWOX2.XML", "DEMOTWOX2.zip", "parts.csv"]);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// Review round 2 of #125: the job's record of its programs on disk.
+
+/// The job file `job` with its record of programs written set to `paths`.
+fn set_written(s: &mut Session, job: &Path, paths: &[PathBuf]) {
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(job).unwrap()).unwrap();
+    v["written"] = json!(paths.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>());
+    std::fs::write(job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    s.open(job).unwrap();
+}
+
+/// The job file's record of programs written, by file name.
+fn written_names(job: &Path) -> Vec<String> {
+    let j = jobfile::load(job).unwrap();
+    let mut v: Vec<String> = j.written.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_file_the_jobs_record_names_that_isnt_one_of_its_programs_is_never_removed() {
+    // MS7: a job file edited (or made elsewhere) to list any file: only this
+    // job's programs in its own folder are ever removed; the rest is forgotten.
+    let d = dir("sheet_machine_record_foreign");
+    let (mut s, job) = two_machine_job(&d, false);
+    let outside = d.join("notes").join("DEMO-TWO.txt");
+    let wrong = d.join("iso-programs").join("DEMO-TWO").join("readme.txt");
+    let other_job = d.join("iso-programs").join("OTHER").join("DEMOTWOX1.CNC");
+    for f in [&outside, &wrong, &other_job] {
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, "keep me").unwrap();
+    }
+    set_written(&mut s, &job, &[outside.clone(), wrong.clone(), other_job.clone()]);
+    call(&mut s, "export", None, json!({}));
+    for f in [&outside, &wrong, &other_job] {
+        assert_eq!(std::fs::read_to_string(f).unwrap(), "keep me", "{}", f.display());
+    }
+    assert_eq!(written_names(&job), vec!["DEMOTWOX1.CNC", "DEMOTWOX2.CNC"], "the record holds what was written, nothing else");
+    // A refused write leaves them too.
+    set_written(&mut s, &job, &[outside.clone(), wrong.clone()]);
+    call(&mut s, "clear-sheets", None, json!({}));
+    assert!(err(&mut s, "export", json!({})).contains("Nothing to export"));
+    assert!(outside.is_file() && wrong.is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_copied_and_renamed_job_never_removes_the_originals_programs() {
+    // MS7: an agent copies the job file, renames the copy and writes it; the
+    // original's programs stay, and the copy remembers only its own.
+    let d = dir("sheet_machine_record_copy");
+    let (mut s, job) = two_machine_job(&d, false);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM laser"}));
+    call(&mut s, "export", None, json!({}));
+    let copy = d.join("DEMO-COPY.snjob");
+    std::fs::copy(&job, &copy).unwrap();
+    let mut c = Session::new(Ctx::builtin());
+    c.ctx.cfg = s.ctx.cfg.clone();
+    call(&mut c, "rename", Some(copy.to_str().unwrap()), json!({"name": "DEMO-COPY"}));
+    assert!(written_names(&copy).is_empty(), "{:?}", written_names(&copy));
+    call(&mut c, "export", None, json!({}));
+    assert_eq!(files_in(&d.join("iso-programs").join("DEMO-TWO")), vec!["DEMOTWOX1.CNC", "parts.csv"]);
+    assert_eq!(files_in(&d.join("blm-programs").join("DEMO-TWO")), vec!["DEMOTWOX2.XML", "DEMOTWOX2.zip", "parts.csv"]);
+    assert_eq!(written_names(&copy), vec!["DEMOCOPYX1.CNC", "DEMOCOPYX2.XML", "DEMOCOPYX2.zip"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn undo_keeps_the_record_of_the_programs_on_disk() {
+    // MS7: move a sheet, write, undo the move: the job still knows the LC5
+    // set is in the BLM's folder, so it goes once the BLM is deleted.
+    let d = dir("sheet_machine_record_undo");
+    let (mut s, job) = two_machine_job(&d, false);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM laser"}));
+    call(&mut s, "export", None, json!({}));
+    let before = written_names(&job);
+    assert_eq!(before, vec!["DEMOTWOX1.CNC", "DEMOTWOX2.XML", "DEMOTWOX2.zip"]);
+    call(&mut s, "undo", None, json!({}));
+    assert_eq!(written_names(&job), before, "undo keeps the record");
+    assert_eq!(sheet_machines(&mut s)[1], ("Demo ISO laser".to_string(), true));
+    s.ctx.cfg.machines.truncate(1);
+    call(&mut s, "export", None, json!({}));
+    assert_eq!(files_in(&d.join("blm-programs").join("DEMO-TWO")), vec!["parts.csv"], "no LC5 set left to run");
+    assert_eq!(written_names(&job), vec!["DEMOTWOX1.CNC", "DEMOTWOX2.CNC"]);
+    let _ = std::fs::remove_dir_all(&d);
+}

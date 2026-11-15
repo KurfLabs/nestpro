@@ -1472,6 +1472,30 @@ fn program_dirs(job_name: &str, t: &sheetmachine::Targets) -> Vec<PathBuf> {
     v
 }
 
+/// MS7: whether a file the job's record names may be removed as one of its
+/// programs: it sits in the job's own folder (`<folder>\<job>`) and is named
+/// as this job's program for a sheet (1–999) on one of the machines, with
+/// that machine's program extension (the LC5 set's `.zip` / `.XML`, else the
+/// post's). Anything else the record names (a file the job file was edited
+/// to list, a program of another job) is never removed, only forgotten.
+fn is_job_program(f: &Path, job_name: &str, t: &sheetmachine::Targets) -> bool {
+    let job_dir = f.parent().and_then(|d| d.file_name()).is_some_and(|d| d.to_string_lossy().eq_ignore_ascii_case(&safe_name(job_name)));
+    let Some(name) = f.file_name().map(|n| n.to_string_lossy().to_string()) else { return false };
+    if !job_dir {
+        return false;
+    }
+    let same = |want: &str| want.eq_ignore_ascii_case(&name);
+    t.sheets.iter().chain(&t.all).any(|o| {
+        (1..=999).any(|k| {
+            if same(&o.post.file_name(job_name, k)) {
+                return true;
+            }
+            let nest = crate::blm::nest_name(o.blm.as_ref().map_or(job_name, |b| b.job.as_str()), k);
+            same(&format!("{nest}.zip")) || same(&format!("{nest}.XML"))
+        })
+    })
+}
+
 /// A file as the folder it is in resolves (a link, another spelling of the
 /// same folder, MAC-79): two spellings of one file give the same. A file or
 /// folder that isn't there yet keeps its spelling.
@@ -1493,7 +1517,7 @@ fn remove_all_stale(job_name: &str, t: &sheetmachine::Targets, kept: &[PathBuf])
     let kept: Vec<PathBuf> = kept.iter().map(|k| same_file(k)).collect();
     let kept = kept.as_slice();
     let mut first_error = None;
-    for f in &t.earlier {
+    for f in t.earlier.iter().filter(|f| is_job_program(f, job_name, t)) {
         if f.is_file() && !kept.contains(&same_file(f)) {
             if let Err(e) = std::fs::remove_file(f) {
                 first_error.get_or_insert(e);

@@ -1738,6 +1738,11 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         }
         "rename" => {
             if let Some(n) = a.str("name") {
+                // MS7: another job now: the programs its record names are
+                // the old name's, never this one's to remove.
+                if n != job.name {
+                    job.written.clear();
+                }
                 job.name = n;
             }
             if let Some(w) = a.str("week") {

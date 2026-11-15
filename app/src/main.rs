@@ -1166,6 +1166,9 @@ impl App {
         // Nor its stock: the copy takes its own sheets when it's saved, and the
         // original's remnants stay the original's.
         j.held.clear();
+        // Nor the record of the original's programs (MS7): the copy never
+        // removes them.
+        j.written.clear();
         for f in j.result.formats.iter_mut() {
             f.made.clear();
             f.made_from = 0;
@@ -4511,6 +4514,21 @@ mod sheet_machine_tests {
         assert!(a.status.contains("Demo ISO laser (the job's), Demo BLM laser"), "{}", a.status);
         a.undo();
         assert_eq!(a.sheet_machine(1), "Demo ISO laser");
+    }
+
+    #[test]
+    fn a_job_file_reloaded_after_an_agents_export_brings_its_record_of_programs() {
+        // MS7: the window takes the record an agent's export saved, so its
+        // next save doesn't put the old one back.
+        let mut a = App::new(None);
+        let d = std::env::temp_dir().join(format!("nestpro_reload_written_{}", std::process::id()));
+        let path = d.join("DEMO-TWO.snjob");
+        let mut j = a.current_jobfile();
+        j.written = vec![d.join("progs").join("DEMO-TWO").join("DEMOTWOX1.CNC")];
+        a.reload_job_file(j.clone(), &path);
+        assert_eq!(a.written, j.written);
+        assert_eq!(a.current_jobfile().written, j.written, "and saves it");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

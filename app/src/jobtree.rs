@@ -155,11 +155,14 @@ impl App {
                 return false;
             }
         }
+        // MS7: another job now: its record of programs written goes.
         if i == self.cur_job {
             self.job_name = n.to_string();
+            self.written.clear();
         }
         if let Some(j) = self.jobs.get_mut(i) {
             j.name = n.to_string();
+            j.written.clear();
         }
         self.status = format!("Job renamed to {n}.");
         true
