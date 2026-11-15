@@ -7113,6 +7113,20 @@
   "value": "every word typed in the name or one other name; any order, case, spaces or accents",
   "source": "MA23",
   "estimated": true
+ },
+ {
+  "name": "material from a name outside",
+  "group": "materials",
+  "value": "name or other name; then name or code in programs (first in the list); then the longest grade other name; then the longest name held (3 characters or more); else unchanged",
+  "source": "MA32",
+  "estimated": true
+ },
+ {
+  "name": "plain number in an imported material",
+  "group": "materials",
+  "value": "a name, never a material number",
+  "source": "MA32",
+  "estimated": true
  }
 ]
 }

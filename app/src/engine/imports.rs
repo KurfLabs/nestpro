@@ -53,8 +53,9 @@ pub fn xml_import(cfg: &AppSettings, lib: Option<&crate::library::Library>, path
     let mut color = color0;
     for (mat, thk) in groups {
         let first = products.iter().find(|p| p.material.to_lowercase() == mat).map(|p| p.material.clone()).unwrap_or_default();
-        // Names, codes and aliases first (an alias gives its main material, MA6), then by look.
-        let material = cfg.material_for(&first).or_else(|| crate::engine::material::look_alike(&first));
+        // MA32: any material of the list, by name, other name, name or code
+        // in programs, grade or look; none keeps the job's (it says so).
+        let material = crate::engine::material::like(&first);
         let mut job = XmlJob { name: if several { format!("{stem} · {first} {thk}") } else { stem.clone() }, material_text: first, material, thickness: thk, parts: vec![] };
         for p in products.iter().filter(|p| key(p) == (mat.clone(), thk)) {
             // Quantity 0 (or not a number, which reads as 0, XI6): nothing to make.
@@ -140,11 +141,12 @@ pub fn xml_import(cfg: &AppSettings, lib: Option<&crate::library::Library>, path
     Ok(out)
 }
 
-/// The app's material for a material name in a machine program header:
-/// Settings → Materials first, then by its look.
-pub fn program_material(cfg: &AppSettings, name: &str) -> usize {
+/// The app's material for a material name in a machine program header: any
+/// material of the list (MA32); a header that names none (or no header) is
+/// guessed by its words as always, which gives one of the first three.
+pub fn program_material(name: &str) -> usize {
     let mu = name.to_uppercase();
-    cfg.material_for(name).unwrap_or(if mu.contains("STAIN") || mu.contains("INOX") || mu.contains("X5CR") || mu.contains("304") || mu.contains("316") {
+    crate::engine::material::like(name).unwrap_or(if mu.contains("STAIN") || mu.contains("INOX") || mu.contains("X5CR") || mu.contains("304") || mu.contains("316") {
         1
     } else if mu.starts_with("AL") {
         2
@@ -242,7 +244,7 @@ pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usi
     if im.thickness > 0.0 {
         spec.thickness = im.thickness;
     }
-    spec.material = program_material(cfg, &im.material);
+    spec.material = program_material(&im.material);
     let parts: Vec<Part> = im
         .parts
         .iter()

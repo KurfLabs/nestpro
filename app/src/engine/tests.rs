@@ -5513,6 +5513,98 @@ fn material_changes_are_refused_while_the_library_cant_be_reached() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+// ---------------------------------------------------------------------------
+// Names from outside find any material (ticket #151, MA32).
+// ---------------------------------------------------------------------------
+
+/// DEMO 316, based on stainless, with its own name and code in programs and
+/// the other names AISI 316 and DEMO-316.
+fn add_demo_316_named(s: &mut Session) -> u64 {
+    let r = call(s, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless", "other_names": "AISI 316, DEMO-316", "program_name": "DEMO316", "program_code": "0316"}));
+    r["data"]["material"].as_u64().unwrap()
+}
+
+#[test]
+fn an_xml_import_finds_any_material_by_any_of_its_names() {
+    let d = dir("xml_any_material");
+    std::fs::write(d.join("brk.dxf"), crate::dxf::SAMPLE_DXF).unwrap();
+    let mut s = Session::new(stock_ctx(&d));
+    assert_eq!(add_demo_316_named(&mut s), 3);
+    // One product per material text, each its own thickness so each makes a job.
+    let texts = ["aisi 316", "  AISI   316 ", "DEMO316", "0316", "demo 316", "DEMO-316L", "AISI316", "STAINLESS", "1", "", "DEMO-COPPER"];
+    let products: String = texts.iter().enumerate().map(|(k, m)| format!("  <Product Reference=\"DEMO-{k}\" Material=\"{m}\" Thickness=\"{}\" Quantity=\"1\" Fich=\"brk.dxf\"/>\n", k + 1)).collect();
+    let xml = d.join("DEMO-ORDER.xml");
+    std::fs::write(&xml, format!("<?xml version=\"1.0\"?><Import>\n{products}</Import>")).unwrap();
+    let r = call(&mut s, "import-xml", None, json!({"path": xml.to_str().unwrap(), "dir": d.join("jobs").to_str().unwrap()}));
+    let by_thk = |r: &Value| -> Vec<(u64, String)> { r["data"]["jobs"].as_array().unwrap().iter().map(|j| (j["thickness"].as_f64().unwrap() as u64, j["material"].as_str().unwrap().to_string())).collect() };
+    let got = by_thk(&r);
+    let want: Vec<(u64, String)> = ["DEMO 316", "DEMO 316", "DEMO 316", "DEMO 316", "DEMO 316", "DEMO 316", "Stainless steel", "Stainless steel", "Mild steel", "Mild steel", "Mild steel"].iter().enumerate().map(|(k, m)| (k as u64 + 1, m.to_string())).collect();
+    assert_eq!(got, want, "{r}");
+    // The job file is in DEMO 316, by its id and name.
+    let j = jobfile::load(Path::new(r["data"]["jobs"][0]["job"].as_str().unwrap())).unwrap();
+    assert_eq!((j.spec.material, j.material_name.as_str()), (3, "DEMO 316"));
+    // A name that matches nothing keeps the job's material and says so, as
+    // before; a plain number is no material number in a file; an empty
+    // material says nothing.
+    let notes = r["data"]["notes"].to_string();
+    assert!(notes.contains("material '1' isn't one of the app's — set to Mild steel") && notes.contains("material 'DEMO-COPPER' isn't one of the app's"), "{notes}");
+    assert_eq!(notes.matches("isn't one of the app's").count(), 2, "{notes}");
+
+    // AISI 316 taken off DEMO 316: the same file no longer finds it there.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "other_names": "DEMO-316"}));
+    let r = call(&mut s, "import-xml", None, json!({"path": xml.to_str().unwrap(), "dir": d.join("jobs").to_str().unwrap(), "force": true}));
+    assert_eq!(by_thk(&r)[0], (1, "Mild steel".to_string()), "{r}");
+    assert!(r["data"]["notes"].to_string().contains("material 'aisi 316' isn't one of the app's"), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_opened_program_finds_any_material_its_header_names() {
+    let d = dir("program_any_material");
+    let mut s = Session::new(stock_ctx(&d));
+    add_demo_316_named(&mut s);
+    // The sheet program's header names the material; a name that matches no
+    // material is guessed by its words, as before.
+    let cases = [("DEMO316", "DEMO 316"), ("demo 316", "DEMO 316"), ("AISI 316", "DEMO 316"), ("0316", "DEMO 316"), ("STAINLESS", "Stainless steel"), ("STEEL", "Mild steel"), ("X5CRNI18", "Stainless steel"), ("DEMO-COPPER", "Mild steel"), ("", "Mild steel")];
+    for (k, (header, want)) in cases.iter().enumerate() {
+        let set = lc5_set_of(&d, &format!("DEMOMAT{k}"), header, None, None);
+        let job = d.join(format!("DEMO-MAT-{k}.snjob"));
+        let r = call(&mut s, "import-program", Some(job.to_str().unwrap()), json!({"path": set.to_str().unwrap()}));
+        let info = call(&mut s, "info", None, json!({}));
+        assert_eq!(info["data"]["sheet"]["material"].as_str(), Some(*want), "header '{header}': {r}");
+    }
+    let j = jobfile::load(&d.join("DEMO-MAT-0.snjob")).unwrap();
+    assert_eq!((j.spec.material, j.material_name.as_str()), (3, "DEMO 316"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_file_name_naming_the_jobs_material_by_any_name_gives_no_warning() {
+    let d = dir("filename_any_material");
+    let mut ctx = stock_ctx(&d);
+    ctx.cfg.name_format = "[Reference]_[Material]".into();
+    let mut s = Session::new(ctx);
+    add_demo_316_named(&mut s);
+    let jp = d.join("DEMO-316-JOB.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"material": "DEMO 316", "thickness": 3}));
+    let import = |s: &mut Session, stem: &str| -> String {
+        let f = d.join(format!("{stem}.dxf"));
+        std::fs::write(&f, crate::dxf::SAMPLE_DXF).unwrap();
+        let r = call(s, "import-drawing", None, json!({"path": f.to_str().unwrap()}));
+        r["data"]["notes"].to_string()
+    };
+    for stem in ["DEMO-A_DEMO 316", "DEMO-B_demo316", "DEMO-C_AISI 316", "DEMO-D_0316", "DEMO-E_DEMO-316L", "DEMO-F_ aisi  316 "] {
+        let notes = import(&mut s, stem);
+        assert!(!notes.contains("the name says"), "{stem}: {notes}");
+    }
+    // Another material, or none of the list, still warns.
+    for (stem, said) in [("DEMO-G_AISI316", "material AISI316 (the job is DEMO 316 3 mm)"), ("DEMO-H_DEMO-COPPER", "material DEMO-COPPER"), ("DEMO-I_2", "material 2")] {
+        let notes = import(&mut s, stem);
+        assert!(notes.contains("the name says") && notes.contains(said), "{stem}: {notes}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn this_pcs_settings_seed_the_list_once() {
     // MA15: the three materials as this PC's settings have them (renamed in
@@ -6195,11 +6287,17 @@ fn a_new_gas_with_a_new_thickness_and_nestings_removed_says_no_sheet_was_kept() 
 /// program's `;IDGAS=` / `;NOMEGAS=` pair (None: no gas lines), `xml_gas`
 /// the job sheet's `GasId` / `GasName` (None: no gas tags).
 fn lc5_set(d: &Path, name: &str, gas: Option<(&str, &str)>, xml_gas: Option<(&str, &str)>) -> PathBuf {
+    lc5_set_of(d, name, "STEEL", gas, xml_gas)
+}
+
+/// `lc5_set` whose sheet program's header (`;<material>,1000,500,3`) names
+/// `material`.
+fn lc5_set_of(d: &Path, name: &str, material: &str, gas: Option<(&str, &str)>, xml_gas: Option<(&str, &str)>) -> PathBuf {
     let sub = format!("{name}701");
     let gas_lines = gas.map_or(String::new(), |(n, g)| format!(";IDGAS={n}\r\n;NOMEGAS={g}\r\n"));
     let call_at = |k: usize, x: u32| format!("ORIG({x},10,0)\r\nN{k} CALL\"/_n_wks_dir/_n_sheet_wpd/_n_{sub}_spf\"\r\n");
     let sheet = format!(
-        ";ADILAS\r\n;STEEL,1000,500,3\r\n;IDMAT=0010\r\n;NOMEMAT=STEEL\r\n;ALIASMAT=STEEL\r\n{gas_lines};Postprocessor version 2.0.0\r\nR12=3\r\nR21=1000\r\nR22=500\r\nINITNEST\r\n{}{}ENDNEST\r\nRET\r\n",
+        ";ADILAS\r\n;{material},1000,500,3\r\n;IDMAT=0010\r\n;NOMEMAT=STEEL\r\n;ALIASMAT=STEEL\r\n{gas_lines};Postprocessor version 2.0.0\r\nR12=3\r\nR21=1000\r\nR22=500\r\nINITNEST\r\n{}{}ENDNEST\r\nRET\r\n",
         call_at(1, 10),
         call_at(2, 200)
     );

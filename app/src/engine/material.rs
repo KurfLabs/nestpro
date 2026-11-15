@@ -575,11 +575,6 @@ pub fn nearest_name(id: Id) -> String {
     name(id).unwrap_or_else(|| nearest(id).name.to_string())
 }
 
-/// Every material's name, in list order.
-pub fn names() -> Vec<String> {
-    current().materials.iter().map(|m| m.name.clone()).collect()
-}
-
 pub fn kind(id: Id) -> Kind {
     with(id, |m| m.kind()).unwrap_or_else(|| standard(nearest(id).standard).kind)
 }
@@ -621,37 +616,79 @@ pub fn machine_key(id: Id) -> String {
     with(id, |m| m.machine_key()).unwrap_or_default()
 }
 
-/// The material a name from outside means (an import, a program, a file
-/// name): the material's own name, its own name or code in programs or one
-/// of its other names, without case. As in the original (MA6), another name
-/// gives its main material; an unknown name gives None.
+/// The material a name means exactly (MA32 steps 1 and 2), compared as
+/// names are (MA16): a material's name or one of its other names, which
+/// only one material has; else a material's name or code in programs (its
+/// own, or its standard's when it has none), the first in the list when
+/// several share it. As in the original (MA6), another name gives its main
+/// material; an unknown name gives None.
 pub fn find(text: &str) -> Option<Id> {
     let n = norm(text);
     if n.is_empty() {
         return None;
     }
     let l = current();
-    let own = |o: &Option<String>| o.as_deref().is_some_and(|p| norm(p) == n);
-    l.materials.iter().find(|m| m.names().any(|x| x == n) || own(&m.program_name) || own(&m.program_code)).map(|m| m.id)
+    l.materials
+        .iter()
+        .find(|m| m.names().any(|x| x == n))
+        .or_else(|| {
+            l.materials.iter().find(|m| {
+                let (p, c) = m.program();
+                norm(&p) == n || norm(&c) == n
+            })
+        })
+        .map(|m| m.id)
 }
 
-/// A look-alike: an exact name or code first, then a name that contains the
-/// text or the other way round (as the XML import reads its files).
+/// MA32: the shortest name a look-alike or a grade compares.
+const LIKE_MIN: usize = 3;
+
+/// A look-alike (MA32 step 4): the longest material name the text holds
+/// ("X5CrNi + Film 2B" → "X5CrNi + Film", not "X5CrNi"); else the first
+/// material whose name holds the text. Names and texts shorter than three
+/// characters are only ever found exactly (step 1).
 pub fn look_alike(text: &str) -> Option<Id> {
-    let l = current();
-    let programs: Vec<(String, String)> = l.materials.iter().map(|m| (m.program_name.clone().unwrap_or_default(), m.program_code.clone().unwrap_or_default())).collect();
-    crate::xmlimport::material_index(text, &names(), &programs).and_then(|i| l.materials.get(i)).map(|m| m.id)
-}
-
-/// The material a material text names: `find`; then a grade that starts with
-/// another name holding a digit ("S355J2" → the material called S355); then
-/// a look-alike.
-pub fn like(text: &str) -> Option<Id> {
     let t = norm(text);
     let l = current();
-    find(text)
-        .or_else(|| l.materials.iter().find(|m| m.other_names.iter().map(|o| norm(o)).any(|x| x.len() >= 3 && x.chars().any(|c| c.is_ascii_digit()) && t.starts_with(&x))).map(|m| m.id))
-        .or_else(|| look_alike(text))
+    let mut best: Option<(usize, Id)> = None;
+    for m in &l.materials {
+        let n = norm(&m.name);
+        let len = n.chars().count();
+        if len >= LIKE_MIN && t.contains(&n) && best.is_none_or(|(b, _)| len > b) {
+            best = Some((len, m.id));
+        }
+    }
+    best.map(|b| b.1).or_else(|| (t.chars().count() >= LIKE_MIN).then(|| l.materials.iter().find(|m| norm(&m.name).contains(&t)).map(|m| m.id)).flatten())
+}
+
+/// A grade (MA32 step 3): the text starts with another name of three
+/// characters or more holding a digit ("S355J2" → the material with other
+/// name S355); the longest such other name wins, then the first in the list.
+fn grade(text: &str) -> Option<Id> {
+    let t = norm(text);
+    let l = current();
+    let mut best: Option<(usize, Id)> = None;
+    for m in &l.materials {
+        for x in m.other_names.iter().map(|o| norm(o)) {
+            let len = x.chars().count();
+            if len >= LIKE_MIN && x.chars().any(|c| c.is_ascii_digit()) && t.starts_with(&x) && best.is_none_or(|(b, _)| len > b) {
+                best = Some((len, m.id));
+            }
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// MA32: the material a name from outside means — an XML import's or a
+/// drawing file's material, an opened program's material header, a file
+/// name's material field, an ERP job's material. Searches the whole list:
+/// `find` (names and other names, then names and codes in programs); then a
+/// grade; then a look-alike. None when nothing matches: each import then
+/// does what it always did (the job's material stays, and it says so).
+/// A plain number is a name like any other here, never a material number:
+/// files from outside number materials their own way.
+pub fn like(text: &str) -> Option<Id> {
+    find(text).or_else(|| grade(text)).or_else(|| look_alike(text))
 }
 
 /// MA17: the material a file means by the id and name it stored. The id,
@@ -765,7 +802,7 @@ mod tests {
     fn the_old_three_answer_by_id() {
         seeded("");
         assert_eq!(ids(), vec![0, 1, 2]);
-        assert_eq!(names(), vec!["Mild steel", "Stainless steel", "Aluminium"]);
+        assert_eq!(current().materials.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), vec!["Mild steel", "Stainless steel", "Aluminium"]);
         assert_eq!(name(1).as_deref(), Some("Stainless steel"));
         assert_eq!((density(0), density(1), density(2)), (7.85, 8.0, 2.70));
         assert_eq!((kind(0), kind(1), kind(2)), (Kind::MildSteel, Kind::Stainless, Kind::Aluminium));
@@ -845,6 +882,82 @@ mod tests {
         assert_eq!(machine_key(3), "##MATEXP0100##");
         assert_eq!(resolve(9, "demo-316"), 3, "a file from another Library finds it by name");
         assert_eq!((resolve(1, "DEMO 316"), resolve(9, "")), (1, 9), "the id first; an id alone stays");
+    }
+
+    /// The seed plus made-up grades: DEMO 316 (stainless, its own name and
+    /// code in programs), DEMO 304 (stainless, its standard's), DEMO-X
+    /// (stainless, named only by its other name) and DEMO MILD + FILM.
+    fn with_demo_grades() {
+        seeded("");
+        let mut l = (*current()).clone();
+        let m = |name: &str, other: &[&str], standard: u32, program: Option<(&str, &str)>| Material {
+            id: 0,
+            name: name.into(),
+            other_names: other.iter().map(|s| s.to_string()).collect(),
+            standard,
+            density: None,
+            program_name: program.map(|p| p.0.to_string()),
+            program_code: program.map(|p| p.1.to_string()),
+            machine_ref: None,
+        };
+        assert_eq!(l.add(m("DEMO 316", &["AISI 316", "DEMO-316", "DEMO1.4401"], 100, Some(("DEMO316", "0316")))), Ok(3));
+        assert_eq!(l.add(m("DEMO 304", &[], 100, None)), Ok(4));
+        assert_eq!(l.add(m("DEMO STEEL", &["DEMO-S3"], 10, None)), Ok(5));
+        assert_eq!(l.add(m("DEMO STEEL + FILM", &["DEMO-S35"], 10, Some(("DEMO-FILM", "0010")))), Ok(6));
+        install(l);
+    }
+
+    #[test]
+    fn a_name_from_outside_finds_any_material_of_the_list() {
+        // MA32 steps 1 and 2: names, other names, names and codes in programs.
+        with_demo_grades();
+        assert_eq!(like("aisi 316"), Some(3), "another name, any capitals");
+        assert_eq!(like("  AISI   316 "), Some(3), "spaces around and inside");
+        assert_eq!(like("AISI316"), Some(1), "the seed's own other name stays stainless");
+        assert_eq!(like("demo 316"), Some(3), "its name");
+        assert_eq!((like("DEMO316"), like("0316")), (Some(3), Some(3)), "its name and code in programs");
+        assert_eq!(like("demo1.4401"), Some(3), "an other name only it has");
+        // A code shared by several: the first in the list (lowest number).
+        assert_eq!(like("0100"), Some(1), "DEMO 304 writes 0100 too, but stainless is first");
+        assert_eq!(like("STAINLESS"), Some(1));
+        assert_eq!(like("0010"), Some(0), "DEMO STEEL + FILM writes 0010 too; mild steel is first");
+        assert_eq!(like("demo-film"), Some(6));
+        // A name wins over another material's name in programs (names mean
+        // one material; names in programs may repeat).
+        let mut l = (*current()).clone();
+        let id = l.add(Material { id: 0, name: "DEMO316".into(), other_names: vec![], standard: 100, density: None, program_name: None, program_code: None, machine_ref: None }).unwrap();
+        install(l);
+        assert_eq!((like("demo316"), like("0316")), (Some(id), Some(3)));
+    }
+
+    #[test]
+    fn a_name_from_outside_falls_back_to_a_grade_then_a_look_alike() {
+        with_demo_grades();
+        // Step 3: the longest other name the grade starts with.
+        assert_eq!(like("DEMO-316L"), Some(3));
+        assert_eq!(like("DEMO-S355"), Some(6), "DEMO-S35 is longer than DEMO-S3");
+        assert_eq!(like("DEMO-S3X"), Some(5));
+        assert_eq!(like("S355J2"), Some(0), "the seed's S355");
+        // Step 4: the longest name the text holds, then a name holding it.
+        assert_eq!(like("DEMO STEEL + FILM 2B"), Some(6));
+        assert_eq!(like("DEMO STEEL 2B"), Some(5));
+        assert_eq!(like("Aluminium 5754"), Some(2));
+        assert_eq!(like("demo 30"), Some(4), "the first name that holds it");
+        // Short texts are found only exactly; nothing else gives None.
+        assert_eq!((like("ST"), like("al"), like("1")), (None, Some(2), None), "AL is an other name of aluminium");
+        assert_eq!((like(""), like("   "), like("DEMO-COPPER")), (None, None, None));
+        // A plain number is never read as a material number here.
+        assert_eq!((like("0"), like("2"), like("4")), (None, None, None));
+    }
+
+    #[test]
+    fn a_material_taken_off_the_list_is_found_no_more() {
+        with_demo_grades();
+        let mut l = (*current()).clone();
+        l.materials.retain(|m| m.id != 3);
+        install(l);
+        assert_eq!((like("aisi 316"), like("DEMO316"), like("0316"), like("DEMO 316")), (None, None, None, None));
+        assert_eq!(like("DEMO-316L"), None);
     }
 
     /// A made-up shop list: the old three, then grades on several standards
