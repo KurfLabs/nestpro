@@ -7085,6 +7085,20 @@
   "value": "0010 mild steel 7.85, 0100 stainless steel 8.0, 0200 aluminium 2.70",
   "source": "MA18",
   "estimated": true
+ },
+ {
+  "name": "material from a name outside",
+  "group": "materials",
+  "value": "name or other name; then name or code in programs (first in the list); then the longest grade other name; then the longest name held (3 characters or more); else unchanged",
+  "source": "MA32",
+  "estimated": true
+ },
+ {
+  "name": "plain number in an imported material",
+  "group": "materials",
+  "value": "a name, never a material number",
+  "source": "MA32",
+  "estimated": true
  }
 ]
 }
