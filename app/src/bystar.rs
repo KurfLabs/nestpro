@@ -143,6 +143,8 @@ pub const SWITCHES: &[SwitchDef] = &[
     sw("R005", "Cut-off distance outside the sheet, left edge", Size, "0", "BV39", Later),
     sw("R006", "Cut-off distance outside the sheet, top edge", Size, "0", "BV39", Later),
     sw("R007", "Cut-off distance outside the sheet, right edge", Size, "0", "BV39", Later),
+    // This app's own switches (the post has none for these), off by default.
+    sw("X001", "This app's own: name the job's gas (ProcessGas) in the job file without a parameter-file name", OnOff, "0", "BV62", Built),
 ];
 
 pub fn switch(key: &str) -> Option<&'static SwitchDef> {
@@ -185,7 +187,7 @@ impl MachinePost {
     /// Set switch `key` (any case) to `value`, checked against its kind.
     /// Setting the value the files give takes the change out again.
     pub fn set_switch(&mut self, key: &str, value: &str) -> Result<(), String> {
-        let def = switch(key).ok_or_else(|| format!("{key} isn't one of the post's switches (B000–B050, C001–C013, R000–R007)"))?;
+        let def = switch(key).ok_or_else(|| format!("{key} isn't one of the post's switches (B000–B050, C001–C013, R000–R007, and this app's X001)"))?;
         let v = value.trim();
         if def.kind != Text && v.parse::<f64>().map_or(true, |x| !x.is_finite()) {
             return Err(format!("{}: \"{v}\" isn't a number", def.key));
@@ -1094,7 +1096,9 @@ pub fn program_name(job: &str, sheet_no: usize) -> String {
 /// BV43, BV44: the job file for `nests` (of `all`).
 pub fn job_info(job: &JobText, parts: &[Part], all: &[Nest], nests: &[usize], post: &Post) -> String {
     let mut t = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n");
-    let gas = if job.gas.is_empty() { String::new() } else { format!(" ProcessGas=\"{}\"", esc(&job.gas)) };
+    // BV43: the post names the gas only with the technology's parameter
+    // file, which the app doesn't know yet; X001 (ours, BV62) names it anyway.
+    let gas = if job.gas.is_empty() || !post.on("X001") { String::new() } else { format!(" ProcessGas=\"{}\"", esc(&job.gas)) };
     let _ = write!(t, "<JobInfo Guid=\"{}\" Name=\"{}\" Material=\"{}\" Thickness=\"{}\" MeasurementSystem=\"Metric\" Parameter=\"\"{gas}>\r\n", esc(&job.guid), esc(&job.name), esc(&job.material), num(job.thickness));
     // The parts the nests place, in the part list's order (BV44: the id is
     // the place in the list).

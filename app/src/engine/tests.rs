@@ -7535,8 +7535,8 @@ fn bystar_switches_change_the_frame_names_and_job_file() {
     let info = std::fs::read_to_string(out.join("JobInfo.xml")).unwrap();
     assert!(info.contains("<ResidualSheetInfos />") && info.contains("<BigPartInfos />") && info.contains("SubProgramName=\"P1\""), "{info}");
     // The job file: the material as programs name it (Settings → Materials),
-    // thickness, the job's gas, the parts.
-    assert!(info.contains("Material=\"STEEL\"") && info.contains("ProcessGas=\"Nitrogen\"") && info.contains("<PartInfo Id=\"1\" Name=\"DEMO-001\" Quantity=\"1\" />"), "{info}");
+    // thickness, the parts; no gas without a parameter file (BV43).
+    assert!(info.contains("Material=\"STEEL\"") && !info.contains("ProcessGas") && info.contains("<PartInfo Id=\"1\" Name=\"DEMO-001\" Quantity=\"1\" />"), "{info}");
     // The ids count up in writing order from 1 (BV24).
     let ids: Vec<usize> = ccp.lines().filter_map(|l| l.split("Id=\"").nth(1)?.split('"').next()?.parse().ok()).collect();
     assert_eq!(ids, (1..=ids.len()).collect::<Vec<_>>());
@@ -7905,5 +7905,40 @@ fn an_extra_pierce_before_the_planned_one_is_refused() {
     let e = export_edited(&mut s, extra);
     assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && (e.contains("pierced 2 time(s)") || e.contains("height sensor is off"))), "{e:?}");
     call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// The owner's answer on #126: the gas as the original writes it.
+
+#[test]
+fn the_job_file_names_the_gas_only_with_the_apps_own_switch() {
+    let d = dir("bystar_process_gas");
+    let mut s = bystar_job(&d, false);
+    let info = |s: &mut Session| -> String {
+        call(s, "export", None, json!({}));
+        std::fs::read_to_string(bystar_dir(&d, "DEMO-BVC").join("JobInfo.xml")).unwrap()
+    };
+    // BV43: no parameter-file name, so no ProcessGas; Parameter stays empty.
+    let off = info(&mut s);
+    assert!(!off.contains("ProcessGas") && off.contains("Parameter=\"\""), "{off}");
+    // X001 (ours, BV62): the job's gas as its programs name it.
+    let r = switches(&mut s, "X001=1");
+    let x = r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "X001").unwrap().clone();
+    assert_eq!((x["value"].as_str(), x["default"].as_str(), x["programs"].as_str()), (Some("1"), Some("0"), Some("written")), "{x}");
+    let on = info(&mut s);
+    assert!(on.contains("Parameter=\"\" ProcessGas=\"Nitrogen\""), "{on}");
+    call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    assert!(info(&mut s).contains("ProcessGas=\"Oxygen\""), "the job's own gas");
+    // Settings saved before the switch (a ByStar Fiber machine with B015
+    // set) load unchanged, with X001 off.
+    let before = "[machine]\nname = Demo ByStar Fiber laser\noutput = bystar\ngas_id = 1\ngas_name = Nitrogen\nkind = laser\nbystar = {\"set\":{\"B015\":\"1\"}}\n";
+    let cfg = crate::settings::AppSettings::parse(before);
+    assert_eq!(crate::settings::AppSettings::parse(&cfg.to_text()), cfg);
+    assert!(cfg.to_text().contains("bystar = {\"set\":{\"B015\":\"1\"}}\n"), "{}", cfg.to_text());
+    s.ctx.cfg.machines = cfg.machines.clone();
+    s.ctx.cfg.active_machine = 0;
+    let r = call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser"}));
+    let x = r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "X001").unwrap().clone();
+    assert_eq!((x["value"].as_str(), x["from"].as_str()), (Some("0"), Some("default")), "{x}");
     let _ = std::fs::remove_dir_all(&d);
 }

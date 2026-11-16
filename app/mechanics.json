@@ -7611,7 +7611,7 @@
  {
   "name": "job file ProcessGas",
   "group": "ByStar Fiber writer",
-  "value": "the job's gas as its programs name it, always",
+  "value": "none (no parameter-file name, BV43); with X001 (ours, off by default) the job's gas as its programs name it",
   "source": "MECHANICS BV62"
  },
  {
