@@ -3419,7 +3419,7 @@ fn main() -> eframe::Result {
                 if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--drops-layout=").and_then(|v| v.parse::<usize>().ok())) {
                     let sheet = app.result.sheets.get(app.cur_sheet).cloned().unwrap_or_default();
                     let st = app.cfg.stock.clone();
-                    if let Some(l) = engine::drops::layouts(&sheet, &app.cur_spec(), &st.line, &st.drops.sizes, st.min_remnant_m2).ok().and_then(|v| v.into_iter().nth(n.saturating_sub(1))) {
+                    if let Some(l) = engine::drops::layouts(&app.parts, &sheet, &app.result.format(app.cur_sheet, &app.spec), &app.cur_spec(), &st.line, &st.drops.sizes, st.min_remnant_m2).ok().and_then(|v| v.into_iter().nth(n.saturating_sub(1))) {
                         app.apply_drop_layout(&l);
                     }
                     app.dropsui.open = false;

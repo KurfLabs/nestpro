@@ -50,7 +50,7 @@ impl App {
         }
         let sheet = self.result.sheets.get(self.cur_sheet).cloned().unwrap_or_default();
         let st = &self.cfg.stock;
-        let v = drops::layouts(&sheet, &self.cur_spec(), &st.line, &st.drops.sizes, st.min_remnant_m2);
+        let v = drops::layouts(&self.parts, &sheet, &self.result.format(self.cur_sheet, &self.spec), &self.cur_spec(), &st.line, &st.drops.sizes, st.min_remnant_m2);
         self.dropsui.cache = Some((key, v.clone()));
         v
     }

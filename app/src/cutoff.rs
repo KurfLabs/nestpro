@@ -356,7 +356,7 @@ impl App {
         }
         // SD2, SD6, SD7: standard drops when they're on.
         let st = self.cfg.stock.clone();
-        match crate::engine::drops::auto_cut(&self.parts, self.sheet_now(), &self.cur_spec(), &st, self.unit()) {
+        match crate::engine::drops::auto_cut(&self.parts, self.sheet_now(), &self.result.format(self.cur_sheet, &self.spec), &self.cur_spec(), &st, self.unit()) {
             Ok((lines, what)) => {
                 if self.set_remnant_lines(lines, &what) && st.drops.on && what.starts_with("Standard drops") {
                     self.status.push_str(" Drop layouts (Sheet tab) shows other ways to cut it.");
@@ -472,7 +472,7 @@ impl App {
         let st = self.cfg.stock.clone();
         self.cur_sheet = i;
         if !self.cut_list().iter().any(|l| l.kind == CutKind::Remnant) {
-            if let Ok((lines, _)) = crate::engine::drops::auto_cut(&self.parts, self.sheet_now(), &self.cur_spec(), &st, self.unit()) {
+            if let Ok((lines, _)) = crate::engine::drops::auto_cut(&self.parts, self.sheet_now(), &self.result.format(self.cur_sheet, &self.spec), &self.cur_spec(), &st, self.unit()) {
                 if lines.iter().all(|l| path_hits_part(&self.parts, self.sheet_now(), &l.pts).is_none()) {
                     self.cut_list_mut().extend(lines);
                 }

@@ -12,7 +12,7 @@
 //! the skeleton.
 
 use crate::cutoff::{CutKind, CutLine};
-use crate::nest::{Part, Placed, SheetSpec, P};
+use crate::nest::{Part, Placed, SheetFormat, SheetSpec, P};
 use crate::remline::{StripRegion, TOL};
 use serde::{Deserialize, Serialize};
 
@@ -444,6 +444,10 @@ pub fn layouts_in(r: &StripRegion, sizes: &[[f64; 2]], k: f64) -> Vec<Layout> {
         plans.push(plan_only(*s, &room));
         plans.push(plan_first(*s, sizes, &room));
     }
+    // Each with one row only too, for when a second row's shared cut would
+    // leave its drops under the minimum area (SD4, SD5).
+    let one_row: Vec<Plan> = plans.iter().filter(|p| !p.high.drops.is_empty()).map(|p| Plan { high: Row::default(), ..p.clone() }).collect();
+    plans.extend(one_row);
     let mut seen: Vec<Vec<(i64, i64, u8)>> = vec![];
     let mut kept: Vec<Plan> = vec![];
     for p in plans {
@@ -458,7 +462,26 @@ pub fn layouts_in(r: &StripRegion, sizes: &[[f64; 2]], k: f64) -> Vec<Layout> {
         kept[1..].sort_by(|a, b| b.area().total_cmp(&a.area()).then(a.count().cmp(&b.count())));
     }
     let auto_first = kept.first().map(|p| *p == plan_greedy(sizes, &room)).unwrap_or(false);
-    kept.into_iter().take(MAX_LAYOUTS).enumerate().map(|(i, p)| layout(&p, r, k, i == 0 && auto_first)).collect()
+    kept.into_iter().enumerate().map(|(i, p)| layout(&p, r, k, i == 0 && auto_first)).collect()
+}
+
+/// SD5: the remnants this layout's cuts would leave on the sheet — its real
+/// outline, with its parts — are exactly its drops, each at least the minimum
+/// area of remnants. Cuts that happen to line up can close off an odd piece,
+/// a shared cut can take a drop under the minimum, and a shaped remnant can
+/// lack material where a drop would be: such a layout isn't offered.
+fn leaves_only_drops(l: &Layout, parts: &[Part], sheet: &[Placed], f: &SheetFormat, k: f64, min_area_m2: f64) -> bool {
+    let area = |d: &[f64; 4]| (d[2] - d[0]) * (d[3] - d[1]);
+    if l.drops.iter().any(|(d, _)| area(d) < min_area_m2 * 1e6 - 1e-6) {
+        return false;
+    }
+    // Every piece of 1 mm² or more counts.
+    let pieces = crate::remnant::sheet_remnants(parts, sheet, f, &l.lines, k, 1e-6, false);
+    let matches = |o: &crate::stock::Outline, d: &[f64; 4]| {
+        let (lo, hi) = o.outer.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]));
+        (o.area_mm2() - area(d)).abs() < 1.0 && [lo[0] - d[0], lo[1] - d[1], hi[0] - d[2], hi[1] - d[3]].iter().all(|e| e.abs() < 0.05)
+    };
+    pieces.len() == l.drops.len() && l.drops.iter().all(|(d, _)| pieces.iter().any(|o| matches(o, d)))
 }
 
 /// What Cut off leftover would do with standard drops on this sheet.
@@ -473,14 +496,22 @@ pub enum Outcome {
     NoneFits(f64, f64),
 }
 
-/// The layouts for a sheet with the shop's sizes, or why there are none.
-pub fn layouts(sheet: &[Placed], spec: &SheetSpec, line: &crate::remline::LineSettings, sizes: &[[f64; 2]], min_area_m2: f64) -> Result<Vec<Layout>, Outcome> {
+/// The layouts for a sheet (`f` its format: a remnant's real outline) with
+/// the shop's sizes, or why there are none. Only layouts that leave exactly
+/// their drops (SD5); the first is what Cut off leftover makes.
+pub fn layouts(parts: &[Part], sheet: &[Placed], f: &SheetFormat, spec: &SheetSpec, line: &crate::remline::LineSettings, sizes: &[[f64; 2]], min_area_m2: f64) -> Result<Vec<Layout>, Outcome> {
     if !line.shape.uses_min_xy() || line.shape == crate::remline::LineShape::OneStep {
         return Err(Outcome::NotStrip);
     }
     let kerf = crate::kerf::kerf_mm(spec);
     let r = crate::remline::strip_region(sheet, spec, line, kerf / 2.0).ok_or(Outcome::NoRoom)?;
-    let v = layouts_in(&r, &clean_sizes(sizes, min_area_m2), kerf);
+    let v: Vec<Layout> = layouts_in(&r, &clean_sizes(sizes, min_area_m2), kerf)
+        .into_iter()
+        .filter(|l| leaves_only_drops(l, parts, sheet, f, kerf, min_area_m2))
+        .take(MAX_LAYOUTS)
+        .enumerate()
+        .map(|(i, l)| Layout { auto: i == 0, ..l })
+        .collect();
     if v.is_empty() {
         return Err(Outcome::NoneFits(r.w - r.x, r.h));
     }
@@ -491,7 +522,7 @@ pub fn layouts(sheet: &[Placed], spec: &SheetSpec, line: &crate::remline::LineSe
 /// drops on, the biggest-first drops; otherwise — or when the shape isn't a
 /// strip or an L, or no drop fits and odd remnants are kept — the usual
 /// automatic line. Ok(lines, what was made) or Err(why nothing).
-pub fn auto_cut(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, st: &crate::stock::StockSettings, unit: crate::units::LenUnit) -> Result<(Vec<CutLine>, String), String> {
+pub fn auto_cut(parts: &[Part], sheet: &[Placed], f: &SheetFormat, spec: &SheetSpec, st: &crate::stock::StockSettings, unit: crate::units::LenUnit) -> Result<(Vec<CutLine>, String), String> {
     let ls = &st.line;
     let usual = || {
         let lines = crate::remline::auto_lines(parts, sheet, spec, ls, crate::kerf::kerf_mm(spec) / 2.0);
@@ -500,7 +531,7 @@ pub fn auto_cut(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, st: &crate::
     if !st.drops.on {
         return usual();
     }
-    match layouts(sheet, spec, ls, &st.drops.sizes, st.min_remnant_m2) {
+    match layouts(parts, sheet, f, spec, ls, &st.drops.sizes, st.min_remnant_m2) {
         Ok(v) => Ok((v[0].lines.clone(), format!("Standard drops, {}", v[0].summary(unit)))),
         Err(Outcome::NotStrip) => usual().map(|(l, what)| (l, format!("{what} (standard drops work with the strip and L shapes only)"))),
         Err(Outcome::NoneFits(..)) if st.drops.keep_odd => usual().map(|(l, what)| (l, format!("{what} (no standard drop fits, so the leftover is one remnant)"))),
@@ -552,7 +583,6 @@ mod tests {
         assert!(all.contains(&"4 × 60 × 24".to_string()), "{all:?}");
         // 24 × 24 fill two rows of four (12 in of the width left between).
         assert!(all.contains(&"8 × 24 × 24".to_string()), "{all:?}");
-        assert!(v.len() <= MAX_LAYOUTS);
     }
 
     /// SD1: each drop is cut to its size, the cut half a cut outside it.
@@ -654,18 +684,58 @@ mod tests {
         let mut st = crate::stock::StockSettings { line: LineSettings { shape: LineShape::VerticalStrip, ..Default::default() }, ..Default::default() };
         st.drops = DropSettings { on: true, sizes: vec![[600.0, 600.0]], keep_odd: false };
         // About 485 mm left: no 600 drop fits.
-        let e = auto_cut(&parts, &sheet, &spec, &st, crate::units::LenUnit::Mm).unwrap_err();
+        let e = auto_cut(&parts, &sheet, &SheetFormat::rect(3000.0, 1500.0), &spec, &st, crate::units::LenUnit::Mm).unwrap_err();
         assert!(e.contains("No standard drop fits") && e.contains("skeleton"), "{e}");
         st.drops.keep_odd = true;
-        assert_eq!(auto_cut(&parts, &sheet, &spec, &st, crate::units::LenUnit::Mm).unwrap().0.len(), 1);
+        assert_eq!(auto_cut(&parts, &sheet, &SheetFormat::rect(3000.0, 1500.0), &spec, &st, crate::units::LenUnit::Mm).unwrap().0.len(), 1);
         st.drops = DropSettings { on: true, sizes: vec![[450.0, 1500.0], [400.0, 400.0]], keep_odd: false };
-        let (lines, what) = auto_cut(&parts, &sheet, &spec, &st, crate::units::LenUnit::Mm).unwrap();
+        let (lines, what) = auto_cut(&parts, &sheet, &SheetFormat::rect(3000.0, 1500.0), &spec, &st, crate::units::LenUnit::Mm).unwrap();
         assert!(what.starts_with("Standard drops, 1 × 1500 × 450"), "{what}");
         assert_eq!(lines.len(), 1, "one 450 × 1500 drop: {lines:?}");
         st.line.shape = LineShape::Staircase;
-        assert!(auto_cut(&parts, &sheet, &spec, &st, crate::units::LenUnit::Mm).unwrap().1.contains("strip and L shapes only"));
+        assert!(auto_cut(&parts, &sheet, &SheetFormat::rect(3000.0, 1500.0), &spec, &st, crate::units::LenUnit::Mm).unwrap().1.contains("strip and L shapes only"));
         st.drops.on = false;
         st.line.shape = LineShape::VerticalStrip;
-        assert_eq!(auto_cut(&parts, &sheet, &spec, &st, crate::units::LenUnit::Mm).unwrap().1, "Vertical strip");
+        assert_eq!(auto_cut(&parts, &sheet, &SheetFormat::rect(3000.0, 1500.0), &spec, &st, crate::units::LenUnit::Mm).unwrap().1, "Vertical strip");
+    }
+
+    fn plate(w: f64, h: f64) -> Part {
+        Part { name: "A".into(), shape: crate::nest::Shape::Rectangle, w, h, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
+    }
+
+    /// SD5: a layout whose cuts line up and close off an odd piece, or whose
+    /// shared cut takes a drop under the minimum area, isn't offered.
+    #[test]
+    fn layouts_that_would_store_odd_pieces_are_left_out() {
+        let spec = |w: f64, h: f64| SheetSpec { w, h, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+        let k = crate::kerf::kerf_mm(&spec(3000.0, 1500.0));
+        // An L: the strip from x 1599.55, the leg from y 900; the leg's
+        // 1599.4 wide drop puts its side cut on the strip's line.
+        let parts = vec![plate(1584.55, 885.0)];
+        let sheet = vec![Placed { part: 0, x: 5.0, y: 5.0, w: 1584.55, h: 885.0, turns: 0, mirror: false, spin: Default::default() }];
+        let line = LineSettings { shape: LineShape::LVerticalFirst, ..Default::default() };
+        let f = SheetFormat::rect(3000.0, 1500.0);
+        let sizes = [[1000.0, 700.0], [1000.0, 500.0], [1599.4, 500.0]];
+        let r = crate::remline::strip_region(&sheet, &spec(3000.0, 1500.0), &line, k / 2.0).unwrap();
+        assert!((r.x - 1599.55).abs() < 1e-9 && r.leg_y == Some(900.0), "{r:?}");
+        let all = layouts_in(&r, &clean_sizes(&sizes, 0.1), k);
+        assert!(all.iter().any(|l| !leaves_only_drops(l, &parts, &sheet, &f, k, 0.1)), "the case to guard against");
+        let v = layouts(&parts, &sheet, &f, &spec(3000.0, 1500.0), &line, &sizes, 0.1).unwrap();
+        for l in &v {
+            assert_eq!(crate::remnant::sheet_remnants(&parts, &sheet, &f, &l.lines, k, 0.1, false).len(), l.drops.len(), "{}", names(l));
+        }
+        assert!(v[0].auto);
+        // Two 500 wide rows in a 1000 wide strip: the second row's 500 × 200
+        // drops would come out under 0.1 m².
+        let parts = vec![plate(1000.0, 900.0)];
+        let sheet = vec![Placed { part: 0, x: 5.0, y: 5.0, w: 1000.0, h: 900.0, turns: 0, mirror: false, spin: Default::default() }];
+        let line = LineSettings { shape: LineShape::VerticalStrip, ..Default::default() };
+        let f = SheetFormat::rect(3000.0, 1000.0);
+        let v = layouts(&parts, &sheet, &f, &spec(3000.0, 1000.0), &line, &[[500.0, 200.0]], 0.1).unwrap();
+        assert!(v[0].drops.len() >= 9, "one row of 500 × 200 still fits: {}", names(&v[0]));
+        for l in &v {
+            assert!(l.drops.iter().all(|(d, _)| (d[2] - d[0]) * (d[3] - d[1]) >= 0.1e6 - 1e-6), "{}", names(l));
+            assert_eq!(crate::remnant::sheet_remnants(&parts, &sheet, &f, &l.lines, k, 0.1, false).len(), l.drops.len());
+        }
     }
 }

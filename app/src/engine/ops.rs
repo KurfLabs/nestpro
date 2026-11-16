@@ -1571,7 +1571,7 @@ fn drops_op(parts: &[Part], sheet: &[Placed], sp: &SheetSpec, ctx: &Ctx, a: &Arg
     if sizes.is_empty() {
         return Err("No standard drop sizes: give sizes=\"1524x1219,610x610\" (mm), or add them in the window's Sheet Remnants options.".into());
     }
-    let v = super::drops::layouts(sheet, sp, &st.line, &sizes, st.min_remnant_m2).map_err(|w| match w {
+    let v = super::drops::layouts(parts, sheet, &job.format(s), sp, &st.line, &sizes, st.min_remnant_m2).map_err(|w| match w {
         Why::NotStrip => format!("Standard drops work with the strip and L shapes of the remnant line, and the Sheet Remnants options have {} (set in the window).", st.line.shape.label()),
         Why::NoRoom => format!("No remnant: less than the minimum width ({:.0} mm) is left past the parts.", st.line.min_width),
         Why::NoneFits(l, w) => format!("No standard drop fits the {l:.0} × {w:.0} mm left past the parts — it goes with the skeleton."),
@@ -1615,8 +1615,8 @@ fn set_remnant_lines(parts: &[Part], sheet: &[Placed], list: &mut Vec<CutLine>, 
 
 /// The automatic remnant line for a sheet that has none yet (None when it
 /// has one, there's no remnant, or the line would cut a part).
-pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, st: &crate::stock::StockSettings) -> Option<Vec<CutLine>> {
-    let (lines, _) = super::drops::auto_cut(parts, sheet, spec, st, crate::units::LenUnit::Mm).ok()?;
+pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], f: &SheetFormat, spec: &SheetSpec, st: &crate::stock::StockSettings) -> Option<Vec<CutLine>> {
+    let (lines, _) = super::drops::auto_cut(parts, sheet, f, spec, st, crate::units::LenUnit::Mm).ok()?;
     lines.iter().all(|l| cutoff::path_hits_part(parts, sheet, &l.pts).is_none()).then_some(lines)
 }
 
@@ -2375,7 +2375,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             if ctx.cfg.stock.lines_after_nesting {
                 // "Generate remnants after nesting": the automatic remnant line on every sheet.
                 for k in 0..job.sheets.len() {
-                    if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[k], &job.spec_at(k), &ctx.cfg.stock) {
+                    if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[k], &job.format(k), &job.spec_at(k), &ctx.cfg.stock) {
                         job.cuts_mut(k).extend(lines);
                     }
                 }
@@ -2543,7 +2543,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             job.cuts_mut(s).clear();
             job.sheet_changed(s);
             if ctx.cfg.stock.lines_after_nesting {
-                if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[s], &job.spec_at(s), &ctx.cfg.stock) {
+                if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[s], &job.format(s), &job.spec_at(s), &ctx.cfg.stock) {
                     job.cuts_mut(s).extend(lines);
                 }
             }
@@ -3078,7 +3078,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             match a.need_str("mode")?.as_str() {
                 "auto" => {
                     // SD2, SD6, SD7: standard drops when they're on.
-                    let (lines, what) = super::drops::auto_cut(&parts, &sheet, &sp, &ctx.cfg.stock, crate::units::LenUnit::Mm)?;
+                    let (lines, what) = super::drops::auto_cut(&parts, &sheet, &job.format(s), &sp, &ctx.cfg.stock, crate::units::LenUnit::Mm)?;
                     set_remnant_lines(&parts, &sheet, job.cuts_mut(s), lines)?;
                     if what.starts_with("Standard drops") {
                         return Ok(Outcome::msg(format!("{what} on sheet {}, cut last (mode=drops lists other ways to cut it).", s + 1)));
