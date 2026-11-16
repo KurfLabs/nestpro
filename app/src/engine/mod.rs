@@ -10,6 +10,7 @@ pub mod arrange;
 pub mod catalogue;
 pub mod contours;
 pub mod cutorder;
+pub mod drops;
 pub mod folderops;
 pub mod imports;
 pub mod inuse;

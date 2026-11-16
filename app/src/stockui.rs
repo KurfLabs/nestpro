@@ -984,7 +984,49 @@ pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings, u: crate:
             });
             ui.end_row();
         });
+        standard_drops(ui, st, u);
     });
+}
+
+/// The shop's standard drop sizes (SD1): Cut off leftover cuts the leftover
+/// into these, biggest first.
+fn standard_drops(ui: &mut egui::Ui, st: &mut stock::StockSettings, u: crate::units::LenUnit) {
+    ui.add_space(6.0);
+    ui.separator();
+    let min_m2 = st.min_remnant_m2;
+    let strip = st.line.shape.uses_min_xy() && st.line.shape != crate::remline::LineShape::OneStep;
+    let d = &mut st.drops;
+    ui.checkbox(&mut d.on, "Cut the leftover into standard drops")
+        .on_hover_text("Cut off leftover cuts the biggest standard drop that fits first, then smaller ones, each to its exact size; what no drop takes goes with the skeleton. Drop layouts (Sheet tab) shows the other ways to cut it.");
+    if d.on && !strip {
+        ui.label(RichText::new(format!("Standard drops work with the strip and L line shapes; with {} the usual line is made.", st.line.shape.label())).size(11.5).color(th().warn_fg));
+    }
+    ui.label(RichText::new("Standard drop sizes (length × width, either way round)").size(12.0).color(th().text_dim));
+    let mut remove = None;
+    for (i, z) in d.sizes.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            crate::units::drag_len_in(ui, &mut z[0], u, 1.0, 20000.0);
+            ui.label("×");
+            crate::units::drag_len_in(ui, &mut z[1], u, 1.0, 20000.0);
+            if ui.small_button("✕").on_hover_text("Take this size off the list").clicked() {
+                remove = Some(i);
+            }
+            if z[0] * z[1] < min_m2 * 1e6 {
+                ui.label(RichText::new("under the minimum area of remnants — left out").size(11.0).color(th().warn_fg));
+            }
+        });
+    }
+    if let Some(i) = remove {
+        d.sizes.remove(i);
+    }
+    if ui.small_button("+ Add a size").clicked() {
+        let next = d.sizes.last().copied().unwrap_or(match u {
+            crate::units::LenUnit::Inch => [1219.2, 609.6],
+            crate::units::LenUnit::Mm => [1000.0, 500.0],
+        });
+        d.sizes.push(next);
+    }
+    ui.checkbox(&mut d.keep_odd, "When no standard drop fits, keep the leftover as one remnant").on_hover_text("Off: it goes with the skeleton");
 }
 
 /// What the material shelf on the left of the Sheet stock window picks.

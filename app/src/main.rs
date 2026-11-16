@@ -24,6 +24,7 @@ mod jobtree;
 mod filename;
 mod dock;
 mod cutoff;
+mod dropsui;
 mod cuttime;
 mod techtable;
 mod dbbrowse;
@@ -406,6 +407,8 @@ pub struct App {
     pub blm: blm::BlmSettings,
     /// The nesting Verify Machining panel.
     pub nverify: v44::NestVerify,
+    /// The Drop layouts window (standard drops, SD8).
+    pub dropsui: dropsui::DropsUi,
     /// Part view: selected elements (by index), the part they belong to, the
     /// start of a box selection, and details of the selection for the ribbon.
     pub sel_elems: Vec<usize>,
@@ -702,6 +705,7 @@ impl App {
             dbb: Default::default(),
             blm: blm::BlmSettings::for_machine(""),
             nverify: v44::NestVerify { check_safe: true, value: 5.0, ..Default::default() },
+            dropsui: Default::default(),
             sel_elems: vec![],
             elem_part: None,
             box_start: None,
@@ -2798,6 +2802,7 @@ impl eframe::App for App {
         self.unknown_material_card(&ctx);
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
+        self.drops_window(&ctx);
         if self.follow_system {
             if let Some(t) = ctx.system_theme() {
                 let dark = t == egui::Theme::Dark;
@@ -3396,6 +3401,28 @@ fn main() -> eframe::Result {
                     app.cfg.stock.line.shape = s;
                     app.cut_lines.clear();
                     app.auto_remnant_edge();
+                }
+            }
+            // --drops (screenshots): standard drops on with made-up sizes, the
+            // leftover cut off and the Drop layouts window open.
+            if std::env::args().any(|a| a == "--drops") {
+                app.tab = Tab::Sheet;
+                app.cur_sheet = app.result.sheets.len().saturating_sub(1);
+                app.cfg.stock.drops = engine::drops::DropSettings { on: true, sizes: vec![[1828.8, 1219.2], [1219.2, 1219.2], [1219.2, 609.6], [609.6, 609.6]], keep_odd: false };
+                if !std::env::args().any(|a| a.starts_with("--remline=")) {
+                    app.cfg.stock.line.shape = remline::LineShape::VerticalStrip;
+                }
+                app.cut_lines.clear();
+                app.auto_remnant_edge();
+                app.dropsui.open = true;
+                // --drops-layout=N: that layout cut, the window closed.
+                if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--drops-layout=").and_then(|v| v.parse::<usize>().ok())) {
+                    let sheet = app.result.sheets.get(app.cur_sheet).cloned().unwrap_or_default();
+                    let st = app.cfg.stock.clone();
+                    if let Some(l) = engine::drops::layouts(&app.parts, &sheet, &app.result.format(app.cur_sheet, &app.spec), &app.cur_spec(), &st.line, &st.drops.sizes, st.min_remnant_m2).ok().and_then(|v| v.into_iter().nth(n.saturating_sub(1))) {
+                        app.apply_drop_layout(&l);
+                    }
+                    app.dropsui.open = false;
                 }
             }
             // --stock-demo (screenshots): two made-up sheets in the stock, the
