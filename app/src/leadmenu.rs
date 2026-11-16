@@ -19,7 +19,7 @@ const PART: Color32 = Color32::from_rgb(62, 68, 90);
 /// A few words under the type's name in the list.
 pub fn hint(t: LeadType) -> &'static str {
     match t {
-        LeadType::Machine => "Per contour, from the machine's tables",
+        LeadType::Machine => "Each kind of contour its own lead",
         LeadType::Perpendicular => "Straight in at 90°",
         LeadType::Line => "Straight in at 45°",
         LeadType::Arc => "Curves in along the edge",
@@ -31,7 +31,7 @@ pub fn hint(t: LeadType) -> &'static str {
 /// One plain sentence on what the type does, in the preview.
 pub fn sentence(t: LeadType) -> &'static str {
     match t {
-        LeadType::Machine => "Each contour gets the lead its machine table gives for its class (outline, large or small hole) and cut quality: shape, lengths and angles.",
+        LeadType::Machine => "Each kind of contour gets the lead the machine is set up for, at the cut quality it is cut with.",
         LeadType::Perpendicular => "Comes straight in at 90° to the edge and leaves the same way. The shortest lead, so it fits narrow gaps between parts.",
         LeadType::Line => "Comes in at 45° on the scrap side and leaves at 45°. A good all-round lead.",
         LeadType::Arc => "Curves onto the edge so the cut starts moving along it, then leaves at 45°. The smoothest start on the edge.",
@@ -108,10 +108,42 @@ pub fn paint_icon(p: &egui::Painter, r: Rect, t: LeadType, big: bool) {
     p.circle_filled(at(pierce), dot, PIERCE);
 }
 
-/// The Type box: the chosen type's picture and name, opening the picker.
+/// The machine table's leads in plain words, one line per kind of contour
+/// ("Round holes: line + arc, lead-in 7 mm, lead-out 5 mm"), for the Machine tables
+/// preview. The general class's spare records (6, 7) are left out.
+pub fn table_lines(recs: &[crate::leads::LeadRec; 8], u: crate::units::LenUnit) -> Vec<String> {
+    const KINDS: [&str; 6] = ["Round holes", "Round outsides", "Rectangular holes", "Rectangular outsides", "Slots", "Other shapes"];
+    KINDS
+        .iter()
+        .zip(recs.iter())
+        .map(|(k, r)| match r.kind {
+            0 => format!("{k}: no lead"),
+            _ => format!("{k}: {}, lead-in {}, lead-out {}", table_kind(r.kind), u.len(r.d_in, 1), u.len(r.d_out, 1)),
+        })
+        .collect()
+}
+
+/// A machine-table lead type in plain words.
+pub fn table_kind(k: u8) -> &'static str {
+    match k {
+        1..=9 => match (k - 1) / 3 {
+            0 => "perpendicular",
+            1 => "inclined",
+            _ => "arc",
+        },
+        10 => "corner",
+        11 => "corner, angled",
+        12 | 13 => "line + arc",
+        14..=16 => "special round-hole lead",
+        _ => "no lead",
+    }
+}
+
+/// The Type box: the chosen type's picture and name, opening the picker;
+/// `tip` is its tooltip, `table` the machine table in words (`table_lines`).
 /// `demo` (screenshots) shows the picker open as if the mouse were on that
 /// type. Returns true when a type was picked.
-pub fn picker(ui: &mut egui::Ui, choice: &mut LeadType, demo: Option<LeadType>) -> bool {
+pub fn picker(ui: &mut egui::Ui, choice: &mut LeadType, demo: Option<LeadType>, tip: &str, table: &[String]) -> bool {
     let t = th();
     let galley = ui.painter().layout_no_wrap(choice.label().to_string(), egui::FontId::proportional(13.0), t.text);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 58.0, 26.0), Sense::click());
@@ -122,12 +154,12 @@ pub fn picker(ui: &mut egui::Ui, choice: &mut LeadType, demo: Option<LeadType>) 
     p.galley(Pos2::new(rect.left() + 36.0, rect.center().y - galley.size().y / 2.0), galley, t.text);
     let a = Pos2::new(rect.right() - 11.0, rect.center().y);
     p.add(Shape::convex_polygon(vec![a + Vec2::new(-4.0, -2.0), a + Vec2::new(4.0, -2.0), a + Vec2::new(0.0, 3.0)], t.text_dim, Stroke::NONE));
-    let resp = resp.on_hover_text("The lead shape Auto lead-ins puts on every contour. Click to see each one.");
+    let resp = resp.on_hover_text(tip);
     let mut picked = None;
-    egui::Popup::menu(&resp).show(|ui| picked = menu(ui, *choice, None));
+    egui::Popup::menu(&resp).show(|ui| picked = menu(ui, *choice, None, table));
     if let Some(h) = demo {
         egui::Area::new(egui::Id::unique("demo_lead_menu")).order(egui::Order::Foreground).fixed_pos(rect.left_bottom() + Vec2::new(0.0, 4.0)).show(ui.ctx(), |ui| {
-            egui::Frame::menu(ui.style()).show(ui, |ui| menu(ui, *choice, Some(h)));
+            egui::Frame::menu(ui.style()).show(ui, |ui| menu(ui, *choice, Some(h), table));
         });
     }
     match picked {
@@ -142,7 +174,7 @@ pub fn picker(ui: &mut egui::Ui, choice: &mut LeadType, demo: Option<LeadType>) 
 /// The open picker: the list on the left (the machine's tables first, then
 /// the fixed shapes), the type under the mouse — or the chosen one — large
 /// on the right. `hover` forces the previewed type (screenshots).
-fn menu(ui: &mut egui::Ui, choice: LeadType, hover: Option<LeadType>) -> Option<LeadType> {
+pub fn menu(ui: &mut egui::Ui, choice: LeadType, hover: Option<LeadType>, table: &[String]) -> Option<LeadType> {
     let t = th();
     let mut picked = None;
     let mut shown = hover.unwrap_or(choice);
@@ -153,7 +185,7 @@ fn menu(ui: &mut egui::Ui, choice: LeadType, hover: Option<LeadType>) -> Option<
                 if k == 1 {
                     ui.add_space(2.0);
                     ui.separator();
-                    ui.label(RichText::new("Same shape on every contour").size(11.0).color(t.text_dim));
+                    ui.label(RichText::new("Fixed shapes").size(11.0).color(t.text_dim));
                 }
                 let r = row(ui, lt, lt == choice, hover == Some(lt));
                 if r.hovered() && hover.is_none() {
@@ -185,6 +217,12 @@ fn menu(ui: &mut egui::Ui, choice: LeadType, hover: Option<LeadType>) -> Option<
             }
             ui.add_space(2.0);
             ui.label(RichText::new(sentence(shown)).size(12.5).color(t.text));
+            if shown == LeadType::Machine && !table.is_empty() {
+                ui.add_space(4.0);
+                for l in table {
+                    ui.label(RichText::new(l).size(11.5).color(t.text_dim));
+                }
+            }
         });
     });
     picked

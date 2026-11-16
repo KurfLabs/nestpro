@@ -1149,6 +1149,12 @@ pub(crate) fn ribbon_fit_plan(full: &[f32], folded: &[f32], prio: &[u8], avail: 
 /// or, when the window is too narrow, one button with the group's name that
 /// shows the group's controls in a drop-down.
 pub(crate) fn ribbon_group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ribbon_group_noted(ui, title, None, add)
+}
+
+/// `ribbon_group` with a short note after the group's name in the accent
+/// colour (e.g. "all parts", when the group's commands change every part).
+pub(crate) fn ribbon_group_noted(ui: &mut egui::Ui, title: &str, note: Option<&str>, add: impl FnOnce(&mut egui::Ui)) {
     let slot = ui.ctx().data_mut(|d| {
         let cur = d.get_temp::<Option<egui::Id>>(egui::Id::unique(RIBBON_FIT_CUR)).flatten()?;
         let f = d.get_temp_mut_or_default::<RibbonFit>(cur);
@@ -1208,10 +1214,16 @@ pub(crate) fn ribbon_group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut
             // when a group of form fields is a little taller than the buttons.
             let w = inner.response.rect.width().max(40.0);
             let font = FontId::proportional(12.0);
-            let tw = ui.painter().layout_no_wrap(title.to_string(), font.clone(), th().text_dim).size().x;
+            let mut job = egui::text::LayoutJob::default();
+            job.append(title, 0.0, egui::TextFormat::simple(font.clone(), th().text_dim));
+            if let Some(n) = note {
+                job.append(&format!(" · {n}"), 0.0, egui::TextFormat::simple(font.clone(), th().accent_fg));
+            }
+            let galley = ui.painter().layout_job(job);
+            let tw = galley.size().x;
             let (cap, _) = ui.allocate_exact_size(Vec2::new(w.max(tw), 14.0), Sense::hover());
             let y = top + 70.0 + ui.spacing().item_spacing.y + 7.0;
-            ui.painter().text(Pos2::new(cap.center().x, y), Align2::CENTER_CENTER, title, font, th().text_dim);
+            ui.painter().galley(Pos2::new(cap.center().x - tw / 2.0, y - galley.size().y / 2.0), galley, th().text_dim);
         }
     });
     ui.add_space(5.0);

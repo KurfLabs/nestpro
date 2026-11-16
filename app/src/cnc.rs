@@ -230,21 +230,52 @@ pub fn plan_part(parts: &[Part], idx: usize, spec: &SheetSpec) -> SheetPlan {
 /// Line → 5 inclined, Arc → 8 tangent arc in, LineArc → 13, Perpendicular → 1,
 /// Corner → 10). Other shapes fall back to a perpendicular lead (contour 2).
 pub fn lead_recs(tech: &PartTech, lq: &crate::leads::LeadQuality) -> [LeadRec; 8] {
-    let (din, dout) = (tech.lead_in.max(0.0), tech.lead_out.max(0.0));
-    let a = LEAD_ANGLE_DEG;
-    let one = match tech.lead_type {
-        LeadType::Machine => return lq.recs,
-        LeadType::Line => LeadRec::new(5, (din, dout), (a, a), (0.0, 0.0)),
-        LeadType::Arc => LeadRec::new(8, (din, dout), (a, a), (din, 0.0)),
-        LeadType::LineArc => LeadRec::new(13, (din / 2.0, dout / 2.0), (0.0, 0.0), (din / 2.0, dout / 2.0)),
-        LeadType::Perpendicular => LeadRec::new(1, (din, dout), (90.0, 90.0), (0.0, 0.0)),
-        LeadType::Corner => LeadRec::new(10, (din, dout), (a, a), (0.0, 0.0)),
-    };
+    let Some(one) = type_rec(tech.lead_type, tech.lead_in.max(0.0), tech.lead_out.max(0.0)) else { return lq.recs };
     let one = LeadRec { overlap: tech.overlap, ..one };
     let mut r = [one; 8];
     r[6] = LeadRec { kind: 1, ..one };
     r[7].kind = 0;
     r
+}
+
+/// The lead record of a fixed shape with lead-in and lead-out `din`, `dout`
+/// mm off the contour (our mapping, see `lead_recs`); `None` for `Machine`,
+/// whose record comes from the machine's tables.
+pub fn type_rec(k: LeadType, din: f64, dout: f64) -> Option<LeadRec> {
+    let a = LEAD_ANGLE_DEG;
+    Some(match k {
+        LeadType::Machine => return None,
+        LeadType::Line => LeadRec::new(5, (din, dout), (a, a), (0.0, 0.0)),
+        LeadType::Arc => LeadRec::new(8, (din, dout), (a, a), (din, 0.0)),
+        LeadType::LineArc => LeadRec::new(13, (din / 2.0, dout / 2.0), (0.0, 0.0), (din / 2.0, dout / 2.0)),
+        LeadType::Perpendicular => LeadRec::new(1, (din, dout), (90.0, 90.0), (0.0, 0.0)),
+        LeadType::Corner => LeadRec::new(10, (din, dout), (a, a), (0.0, 0.0)),
+    })
+}
+
+/// A lead given its own shape `k` (LE9): `Machine` takes the machine
+/// table's record for the contour's class (`table`); a fixed shape keeps how
+/// far the lead it replaces reached off the contour (a laser lead's straight
+/// part and arc together), and its overlap. A contour that had no lead takes
+/// the table's reach, else the part defaults' (5 mm in, 2 mm out).
+pub fn reshaped(old: LeadRec, k: LeadType, table: LeadRec) -> LeadRec {
+    let reach = |r: &LeadRec| {
+        let laser = matches!(r.kind, 12 | 13);
+        let f = |d: f64, arc: f64| if laser { d + arc } else { d };
+        (f(r.d_in, r.r_in), f(r.d_out, r.r_out))
+    };
+    let base = PartTech::default();
+    let (mut din, mut dout) = if old.kind == 0 { (0.0, 0.0) } else { reach(&old) };
+    if din <= 0.0 {
+        (din, dout) = reach(&table);
+    }
+    if din <= 0.0 {
+        (din, dout) = (base.lead_in, base.lead_out);
+    }
+    match type_rec(k, din, dout.max(0.0)) {
+        Some(r) => LeadRec { overlap: old.overlap, ..r },
+        None => table,
+    }
 }
 
 fn bbox_of(pts: &[P]) -> [f64; 4] {
@@ -1162,6 +1193,10 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             // type away from a corner is built perpendicular (our choice).
             let lead_rec = placement.map_or(edit.map_or(class.rec(), |e| (e.rec as usize).min(7)), |p| p.rec);
             let mut rec = recs[lead_rec];
+            // A lead given its own shape on the Part view (LE9).
+            if let Some(k) = edit.and_then(|e| e.kind) {
+                rec = reshaped(rec, k, lq.recs[lead_rec]);
+            }
             if auto && placement.is_none() {
                 rec.kind = 0;
             }
@@ -1178,7 +1213,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             // crosses its own part (our safety rule). A lead moved by hand
             // keeps its start and is only shortened, against every part when
             // the machine tests leads (LE5).
-            let full = (auto || hand.is_some()) && mt.leads.test > 0;
+            let full = (auto || hand.is_some() || edit.is_some_and(|e| e.kind.is_some())) && mt.leads.test > 0;
             // VP3: a lead that leaves the sheet collides with its edge, so it
             // moves or shortens like one that hits a part (ours; MAC-46).
             let off_sheet = |path: &[P]| spec.w > 0.0 && spec.h > 0.0 && path.iter().any(|q| q[0] < -0.01 || q[1] < -0.01 || q[0] > spec.w + 0.01 || q[1] > spec.h + 0.01);
@@ -2468,7 +2503,7 @@ mod hand_lead_tests {
     fn a_lead_moved_by_hand_keeps_its_start_and_lean_when_the_part_is_turned_or_mirrored() {
         // Plate with a hole: contour 0 the hole, 1 the outline. The outline's
         // lead-in swung round its bottom-left corner to −45° (LE1, LE2).
-        let e = LeadEdit { contour: 1, at: [0.0, 0.0], rec: 3, lead_in: Some((10.0, -45.0)), lead_out: None, same: false };
+        let e = LeadEdit { contour: 1, at: [0.0, 0.0], rec: 3, lead_in: Some((10.0, -45.0)), lead_out: None, same: false, kind: None };
         let parts = vec![part(Shape::PlateHole, 200.0, 150.0, Some(with_edit(e)))];
         for (turns, mirror) in [(0, false), (1, false), (2, true), (3, true)] {
             let (w, h) = if turns % 2 == 1 { (150.0, 200.0) } else { (200.0, 150.0) };
@@ -2490,7 +2525,7 @@ mod hand_lead_tests {
     #[test]
     fn a_lead_moved_by_hand_is_shortened_not_moved_when_it_would_hit_a_neighbour() {
         // A 20 mm lead-in square off the right side, toward a part 5 mm away (LE5).
-        let e = LeadEdit { contour: 0, at: [100.0, 50.0], rec: 3, lead_in: Some((20.0, 90.0)), lead_out: None, same: false };
+        let e = LeadEdit { contour: 0, at: [100.0, 50.0], rec: 3, lead_in: Some((20.0, 90.0)), lead_out: None, same: false, kind: None };
         let parts = vec![part(Shape::Rectangle, 100.0, 100.0, Some(with_edit(e))), part(Shape::Rectangle, 100.0, 100.0, None)];
         let a = Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         let b = Placed { part: 1, x: 205.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
