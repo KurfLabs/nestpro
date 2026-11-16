@@ -330,18 +330,20 @@ impl App {
         let lib = crate::library::Library::at(&dir, &self.who, &self.clock);
         // A screenshot run writes to no Library: it never joins one.
         let by = || lib.saved();
+        // MA34: which open jobs' materials the list read before had.
+        let known = crate::engine::material::exists(self.spec.material);
+        let known_jobs: Vec<bool> = self.jobs.iter().map(|j| crate::engine::material::exists(j.spec.material)).collect();
         let joined = crate::engine::load_materials(&dir, &pc_dir, &self.cfg, first, (!self.shot_mode_now()).then_some(&by as &dyn Fn() -> crate::shared::Saved)).ok().flatten();
-        // MA28: the jobs open here were in this PC's numbering.
+        // MA28: the jobs open here were in this PC's numbering. MA30, MA34:
+        // a material added since a job was read is found by the name it
+        // came with, never by its number alone.
+        relist(&mut self.spec.material, &mut self.job_material_names, joined.as_ref(), known);
+        for (j, known) in self.jobs.iter_mut().zip(known_jobs) {
+            relist(&mut j.spec.material, &mut j.material_names, joined.as_ref(), known);
+        }
         if let Some(n) = &joined {
-            self.spec.material = n.id(self.spec.material);
-            for j in &mut self.jobs {
-                j.spec.material = n.id(j.spec.material);
-            }
             self.status = n.note();
         }
-        // MA30: a material added since the job was read is found by the
-        // name it came with.
-        self.find_job_material();
     }
 
     /// MA30: while the open job's material isn't in the list, a notice over
@@ -432,14 +434,11 @@ impl App {
     /// MA30: the open job's material, when the list doesn't have its
     /// number, found again by the name the job came with.
     pub fn find_job_material(&mut self) {
-        let id = self.spec.material;
-        if !crate::engine::material::exists(id) {
-            let found = crate::engine::material::read_material(id, &crate::engine::material::read_name(id, &self.job_material_names));
-            if found != id {
-                self.spec.material = found;
-                if let Some(j) = self.jobs.get_mut(self.cur_job) {
-                    j.spec.material = found;
-                }
+        if !crate::engine::material::exists(self.spec.material) {
+            relist(&mut self.spec.material, &mut self.job_material_names, None, false);
+            if let Some(j) = self.jobs.get_mut(self.cur_job) {
+                j.spec.material = self.spec.material;
+                j.material_names = self.job_material_names.clone();
             }
         }
     }
@@ -1281,6 +1280,18 @@ impl App {
         if let Some(id) = open {
             self.open_library_job(id);
         }
+    }
+}
+
+/// MA28, MA34: an open job's material once the list was read again
+/// (`materials::after_reload`); the name it was read with goes with its new
+/// number, so it is saved with it (MA17).
+fn relist(id: &mut crate::engine::material::Id, names: &mut crate::engine::material::ReadNames, joined: Option<&crate::materials::JoinedNow>, known: bool) {
+    let name = crate::engine::material::read_name(*id, names);
+    let now = crate::materials::after_reload(joined, *id, &name, known);
+    if now != *id {
+        crate::engine::material::remember_read(names, now, &name);
+        *id = now;
     }
 }
 
@@ -2594,6 +2605,45 @@ pub(crate) mod libui_tests {
         let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
         assert_eq!(stored.get(3).map(|m| (m.name.as_str(), m.standard)), Some(("DEMO 904L", 10)));
         assert_eq!(material::unknown_note(a.spec.material, ""), None, "no notice any more");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// MA34: a job whose material the list doesn't have keeps it when
+    /// another PC adds a material that takes its number; once its own is
+    /// added, the job finds it by its name.
+    #[test]
+    fn an_unknown_jobs_number_given_to_another_material_elsewhere_doesnt_switch_it() {
+        use crate::engine::material;
+        let dir = new_library("unknown_number_taken");
+        let mut a = window(&dir, "demo", "DEMO-PC", &Clock::pc());
+        a.reload_materials(true);
+        let next = material::current().next_id;
+        let mut j = a.current_jobfile();
+        j.name = "DEMO-2507".into();
+        j.library = None;
+        j.held.clear();
+        j.spec.material = next;
+        j.material_name = "DEMO 2507".into();
+        let path = dir.with_extension("snjob");
+        crate::jobfile::save(&path, &j).unwrap();
+        a.open_job_file(&path);
+        assert_eq!(a.spec.material, next);
+        // Another PC adds a material: its list never reaches this window's.
+        let other = |name: &str| {
+            let lib = Library::at(&dir, &Who::new("sam", "PROG-2"), &Clock::pc());
+            let add = crate::engine::materialedit::Change::Add(material::for_unknown(name));
+            crate::materials::apply(&crate::materials::Home::Library(dir.clone()), &dir.with_extension("pc2"), &crate::settings::AppSettings::default(), || lib.saved(), &lib, &[add], &[]).unwrap();
+        };
+        other("DEMO A");
+        a.reload_materials(false);
+        assert_eq!(material::name(next).as_deref(), Some("DEMO A"));
+        assert!(!material::exists(a.spec.material), "still unknown, not DEMO A");
+        assert_eq!(material::file_id(a.spec.material), next);
+        let saved = a.current_jobfile();
+        assert_eq!(saved.material_name, "DEMO 2507", "saved with its own name");
+        other("DEMO 2507");
+        a.reload_materials(false);
+        assert_eq!(material::name(a.spec.material).as_deref(), Some("DEMO 2507"));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir_all(&dir);
     }

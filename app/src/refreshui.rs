@@ -482,6 +482,9 @@ mod refreshui_tests {
     fn watching(dir: &Path, user: &str, pc: &str, clock: &Clock, minutes: u32) -> App {
         let mut a = window(dir, user, pc, clock);
         a.cfg.refresh_minutes = minutes;
+        // As a window starting on this Library reads its material list (and
+        // stores it there when the Library has none yet, MA28).
+        a.reload_materials(false);
         a.lib_refresh();
         a.stockui.loaded = false;
         a.stock_reload();

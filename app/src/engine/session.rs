@@ -16,6 +16,10 @@ pub struct Session {
     /// When the open job's file was last read or written by us.
     stamp: Option<SystemTime>,
     undo: Vec<JobFile>,
+    /// The material list this session read last (MA34): whether the open
+    /// job's material was in it, whatever list another session in the same
+    /// process installed since.
+    seen: Option<std::sync::Arc<super::material::List>>,
 }
 
 /// What a call gave back: the JSON answer and, for render, the PNG.
@@ -43,7 +47,7 @@ pub fn job_path(s: &str) -> PathBuf {
 
 impl Session {
     pub fn new(ctx: Ctx) -> Session {
-        Session { ctx, job: None, path: None, stamp: None, undo: vec![] }
+        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None }
     }
 
     /// Open a job file (again, when it changed on disk).
@@ -87,16 +91,14 @@ impl Session {
         // The material list may have changed on another PC since (MA14);
         // the first time this PC points at a Library its own list joins it
         // (MA28), and a job open in this PC's numbering takes the Library's.
+        // MA34: whether the open job's material was in the list read before.
+        let known = self.job.as_ref().map(|j| self.seen.as_ref().map_or_else(|| super::material::exists(j.spec.material), |l| l.get(j.spec.material).is_some()));
         let joined = self.ctx.reload_materials();
-        if let Some(j) = self.job.as_mut() {
-            if let Some(n) = &joined {
-                j.spec.material = n.id(j.spec.material);
-            }
+        self.seen = Some(super::material::current());
+        if let (Some(j), Some(known)) = (self.job.as_mut(), known) {
             // MA30: a material added since the job was read is found by the
-            // name the job came with.
-            if !super::material::exists(j.spec.material) {
-                j.spec.material = super::material::read_material(j.spec.material, &j.material_name);
-            }
+            // name the job came with; never by its number alone (MA34).
+            j.spec.material = crate::materials::after_reload(joined.as_ref(), j.spec.material, &j.material_name, known);
         }
         let mut r = self.run_call(name, job, args)?;
         if let (Some(n), Some(o)) = (joined, r.json.as_object_mut()) {

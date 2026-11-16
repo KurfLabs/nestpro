@@ -669,8 +669,33 @@ thread_local! {
     static LOCAL: std::cell::RefCell<Option<Arc<List>>> = const { std::cell::RefCell::new(None) };
 }
 
+thread_local! {
+    /// The list files are read against for a moment (`reading_with`),
+    /// whatever list is installed (MA35).
+    static READING: std::cell::RefCell<Option<Arc<List>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// MA35: run `f` with every answer on this thread coming from `list`, not
+/// the list installed: what uses a material is read against the list as
+/// read under the write lock, which may be newer than the one this window
+/// or session read last.
+pub fn reading_with<T>(list: &List, f: impl FnOnce() -> T) -> T {
+    struct Back(Option<Arc<List>>);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            let b = self.0.take();
+            READING.with(|r| *r.borrow_mut() = b);
+        }
+    }
+    let _back = Back(READING.with(|r| r.borrow_mut().replace(Arc::new(list.clone()))));
+    f()
+}
+
 /// The list the answers come from now.
 pub fn current() -> Arc<List> {
+    if let Some(l) = READING.with(|r| r.borrow().clone()) {
+        return l;
+    }
     #[cfg(test)]
     if let Some(l) = LOCAL.with(|l| l.borrow().clone()) {
         return l;
@@ -956,6 +981,24 @@ pub fn file_id(id: Id) -> Id {
 pub fn read_material(id: Id, name: &str) -> Id {
     let id = file_id(id);
     resolve_read(id, name).unwrap_or(UNRESOLVED + id)
+}
+
+/// MA34: a job's material that wasn't in the list, once the list was read
+/// again (another PC changed it, or this PC's list joined the Library's):
+/// found by its stored name as a file's is (MA31), but never by its number
+/// alone, which may be another material now (one a joining PC brought, or
+/// one added since). Else it stays unknown (`?`, MA30), keeping its number
+/// and name.
+pub fn find_again(id: Id, name: &str) -> Id {
+    let own = file_id(id);
+    let l = current();
+    let n = norm(name);
+    // The number's material has, or had before a rename here, the name.
+    let named = |m: Id| l.get(m).is_some_and(|x| x.names().any(|k| k == n)) || l.former.iter().any(|(i, f)| *i == m && norm(f) == n);
+    match resolve_read(own, name) {
+        Some(m) if m != own || own < KEPT || l.get(own).is_none() || (!n.is_empty() && named(own)) => m,
+        _ => UNRESOLVED + own,
+    }
 }
 
 /// MA30: what a job whose material the list doesn't have says, from its

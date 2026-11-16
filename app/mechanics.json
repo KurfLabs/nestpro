@@ -7166,7 +7166,7 @@
  {
   "name": "joining a Library",
   "group": "materials",
-  "value": "the Library's list wins; 0 to 2 the same by number; another PC material is the Library material one of its names (name or other name) belongs to, else added with its values and the Library's next number; the PC's name (always, even when the Library's material shows it) and former names go with it as joined names, kept apart from renames on the list; a Library with no list takes the PC's, stored; once per Library (materials-joined.json); under the write lock, retried while out of reach; started offline after joining: 0 to 2 only, no name finds another number",
+  "value": "the Library's list wins; 0 to 2 the same by number; another PC material is the Library material one of its names (name or other name) belongs to, else added with its values and the Library's next number; the PC's name (always, even when the Library's material shows it) and former names go with it as joined names, kept apart from renames on the list; a Library with no list takes the PC's (a PC with settings from before: its three as seeded), stored; once per Library (materials-joined.json); under the write lock, retried while out of reach; started offline after joining: 0 to 2 only, no name finds another number",
   "source": "MA28",
   "estimated": true
  },
@@ -7203,6 +7203,20 @@
   "group": "materials",
   "value": "a name, never a material number",
   "source": "MA32",
+  "estimated": true
+ },
+ {
+  "name": "unknown material after the list changes",
+  "group": "materials",
+  "value": "an open job whose material the list didn't have is looked for again by its name (MA31) whenever the list is read again or joined, never by its number alone; no name found: stays unknown, keeping its number and name",
+  "source": "MA34",
+  "estimated": true
+ },
+ {
+  "name": "what uses a material, read against",
+  "group": "materials",
+  "value": "the material list as read under the write lock; files first read without the lock are read again when the list changed in between",
+  "source": "MA35",
   "estimated": true
  }
 ]

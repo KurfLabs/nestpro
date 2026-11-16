@@ -159,16 +159,25 @@ impl JoinedNow {
 /// the Library's list wins and this PC's materials whose names it doesn't
 /// have are added (`List::merge`); a Library with no list yet takes this
 /// PC's own as it is. Nothing to do (None) when the home is this PC's own,
-/// this PC has no list of its own (its settings' three are the Library's
-/// first three), or it joined this Library before. Refused, to be tried
-/// again the next time the list is read, while the Library can't be
-/// reached; nothing is stored then.
+/// or it joined this Library before. A PC whose settings are from before
+/// the list has no list of its own: its settings' three are the Library's
+/// first three, so it has nothing to add to a Library's list; a Library
+/// with no list yet takes them, as its settings seed them (MA15), so every
+/// PC sharing it answers from the same list. Refused, to be tried again the
+/// next time the list is read, while the Library can't be reached; nothing
+/// is stored then.
 pub fn join(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved) -> Result<Option<JoinedNow>, String> {
     let Home::Library(d) = home else { return Ok(None) };
     if has_joined(pc_dir, d) {
         return Ok(None);
     }
-    let Some(own) = own_list(pc_dir, cfg)? else { return Ok(None) };
+    let own = own_list(pc_dir, cfg)?;
+    // Settings from before the list: only a Library with no list yet needs
+    // them (looked at again under the lock).
+    if own.is_none() && read(&home.file())?.is_some() {
+        return Ok(None);
+    }
+    let own = own.unwrap_or_else(|| List::seed(cfg));
     crate::library::usable(d).map_err(|e| format!("{e} This PC's materials will join the Library's material list once it can be reached."))?;
     let lock = WriteLock::take(d)?;
     let joined = match read(&home.file())? {
@@ -189,6 +198,21 @@ pub fn join(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: 
     crate::shared::write_file(&joined_file(pc_dir), text.as_bytes(), None)?;
     let added = joined.added.iter().filter_map(|(_, id)| joined.list.get(*id).map(|m| m.name.clone())).collect();
     Ok(Some(JoinedNow { map: joined.same.iter().chain(&joined.added).copied().collect(), added }))
+}
+
+/// MA28, MA34: the material of a job open in a window or session once the
+/// list was read again, from its material `id` and the name it was read
+/// with: `known` says whether the list read before had `id`. One it had
+/// keeps its number, or takes the Library's when this PC's list `joined`
+/// it just now. One it didn't (unknown, MA30) is found again by its name
+/// (`material::find_again`), never by its number alone, which may be
+/// another material now.
+pub fn after_reload(joined: Option<&JoinedNow>, id: Id, name: &str, known: bool) -> Id {
+    if known {
+        joined.map_or(id, |n| n.id(id))
+    } else {
+        crate::engine::material::find_again(id, name)
+    }
 }
 
 /// The list to answer from when a window or session starts while the list
@@ -286,14 +310,24 @@ pub fn uses(lib: &crate::library::Library, id: Id, open: &[Open]) -> Result<Uses
 /// another PC either counts or comes after. On a refusal nothing is
 /// changed. Gives what each change did and the list as stored.
 pub fn apply(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved, lib: &crate::library::Library, changes: &[Change], open: &[Open]) -> Result<(Vec<Done>, List), String> {
+    use crate::engine::material::reading_with;
     // The first three are kept whatever uses them: no need to look.
     let deletes = changes.iter().any(|c| matches!(c, Change::Delete(id) if *id >= crate::engine::material::KEPT));
-    let first = deletes.then(|| lib.scan_records(None));
+    // MA35: the files are read against the list as it is stored now, never
+    // the one this window or session read last.
+    let first = if deletes { load(home, pc_dir, cfg).ok().map(|seen| (reading_with(&seen, || lib.scan_records(None)), seen)) } else { None };
+    crate::shared::pause("materials scanned");
     update(home, pc_dir, cfg, by, |l| {
+        // What uses a material is read against the list read under the
+        // lock; files read first against another list are read again.
+        let base = l.clone();
+        let known = first.as_ref().filter(|(_, seen)| *seen == base).map(|f| &f.0);
         let mut scan = None;
         l.apply(changes, |id| {
-            let s = scan.get_or_insert_with(|| lib.scan_records(first.as_ref()));
-            uses_in(lib, s, id, open)
+            reading_with(&base, || {
+                let s = scan.get_or_insert_with(|| lib.scan_records(known));
+                uses_in(lib, s, id, open)
+            })
         })
     })
 }
