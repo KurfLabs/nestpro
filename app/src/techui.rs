@@ -358,7 +358,9 @@ impl App {
         }
     }
 
-    /// Settings for automatic micro-joints by contour size.
+    /// The Micro-joints window: a *Joint* tab (type and sizes, set on a
+    /// drawing of one joint) and a *How many* tab (spacing and the count by
+    /// contour size, rule P7).
     pub fn joint_sizes_window(&mut self, ctx: &egui::Context) {
         self.cut_ranges_window(ctx);
         if !self.show_joint_sizes {
@@ -370,109 +372,62 @@ impl App {
         let mut edit = cur;
         let mt = self.machine_tech();
         let sizes_before = self.auto_joints;
+        let unit = self.cfg.nesting.units;
+        let applies = if targets.is_empty() {
+            "Select a part first".to_string()
+        } else if self.tech_all {
+            format!("For all {} parts", targets.len())
+        } else {
+            "For the selected part".to_string()
+        };
         egui::Window::new("Micro-joints").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            // Joint type and its leads (the original's micro-joint types and joint leads).
-            ui.label(RichText::new("Type and leads").strong());
-            ui.add_enabled_ui(!targets.is_empty(), |ui| {
-                egui::Grid::new("jt").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                    ui.label("Type");
-                    egui::ComboBox::from_id_salt("joint_type").width(190.0).selected_text(edit.joint_type.label()).show_ui(ui, |ui| {
-                        for jt in crate::nest::JointType::ALL {
-                            ui.selectable_value(&mut edit.joint_type, jt, jt.label());
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Gap width");
-                    crate::units::drag_len_in(ui, &mut edit.joint_width, self.cfg.nesting.units, 0.05, 10.0);
-                    ui.end_row();
-                    let leads = edit.joint_type.has_leads();
-                    ui.label("Lead-in distance").on_hover_text("How far off the contour the lead-in starts (perpendicular distance)");
-                    ui.add_enabled_ui(leads, |ui| crate::units::drag_len_in(ui, &mut edit.joint_lead, self.cfg.nesting.units, 0.0, 50.0)).inner;
-                    ui.end_row();
-                    let mut out = edit.joint_lead_out.unwrap_or(edit.joint_lead);
-                    ui.label("Lead-out distance").on_hover_text("0 = no lead-out: the beam just stops at the gap");
-                    if ui.add_enabled_ui(leads, |ui| crate::units::drag_len_in(ui, &mut out, self.cfg.nesting.units, 0.0, 50.0)).inner.changed() {
-                        edit.joint_lead_out = Some(out);
-                    }
-                    ui.end_row();
-                    ui.label("Lead angle").on_hover_text("Inclined leads only; perpendicular leads ignore it");
-                    ui.add_enabled(edit.joint_type == crate::nest::JointType::LeadsInclined || edit.joint_type == crate::nest::JointType::Corner, egui::DragValue::new(&mut edit.joint_angle).range(1.0..=90.0).speed(0.5).suffix("°"));
-                    ui.end_row();
-                    ui.label("One every").on_hover_text("Automatic joints: one per this many mm of each contour, holes too (the machine's maximum distance, CT1 F150). 0 = the fixed number of joints on the outside");
-                    crate::units::drag_len_in(ui, &mut edit.joint_every, self.cfg.nesting.units, 0.0, 5000.0);
-                    ui.end_row();
-                });
-                if ui
-                    .button("Machine values")
-                    .on_hover_text(format!(
-                        "From the machine's technology file: type {}, gap {} mm, lead-in {} mm at {}°, lead-out {} mm, one joint per {} mm ({})",
-                        mt.joint_type,
-                        mt.joint_gap,
-                        mt.joint_lead,
-                        mt.joint_angle,
-                        mt.joint_lead_out,
-                        mt.joint_every,
-                        mt.source.as_ref().map_or("built-in BLM values".to_string(), |p| p.display().to_string())
-                    ))
-                    .clicked()
-                {
-                    edit.joint_width = mt.joint_gap;
-                    edit.joint_lead = mt.joint_lead;
-                    edit.joint_lead_out = Some(mt.joint_lead_out);
-                    edit.joint_angle = mt.joint_angle;
-                    edit.joint_every = mt.joint_every;
-                    if let Some(jt) = crate::nest::JointType::from_code(mt.joint_type) {
-                        edit.joint_type = jt;
-                    }
-                }
-                ui.label(
-                    RichText::new("With leads, each joint cuts out into the scrap, stops, re-pierces and cuts back in; the leads lean away from the gap — drag the red handle on a joint in the Part view to change them. Each gap sits on one line or arc longer than the gap; a joint next to a corner goes on the corner.")
-                        .size(11.0)
-                        .color(th().text_dim),
-                );
-            });
-            ui.separator();
-            ui.label(RichText::new("Automatic count by size").strong());
-            ui.label(RichText::new("A contour is small if its box is within the small size, large if it reaches the large size in both directions, otherwise medium. Each class keeps the count between its fewest and most (blank = the general limits).").size(12.0));
-            ui.add_space(6.0);
-            let c = &mut self.auto_joints;
-            egui::Grid::new("aj").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.label("");
-                ui.label(RichText::new("X").strong());
-                ui.label(RichText::new("Y").strong());
-                ui.end_row();
-                ui.label("Small up to");
-                crate::units::drag_len_in(ui, &mut c.small[0], self.cfg.nesting.units, 0.0, 99999.999);
-                crate::units::drag_len_in(ui, &mut c.small[1], self.cfg.nesting.units, 0.0, 99999.999);
-                ui.end_row();
-                ui.label("Large from");
-                crate::units::drag_len_in(ui, &mut c.large[0], self.cfg.nesting.units, 0.0, 99999.999);
-                crate::units::drag_len_in(ui, &mut c.large[1], self.cfg.nesting.units, 0.0, 99999.999);
-                ui.end_row();
-                ui.label("");
-                ui.label(RichText::new("Fewest").strong());
-                ui.label(RichText::new("Most").strong());
-                ui.end_row();
-                for (k, name) in ["Parts · small", "Parts · medium", "Parts · large", "Holes · small", "Holes · medium", "Holes · large"].iter().enumerate() {
-                    ui.label(*name);
-                    let pair = if k < 3 { &mut c.parts[k] } else { &mut c.holes[k - 3] };
-                    ui.add(egui::DragValue::new(&mut pair[0]).range(-1..=999).custom_formatter(|v, _| if v < 0.0 { "—".into() } else { format!("{v:.0}") }));
-                    ui.add(egui::DragValue::new(&mut pair[1]).range(-1..=99999).custom_formatter(|v, _| if v < 0.0 { "—".into() } else { format!("{v:.0}") }));
-                    ui.end_row();
-                }
-                ui.label("General");
-                ui.add(egui::DragValue::new(&mut c.min).range(0..=999));
-                ui.add(egui::DragValue::new(&mut c.max).range(0..=99999));
-                ui.end_row();
-            });
-            ui.add_space(6.0);
+            ui.set_width(JW);
+            let rules_on = self.auto_joints != crate::nest::AutoJoints::default();
             ui.horizontal(|ui| {
-                if ui.button("Original defaults").on_hover_text("Every contour medium, 0 to 99999 joints").clicked() {
-                    self.auto_joints = crate::nest::AutoJoints::default();
+                ui.spacing_mut().item_spacing.x = 14.0;
+                if joint_tab(ui, "Joint", self.joint_tab == 0, false).on_hover_text("Joint type, gap and leads").clicked() {
+                    self.joint_tab = 0;
                 }
-                if ui.button("Machine values").on_hover_text("The size classes of the machine's technology file (F121, F122, F136–F149)").clicked() {
-                    self.auto_joints = mt.joint_sizes;
+                let tip = if rules_on { "Spacing and the count by contour size (size rules are on)" } else { "Spacing and the count by contour size" };
+                if joint_tab(ui, "How many", self.joint_tab == 1, rules_on).on_hover_text(tip).clicked() {
+                    self.joint_tab = 1;
                 }
+            });
+            ui.add_space(2.0);
+            if self.joint_tab == 0 {
+                ui.add_enabled_ui(!targets.is_empty(), |ui| joint_type_ui(ui, &mut edit, unit));
+            } else {
+                joint_count_ui(ui, &mut edit, &mut self.auto_joints, unit, !targets.is_empty());
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&applies).size(11.0).color(th().text_dim));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let src = mt.source.as_ref().map_or("built-in BLM values".to_string(), |p| p.display().to_string());
+                    if self.joint_tab == 0 {
+                        let tip = format!("From the machine's technology file: type {}, gap {} mm, lead-in {} mm at {}°, lead-out {} mm ({src})", mt.joint_type, mt.joint_gap, mt.joint_lead, mt.joint_angle, mt.joint_lead_out);
+                        if ui.add_enabled(!targets.is_empty(), egui::Button::new("Machine values")).on_hover_text(tip).clicked() {
+                            edit.joint_width = mt.joint_gap;
+                            edit.joint_lead = mt.joint_lead;
+                            edit.joint_lead_out = Some(mt.joint_lead_out);
+                            edit.joint_angle = mt.joint_angle;
+                            if let Some(jt) = crate::nest::JointType::from_code(mt.joint_type) {
+                                edit.joint_type = jt;
+                            }
+                        }
+                    } else {
+                        let tip = format!("From the machine's technology file: one joint per {} mm and its size classes (F121, F122, F136–F149) ({src})", mt.joint_every);
+                        if ui.button("Machine values").on_hover_text(tip).clicked() {
+                            self.auto_joints = mt.joint_sizes;
+                            if !targets.is_empty() {
+                                edit.joint_every = mt.joint_every;
+                            }
+                        }
+                        if ui.button("No size rules").on_hover_text("Every contour medium, any number of joints (the original's defaults)").clicked() {
+                            self.auto_joints = crate::nest::AutoJoints::default();
+                        }
+                    }
+                });
             });
         });
         // The size rules edited here act on the active machine's tables.
@@ -483,7 +438,7 @@ impl App {
             self.show_joint_sizes = false;
         }
         if edit != cur && !targets.is_empty() {
-            let (jt, w, l, a, every) = (edit.joint_type, edit.joint_width, edit.joint_lead, edit.joint_angle, edit.joint_every);
+            let (jt, w, l, lo, a, every) = (edit.joint_type, edit.joint_width, edit.joint_lead, edit.joint_lead_out, edit.joint_angle, edit.joint_every);
             // A gap or spacing set here is the programmer's: a gas change
             // leaves it (GS14).
             let (own_w, own_every) = (w != cur.joint_width, every != cur.joint_every);
@@ -492,6 +447,7 @@ impl App {
                 x.joint_type = jt;
                 x.joint_width = w;
                 x.joint_lead = l;
+                x.joint_lead_out = lo;
                 x.joint_angle = a;
                 x.joint_every = every;
                 if own_w {
@@ -504,6 +460,218 @@ impl App {
             });
         }
     }
+}
+
+/// Width of the Micro-joints window's content.
+const JW: f32 = 340.0;
+
+/// A tab title with an underline when it is shown, and an amber dot when
+/// something on it is switched on.
+fn joint_tab(ui: &mut egui::Ui, text: &str, on: bool, dot: bool) -> egui::Response {
+    let col = if on { th().text_strong } else { th().text_dim };
+    let r = ui.add(egui::Button::new(RichText::new(text).size(13.0).color(col)).frame(false));
+    if on {
+        ui.painter().line_segment([r.rect.left_bottom() + Vec2::new(0.0, 3.0), r.rect.right_bottom() + Vec2::new(0.0, 3.0)], Stroke::new(2.0, th().accent));
+    }
+    if dot {
+        ui.painter().circle_filled(r.rect.right_top() + Vec2::new(4.0, 4.0), 3.0, crate::jointpics::MEDIUM);
+    }
+    r
+}
+
+/// A section title with an (i) that explains it on hover.
+fn joint_section(ui: &mut egui::Ui, title: &str, tip: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).strong());
+        if !tip.is_empty() {
+            let (r, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+            let c = if resp.hovered() { th().text } else { th().text_dim };
+            ui.painter().circle_stroke(r.center(), 6.0, Stroke::new(1.0, c));
+            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "i", egui::FontId::proportional(9.5), c);
+            resp.on_hover_text(tip);
+        }
+    });
+}
+
+fn joint_hint(ui: &mut egui::Ui, s: &str) {
+    ui.label(RichText::new(s).size(11.0).color(th().text_dim));
+}
+
+/// The Joint tab: the four types as pictures, then one joint drawn large
+/// with its size boxes on the sizes they set.
+fn joint_type_ui(ui: &mut egui::Ui, edit: &mut PartTech, unit: crate::units::LenUnit) {
+    use crate::jointpics as jp;
+    use crate::nest::JointType;
+    joint_section(ui, "Type", "");
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let tw = (JW - 18.0) / 4.0;
+        for (jt, name) in JointType::ALL.into_iter().zip(["Plain gap", "Square leads", "Angled leads", "Corner"]) {
+            let (r, resp) = ui.allocate_exact_size(Vec2::new(tw, tw / 2.0 + 24.0), Sense::click());
+            let on = edit.joint_type == jt;
+            let p = ui.painter();
+            let fill = if on { th().accent_soft } else if resp.hovered() { th().hover } else { th().card };
+            p.rect_filled(r, CornerRadius::same(7), fill);
+            p.rect_stroke(r, CornerRadius::same(7), Stroke::new(if on { 1.5 } else { 1.0 }, if on { th().accent } else { th().border }), egui::StrokeKind::Inside);
+            jp::type_tile(p, Rect::from_min_size(r.min + Vec2::splat(4.0), Vec2::new(tw - 8.0, (tw - 8.0) / 2.0)), jt);
+            p.text(r.center_bottom() - Vec2::new(0.0, 5.0), egui::Align2::CENTER_BOTTOM, name, egui::FontId::proportional(11.0), if on { th().text_strong } else { th().text });
+            if resp.on_hover_text(jt.label()).clicked() {
+                edit.joint_type = jt;
+            }
+        }
+    });
+    ui.add_space(4.0);
+    joint_section(
+        ui,
+        "Sizes",
+        "Type a size in the box on the drawing. Each gap sits on one line or arc longer than the gap; a joint next to a corner goes on the corner.",
+    );
+    let jt = edit.joint_type;
+    let r = Rect::from_min_size(ui.cursor().min, Vec2::new(JW, jp::joint_height(jt, JW)));
+    let m = jp::joint(ui.painter(), r, jt);
+    // A child ui over the drawing: boxes placed on it leave the rest of the
+    // window where it was.
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+        let fw = if unit == crate::units::LenUnit::Inch { 74.0 } else { 66.0 };
+        let at = |c: egui::Pos2, w: f32| Rect::from_center_size(c, Vec2::new(w, 18.0));
+        ui.put(at(m.gap, fw), crate::units::len_drag(&mut edit.joint_width, unit, 0.05, 10.0)).on_hover_text("Gap: the bit left uncut that holds the part in the sheet");
+        if let Some(c) = m.lead_out {
+            let mut out = edit.joint_lead_out.unwrap_or(edit.joint_lead);
+            let field = crate::units::len_drag_word(&mut out, unit, 0.0, 50.0, "None", |v| v <= 0.0, 0.0);
+            if ui.put(at(c, fw), field).on_hover_text("Lead-out: how far the cut runs out into the scrap before the gap, square to the contour. None = the beam just stops at the gap").changed() {
+                edit.joint_lead_out = Some(out);
+            }
+        }
+        if let Some(c) = m.lead_in {
+            ui.put(at(c, fw), crate::units::len_drag(&mut edit.joint_lead, unit, 0.0, 50.0)).on_hover_text("Lead-in: how far off the contour the cut re-pierces after the gap, square to the contour");
+        }
+        if let Some(c) = m.angle {
+            ui.put(at(c, 48.0), egui::DragValue::new(&mut edit.joint_angle).range(1.0..=90.0).speed(0.5).suffix("°")).on_hover_text("The leads' angle to the contour: 90° is square to it, less leans them further away from the gap");
+        }
+    });
+    ui.advance_cursor_after_rect(r);
+    ui.add_space(2.0);
+    jp::legend(ui, jt.has_leads());
+    joint_hint(
+        ui,
+        match jt {
+            JointType::Gap => "The beam goes off across the gap and back on after it. No leads.",
+            JointType::Corner => "Joints go on the outside corners first. Drag the red handle on a joint in the Part view to bend its leads.",
+            _ => "Cuts out into the scrap, stops, re-pierces and cuts back in. Drag the red handle on a joint in the Part view to bend its leads.",
+        },
+    );
+}
+
+/// The How many tab: the spacing, the size map with its limits and the
+/// fewest / most joints for each size class (rule P7).
+fn joint_count_ui(ui: &mut egui::Ui, edit: &mut PartTech, aj: &mut crate::nest::AutoJoints, unit: crate::units::LenUnit, has_part: bool) {
+    use crate::jointpics as jp;
+    joint_section(ui, "Spacing", "Automatic joints: one per this length of each contour, holes too (the machine's maximum distance, CT1 F150). Off = the fixed number of joints on the outside.");
+    let (r, _) = ui.allocate_exact_size(Vec2::new(JW, 80.0 * JW / 336.0), Sense::hover());
+    jp::spacing(ui.painter(), r);
+    ui.add_enabled_ui(has_part, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("One joint every");
+            ui.add_sized([84.0, 18.0], crate::units::len_drag_word(&mut edit.joint_every, unit, 0.0, 5000.0, "Off", |v| v <= 0.0, 0.0));
+        });
+    });
+    ui.separator();
+    joint_section(
+        ui,
+        "Size classes",
+        "Each contour is sorted by its box: small if it fits inside the small size, large if it reaches the large size both ways, otherwise medium. Holes and parts each have their own counts.",
+    );
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(Vec2::new(104.0, 92.0), Sense::hover());
+        jp::size_map(ui.painter(), r, aj);
+        ui.vertical(|ui| {
+            let none = |v: f64| v <= 0.0;
+            let pair = |ui: &mut egui::Ui, name: &str, c: Color32, v: &mut [f64; 2], large: bool| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.add_sized([70.0, 18.0], egui::Label::new(RichText::new(name).color(c)));
+                    for (k, axis) in ["Width", "Height"].into_iter().enumerate() {
+                        if k == 1 {
+                            ui.label("×");
+                        }
+                        let f = if large {
+                            crate::units::len_drag_word(&mut v[k], unit, 0.0, jp::NO_LIMIT_MM, "No limit", jp::is_no_limit, jp::NO_LIMIT_MM)
+                        } else {
+                            crate::units::len_drag_word(&mut v[k], unit, 0.0, jp::NO_LIMIT_MM, "None", none, 0.0)
+                        };
+                        ui.add_sized([70.0, 18.0], f).on_hover_text(axis);
+                    }
+                });
+            };
+            pair(ui, "Small up to", jp::SMALL, &mut aj.small, false);
+            pair(ui, "Large from", jp::LARGE, &mut aj.large, true);
+            ui.label(RichText::new("Medium = everything else").size(11.0).color(jp::MEDIUM));
+        });
+    });
+    ui.add_space(4.0);
+    joint_section(ui, "Joints per contour", "Click a box to set the fewest and most joints for that size. Grey = it follows Every contour.");
+    let general = *aj;
+    egui::Grid::new("aj_counts").num_columns(4).spacing([6.0, 5.0]).show(ui, |ui| {
+        ui.label("");
+        for (name, c) in [("Small", jp::SMALL), ("Medium", jp::MEDIUM), ("Large", jp::LARGE)] {
+            ui.add_sized([82.0, 16.0], egui::Label::new(RichText::new(name).strong().size(11.5).color(c)));
+        }
+        ui.end_row();
+        for (row, hole) in [("Parts", false), ("Holes", true)] {
+            ui.label(row);
+            for k in 0..3 {
+                let pair = if hole { &mut aj.holes[k] } else { &mut aj.parts[k] };
+                count_cell(ui, pair, &general, if hole { "Holes" } else { "Parts" }, ["small", "medium", "large"][k]);
+            }
+            ui.end_row();
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Every contour").color(th().text_dim)).on_hover_text("The limits a size class follows when it has none of its own");
+        ui.label("fewest");
+        ui.add(egui::DragValue::new(&mut aj.min).range(0..=999));
+        ui.label("most");
+        ui.add(egui::DragValue::new(&mut aj.max).range(0..=99999).custom_formatter(|v, _| if v >= jp::NO_LIMIT_COUNT as f64 { "No limit".into() } else { format!("{v:.0}") }).custom_parser(no_limit_count));
+    });
+}
+
+/// "no limit" typed in a count box.
+fn no_limit_count(s: &str) -> Option<f64> {
+    let t = s.trim().to_ascii_lowercase();
+    if t.is_empty() || (t.len() >= 2 && "no limit".starts_with(&t)) { Some(99999.0) } else { t.parse().ok() }
+}
+
+/// One size class's count, as words ("any", "0–2"); a click opens its
+/// fewest / most.
+fn count_cell(ui: &mut egui::Ui, pair: &mut [i32; 2], general: &crate::nest::AutoJoints, what: &str, size: &str) {
+    use crate::jointpics as jp;
+    let (text, follows) = jp::range_text(*pair, general);
+    let resp = ui.add_sized([82.0, 20.0], egui::Button::new(RichText::new(text).color(if follows { th().text_dim } else { th().text_strong })));
+    let resp = resp.on_hover_text(format!("{what}, {size}: click to set the fewest and most joints"));
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(190.0);
+        ui.label(RichText::new(format!("{what}, {size}")).strong());
+        let same = |v: f64, _: std::ops::RangeInclusive<usize>| if v < 0.0 { "as Every contour".into() } else if v >= jp::NO_LIMIT_COUNT as f64 { "No limit".into() } else { format!("{v:.0}") };
+        egui::Grid::new("cell").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label("Fewest");
+            ui.add(egui::DragValue::new(&mut pair[0]).range(-1..=999).custom_formatter(same));
+            ui.end_row();
+            ui.label("Most");
+            ui.add(egui::DragValue::new(&mut pair[1]).range(-1..=99999).custom_formatter(same).custom_parser(no_limit_count));
+            ui.end_row();
+        });
+        ui.horizontal(|ui| {
+            if ui.small_button("None").on_hover_text("No joints on these contours").clicked() {
+                *pair = [0, 0];
+            }
+            if ui.small_button("Any").on_hover_text("No limit either way").clicked() {
+                *pair = [0, jp::NO_LIMIT_COUNT];
+            }
+            if ui.small_button("As Every contour").clicked() {
+                *pair = [-1, -1];
+            }
+        });
+    });
 }
 
 impl App {

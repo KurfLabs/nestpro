@@ -16,6 +16,7 @@ mod ct1;
 mod cutpanel;
 mod orderpick;
 mod leadmenu;
+mod jointpics;
 mod joints;
 mod kerf;
 mod leads;
@@ -319,6 +320,8 @@ pub struct App {
     pub result_card: Option<ResultCard>,
     pub auto_joints: nest::AutoJoints,
     pub show_joint_sizes: bool,
+    /// Micro-joints window: the tab shown, 0 = Joint, 1 = How many (kept while the app runs).
+    pub joint_tab: u8,
     /// Cut Technology → By size window.
     pub show_cut_ranges: bool,
     /// Nest parts grouped by their Group attribute (CT1 A785 sets the start value).
@@ -663,6 +666,7 @@ impl App {
             result_card: None,
             auto_joints: nest::AutoJoints::default(),
             show_joint_sizes: false,
+            joint_tab: 0,
             show_cut_ranges: false,
             group_nest: crate::ct1::active().group_parts,
             job_folders: vec![],
@@ -3657,6 +3661,32 @@ fn main() -> eframe::Result {
                             t.cut_ranges[k] = crate::nest::CutRange { on: true, min_r: from, max_r: to, quality: q };
                         }
                     }
+                }
+            }
+            // --joints=joint|count (screenshots): the Micro-joints window on that
+            // tab for the plate with holes; --joint-type=gap|square|angled|corner
+            // picks the part's joint type, --joint-rules sets demo size rules.
+            if let Some(tab) = std::env::args().find_map(|a| a.strip_prefix("--joints=").map(|s| s.to_string())) {
+                app.tab = Tab::Technology;
+                app.sel_part = app.parts.iter().position(|p| p.name == "Square hole").or((!app.parts.is_empty()).then_some(0));
+                app.tech_nest_all = Some(false);
+                app.show_joint_sizes = true;
+                app.joint_tab = u8::from(tab == "count");
+                app.auto_joints = crate::ct1::for_spec(&app.spec).joint_sizes;
+                if std::env::args().any(|a| a == "--joint-rules") {
+                    app.auto_joints = nest::AutoJoints { small: [50.0, 50.0], parts: [[0, 2], [-1, -1], [-1, -1]], holes: [[0, 0], [-1, -1], [-1, -1]], ..nest::AutoJoints::default() };
+                }
+                let jt = match std::env::args().find_map(|a| a.strip_prefix("--joint-type=").map(|s| s.to_string())).as_deref() {
+                    Some("square") => nest::JointType::Leads,
+                    Some("angled") => nest::JointType::LeadsInclined,
+                    Some("corner") => nest::JointType::Corner,
+                    _ => nest::JointType::Gap,
+                };
+                if let Some(i) = app.sel_part {
+                    let mut t = app.parts[i].tech.unwrap_or_default();
+                    t.joint_type = jt;
+                    t.joint_every = 100.0;
+                    app.parts[i].tech = Some(t);
                 }
             }
             // --paint-panel / --paint-contours (screenshots): the cut technology
