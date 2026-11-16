@@ -32,8 +32,15 @@ impl App {
             v.to_bits().hash(&mut h);
         }
         for p in self.result.sheets.get(self.cur_sheet).map_or(&[][..], |v| v.as_slice()) {
-            for v in [p.x, p.y, p.w, p.h] {
+            (p.part, p.turns, p.mirror, self.parts.get(p.part).map(|q| &q.name)).hash(&mut h);
+            for v in [p.x, p.y, p.w, p.h, p.spin.deg] {
                 v.to_bits().hash(&mut h);
+            }
+        }
+        // The layouts are checked against the sheet's real outline (SD5).
+        if let Some(o) = &self.result.format(self.cur_sheet, &self.spec).outline {
+            for q in o.outer.iter().chain(o.holes.iter().flatten()) {
+                (q[0].to_bits(), q[1].to_bits()).hash(&mut h);
             }
         }
         format!("{:?}{:?}", self.cfg.stock.line, self.cfg.stock.drops.sizes).hash(&mut h);
