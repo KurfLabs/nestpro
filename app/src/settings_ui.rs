@@ -9,6 +9,7 @@ pub fn output_name(o: Output) -> &'static str {
     match o {
         Output::Iso => "ISO G-code",
         Output::BlmSiemens => "BLM / Siemens",
+        Output::ByStar => "ByStar Fiber laser",
     }
 }
 use crate::theme::th;
@@ -139,6 +140,8 @@ pub struct SettingsUi {
     pub order_file: Option<(String, crate::ct1::OrderSettings, bool, Option<String>)>,
     /// Scroll the Machines page down to the cut order (`--settings=machines-order`).
     pub show_order: bool,
+    /// Screenshots: scroll a ByStar Fiber laser's page to its switches.
+    pub show_switches: bool,
 }
 
 /// "lower left" → "Lower left".
@@ -811,7 +814,7 @@ impl App {
                 ui.label(RichText::new(m.kind.describe()).size(11.5).color(th().text_dim));
             });
             row(ui, "Program format", |ui| {
-                for (o, title) in [(Output::Iso, "ISO G-code (.CNC) — most controls"), (Output::BlmSiemens, "BLM / Siemens 840D (.SPF set + XML, zipped)")] {
+                for (o, title) in [(Output::Iso, "ISO G-code (.CNC) — most controls"), (Output::BlmSiemens, "BLM / Siemens 840D (.SPF set + XML, zipped)"), (Output::ByStar, "ByStar Fiber laser (.bvc: job file + cut programs, zipped)")] {
                     ui.radio_value(&mut m.output, o, title);
                 }
             });
@@ -929,6 +932,8 @@ impl App {
                     ui.add(egui::TextEdit::singleline(&mut p.extension).desired_width(80.0));
                 });
             });
+        } else if output == Output::ByStar {
+            self.settings_bystar(ui, k, &start);
         } else {
             card(ui, "BLM / Siemens post", "The post's own settings files give the cut-off overruns, CORNER angle and arc tolerance.", |ui| {
                 let m = &mut self.cfg.machines[k];
@@ -1284,5 +1289,135 @@ mod settings_ui_tests {
         assert_eq!(conn_string(&c), "DRIVER=SQL SERVER;SERVER=srv;DATABASE=DB;User ID=u;Password=••••••");
         c.windows = true;
         assert_eq!(conn_string(&c), "Provider=sqloledb;Data Source=srv;Initial Catalog=DB;Persist Security Info=False;Integrated Security=SSPI");
+    }
+}
+
+impl App {
+    /// BV61: a ByStar Fiber laser's post: its files, every switch with its
+    /// default and what this app does with it, and the technology table's
+    /// ByStar Fiber columns (BV58).
+    fn settings_bystar(&mut self, ui: &mut egui::Ui, k: usize, start: &str) {
+        use crate::bystar::{Kind, Post, Status, PIERCES, SWITCHES};
+        card(ui, "ByStar Fiber laser post", "Without post files the machine uses the post's built-in defaults. A switch changed here wins over the files.", |ui| {
+            let m = &mut self.cfg.machines[k];
+            file_row(ui, "Post settings (.ps1)", &mut m.bystar.ps1, ("Post settings", &["ps1", "PS1"]), start);
+            file_row(ui, "Post library (.CF1)", &mut m.bystar.cf1, ("Post library", &["CF1", "cf1"]), start);
+            let p = Post::load(&m.bystar);
+            row(ui, "Values in use", |ui| {
+                let unit = if (p.unit - 25.4).abs() < 1e-9 { "inch".to_string() } else if (p.unit - 1.0).abs() < 1e-9 { "mm".to_string() } else { format!("{} mm per unit", p.unit) };
+                ui.label(RichText::new(format!("machine tolerance {} mm · program unit {unit} · {} switch(es) changed here", p.tol, m.bystar.set.len())).size(12.0));
+            });
+            if let Some(e) = &p.file_error {
+                ui.label(RichText::new(format!("⚠ Can't read a post file: {e}. Programs aren't written until it reads or is cleared.")).size(11.5).color(th().warn_fg));
+            }
+            if !m.bystar.set.is_empty() && ui.button("Use the files' values for every switch").clicked() {
+                m.bystar.set.clear();
+            }
+        });
+        ui.add_space(10.0);
+        if self.setui.show_switches {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+            self.setui.show_switches = self.shot_mode_now();
+        }
+        card(ui, "Post switches", "Each switch with the post's default. \"Written\": programs follow it. \"Not yet\": kept and shown; a sheet it would change is refused until it is built. \"No effect\": the post doesn't use it in the files either.", |ui| {
+            let m = &mut self.cfg.machines[k];
+            let p = Post::load(&m.bystar);
+            egui::Grid::new("bystar_switches").striped(true).num_columns(5).spacing([10.0, 4.0]).show(ui, |ui| {
+                for h in ["Switch", "What it does", "Value", "Default", ""] {
+                    ui.label(RichText::new(h).strong().size(12.0));
+                }
+                ui.end_row();
+                for d in SWITCHES {
+                    let changed = p.changed(d.key);
+                    let key = if p.from.get(d.key) == Some(&"set") { format!("{} •", d.key) } else { d.key.to_string() };
+                    ui.label(RichText::new(key).monospace().size(12.0)).on_hover_text(format!("Rule {}", d.rule));
+                    ui.label(RichText::new(d.what).size(12.0));
+                    let mut new: Option<String> = None;
+                    match d.kind {
+                        Kind::OnOff => {
+                            let mut on = p.on(d.key);
+                            if ui.checkbox(&mut on, "").changed() {
+                                new = Some(if on { "1" } else { "0" }.into());
+                            }
+                        }
+                        Kind::Quality => {
+                            let mut q = p.num(d.key).trunc().clamp(0.0, 12.0) as i64;
+                            if ui.add(egui::DragValue::new(&mut q).range(0..=12)).on_hover_text("A cut quality 1–12; 0 = none").changed() {
+                                new = Some(q.to_string());
+                            }
+                        }
+                        Kind::Choice => {
+                            let mut c = p.num(d.key).round().clamp(0.0, 2.0) as i64;
+                            if ui.add(egui::DragValue::new(&mut c).range(0..=2)).changed() {
+                                new = Some(c.to_string());
+                            }
+                        }
+                        Kind::Length | Kind::Size => {
+                            let mut v = p.num(d.key);
+                            if ui.add(egui::DragValue::new(&mut v).speed(0.1).max_decimals(4)).changed() {
+                                new = Some(crate::bystar::num(v));
+                            }
+                        }
+                        Kind::Text => {
+                            let mut t = p.raw(d.key).to_string();
+                            if ui.add(egui::TextEdit::singleline(&mut t).desired_width(120.0)).changed() {
+                                new = Some(t);
+                            }
+                        }
+                    }
+                    if let Some(v) = new {
+                        let _ = m.bystar.set_switch(d.key, &v);
+                    }
+                    ui.label(RichText::new(if d.default.is_empty() { "empty" } else { d.default }).size(12.0).color(th().text_dim));
+                    let (txt, warn) = match d.status {
+                        Status::Built => ("Written", false),
+                        Status::Later => ("Not yet", changed),
+                        Status::NoEffect => ("No effect", false),
+                    };
+                    ui.label(RichText::new(txt).size(11.5).color(if warn { th().warn_fg } else { th().text_dim }));
+                    ui.end_row();
+                }
+            });
+        });
+        ui.add_space(10.0);
+        card(ui, "Technology table: ByStar Fiber columns", "The operation mode (the machine's technology column) and pierce mode of each cut quality, used when switches B015 and B014 are on. Unchanged, they give what the switches give when off.", |ui| {
+            let m = &mut self.cfg.machines[k];
+            let p = Post::load(&m.bystar);
+            egui::Grid::new("bystar_table").striped(true).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
+                for h in ["Quality", "Operation mode", "Pierce"] {
+                    ui.label(RichText::new(h).strong().size(12.0));
+                }
+                ui.end_row();
+                for q in 0..=12usize {
+                    ui.label(RichText::new(if q == 0 { "Marking".to_string() } else { format!("Quality {q}") }).size(12.0));
+                    if q == 0 {
+                        ui.label(RichText::new("2").size(12.0).color(th().text_dim));
+                    } else {
+                        let mut mode = p.modes[q];
+                        if ui.add(egui::DragValue::new(&mut mode).range(0..=99)).changed() {
+                            if mode == crate::bystar::seed_mode(q) {
+                                m.bystar.modes.remove(&(q as u8));
+                            } else {
+                                m.bystar.modes.insert(q as u8, mode);
+                            }
+                        }
+                    }
+                    let cur = p.pierces[q].clone();
+                    egui::ComboBox::from_id_salt(("bystar_pierce", q)).width(110.0).selected_text(if cur.is_empty() { "no pierce".to_string() } else { cur.clone() }).show_ui(ui, |ui| {
+                        for o in PIERCES.iter().map(|s| s.to_string()).chain(std::iter::once(String::new())) {
+                            let label = if o.is_empty() { "no pierce".to_string() } else { o.clone() };
+                            if ui.selectable_label(cur == o, label).clicked() {
+                                if o == crate::bystar::seed_pierce(q) {
+                                    m.bystar.pierces.remove(&(q as u8));
+                                } else {
+                                    m.bystar.pierces.insert(q as u8, o.clone());
+                                }
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        });
     }
 }

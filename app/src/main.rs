@@ -5,6 +5,7 @@ mod arrange_ui;
 mod bands;
 mod blm;
 mod bvc;
+mod bystar;
 mod startup;
 mod iconfile;
 mod cli;
@@ -2017,7 +2018,11 @@ impl App {
                     format!("( {} )", engine::sheetmachine::unknown_refusal(&self.cfg, &t.unknown).replace("Export stopped", "No program"))
                 } else {
                     let post = t.sheets.get(self.cur_sheet).map_or_else(|| self.post.clone(), |o| o.post.clone());
-                    engine::sheetmachine::on_sheet(&f, || engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.remnant_marks(self.cur_sheet), &post, self.cfg.stock.line.edge_offset))
+                    match t.sheets.get(self.cur_sheet).filter(|o| o.bystar.is_some()) {
+                        // MS6, BV59: a ByStar Fiber laser's cut program.
+                        Some(o) => engine::bystar_program(&self.job_name, self.cur_sheet, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &f, o).unwrap_or_else(|e| format!("<!-- {e} -->")),
+                        None => engine::sheetmachine::on_sheet(&f, || engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.remnant_marks(self.cur_sheet), &post, self.cfg.stock.line.edge_offset)),
+                    }
                 }
             }
             _ => "( NO SHEET NESTED )".into(),
@@ -3213,7 +3218,7 @@ fn main() -> eframe::Result {
                     "shortcuts" => Shortcuts,
                     "about" => About,
                     "connections" => Connections,
-                    "machines" | "machines-order" => Machines,
+                    "machines" | "machines-order" | "machines-switches" => Machines,
                     "materials" => Materials,
                     "erp" | "integrations" => Integrations,
                     "folders" => Folders,
@@ -3223,6 +3228,7 @@ fn main() -> eframe::Result {
                 app.open_settings(sec);
                 // Screenshots of a machine's cut order scroll down to it.
                 app.setui.show_order = s == "machines-order";
+                app.setui.show_switches = s == "machines-switches";
             }
             // Load the saved "ExpertLayout" (the original does this at start, D6).
             if load_layout {
@@ -3736,6 +3742,18 @@ fn main() -> eframe::Result {
                 let last = app.result.sheets.len().saturating_sub(1);
                 app.move_sheet_to(last, "Demo BLM laser");
                 app.select_sheet(last);
+            }
+            // --bystar-demo (screenshots only, never saved): a made-up BLM and
+            // a made-up ByStar Fiber laser, the second shown in Settings →
+            // Machines with two switches changed (BV61).
+            if app.shot.is_some() && std::env::args().any(|a| a == "--bystar-demo") {
+                let mut b = settings::Machine { name: "Demo ByStar Fiber laser".into(), output: settings::Output::ByStar, ..Default::default() };
+                let _ = b.bystar.set_switch("B015", "1");
+                let _ = b.bystar.set_switch("C004", "P");
+                app.cfg.machines = vec![settings::Machine { name: "Demo BLM laser".into(), output: settings::Output::BlmSiemens, ..Default::default() }, b];
+                app.cfg.active_machine = 1;
+                app.setui.sel_machine = 1;
+                app.apply_settings(true);
             }
             if want_jobs {
                 app.workspace = Workspace::Jobs;

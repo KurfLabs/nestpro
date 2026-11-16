@@ -14,6 +14,9 @@ pub enum Output {
     /// BLM / Siemens 840D: sheet .SPF + one .SPF per part + list, zipped,
     /// with the .XML job sheet (see blm.rs).
     BlmSiemens,
+    /// ByStar Fiber laser: one `.bvc` (job file + XML cut program) per nest,
+    /// written as the original's ByStar Fiber post writes it (see bystar.rs).
+    ByStar,
 }
 
 impl Output {
@@ -21,10 +24,17 @@ impl Output {
         match self {
             Output::Iso => "iso",
             Output::BlmSiemens => "blm",
+            Output::ByStar => "bystar",
         }
     }
     pub fn from_key(s: &str) -> Self {
-        if s.eq_ignore_ascii_case("blm") { Output::BlmSiemens } else { Output::Iso }
+        if s.eq_ignore_ascii_case("blm") {
+            Output::BlmSiemens
+        } else if s.eq_ignore_ascii_case("bystar") {
+            Output::ByStar
+        } else {
+            Output::Iso
+        }
     }
 }
 
@@ -71,6 +81,10 @@ pub struct Machine {
     /// MS7, MAC-76: the folder this machine's programs go in (`<folder>\<job>`);
     /// empty = the shared export folder (settings saved before have none).
     pub program_dir: String,
+    /// BV61: a ByStar Fiber machine's post files, the switches changed here
+    /// and its technology table's columns; empty = the original's defaults
+    /// (settings saved before have none).
+    pub bystar: crate::bystar::MachinePost,
 }
 
 impl Machine {
@@ -111,7 +125,7 @@ impl Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default(), program_dir: String::new() }
+        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default(), program_dir: String::new(), bystar: Default::default() }
     }
 }
 
@@ -507,6 +521,10 @@ impl AppSettings {
             if !m.program_dir.is_empty() {
                 s += &format!("program_dir = {}\n", esc(&m.program_dir));
             }
+            // BV61: only a ByStar Fiber post with something set writes it.
+            if !m.bystar.is_empty() {
+                s += &format!("bystar = {}\n", esc(&serde_json::to_string(&m.bystar).unwrap_or_default()));
+            }
         }
         for i in &self.integrations {
             s += &format!(
@@ -675,6 +693,7 @@ impl AppSettings {
                             // taken is left out, the others kept (CO16).
                             "order" => m.order = crate::ct1::OrderChanges::read(&v),
                             "program_dir" => m.program_dir = v,
+                            "bystar" => m.bystar = serde_json::from_str(&v).unwrap_or_default(),
                             _ => {}
                         }
                     }
@@ -1108,5 +1127,33 @@ mod settings_tests {
         let old = AppSettings::default().to_text();
         assert_eq!(AppSettings::parse(&old).to_text(), old);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn settings_saved_before_the_bystar_machine_load_and_save_unchanged() {
+        // BV61: a file from before has no ByStar Fiber lines; read and saved
+        // again it is the same text, and no machine gets a ByStar post.
+        let before = "# nestpro settings\n[general]\nlantek_dir = x\nactive_machine = 1\n[machine]\nname = Laser 01\noutput = iso\npost_lib = \ngas_id = 1\ngas_name = Nitrogen\nkind = laser\n[machine]\nname = LC5\noutput = blm\nblm_ps1 = C:\\\\x\\\\PstAdi06.PS1\nblm_cf1 = \ngas_id = 3\ngas_name = Oxygen\nkind = laser\nprogram_dir = D:\\\\cnc\n";
+        let s = AppSettings::parse(before);
+        assert!(s.machines.iter().all(|m| m.bystar.is_empty() && m.output != Output::ByStar));
+        let again = AppSettings::parse(&s.to_text());
+        assert_eq!(again, s);
+        assert!(!s.to_text().contains("bystar"), "{}", s.to_text());
+        // A ByStar Fiber machine keeps its post files, switches and table.
+        let mut m = Machine { name: "Demo ByStar Fiber laser".into(), output: Output::ByStar, ..Default::default() };
+        m.bystar.ps1 = r"C:\Lantek\Expert\MchFiles\DEMO.ps1".into();
+        m.bystar.set_switch("b015", "1").unwrap();
+        m.bystar.set_switch("C004", "P").unwrap();
+        m.bystar.modes.insert(4, 9);
+        m.bystar.pierces.insert(0, String::new());
+        let s = AppSettings { machines: vec![m.clone()], ..AppSettings::default() };
+        let back = AppSettings::parse(&s.to_text());
+        assert_eq!(back.machines[0], m, "{}", s.to_text());
+        assert!(m.bystar.set_switch("B099", "1").is_err());
+        assert!(m.bystar.set_switch("B015", "on").is_err());
+        // Setting a switch back to the value it has without a change drops it.
+        m.bystar.ps1.clear();
+        m.bystar.set_switch("B015", "0").unwrap();
+        assert!(!m.bystar.set.contains_key("B015"));
     }
 }

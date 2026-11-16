@@ -7497,6 +7497,140 @@
   "group": "sheet machine",
   "value": "shown marked, planned on the job's machine, writing programs refused with the machine list",
   "source": "MECHANICS MS8"
+ },
+ {
+  "name": "part subprogram coordinates",
+  "group": "ByStar Fiber writer",
+  "value": "the part's own (its origin and orientation); the call gives position and turn",
+  "source": "MECHANICS BV56"
+ },
+ {
+  "name": "call position written",
+  "group": "ByStar Fiber writer",
+  "value": "rounded as BV52 (whole units, 3 decimals with B021); the subprogram written about the rounded call",
+  "source": "MECHANICS BV56"
+ },
+ {
+  "name": "mirrored part",
+  "group": "ByStar Fiber writer",
+  "value": "its own subprogram, turned 0, mirrored shape",
+  "source": "MECHANICS BV56"
+ },
+ {
+  "name": "copies share a subprogram",
+  "group": "ByStar Fiber writer",
+  "value": "only when their commands come out the same",
+  "source": "MECHANICS BV56"
+ },
+ {
+  "name": "arc fit",
+  "group": "ByStar Fiber writer",
+  "value": "the LC5 post's (BL38), in mm",
+  "source": "MECHANICS BV57"
+ },
+ {
+  "name": "overlap and lead-out",
+  "group": "ByStar Fiber writer",
+  "value": "inside BeginLeadOut ... EndLeadOut, before EndCutOut",
+  "source": "MECHANICS BV57"
+ },
+ {
+  "name": "seed operation mode by quality (B015)",
+  "group": "ByStar Fiber writer",
+  "value": {
+   "2": 1,
+   "3": 3,
+   "4": 4,
+   "5": 5,
+   "6": 6,
+   "7": 7,
+   "other": 0
+  },
+  "source": "MECHANICS BV58"
+ },
+ {
+  "name": "seed pierce (B014)",
+  "group": "ByStar Fiber writer",
+  "value": "Fine; marking Normal",
+  "source": "MECHANICS BV58"
+ },
+ {
+  "name": "identical sheets",
+  "group": "ByStar Fiber writer",
+  "value": "one nest, Multiplicity = their count",
+  "source": "MECHANICS BV59"
+ },
+ {
+  "name": "program name",
+  "group": "ByStar Fiber writer",
+  "value": "<JOB>X<first sheet>",
+  "source": "MECHANICS BV59"
+ },
+ {
+  "name": "files per nest (B017 off)",
+  "group": "ByStar Fiber writer",
+  "value": "one .bvc per nest",
+  "source": "MECHANICS BV59"
+ },
+ {
+  "name": "B017 on",
+  "group": "ByStar Fiber writer",
+  "value": "every nest in the first program's .bvc, one job file listing all nests",
+  "source": "MECHANICS BV59"
+ },
+ {
+  "name": "read-back tolerance (mm)",
+  "group": "ByStar Fiber writer",
+  "value": 0.125,
+  "source": "MECHANICS BV59"
+ },
+ {
+  "name": "read-back compares",
+  "group": "ByStar Fiber writer",
+  "value": "sheet size, thickness, run count; every planned sheet once, each sheet of a fold compared; every cut both ways with the compensation and mode in force during its moves, cut-out side, pierce mode and point, part named; the height sensor through the calls; no unplanned command",
+  "source": "MECHANICS BV59"
+ },
+ {
+  "name": "refused until built",
+  "group": "ByStar Fiber writer",
+  "value": "micro-joints, corner loops, punched holes, remnant/cut-off lines, cuts stopping short, system or no kerf compensation, B012/B036 changed with marking",
+  "source": "MECHANICS BV60"
+ },
+ {
+  "name": "settings line",
+  "group": "ByStar Fiber writer",
+  "value": "bystar = {json}, only when something is set",
+  "source": "MECHANICS BV61"
+ },
+ {
+  "name": "job file Parameter",
+  "group": "ByStar Fiber writer",
+  "value": "empty",
+  "source": "MECHANICS BV62"
+ },
+ {
+  "name": "job file ProcessGas",
+  "group": "ByStar Fiber writer",
+  "value": "none (no parameter-file name, BV43); with X001 (ours, off by default) the job's gas as its programs name it",
+  "source": "MECHANICS BV62"
+ },
+ {
+  "name": "EstimatedCuttingTime",
+  "group": "ByStar Fiber writer",
+  "value": "plan seconds, whole: attribute and child",
+  "source": "MECHANICS BV62"
+ },
+ {
+  "name": "float noise written as 0 below",
+  "group": "ByStar Fiber writer",
+  "value": 1e-12,
+  "source": "MECHANICS BV62"
+ },
+ {
+  "name": "opened .bvc sheets go to",
+  "group": "ByStar Fiber writer",
+  "value": "the first ByStar Fiber laser in Settings, else the job's machine with a note",
+  "source": "MECHANICS BV62"
  }
 ]
 }

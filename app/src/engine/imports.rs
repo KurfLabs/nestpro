@@ -349,13 +349,25 @@ pub fn bvc_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) 
         notes.push("inch file, opened in mm".into());
     }
     notes.extend(n.notes);
+    // BV62: the sheets go on the first ByStar Fiber laser of Settings →
+    // Machines (none named when it is the job's machine, MS1); without one
+    // they stay on the job's machine, with a note.
+    let bystar = cfg.machines.iter().position(|m| m.output == crate::settings::Output::ByStar);
+    let machine = match bystar {
+        Some(i) if i == cfg.active_machine => String::new(),
+        Some(i) => cfg.machines[i].name.clone(),
+        None => {
+            notes.push(format!("there is no ByStar Fiber laser in Settings → Machines, so its sheets are on {}; add one before writing this job's programs", cfg.machine().name));
+            String::new()
+        }
+    };
     let (mut sheets, mut formats, mut cuts) = (vec![], vec![], vec![]);
     for s in &n.sheets {
         let (w, h) = if s.w > 0.0 && s.h > 0.0 { (s.w, s.h) } else { (spec.w, spec.h) };
         let lines = bvc_cut_lines(&s.cutoffs, w, h);
         for _ in 0..s.count {
             sheets.push(s.placed.clone());
-            formats.push(crate::nest::SheetFormat::rect(w, h));
+            formats.push(crate::nest::SheetFormat { machine: machine.clone(), ..crate::nest::SheetFormat::rect(w, h) });
             cuts.push(lines.clone());
         }
     }
