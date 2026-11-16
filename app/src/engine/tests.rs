@@ -8408,7 +8408,8 @@ fn a_cut_that_comes_back_through_a_joint_marker_and_goes_on_again_is_refused() {
         lines.join("\r\n")
     };
     let e = export_edited(&mut s, back_and_on);
-    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("micro-joint gap")), "{e:?}");
+    // Refused by the gap's passes or, since round 3, by the order check first.
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && (e.contains("micro-joint gap") || e.contains("again"))), "{e:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -8491,5 +8492,92 @@ fn a_cut_off_with_an_empty_table_pierce_is_written_without_its_first_pierce() {
         format!("{}X=\"900\" Y=\"4\"{}", &t[..k], &t[k + "X=\"900\" Y=\"10\"".len()..])
     });
     assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Review round 3 (#127): each cut once, in its planned order.
+
+/// `t` with lines `a..=b` written again right after `b`.
+fn twice(t: &str, a: usize, b: usize) -> String {
+    let mut lines: Vec<String> = t.split("\r\n").map(str::to_string).collect();
+    let copy: Vec<String> = lines[a..=b].to_vec();
+    for (k, l) in copy.into_iter().enumerate() {
+        lines.insert(b + 1 + k, l);
+    }
+    lines.join("\r\n")
+}
+
+#[test]
+fn a_cut_off_piece_cut_twice_is_refused_and_nothing_is_written() {
+    // S1: the second piece (its rapid, no-time pierce, sensing and lift)
+    // written twice: the union of the cuts still covers the line once.
+    let d = dir("bystar_cutoff_twice");
+    let mut s = bystar_job(&d, false);
+    with_cut_line(&mut s, "900,0;900,500");
+    switches(&mut s, "B003=3, B004=5, B005=2");
+    let again = |t: String| -> String {
+        let lines: Vec<&str> = t.split("\r\n").collect();
+        let a = lines.iter().position(|l| l.contains("SetPiercingMode") && l.contains("NoTime")).unwrap() - 2;
+        assert!(lines[a].contains("<MoveLineTo"));
+        let b = a + lines[a..].iter().position(|l| l.contains("<ExecHighPositioning")).unwrap();
+        twice(&t, a, b)
+    };
+    let e = export_edited(&mut s, again);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("cut-off line") && e.contains("piece")), "{e:?}");
+    assert!(!bystar_dir(&d, "DEMO-BVC").join("DEMOBVCX1.bvc").exists(), "nothing written");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_stretch_of_a_contour_cut_twice_is_refused() {
+    // S1's pattern on a part: one move cut, back and cut again. Its path is
+    // still the plan's both ways, but that stretch would be cut three times.
+    let d = dir("bystar_stretch_twice");
+    let mut s = bystar_job(&d, false);
+    let back_and_again = |t: String| -> String {
+        let lines: Vec<&str> = t.split("\r\n").collect();
+        let k = (1..lines.len()).find(|&k| lines[k].contains("<LineTo") && lines[k - 1].contains("<LineTo") && !lines[k + 1].contains("Microjoint")).unwrap();
+        let xy = |l: &str| format!("X={}", l.split(" X=").nth(1).unwrap().split(" />").next().unwrap());
+        let mut v: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        v.insert(k + 1, format!("        <LineTo Id=\"9998\" {} />", xy(lines[k - 1])));
+        v.insert(k + 2, lines[k].to_string());
+        v.join("\r\n")
+    };
+    let e = export_edited(&mut s, back_and_again);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("again")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_engraving_a_point_mark_or_a_joint_cut_twice_is_refused() {
+    // Each cut of a part is compared one by one: a mark written twice is one
+    // cut too many; a joint's cut to its middle and marker written twice is
+    // one marker too many.
+    let d = dir("bystar_mark_twice");
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    let job = d.join("DEMO-MARK.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    call(&mut s, "joints", None, json!({"mode": "auto", "every": 100, "parts": 1}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "export", None, json!({}));
+    let mark_twice = |t: String| -> String {
+        let lines: Vec<&str> = t.split("\r\n").collect();
+        let a = lines.iter().position(|l| l.contains("<MoveLineTo")).unwrap();
+        let b = a + lines[a..].iter().position(|l| l.contains("<EndCutOut")).unwrap() + 1;
+        twice(&t, a, b)
+    };
+    let e = export_edited(&mut s, mark_twice);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("cuts")), "{e:?}");
+    let joint_twice = |t: String| -> String {
+        let lines: Vec<&str> = t.split("\r\n").collect();
+        let k = lines.iter().position(|l| l.contains("<ExecMicrojoint")).unwrap();
+        twice(&t, k - 1, k)
+    };
+    let e = export_edited(&mut s, joint_twice);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("micro-joint")), "{e:?}");
     let _ = std::fs::remove_dir_all(&d);
 }

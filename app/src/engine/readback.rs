@@ -565,6 +565,69 @@ fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -
     out
 }
 
+/// The points of path `p` from `s0` to `s1` mm along it.
+fn stretch(p: &[P], s0: f64, s1: f64) -> Vec<P> {
+    let at = |s: f64| along(p, { let l: f64 = p.windows(2).map(|w| dist(w[0], w[1])).sum(); if l > 0.0 { (s / l).clamp(0.0, 1.0) } else { 0.0 } });
+    let mut out = vec![at(s0)];
+    let mut gone = 0.0;
+    for w in p.windows(2) {
+        gone += dist(w[0], w[1]);
+        if gone > s0 + 1e-9 && gone < s1 - 1e-9 {
+            out.push(w[1]);
+        }
+    }
+    out.push(at(s1));
+    out.dedup_by(|a, b| dist(*a, *b) < 1e-9);
+    out
+}
+
+/// The first point where written path `w` goes back over planned path `e`
+/// or skips part of it: walked half a millimetre at a time, each point of
+/// `w` must lie on `e` at or just after where the one before it did. A
+/// stretch cut twice, or cut out of order, has the same ground both ways
+/// but not the same sequence (#127 review).
+fn out_of_order(w: &[P], e: &[P], tol: f64) -> Option<P> {
+    if w.len() < 2 || e.len() < 2 {
+        return None;
+    }
+    let mut cum = vec![0.0];
+    for s in e.windows(2) {
+        cum.push(cum[cum.len() - 1] + dist(s[0], s[1]));
+    }
+    // Where `q` falls on segment `j`: how far off, and how far along `e`.
+    let on = |q: P, j: usize| -> (f64, f64) {
+        let (a, b) = (e[j], e[j + 1]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = dx * dx + dy * dy;
+        let t = if l == 0.0 { 0.0 } else { (((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l).clamp(0.0, 1.0) };
+        (dist(q, [a[0] + t * dx, a[1] + t * dy]), cum[j] + t * l.sqrt())
+    };
+    let mut pts = vec![w[0]];
+    for s in w.windows(2) {
+        let n = (dist(s[0], s[1]) / 0.5).ceil().max(1.0) as usize;
+        pts.extend((1..=n).map(|k| {
+            let f = k as f64 / n as f64;
+            [s[0][0] + (s[1][0] - s[0][0]) * f, s[0][1] + (s[1][1] - s[0][1]) * f]
+        }));
+    }
+    let (mut k, mut s, mut prev) = (0usize, 0.0f64, w[0]);
+    for (i, &q) in pts.iter().enumerate() {
+        let step = dist(q, prev);
+        prev = q;
+        let hit = (k..e.len() - 1).find_map(|j| {
+            let (off, at) = on(q, j);
+            (off <= tol && (j > k || at >= s - tol)).then_some((j, at))
+        });
+        let Some((j, at)) = hit else { return Some(q) };
+        if i > 0 && at > s + step + 2.0 * tol + 1e-6 {
+            return Some(q);
+        }
+        k = j;
+        s = s.max(at);
+    }
+    None
+}
+
 /// How many times a path passes within `r` of `g`. Two moves that both
 /// come near are one pass only when the point they share is near too: a cut
 /// that leaves the gap and comes back through it passes it again (S1).
@@ -720,8 +783,8 @@ fn cutoff_issues(label: &str, written: &[(Cut, &crate::bvc::Cut)], place: &dyn F
         let mut line = l.pts.clone();
         line.dedup_by(|a, b| dist(*a, *b) < 1e-9);
         let len: f64 = line.windows(2).map(|w| dist(w[0], w[1])).sum();
-        let pierce_at = if starts_inside {
-            line[0]
+        let s_p = if starts_inside {
+            0.0
         } else {
             let (lo, hi) = ([d, d], [spec.w - d, spec.h - d]);
             let mut gone = 0.0;
@@ -746,12 +809,42 @@ fn cutoff_issues(label: &str, written: &[(Cut, &crate::bvc::Cut)], place: &dyn F
                 }
                 gone += dist(w[0], w[1]);
             }
-            let s = match s_in {
+            match s_in {
                 Some(s) if s <= len / 2.0 => s,
                 _ => len / 4.0,
-            };
-            along(&line, if len > 0.0 { s / len } else { 0.0 })
+            }
         };
+        let pierce_at = along(&line, if len > 0.0 { s_p / len } else { 0.0 });
+        // The pieces BV38 cuts, in order: back from the pierce to the start
+        // and B003 past it (when it starts on an edge and there is anything
+        // to cut back), then on from the pierce to the end and B003 past a
+        // far end on an edge. Each written piece is compared with its own,
+        // so a piece cut twice is one too many (#127 review).
+        let nl = line.len();
+        let mut pieces: Vec<Vec<P>> = vec![];
+        if !starts_inside && (s_p > 1e-9 || b003 > 0.0) {
+            let mut back: Vec<P> = stretch(&line, 0.0, s_p).into_iter().rev().collect();
+            if b003 > 0.0 {
+                back.push(ext(line[1], line[0]));
+            }
+            pieces.push(back);
+        }
+        let mut far = stretch(&line, s_p, len);
+        if b003 > 0.0 && near_edge(line[nl - 1], post.tol) {
+            far.push(ext(line[nl - 2], line[nl - 1]));
+        }
+        pieces.push(far);
+        if cuts.len() != pieces.len() {
+            issues.push(format!("{at} is cut in {} piece(s) where BV38 cuts it in {}, so part of it would be cut again", cuts.len(), pieces.len()));
+        } else {
+            for (k, ((w, _), want)) in cuts.iter().zip(&pieces).enumerate() {
+                let (a, b) = (w.pts[0], w.pts[w.pts.len() - 1]);
+                let off = first_stray(&w.pts, want, tol).or_else(|| first_stray(want, &w.pts, tol)).map(|x| x.0).or_else(|| out_of_order(&w.pts, want, tol));
+                if let Some(q) = off.or((dist(a, want[0]) > tol).then_some(a)).or((dist(b, want[want.len() - 1]) > tol).then_some(b)) {
+                    issues.push(format!("{at}: its piece {} isn't the one BV38 plans near X{:.1} Y{:.1}", k + 1, q[0], q[1]));
+                }
+            }
+        }
         let first_pierce = post.pierce(q, false);
         for (k, (_, raw)) in cuts.iter().enumerate() {
             // BV33: no first pierce for a line starting inside without B025,
@@ -925,7 +1018,7 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                             return Some(format!("it is written with {} cuts, but {} are planned", written.len(), want.len()));
                         }
                         written.iter().zip(want).enumerate().find_map(|(k, ((w, raw), e))| {
-                            let m = compare(w, &e.cut, tol).or_else(|| {
+                            let m = compare(w, &e.cut, tol).or_else(|| out_of_order(&w.pts, &e.cut.pts, tol).map(|q| format!("it is written cutting part of its path again or out of order near X{:.1} Y{:.1}", q[0], q[1]))).or_else(|| {
                                 if raw.mode != Some(e.mode) {
                                     return Some(format!("it is written in operation mode {} where {} is planned", raw.mode.map_or("none".into(), |m| m.to_string()), e.mode));
                                 }
@@ -1186,6 +1279,28 @@ mod tests {
         plan.contours[0].joints.push((10.0, 0.5));
         let out = check_set(&set, &parts, &placed, &plan, &[]);
         assert!(out.iter().any(|m| m.contains("DEMO-001") && m.contains("micro-joints")), "{out:?}");
+    }
+
+    #[test]
+    fn a_cut_that_leaves_a_gap_and_comes_back_through_it_passes_it_twice() {
+        // #127 review round 1 S1: through the marker at (10, 0), on to 20,
+        // back to the marker and on again.
+        let g = [10.0, 0.0];
+        assert_eq!(passes(&[[0.0, 0.0], g, [20.0, 0.0]], g, 0.1), 1);
+        assert_eq!(passes(&[[0.0, 0.0], g, [20.0, 0.0], g, [20.0, 0.0]], g, 0.1), 2);
+        assert_eq!(passes(&[[0.0, 0.0], [5.0, 0.0]], g, 0.1), 0);
+    }
+
+    #[test]
+    fn a_stretch_cut_twice_or_out_of_order_is_found() {
+        // #127 review round 3: the same ground both ways, another sequence.
+        let e = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
+        assert_eq!(out_of_order(&e, &e, tolerance()), None);
+        assert!(out_of_order(&[[0.0, 0.0], [10.0, 0.0], [4.0, 0.0], [10.0, 0.0], [10.0, 10.0]], &e, tolerance()).is_some(), "back and again");
+        assert!(out_of_order(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [10.0, 0.0], [10.0, 10.0]], &e, tolerance()).is_some(), "a side twice");
+        // A closed contour's overlap past its start is in the plan, so it is in order.
+        let sq = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0], [1.0, 0.0]];
+        assert_eq!(out_of_order(&sq, &sq, tolerance()), None);
     }
 
     #[test]
