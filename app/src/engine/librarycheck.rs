@@ -531,7 +531,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         // The same for a library part, filed in the part folder DEMO-CHECK
         // (JX19), which every run shares.
         let name = format!("{TAG} {pc} {stamp} part {n}");
-        match lib.save_product_in(&demo_part(&name, 0), TAG, 0, 3.0, SaveTo::New, &folders::PartsFolder::Path(TAG.into())) {
+        match lib.save_product_in(&demo_part(&name, 0), TAG, (0, ""), 3.0, SaveTo::New, &folders::PartsFolder::Path(TAG.into())) {
             Ok(Record { id, .. }) => log.parts.push(Saved { id, name, rev: 0, folder: None }),
             Err(e) => log.errors.push(format!("saving library part '{name}' reported an error: {e}")),
         }

@@ -201,14 +201,12 @@ impl Default for MachineTech {
 }
 
 static ACTIVE: std::sync::RwLock<Option<MachineTech>> = std::sync::RwLock::new(None);
-/// The machine-file keys of the app's materials (Settings → Materials →
-/// Machine table), already normalised; None = the built-in ones.
-static KEYS: std::sync::RwLock<Option<Vec<String>>> = std::sync::RwLock::new(None);
-/// Bumped whenever the machine or the material keys change (empties the cache).
+/// Bumped whenever the machine changes (empties the cache).
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// The last values picked for a material and thickness: (generation, material, thickness bits).
+/// The last values picked for a material and thickness: (generation, the
+/// material's machine-file key, thickness bits).
 #[allow(clippy::type_complexity)]
-static PICKED: std::sync::Mutex<Option<((u64, usize, u64, i32), MachineTech)>> = std::sync::Mutex::new(None);
+static PICKED: std::sync::Mutex<Option<((u64, String, u64, i32), MachineTech)>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 thread_local! {
@@ -239,31 +237,10 @@ pub fn set_thread_active(t: Option<MachineTech>) {
     LOCAL.with(|l| *l.borrow_mut() = t);
 }
 
-/// Set the machine-file key of each app material: what the user typed in
-/// Settings → Materials (normalised by `material_key`), or the material's
-/// name in programs when that is empty (MTL2: an empty internal reference
-/// keeps the material's name).
-pub fn set_material_keys(refs: &[String], names: &[String]) {
-    let keys: Vec<String> = (0..refs.len().max(names.len()))
-        .map(|i| {
-            let r = refs.get(i).map(|s| material_key(s)).unwrap_or_default();
-            if r.is_empty() { names.get(i).map(|n| n.trim().to_string()).unwrap_or_default() } else { r }
-        })
-        .collect();
-    if let Ok(mut g) = KEYS.write() {
-        if g.as_ref() != Some(&keys) {
-            *g = Some(keys);
-            GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
-
-/// The machine-file key of app material `i` (index into `cnc::MATERIALS`).
+/// The machine-file key of app material `i` (its id; MTL2), from the
+/// material list.
 pub fn key_of_material(i: usize) -> String {
-    if let Some(k) = KEYS.read().ok().and_then(|g| g.as_ref().and_then(|v| v.get(i).cloned())) {
-        return k;
-    }
-    crate::settings::default_material_refs().get(i).map(|r| material_key(r)).unwrap_or_default()
+    crate::engine::material::machine_key(i)
 }
 
 /// The active machine's values for a sheet: the first section of its file
@@ -276,12 +253,13 @@ pub fn for_spec(spec: &crate::nest::SheetSpec) -> MachineTech {
 /// The active machine's values for app material `material` at `thickness`
 /// mm, cut with `gas` (None: a job without a gas of its own, GS13).
 pub fn for_material(material: usize, thickness: f64, gas: Option<crate::gas::Gas>) -> MachineTech {
-    let keys = JobKeys::for_job(&key_of_material(material), thickness, gas);
+    let key = key_of_material(material);
+    let keys = JobKeys::for_job(&key, thickness, gas);
     #[cfg(test)]
     if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
         return t.for_job(&keys);
     }
-    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), material, thickness.to_bits(), keys.gas);
+    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), key, thickness.to_bits(), keys.gas);
     if let Some((k, t)) = PICKED.lock().ok().and_then(|g| g.clone()) {
         if k == id {
             return t;
@@ -471,7 +449,10 @@ pub const CATALOGUE: [(&str, &str); 7] = [
     ("0590", "brass"),
 ];
 
-/// A material key for people: "0010 mild steel", "any material", or the name.
+/// A material key for people: "0010 mild steel", "any material", or the
+/// name. A number of the material catalogue (MA12) beyond those above is
+/// named as the catalogue shows it ("0110 X3CrNiMo 17-13-3"), so the section
+/// a grade on it cuts with (MA24) reads as its standard.
 pub fn material_label(key: &str) -> String {
     if key == "*" {
         return "any material".into();
@@ -479,7 +460,10 @@ pub fn material_label(key: &str) -> String {
     match key.strip_prefix("##MATEXP").and_then(|r| r.strip_suffix("##")) {
         Some(n) => match CATALOGUE.iter().find(|c| c.0 == n) {
             Some((_, name)) => format!("{n} {name}"),
-            None => n.to_string(),
+            None => match n.parse::<u32>().ok().and_then(crate::engine::catalogue::entry) {
+                Some(e) => format!("{n} {}", e.name),
+                None => n.to_string(),
+            },
         },
         None => key.to_string(),
     }
@@ -976,6 +960,10 @@ mod ct1_tests {
         assert_eq!(material_key("210"), "##MATEXP0210##");
         assert_eq!(material_key(" AISI304 "), "AISI304");
         assert_eq!(material_label("##MATEXP0300##"), "0300 galvanised steel");
+        // MA24: the catalogue names the other standards; a number it lacks stays a number.
+        assert_eq!(material_label("##MATEXP0110##"), "0110 X3CrNiMo 17-13-3");
+        assert_eq!(material_label("##MATEXP0400##"), "0400 Titanium");
+        assert_eq!(material_label("##MATEXP9999##"), "9999");
         // A plain-name section fits only the same name, case and all.
         let s = Section { material: "AISI304".into(), t_min: 0.0, t_max: 10.0, ..Default::default() };
         assert!(section_fits(&s, &JobKeys::new("AISI304", 2.0)));

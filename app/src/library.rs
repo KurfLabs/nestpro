@@ -65,7 +65,14 @@ pub struct Entry {
     pub name: String,
     /// Jobs: their folder (week); products: a group, e.g. the customer.
     pub folder: String,
+    /// Its material as read (MA17, MA31); the list file keeps the record's
+    /// own number.
+    #[serde(serialize_with = "file_material")]
     pub material: usize,
+    /// The name of a material that can't be told (MA31), so the list file
+    /// keeps the record's own number and name, and reads it back the same.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub material_name: String,
     pub thickness: f64,
     pub w: f64,
     pub h: f64,
@@ -262,6 +269,27 @@ struct Index {
     entries: Vec<Entry>,
 }
 
+/// An entry's material as its record stores it (the record's own number
+/// for one that can't be told, MA31).
+fn file_material<S: serde::Serializer>(m: &usize, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64(crate::engine::material::file_id(*m) as u64)
+}
+
+/// The list file's entries, each material as read (MA31).
+fn read_entries(i: Index) -> Vec<Entry> {
+    let mut v = i.entries;
+    for e in v.iter_mut().filter(|e| !e.material_name.is_empty()) {
+        e.material = crate::engine::material::read_material(e.material, &e.material_name);
+    }
+    v
+}
+
+/// The name a list entry keeps beside material `id`: only for one that
+/// can't be told (MA31).
+fn unresolved_name(id: usize, name: &str) -> String {
+    if crate::engine::material::file_id(id) != id { name.to_string() } else { String::new() }
+}
+
 /// A product as stored: the part plus its material and thickness.
 #[derive(Serialize, Deserialize)]
 pub struct ProductFile {
@@ -270,6 +298,11 @@ pub struct ProductFile {
     pub part: Part,
     pub folder: String,
     pub material: usize,
+    /// The material's name, written on every save from the material list,
+    /// so the part finds its material again by name (MA17). Empty in a part
+    /// saved before names were stored. Readers go by `material`.
+    #[serde(default)]
+    pub material_name: String,
     pub thickness: f64,
     /// Who saved it, and when (LB5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -404,14 +437,14 @@ impl Library {
         std::fs::read_to_string(self.dir.join(INDEX))
             .ok()
             .and_then(|t| serde_json::from_str::<Index>(&t).ok())
-            .map(|i| i.entries)
+            .map(read_entries)
             .unwrap_or_else(|| self.rescan())
     }
 
     /// The list as stored, or why it can't be read (the Library check).
     pub fn read_index(&self) -> Result<Vec<Entry>, String> {
         let t = std::fs::read_to_string(self.dir.join(INDEX)).map_err(|e| e.to_string())?;
-        serde_json::from_str::<Index>(&t).map(|i| i.entries).map_err(|e| e.to_string())
+        serde_json::from_str::<Index>(&t).map(read_entries).map_err(|e| e.to_string())
     }
 
     fn write_index(&self, entries: &[Entry], lock: &WriteLock) -> Result<(), String> {
@@ -437,6 +470,12 @@ impl Library {
                 let Ok(files) = std::fs::read_dir(sub.path()) else { continue };
                 for f in files.flatten() {
                     let p = f.path();
+                    // Only `<number>.<ext>`: an undo copy beside a record
+                    // (`7.snjob~`) or a deleted record's mark isn't the
+                    // record, and never stands in for it (MA20).
+                    if p.extension().and_then(|e| e.to_str()) != Some(kind.ext()) {
+                        continue;
+                    }
                     let Some(id) = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) else { continue };
                     let meta = f.metadata().ok();
                     let stamp = (meta.as_ref().and_then(|m| m.modified().ok()), meta.as_ref().map_or(0, |m| m.len()));
@@ -447,6 +486,7 @@ impl Library {
                     let written = stamp.0.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
                     let e = match kind {
                         Kind::Job => crate::jobfile::load(&p).ok().map(|j| job_entry(id, &j, written)),
+                        // MA17, MA31: its material as read (`product_entry`).
                         Kind::Product => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<ProductFile>(&t).ok()).map(|pf| product_entry(id, &pf, written)),
                     };
                     if let Some(e) = e {
@@ -456,6 +496,15 @@ impl Library {
             }
         }
         out
+    }
+
+    /// Every record file as it is now (MA20: what uses a material is read
+    /// from the files, not the list, which says only what each was saved
+    /// with). Files whose stamp is in `known` aren't read again, so a scan
+    /// first made without the write lock is cheap to repeat under it (LB1,
+    /// LB2).
+    pub fn scan_records(&self, known: Option<&RecordScan>) -> RecordScan {
+        RecordScan(self.scan(known.map_or(&Scanned::new(), |k| &k.0)))
     }
 
     /// Re-read the index from the record files and save it. The files are
@@ -659,7 +708,7 @@ impl Library {
     /// `save_job`, a new record going into the folder `folder` while that is
     /// still there (JX15).
     pub fn save_job_in(&self, job: &JobFile, to: SaveTo, folder: Option<u64>) -> Result<Record, Refused> {
-        self.save_job_with(to, &job.name, folder, || Ok(job.clone()))
+        self.save_job_with(to, &job.name, folder, job.spec.material, || Ok(job.clone()))
     }
 
     /// Save the job `job` makes, under the name `name`, while the write lock
@@ -672,8 +721,11 @@ impl Library {
     /// is one hold of the write lock, so of two PCs saving one new name at
     /// the same moment, one is stored and the other refused. A place in the
     /// folder tree that can't be written leaves the job at the top, saved.
-    pub fn save_job_with(&self, to: SaveTo, name: &str, folder: Option<u64>, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
+    /// The job's material is `material`: refused, booking nothing, when it
+    /// was deleted from the material list since it was picked (MA20).
+    pub fn save_job_with(&self, to: SaveTo, name: &str, folder: Option<u64>, material: usize, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
         let _lock = self.lock()?;
+        crate::materials::not_deleted(&self.dir, material, "the job").map_err(Refused::Failed)?;
         // Not over a job taken over from this PC, nor under a new name over
         // one someone else has in use (an agent: not over any job in use),
         // CU9, CU11, CU12: checked first, under the lock, so nothing is
@@ -730,11 +782,24 @@ impl Library {
     /// Save a product, recording who saved it and when (LB5) and its
     /// revision (LB7). Returns its record.
     pub fn save_product(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo) -> Result<Record, Refused> {
+        self.store_product(part, folder, (material, ""), thickness, to)
+    }
+
+    /// `save_product` with the material's id and the name it was read with
+    /// (MA17): kept while the material list doesn't have the id.
+    fn store_product(&self, part: &Part, folder: &str, material: (usize, &str), thickness: f64, to: SaveTo) -> Result<Record, Refused> {
+        let (material, read_name) = material;
+        // MA31: an unresolved material keeps the name it was read with and
+        // the file's own number (the name first: that number may be another
+        // material's).
+        let read_name = crate::engine::material::stored_name(material, read_name);
+        let material = crate::engine::material::file_id(material);
         // A library product is reusable stock, not one order's part: its ERP orders stay with the job.
         let mut part = part.clone();
         part.erp.clear();
         self.store(Kind::Product, to, || Ok(part), |part, saved, rec| {
-            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, thickness, saved: Some(saved), revision: rec.revision };
+            crate::materials::not_deleted(&self.dir, material, "the library part")?;
+            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: read_name.clone(), thickness, saved: Some(saved), revision: rec.revision };
             let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
             Ok((text, move |id| product_entry(id, &pf, 0)))
         })
@@ -742,7 +807,10 @@ impl Library {
 
     pub fn load_product(&self, id: u64) -> Result<ProductFile, String> {
         let t = std::fs::read_to_string(self.path(Kind::Product, id)).map_err(|e| e.to_string())?;
-        serde_json::from_str(&t).map_err(|e| format!("not a library product ({e})"))
+        let mut pf: ProductFile = serde_json::from_str(&t).map_err(|e| format!("not a library product ({e})"))?;
+        // MA17: by id, else by the name it was saved with.
+        pf.material = crate::engine::material::read_material(pf.material, &pf.material_name);
+        Ok(pf)
     }
 
     /// The product stored under this reference. As in Lantek
@@ -786,14 +854,15 @@ impl Library {
     }
 
     /// `save_product`, a new part going into the part folder `into` names,
+    /// in `material`: its id and the name the job read it with (MA17),
     /// made if missing (JX19); saving over a part never moves it. The
     /// revision check (LB7), the part, its line in the list and its place in
     /// the parts tree are one hold of the write lock (LB1): a save refused
     /// because someone saved the part since files nothing. A place that
     /// can't be written leaves the part at the top of the tree, saved.
-    pub fn save_product_in(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo, into: &crate::folders::PartsFolder) -> Result<Record, Refused> {
+    pub fn save_product_in(&self, part: &Part, folder: &str, material: (usize, &str), thickness: f64, to: SaveTo, into: &crate::folders::PartsFolder) -> Result<Record, Refused> {
         let _lock = self.lock()?;
-        let rec = self.save_product(part, folder, material, thickness, to)?;
+        let rec = self.store_product(part, folder, material, thickness, to)?;
         if to.id().is_none() {
             let _ = crate::folders::file_part(self, rec.id, into);
         }
@@ -803,6 +872,21 @@ impl Library {
 
 /// Record files read: (kind, number) → (stamp, line in the list).
 type Scanned = std::collections::HashMap<(u8, u64), ((Option<std::time::SystemTime>, u64), Entry)>;
+
+/// The Library's record files as one scan read them (`scan_records`).
+pub struct RecordScan(Scanned);
+
+impl RecordScan {
+    /// The saved jobs and library parts in the material, each as (record
+    /// number, name), in record order (MA20). A record is in the material
+    /// its file means once read: its number, else its saved name (MA17).
+    pub fn using_material(&self, material: usize) -> (Vec<(u64, String)>, Vec<(u64, String)>) {
+        let mut found: Vec<&Entry> = self.0.values().map(|(_, e)| e).filter(|e| e.material == material).collect();
+        found.sort_by_key(|e| (e.kind as u8, e.id));
+        let of = |k: Kind| found.iter().filter(|e| e.kind == k).map(|e| (e.id, e.name.clone())).collect::<Vec<_>>();
+        (of(Kind::Job), of(Kind::Product))
+    }
+}
 
 /// The lines of a scan, in the list's order.
 fn entries_of(s: Scanned) -> Vec<Entry> {
@@ -859,14 +943,15 @@ fn saved_line(saved: Option<&Saved>, written: u64) -> (u64, Option<Who>) {
 
 fn job_entry(id: u64, j: &JobFile, written: u64) -> Entry {
     let (updated, saved_by) = saved_line(j.saved.as_ref(), written);
-    Entry { kind: Kind::Job, id, name: j.name.clone(), folder: j.week.clone(), material: j.spec.material, thickness: j.spec.thickness, w: j.spec.w, h: j.spec.h, count_a: j.parts.len(), count_b: j.sheets.len(), updated, tech: false, saved_by, gas: j.spec.gas }
+    Entry { kind: Kind::Job, id, name: j.name.clone(), folder: j.week.clone(), material: j.spec.material, material_name: unresolved_name(j.spec.material, &j.material_name), thickness: j.spec.thickness, w: j.spec.w, h: j.spec.h, count_a: j.parts.len(), count_b: j.sheets.len(), updated, tech: false, saved_by, gas: j.spec.gas }
 }
 
 fn product_entry(id: u64, p: &ProductFile, written: u64) -> Entry {
     let (w, h) = p.part.bbox();
     let tech = p.part.tech.is_some() || !p.part.texts.is_empty();
     let (updated, saved_by) = saved_line(p.saved.as_ref(), written);
-    Entry { kind: Kind::Product, id, name: p.part.name.clone(), folder: p.folder.clone(), material: p.material, thickness: p.thickness, w, h, count_a: p.part.qty as usize, count_b: 0, updated, tech, saved_by, gas: None }
+    let material = crate::engine::material::read_material(p.material, &p.material_name);
+    Entry { kind: Kind::Product, id, name: p.part.name.clone(), folder: p.folder.clone(), material, material_name: unresolved_name(material, &p.material_name), thickness: p.thickness, w, h, count_a: p.part.qty as usize, count_b: 0, updated, tech, saved_by, gas: None }
 }
 
 /// Thickness filters below this mean "any thickness" (rule PK3: Lantek adds
@@ -939,10 +1024,16 @@ mod library_tests {
         let p3 = lib.save_product(&tp, "ACME", 2, 1.0, SaveTo::New).unwrap().id;
         assert!(lib.entries().iter().find(|e| e.kind == Kind::Product && e.id == p3).unwrap().tech);
         lib.delete(Kind::Product, p3).unwrap();
+        // MA17: a part saved from a job in a material the list doesn't have
+        // keeps the name the job read it with.
+        let p4 = lib.save_product_in(&part, "ACME", (41, "DEMO 904L"), 2.0, SaveTo::New, &crate::folders::PartsFolder::Path(String::new())).unwrap().id;
+        let pf = lib.load_product(p4).unwrap();
+        assert_eq!((pf.material, pf.material_name.as_str()), (41, "DEMO 904L"));
+        lib.delete(Kind::Product, p4).unwrap();
         assert_eq!((p1, p2), (1, 2));
         assert_eq!(lib.path(Kind::Product, 1234), dir.join("Products").join("1").join("1234.json"));
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
-        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
+        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
         let j = lib.save_job(&job, SaveTo::New).unwrap().id;
         // Saving again over the same number keeps one record.
         lib.save_job(&job, SaveTo::Over(j)).unwrap();
@@ -1317,7 +1408,7 @@ mod library_tests {
         // LB8: what a save does before writing (the window books the stock
         // there) never runs for a refused save.
         let mut booked = false;
-        let r = prog2.save_job_with(SaveTo::Read(on2.library.unwrap()), &on2.name, None, || {
+        let r = prog2.save_job_with(SaveTo::Read(on2.library.unwrap()), &on2.name, None, on2.spec.material, || {
             booked = true;
             Ok(on2.clone())
         });
