@@ -360,6 +360,14 @@ pub struct App {
     /// Part view: a lead just moved on one hole alone, offered to the holes
     /// of its shape (part, contour, how many) (LE8).
     pub lead_offer: Option<(usize, usize, usize)>,
+    /// Part view: the lead clicked on (part, contour), whose card changes
+    /// its shape (LE9).
+    pub sel_lead: Option<(usize, usize)>,
+    /// Screenshots only (--lead-card-menu): the selected lead's shape menu open.
+    pub lead_card_demo: bool,
+    /// Where that card sits (part, contour; top left), worked out from its
+    /// size the frame before.
+    pub lead_card_at: Option<((usize, usize), egui::Pos2)>,
     /// Follow Windows' light/dark setting (the original's default style takes
     /// the system colours).
     pub follow_system: bool,
@@ -682,6 +690,9 @@ impl App {
             part_ext_lock: None,
             lead_same: false,
             lead_offer: None,
+            sel_lead: None,
+            lead_card_demo: false,
+            lead_card_at: None,
             part_view_last: 0.0,
             follow_system: false,
             options_open: false,
@@ -3847,6 +3858,22 @@ fn main() -> eframe::Result {
             if let Some(t) = std::env::args().find_map(|a| a.strip_prefix("--lead-menu=").and_then(leadmenu::named)) {
                 app.tab = Tab::Technology;
                 app.lead_menu_demo = Some(t);
+            }
+            // --lead-pick=<contour> (screenshots, with --part): that cut
+            // contour's lead clicked on, its card shown (LE9); with
+            // --lead-shape=<type> given that shape through the engine first,
+            // with --lead-card-menu its shape menu open.
+            if let (Some(idx), Some(ci)) = (app.shown_part(), std::env::args().find_map(|a| a.strip_prefix("--lead-pick=").and_then(|v| v.parse::<usize>().ok()))) {
+                if let Some(k) = std::env::args().find_map(|a| a.strip_prefix("--lead-shape=").and_then(leadmenu::named)) {
+                    let spec = app.spec.clone();
+                    match engine::set_lead_type(&mut app.parts, idx, &spec, ci, k, false) {
+                        Ok(m) | Err(m) => app.status = m,
+                    }
+                    app.refresh();
+                }
+                app.sel_lead = Some((idx, ci));
+                app.lead_card_demo = std::env::args().any(|a| a == "--lead-card-menu");
+                app.tab = Tab::Technology;
             }
             // --tech-result (screenshots): Auto lead-ins run on one part type,
             // with its result card and "Apply to all".
