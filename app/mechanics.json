@@ -362,6 +362,13 @@
    "estimated": true
   },
   {
+   "name": "cut contour colour before and after machining",
+   "group": "part technology",
+   "value": {"not machined": "the plain contour colour: #ffff00 on the part's drawing look, the part's edge colour otherwise", "machined": "its cut quality's colour (CS7)", "machined on": "Machine part (part screen), Machine all or Cutting path (sheet)", "cleared by": "Clear machining, Clear cut order", "always coloured while": "the cut technology panel or Quality by size is open, and in the import preview"},
+   "source": "CS8",
+   "estimated": true
+  },
+  {
    "name": "a part's cut order set by hand is stored as",
    "group": "part cut order",
    "value": "a list of contour numbers (CS1), command by command; contour numbers never change",

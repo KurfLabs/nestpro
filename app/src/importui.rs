@@ -1500,7 +1500,9 @@ impl App {
                 let col = part_color(self.color_seq);
                 paint_part(&p, part, to_s, col, Stroke::new(1.2, darker(col, 0.5)), th().card);
                 let mt = crate::ct1::for_spec(&self.spec);
-                cutpanel::paint_contour_colours(&p, part, &mt, &to_s, 1.4, self.importui.panel.open);
+                // A drawing about to be imported is never machined: its contours show
+                // the qualities being set for it (CS7, CS8).
+                cutpanel::paint_contour_colours(&p, part, &mt, &to_s, 1.4, self.importui.panel.open, None);
                 // Width under the part, height on its right.
                 let dim = Stroke::new(1.0, th().text_dim);
                 let (x0, x1, y0, y1) = (o.x, o.x + w as f32 * s, o.y - h as f32 * s, o.y);
