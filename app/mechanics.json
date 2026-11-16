@@ -7208,14 +7208,14 @@
  {
   "name": "unknown material after the list changes",
   "group": "materials",
-  "value": "an open job whose material the list didn't have is looked for again by its name (MA31) whenever the list is read again or joined, never by its number alone; no name found: stays unknown, keeping its number and name",
+  "value": "an open job whose material the list didn't have is looked for again by its name (MA31) whenever a new list comes into use (read again, joined, or a change stored from this window or session), never by its number alone; whether it was known is taken from the list before; no name found: stays unknown, keeping its number and name",
   "source": "MA34",
   "estimated": true
  },
  {
   "name": "what uses a material, read against",
   "group": "materials",
-  "value": "the material list as read under the write lock; files first read without the lock are read again when the list changed in between",
+  "value": "the material list as read under the write lock; files first read without the lock are read again when the list changed in between; an open job that was unknown is found again in that list by its name (MA34)",
   "source": "MA35",
   "estimated": true
  }

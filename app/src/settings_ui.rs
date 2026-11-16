@@ -1145,7 +1145,9 @@ impl App {
     /// (MA20, JOB-88).
     fn open_material_jobs(&mut self) -> Vec<crate::materials::Open> {
         self.store_job();
-        self.jobs.iter().map(|j| crate::materials::Open { name: j.name.clone(), material: j.spec.material, record: j.lib_id }).collect()
+        // MA35: with the name each was read with and whether the list has
+        // it, so an unknown one is found again against the list as stored.
+        self.jobs.iter().map(|j| crate::materials::Open::new(&j.name, j.spec.material, &crate::engine::material::read_name(j.spec.material, &j.material_names), j.lib_id)).collect()
     }
 
     /// Settings → Materials: the material list (MA21). The page edits a copy
@@ -1409,7 +1411,11 @@ impl App {
         let r = d.changes().and_then(|c| crate::materials::apply(&home, &pc_dir, &self.cfg, || lib.saved(), &lib, &c, &open));
         match r {
             Ok((_, l)) => {
-                crate::engine::material::install(l);
+                // MA34: the open jobs follow the list as stored.
+                self.install_materials(|| {
+                    crate::engine::material::install(l);
+                    None
+                });
                 self.setui.mat_draft = None;
                 self.setui.mat_sel = None;
                 self.setui.mat_note = Some((true, "Materials saved.".into()));

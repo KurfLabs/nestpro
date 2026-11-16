@@ -269,13 +269,34 @@ pub fn update<T>(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings,
 pub struct Open {
     pub name: String,
     pub material: Id,
+    /// The name its material was read with (MA17).
+    pub material_name: String,
+    /// Whether the list it was read against had `material` (MA34).
+    pub known: bool,
     /// Its record in the Library, when it is a saved job.
     pub record: Option<u64>,
 }
 
+impl Open {
+    /// Job `name` open in `material`, read with `material_name`, against
+    /// the list in use now.
+    pub fn new(name: &str, material: Id, material_name: &str, record: Option<u64>) -> Open {
+        Open { name: name.to_string(), material, material_name: material_name.to_string(), known: crate::engine::material::exists(material), record }
+    }
+
+    /// MA34, MA35: its material against the list answering now (the one
+    /// read under the write lock): one the list it was read against had
+    /// keeps its number; an unknown one is found again by its name, never
+    /// by its number alone (another PC may have given the name to a
+    /// material since).
+    fn material_now(&self) -> Id {
+        if self.known { self.material } else { crate::engine::material::find_again(self.material, &self.material_name) }
+    }
+}
+
 impl From<&crate::jobfile::JobFile> for Open {
     fn from(j: &crate::jobfile::JobFile) -> Open {
-        Open { name: j.name.clone(), material: j.spec.material, record: j.library.map(|r| r.id) }
+        Open::new(&j.name, j.spec.material, &j.material_name, j.library.map(|r| r.id))
     }
 }
 
@@ -288,7 +309,7 @@ fn uses_in(lib: &crate::library::Library, scan: &crate::library::RecordScan, id:
     let stock = crate::stock::Stock::load(&lib.dir).map_err(|e| format!("The sheet stock can't be read ({e}), so it can't be told whether a stock sheet uses the material: it wasn't deleted."))?;
     Ok(Uses {
         stock: stock.items.iter().filter(|i| i.material == id).map(|i| i.reference.clone()).collect(),
-        open: open.iter().filter(|j| j.material == id && !j.record.is_some_and(|r| jobs.iter().any(|x| x.0 == r))).map(|j| j.name.clone()).collect(),
+        open: open.iter().filter(|j| j.material_now() == id && !j.record.is_some_and(|r| jobs.iter().any(|x| x.0 == r))).map(|j| j.name.clone()).collect(),
         jobs: jobs.into_iter().map(|x| x.1).collect(),
         parts: parts.into_iter().map(|x| x.1).collect(),
     })

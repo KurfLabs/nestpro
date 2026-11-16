@@ -8420,6 +8420,57 @@ fn an_unknown_jobs_number_given_to_a_new_material_elsewhere_doesnt_switch_it() {
 }
 
 #[test]
+fn a_material_this_session_adds_never_takes_its_unknown_jobs_number() {
+    // MA34: the open job is (3, DEMO 304), which the list hasn't. This
+    // session adds DEMO 316, which takes number 3: the job stays unknown,
+    // on every call after, and is saved with its own number and name.
+    let d = dir("session_add_unknown_number");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let jp = open_unknown_job(&mut s, &d, "DEMO-304-JOB", 3, "DEMO 304");
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    assert_eq!(material::name(3).as_deref(), Some("DEMO 316"));
+    assert_eq!(job_material(&mut s), ("?".into(), 3, false));
+    assert_eq!(job_material(&mut s), ("?".into(), 3, false), "and on every call after");
+    call(&mut s, "set-sheet", None, json!({"gap": 7}));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    assert_eq!((saved["spec"]["material"].as_u64(), saved["material_name"].as_str()), (Some(3), Some("DEMO 304")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_rename_elsewhere_while_a_delete_looks_counts_the_open_job_it_now_names() {
+    // MA35: the open job is (41, DEMO C), which this list doesn't have.
+    // While this session looks at what uses DEMO Y (3), before it takes the
+    // lock, another PC renames DEMO Y to DEMO C: the open job now means it,
+    // so the delete is refused.
+    let d = dir("material_delete_race_open_job");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Y", "standard": "stainless"}));
+    open_unknown_job(&mut s, &d, "DEMO-J41", 41, "DEMO C");
+    let lib2 = lib.clone();
+    let mut done = false;
+    crate::shared::hooks::set(move |step| {
+        if step == "materials scanned" && !done {
+            done = true;
+            // Another PC: its list never reaches this session's.
+            let before = material::current();
+            let mut other = Session::new(stock_ctx_again(&lib2));
+            call(&mut other, "material", None, json!({"mode": "edit", "material": "DEMO Y", "name": "DEMO C"}));
+            material::install((*before).clone());
+        }
+    });
+    let r = delete_material(&mut s, "DEMO Y");
+    crate::shared::hooks::clear();
+    let e = r.unwrap_err();
+    assert!(e.contains("DEMO-J41"), "{e}");
+    let stored = crate::materials::read(&crate::materials::Home::Library(lib.clone()).file()).unwrap().unwrap();
+    assert_eq!(stored.get(3).map(|m| m.name.as_str()), Some("DEMO C"), "not deleted");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn two_pcs_with_settings_from_before_answer_from_the_first_ones_list() {
     // MA28: a Library with no list yet takes the first upgraded PC's three
     // (as its settings had them), stored; the next PC answers from it, not
