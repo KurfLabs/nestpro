@@ -8581,3 +8581,40 @@ fn an_engraving_a_point_mark_or_a_joint_cut_twice_is_refused() {
     assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("micro-joint")), "{e:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// Review round 4 (#127): a correct program with tiny features is written.
+
+#[test]
+fn a_part_with_a_tiny_notch_and_a_small_fillet_is_written_and_read_back_in_order() {
+    // S1: a 100 × 50 plate with a 0.2 × 0.2 mm notch in its top edge, an
+    // R1 fillet at one corner (beside a straight) and a 0.1 mm step.
+    let d = dir("bystar_tiny_features");
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    let job = d.join("DEMO-TINY.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    // Vertices (x, y, bulge): the fillet is the arc from (99, 0) to (100, 1).
+    let v = [(0.0, 0.0, 0.0), (99.0, 0.0, 0.414213562), (100.0, 1.0, 0.0), (100.0, 50.0, 0.0), (50.1, 50.0, 0.0), (50.1, 49.8, 0.0), (49.9, 49.8, 0.0), (49.9, 50.0, 0.0), (0.1, 50.0, 0.0), (0.1, 49.9, 0.0), (0.0, 49.9, 0.0)];
+    let mut pl = format!("0\nLWPOLYLINE\n8\n0\n90\n{}\n70\n1\n", v.len());
+    for (x, y, b) in v {
+        pl.push_str(&format!("10\n{x}\n20\n{y}\n"));
+        if b != 0.0 {
+            pl.push_str(&format!("42\n{b}\n"));
+        }
+    }
+    let dxf = d.join("DEMO-TINY.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{pl}0\nENDSEC\n0\nEOF\n")).unwrap();
+    call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 2}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 300, "y": 50, "angle": 90}));
+    let r = call(&mut s, "export", None, json!({}));
+    assert!(bystar_dir(&d, "DEMO-TINY").join("DEMOTINYX1.bvc").is_file(), "{r}");
+    // With leads off, each contour starts on a vertex: the overlap runs over
+    // its first elements.
+    call(&mut s, "leads", None, json!({"mode": "delete"}));
+    call(&mut s, "tech-set", None, json!({"parts": 1, "overlap": 1}));
+    let r = call(&mut s, "export", None, json!({}));
+    assert!(bystar_dir(&d, "DEMO-TINY").join("DEMOTINYX1.bvc").is_file(), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}

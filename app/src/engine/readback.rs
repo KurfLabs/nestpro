@@ -582,10 +582,15 @@ fn stretch(p: &[P], s0: f64, s1: f64) -> Vec<P> {
 }
 
 /// The first point where written path `w` goes back over planned path `e`
-/// or skips part of it: walked half a millimetre at a time, each point of
-/// `w` must lie on `e` at or just after where the one before it did. A
-/// stretch cut twice, or cut out of order, has the same ground both ways
-/// but not the same sequence (#127 review).
+/// or skips part of it (#127 review, rounds 3 and 4). `w` is walked half a
+/// millimetre at a time. For each point the walk keeps every place along `e`
+/// (as intervals of distance along it) the point may be at: within `tol` of
+/// `e`, not before the furthest place every earlier point had to have
+/// reached, and at most its step plus twice `tol` past where the point before
+/// it could be. A walk with no place left, or one that ends short of the
+/// plan's end by more than twice `tol`, is out of order. So a stretch is cut
+/// again (back more than twice `tol`), or a part of the plan skipped, and
+/// near segments of a tiny feature never strand it: every candidate is kept.
 fn out_of_order(w: &[P], e: &[P], tol: f64) -> Option<P> {
     if w.len() < 2 || e.len() < 2 {
         return None;
@@ -594,13 +599,39 @@ fn out_of_order(w: &[P], e: &[P], tol: f64) -> Option<P> {
     for s in e.windows(2) {
         cum.push(cum[cum.len() - 1] + dist(s[0], s[1]));
     }
-    // Where `q` falls on segment `j`: how far off, and how far along `e`.
-    let on = |q: P, j: usize| -> (f64, f64) {
-        let (a, b) = (e[j], e[j + 1]);
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let l = dx * dx + dy * dy;
-        let t = if l == 0.0 { 0.0 } else { (((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l).clamp(0.0, 1.0) };
-        (dist(q, [a[0] + t * dx, a[1] + t * dy]), cum[j] + t * l.sqrt())
+    let total = cum[cum.len() - 1];
+    let near = Near::new(e, tol);
+    // The places along `e` within `tol` of `q`, as sorted, merged intervals.
+    let places = |q: P| -> Vec<(f64, f64)> {
+        let key = ((q[0] / near.cell).floor() as i64, (q[1] / near.cell).floor() as i64);
+        let mut v: Vec<(f64, f64)> = vec![];
+        for &j in near.cells.get(&key).map_or(&[][..], |x| x.as_slice()) {
+            let j = j as usize;
+            let (a, b) = (e[j], e[j + 1]);
+            let dd = [b[0] - a[0], b[1] - a[1]];
+            let l2 = dd[0] * dd[0] + dd[1] * dd[1];
+            let f = [a[0] - q[0], a[1] - q[1]];
+            let c = f[0] * f[0] + f[1] * f[1] - (tol + 1e-9) * (tol + 1e-9);
+            if l2 == 0.0 {
+                if c <= 0.0 {
+                    v.push((cum[j], cum[j]));
+                }
+                continue;
+            }
+            // |a + t·d − q|² ≤ tol²: a quadratic in t.
+            let bq = f[0] * dd[0] + f[1] * dd[1];
+            let disc = bq * bq - l2 * c;
+            if disc < 0.0 {
+                continue;
+            }
+            let r = disc.sqrt();
+            let (t0, t1) = (((-bq - r) / l2).max(0.0), ((-bq + r) / l2).min(1.0));
+            if t0 <= t1 {
+                let l = l2.sqrt();
+                v.push((cum[j] + t0 * l, cum[j] + t1 * l));
+            }
+        }
+        merge(v)
     };
     let mut pts = vec![w[0]];
     for s in w.windows(2) {
@@ -610,22 +641,49 @@ fn out_of_order(w: &[P], e: &[P], tol: f64) -> Option<P> {
             [s[0][0] + (s[1][0] - s[0][0]) * f, s[0][1] + (s[1][1] - s[0][1]) * f]
         }));
     }
-    let (mut k, mut s, mut prev) = (0usize, 0.0f64, w[0]);
-    for (i, &q) in pts.iter().enumerate() {
-        let step = dist(q, prev);
-        prev = q;
-        let hit = (k..e.len() - 1).find_map(|j| {
-            let (off, at) = on(q, j);
-            (off <= tol && (j > k || at >= s - tol)).then_some((j, at))
-        });
-        let Some((j, at)) = hit else { return Some(q) };
-        if i > 0 && at > s + step + 2.0 * tol + 1e-6 {
-            return Some(q);
+    // The written path starts where the plan does.
+    let mut set: Vec<(f64, f64)> = places(pts[0]).into_iter().filter_map(|(a, b)| (a <= 2.0 * tol).then_some((a, b.min(2.0 * tol)))).collect();
+    if set.is_empty() {
+        return Some(pts[0]);
+    }
+    // Every place a point may be is at least here: the furthest any earlier
+    // point had to have reached (no creeping back step by step).
+    let mut floor = set[0].0;
+    for k in 1..pts.len() {
+        let step = dist(pts[k], pts[k - 1]);
+        let reach: Vec<(f64, f64)> = merge(set.iter().map(|&(a, b)| (a.max(floor), b + step + 2.0 * tol)).collect());
+        let here = places(pts[k]);
+        let mut next = vec![];
+        for &(a, b) in &here {
+            for &(c, d) in &reach {
+                let (lo, hi) = (a.max(c), b.min(d));
+                if lo <= hi {
+                    next.push((lo, hi));
+                }
+            }
         }
-        k = j;
-        s = s.max(at);
+        set = merge(next);
+        let Some(&(lo, _)) = set.first() else { return Some(pts[k]) };
+        floor = floor.max(lo);
+    }
+    // And it ends where the plan does.
+    if set.last().is_none_or(|x| x.1 < total - 2.0 * tol) {
+        return pts.last().copied();
     }
     None
+}
+
+/// Intervals sorted and joined where they touch.
+fn merge(mut v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = vec![];
+    for (a, b) in v {
+        match out.last_mut() {
+            Some(l) if a <= l.1 + 1e-9 => l.1 = l.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
 }
 
 /// How many times a path passes within `r` of `g`. Two moves that both
@@ -1301,6 +1359,38 @@ mod tests {
         // A closed contour's overlap past its start is in the plan, so it is in order.
         let sq = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0], [1.0, 0.0]];
         assert_eq!(out_of_order(&sq, &sq, tolerance()), None);
+    }
+
+    #[test]
+    fn a_path_written_as_planned_is_in_order_with_tiny_features() {
+        // #127 review round 4 S1: identical paths, each with a feature
+        // smaller than the walk's step near earlier segments.
+        let tol = tolerance();
+        let detour = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 0.1], [10.1, 0.1], [10.1, 0.0], [10.0, 0.0], [10.0, -10.0]];
+        assert_eq!(out_of_order(&detour, &detour, tol), None, "a 0.1 mm square detour");
+        // A 0.2 mm notch in a straight edge.
+        let notch = vec![[0.0, 0.0], [49.9, 0.0], [49.9, 0.2], [50.1, 0.2], [50.1, 0.0], [100.0, 0.0], [100.0, 50.0]];
+        assert_eq!(out_of_order(&notch, &notch, tol), None, "a 0.2 mm notch");
+        // A closed square whose first element is 0.1 mm long, with its overlap
+        // past the start (over that short element and on).
+        let sq = vec![[0.0, 0.0], [0.1, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0], [0.1, 0.0], [1.0, 0.0]];
+        assert_eq!(out_of_order(&sq, &sq, tol), None, "a short first element and the overlap");
+        // A small arc (R0.5, as points) right after a straight.
+        let mut arc = vec![[0.0, 0.0], [20.0, 0.0]];
+        arc.extend((1..=16).map(|k| {
+            let a = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * k as f64 / 16.0;
+            [20.0 + 0.5 * a.cos(), 0.5 + 0.5 * a.sin()]
+        }));
+        arc.push([0.0, 1.0]);
+        assert_eq!(out_of_order(&arc, &arc, tol), None, "a small arc next to a straight");
+        // Each still refused with its longest element cut back and again.
+        for e in [&detour, &notch, &sq, &arc] {
+            let k = (0..e.len() - 1).max_by(|&a, &b| dist(e[a], e[a + 1]).total_cmp(&dist(e[b], e[b + 1]))).unwrap();
+            let mut w = e.clone();
+            w.insert(k + 2, e[k]);
+            w.insert(k + 3, e[k + 1]);
+            assert!(out_of_order(&w, e, tol).is_some(), "the longest element cut again: {e:?}");
+        }
     }
 
     #[test]
