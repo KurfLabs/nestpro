@@ -154,10 +154,19 @@ fn whole_circle(c: &Contour) -> Option<P> {
     if !c.joints.is_empty() || !c.loops.is_empty() {
         return None;
     }
-    match crate::machine::recognise(&c.points) {
-        Some(crate::machine::StdShape::Circle { c: centre, .. }) => Some(centre),
-        _ => None,
-    }
+    let Some(crate::machine::StdShape::Circle { c: centre, d }) = crate::machine::recognise(&c.points) else { return None };
+    // The recogniser looks at corners only, and a rectangle's corners lie on
+    // one circle too (system compensation leaves it no sharp corner): every
+    // point and the middle of every straight must be on the circle (BL38's
+    // tolerance).
+    let n = c.points.len();
+    let on = |p: P| (dist(p, centre) - d / 2.0).abs() <= crate::blm::ARC_SPAN_TOL;
+    (0..n)
+        .all(|i| {
+            let (a, b) = (c.points[i], c.points[(i + 1) % n]);
+            on(a) && on([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
+        })
+        .then_some(centre)
 }
 
 /// One cut contour (OX19): traverse to the pierce point, lead-in at quality
@@ -569,6 +578,26 @@ mod tests {
         let hole = contour(circle([50.0, 25.0], 10.0, 72, true), true, vec![], 2);
         let recs = records(&plan(vec![hole]), &[]);
         assert!(recs.iter().filter(|r| r.q == 2).all(|r| r.side == 1 && r.bow > 0.0), "{recs:?}");
+    }
+
+    #[test]
+    fn a_rectangle_with_rounded_offset_corners_is_not_a_circle() {
+        // System compensation rounds a 100 × 50 outside's corners (0.3 mm kerf):
+        // its corners all lie on one circle, but it is still four sides.
+        let r = 0.15;
+        let mut pts = vec![];
+        for (cx, cy, a0) in [(100.0, 0.0, -90.0), (100.0, 50.0, 0.0), (0.0, 50.0, 90.0), (0.0, 0.0, 180.0)] {
+            for k in 0..=3 {
+                let a = (a0 + 30.0 * k as f64).to_radians();
+                pts.push([cx + r * a.cos(), cy + r * a.sin()]);
+            }
+        }
+        let mut c = contour(pts, false, vec![], 3);
+        c.comp.system = true;
+        let p = plan(vec![c]);
+        let text = program(1, 1, &spec(), &p, &[], 1.0);
+        assert!(check(&text, &p, &[]).is_empty(), "{:?}\n{text}", check(&text, &p, &[]));
+        assert!(records(&p, &[]).iter().all(|r| r.side == 0));
     }
 
     #[test]
