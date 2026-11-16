@@ -8386,3 +8386,110 @@ fn the_machine_proof_job_writes_a_bvc_that_opens_back_to_the_same_job() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// Review round 1 (#127): each test fails without its fix.
+
+#[test]
+fn a_cut_that_comes_back_through_a_joint_marker_and_goes_on_again_is_refused() {
+    // S1: after a marker, the cut runs on along the edge, comes back to the
+    // marker and goes on again: the gap is cut through twice, unmarked.
+    let d = dir("bystar_joint_return");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "joints", None, json!({"mode": "auto", "every": 60, "parts": 1}));
+    call(&mut s, "export", None, json!({}));
+    let back_and_on = |t: String| -> String {
+        let mut lines: Vec<String> = t.split("\r\n").map(str::to_string).collect();
+        let k = (1..lines.len() - 1).find(|&k| lines[k].contains("<ExecMicrojoint") && lines[k + 1].contains("<LineTo")).unwrap();
+        let xy = |l: &str| -> String { format!("X={}", l.split(" X=").nth(1).unwrap().split(" />").next().unwrap()) };
+        let marker = xy(&lines[k - 1]);
+        let next = lines[k + 1].clone();
+        lines.insert(k + 2, format!("        <LineTo Id=\"9998\" {marker} />"));
+        lines.insert(k + 3, next);
+        lines.join("\r\n")
+    };
+    let e = export_edited(&mut s, back_and_on);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("micro-joint gap")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_cut_off_pierced_away_from_its_bv38_point_is_refused() {
+    // S2: B003 = 3, B004 = 5, B005 = 2: both pierces must be at Y 7 (Y 10 in
+    // the subprogram); moved to Y 1 they still lie on the line.
+    let d = dir("bystar_cutoff_pierce_at");
+    let mut s = bystar_job(&d, false);
+    with_cut_line(&mut s, "900,0;900,500");
+    switches(&mut s, "B003=3, B004=5, B005=2");
+    call(&mut s, "export", None, json!({}));
+    let e = export_edited(&mut s, |t| t.replace("X=\"900\" Y=\"10\"", "X=\"900\" Y=\"4\""));
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("pierced at")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_head_lift_after_the_next_rapid_is_refused() {
+    // S3: the cut-off's first lift moved past the rapid back to the pierce
+    // point: the head travels before it lifts.
+    let d = dir("bystar_lift_late");
+    let mut s = bystar_job(&d, false);
+    with_cut_line(&mut s, "900,0;900,500");
+    switches(&mut s, "B003=3, B004=5, B005=2");
+    call(&mut s, "export", None, json!({}));
+    let late = |t: String| -> String {
+        let mut lines: Vec<String> = t.split("\r\n").map(str::to_string).collect();
+        let k = lines.iter().position(|l| l.contains("<ExecHighPositioning")).unwrap();
+        assert!(lines[k + 1].contains("<MoveLineTo"));
+        lines.swap(k, k + 1);
+        lines.join("\r\n")
+    };
+    let e = export_edited(&mut s, late);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("head lift")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_overrun_without_sensing_or_run_up_distances_runs_past_both_edges() {
+    // S4: B003 = 3, B004 = B005 = 0: pierced on the start edge, out 3 past
+    // it, then on from the same point (no-time) to 3 past the far edge.
+    // Before the fix the start's overrun was left out and the read-back
+    // refused the sheet.
+    let d = dir("bystar_overrun_only");
+    let mut s = bystar_job(&d, false);
+    with_cut_line(&mut s, "900,0;900,500");
+    switches(&mut s, "B003=3");
+    let ccp = bystar_program_text(&mut s, 1);
+    let (o, c) = sub_commands(&ccp, "ResidualSheetCuts");
+    let seq: Vec<String> = c.iter().filter(|x| matches!(x.0.as_str(), "MoveLineTo" | "LineTo" | "SetPiercingMode")).map(|x| match x.0.as_str() {
+        "SetPiercingMode" => attr(x, "Value").unwrap().to_string(),
+        _ => {
+            let p = on_sheet(x, o);
+            format!("{} {} {}", x.0, p[0], p[1])
+        }
+    }).collect();
+    // (Sensing goes off at the far edge itself, between its two moves, BV38.)
+    assert_eq!(seq, ["MoveLineTo 900 0", "Fine", "LineTo 900 -3", "MoveLineTo 900 0", "NoTime", "LineTo 900 500", "LineTo 900 503"], "{ccp}");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_cut_off_with_an_empty_table_pierce_is_written_without_its_first_pierce() {
+    // S5: B014 with quality 1's pierce empty: BV33 writes no first pierce;
+    // the no-time re-pierce stays and is still checked.
+    let d = dir("bystar_cutoff_no_pierce");
+    let mut s = bystar_job(&d, false);
+    with_cut_line(&mut s, "900,0;900,500");
+    call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "set": "B014=1, B003=3, B004=5, B005=2", "pierce": "1="}));
+    let ccp = bystar_program_text(&mut s, 1);
+    let (_, c) = sub_commands(&ccp, "ResidualSheetCuts");
+    let pierces: Vec<&str> = c.iter().filter(|x| x.0 == "SetPiercingMode").map(|x| attr(x, "Value").unwrap()).collect();
+    assert_eq!(pierces, ["NoTime"], "{ccp}");
+    call(&mut s, "export", None, json!({}));
+    // The re-pierce moved off its point is still refused.
+    let e = export_edited(&mut s, |t| {
+        let k = t.rfind("X=\"900\" Y=\"10\"").unwrap();
+        format!("{}X=\"900\" Y=\"4\"{}", &t[..k], &t[k + "X=\"900\" Y=\"10\"".len()..])
+    });
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

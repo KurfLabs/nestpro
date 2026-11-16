@@ -565,7 +565,9 @@ fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -
     out
 }
 
-/// How many times a path passes within `r` of `g`.
+/// How many times a path passes within `r` of `g`. Two moves that both
+/// come near are one pass only when the point they share is near too: a cut
+/// that leaves the gap and comes back through it passes it again (S1).
 fn passes(path: &[P], g: P, r: f64) -> usize {
     let near = |a: P, b: P| {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -577,7 +579,7 @@ fn passes(path: &[P], g: P, r: f64) -> usize {
     let mut was = false;
     for w in path.windows(2) {
         let now = near(w[0], w[1]);
-        if now && !was {
+        if now && !(was && dist(w[0], g) <= r) {
             n += 1;
         }
         was = now;
@@ -709,30 +711,68 @@ fn cutoff_issues(label: &str, written: &[(Cut, &crate::bvc::Cut)], place: &dyn F
         if let Some(gap) = (0..=n).map(|k| along(must, k as f64 / n as f64)).find(|q| !nears.iter().any(|nr| nr.within(*q, tol))) {
             issues.push(format!("{at} isn't cut near X{:.1} Y{:.1}: it would miss the sheet's edge or leave part of the line uncut", gap[0], gap[1]));
         }
-        let starts_inside = !near_edge(l.pts[0], (post.whole("B004") + post.whole("B005")).max(0) as f64 * post.unit + post.tol);
-        let mut first_at: Option<P> = None;
+        let d = (post.whole("B004") + post.whole("B005")).max(0) as f64 * post.unit;
+        let starts_inside = !near_edge(l.pts[0], d + post.tol);
+        // S2, BV38, BV49: where every pierce of this line must be, worked out
+        // here on its own: its start when it starts inside; else where it
+        // first comes B004 + B005 inside the sheet, or a quarter of the way
+        // along when that isn't in its first half.
+        let mut line = l.pts.clone();
+        line.dedup_by(|a, b| dist(*a, *b) < 1e-9);
+        let len: f64 = line.windows(2).map(|w| dist(w[0], w[1])).sum();
+        let pierce_at = if starts_inside {
+            line[0]
+        } else {
+            let (lo, hi) = ([d, d], [spec.w - d, spec.h - d]);
+            let mut gone = 0.0;
+            let mut s_in: Option<f64> = None;
+            for w in line.windows(2) {
+                let (mut t0, mut t1) = (0.0f64, 1.0f64);
+                for k in 0..2 {
+                    let dk = w[1][k] - w[0][k];
+                    if dk.abs() < 1e-12 {
+                        if w[0][k] < lo[k] - 1e-9 || w[0][k] > hi[k] + 1e-9 {
+                            t0 = 2.0;
+                        }
+                    } else {
+                        let (u, v) = ((lo[k] - w[0][k]) / dk, (hi[k] - w[0][k]) / dk);
+                        t0 = t0.max(u.min(v));
+                        t1 = t1.min(u.max(v));
+                    }
+                }
+                if t0 <= t1 + 1e-12 {
+                    s_in = Some(gone + t0 * dist(w[0], w[1]));
+                    break;
+                }
+                gone += dist(w[0], w[1]);
+            }
+            let s = match s_in {
+                Some(s) if s <= len / 2.0 => s,
+                _ => len / 4.0,
+            };
+            along(&line, if len > 0.0 { s / len } else { 0.0 })
+        };
+        let first_pierce = post.pierce(q, false);
         for (k, (_, raw)) in cuts.iter().enumerate() {
-            let want = if k == 0 { if starts_inside && !post.on("B025") { 0 } else { 1 } } else { 1 };
+            // BV33: no first pierce for a line starting inside without B025,
+            // nor when the table's pierce is empty (S5); a re-pierce always.
+            let want = if k > 0 { 1 } else if (starts_inside && !post.on("B025")) || first_pierce.is_none() { 0 } else { 1 };
             if raw.pierces.len() != want {
                 issues.push(format!("{at} is pierced {} time(s) in its cut {} where {want} is planned", raw.pierces.len(), k + 1));
                 continue;
             }
-            if let Some((p0, _)) = raw.pierces.first() {
+            for (p0, _) in &raw.pierces {
                 let p0 = place(*p0);
-                if first_stray(&[p0], &allowed[i].0, tol).is_some() || p0[0] < -tol || p0[1] < -tol || p0[0] > spec.w + tol || p0[1] > spec.h + tol {
-                    issues.push(format!("{at} is pierced at X{:.1} Y{:.1}, off the line or off the sheet", p0[0], p0[1]));
+                if dist(p0, pierce_at) > tol {
+                    issues.push(format!("{at} is pierced at X{:.1} Y{:.1} where BV38 pierces it at X{:.1} Y{:.1}", p0[0], p0[1], pierce_at[0], pierce_at[1]));
                 }
+            }
+            if want == 1 {
                 let how = raw.pierce.map(|p| p.1);
-                let ok = if k == 0 {
-                    let w = post.pierce(q, false);
-                    how.map(|h| format!("{h:?}")) == w
-                } else {
-                    how == Some(Piercing::NoTime) && first_at.is_some_and(|f| dist(f, p0) <= tol)
-                };
+                let ok = if k == 0 { how.map(|h| format!("{h:?}")) == first_pierce } else { how == Some(Piercing::NoTime) };
                 if !ok {
-                    issues.push(format!("{at}: its cut {} is pierced {:?} where {} is planned", k + 1, how, if k == 0 { "the cut-off's pierce (BV33)" } else { "a no-time pierce where the first one was" }));
+                    issues.push(format!("{at}: its cut {} is pierced {:?} where {} is planned", k + 1, how, if k == 0 { "the cut-off's pierce (BV33)" } else { "a no-time pierce (BV38)" }));
                 }
-                first_at = first_at.or(Some(p0));
             }
             if raw.mode != Some(mode) || raw.modes.iter().any(|m| *m != Some(mode)) {
                 issues.push(format!("{at} is cut in operation mode {:?} where {mode} is planned", raw.mode));
@@ -857,7 +897,12 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                             let at = place(q);
                             let inside = at[0] > post.tol && at[1] > post.tol && at[0] < s.spec.w - post.tol && at[1] < s.spec.h - post.tol;
                             let exempt = mode == 1 && c.mode == Some(2);
-                            if inside != on && !(exempt && inside) {
+                            // BV38: a cut-off's no-time re-pierce comes after the
+                            // sequence's own `SetSensingSensor On`, on the start
+                            // edge when B004 + B005 is 0 (S4); the cut-off check
+                            // keeps the sensor off past the sheet.
+                            let re_pierce = c.lift && c.pierce.is_some_and(|p| p.1 == Piercing::NoTime) && on && !inside;
+                            if inside != on && !(exempt && inside) && !re_pierce {
                                 issues.push(format!("{label}: the height sensor is {} at the pierce at X{:.1} Y{:.1}, {} the sheet (BV37)", if on { "on" } else { "off" }, at[0], at[1], if inside { "inside" } else { "on the edge of" }));
                             }
                         }
@@ -904,8 +949,11 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                                 if let Some((m, _)) = marks.iter().zip(&e.markers).find(|(m, x)| dist(**m, **x) > tol) {
                                     return Some(format!("its micro-joint marker at X{:.1} Y{:.1} isn't at a planned gap's middle", m[0], m[1]));
                                 }
+                                // Each gap is passed once, at its marker (where the
+                                // written path is), or never with B038.
                                 let through = if e.markers.is_empty() { 0 } else { 1 };
-                                if let Some((g, _)) = e.gaps.iter().find(|(g, r)| passes(&w.pts, *g, *r) > through) {
+                                let at = |g: P| marks.iter().copied().find(|m| dist(*m, g) <= tol).unwrap_or(g);
+                                if let Some((g, _)) = e.gaps.iter().find(|(g, r)| passes(&w.pts, at(*g), *r) > through) {
                                     return Some(format!("it cuts through the micro-joint gap at X{:.1} Y{:.1}", g[0], g[1]));
                                 }
                                 if raw.lift {

@@ -1214,7 +1214,9 @@ pub fn cutoff_pieces(pts: &[P], w: f64, h: f64, b003: f64, b004: f64, b005: f64,
     } else {
         far.push((sub_path(&p, sp, len), None));
     }
-    if from_edge && sp > 1e-9 {
+    // BV38: a piece back to the start edge and past it, also when the pierce
+    // is on the edge itself but B003 runs it past (S4).
+    if from_edge && (sp > 1e-9 || b003 > 0.0) {
         // Back to the start edge and past it.
         let back: Vec<P> = sub_path(&p, 0.0, sp).into_iter().rev().collect();
         let off = b005.min(sp);
