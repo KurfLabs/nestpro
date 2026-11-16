@@ -2,10 +2,13 @@
 # Check before every commit: nothing private in the files to publish, the
 # tests pass on Linux, and the app type-checks for Windows (the main target).
 # Windows linking and the .exe icon need a Windows machine.
+# --boat runs the Linux tests and the Windows check on a boat.dev cloud machine
+# (tools/boat-check.sh) instead of here; the quick checks still run here.
 # Exits 1 when any step fails, so scripts and agents can trust the exit code.
 set -uo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
 cd "$(dirname "$0")/.."
+boat=false; [ "${1:-}" = "--boat" ] && boat=true
 
 # cargo builds and tests in CARGO_TARGET_DIR when it is set. One outside this
 # checkout may hold another worktree's build, so the tests could run that
@@ -33,11 +36,20 @@ echo "== Public check";  tools/public-check.sh | tail -40
 [ "${PIPESTATUS[0]}" = 0 ] || failed+=("public check")
 echo "== Rule IDs";      tools/unique-ids.sh || failed+=("rule IDs")
 echo "== Line endings";  { tools/line-endings-test.sh && tools/line-endings.sh; } || failed+=("line endings")
+if $boat; then
+  # Nothing leaves this computer unless the public check passed.
+  if [[ " ${failed[*]} " == *" public check "* ]]; then
+    echo "== Boat tests skipped: the public check failed, so nothing was sent"; failed+=("boat tests")
+  else
+    tools/boat-check.sh || failed+=("boat tests")
+  fi
+else
 cd app
 echo "== Linux tests";   cargo test 2>&1 | grep -E "^test result|FAILED|panicked|^error"
 [ "${PIPESTATUS[0]}" = 0 ] || failed+=("Linux tests")
 echo "== Windows check"; cargo check --target x86_64-pc-windows-gnu 2>&1 | grep -E "^(warning|error)|Finished"
 [ "${PIPESTATUS[0]}" = 0 ] || failed+=("Windows check")
+fi
 
 if [ ${#failed[@]} -gt 0 ]; then
   echo "== FAILED: ${failed[*]}"
