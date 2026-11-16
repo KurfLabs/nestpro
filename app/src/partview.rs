@@ -407,13 +407,17 @@ impl App {
         // Part.
         let part = &self.parts[idx];
         let mt = crate::ct1::for_spec(&self.spec);
+        // Cut contours take their quality colours once the part is machined
+        // (CS8); until then they keep the plain contour colour.
+        let machined = self.part_shows_machined();
         if lantek {
-            crate::drawing::paint_drawing_part(&painter, part, &mt, &to_s, self.dv.texts_dims, self.cut_panel.open);
+            crate::drawing::paint_drawing_part(&painter, part, &mt, &to_s, self.dv.texts_dims, self.cut_panel.open, machined);
         } else {
             let base = part_color(part.color);
-            paint_part(&painter, part, to_s, base, Stroke::new(1.5, darker(base, 0.42)), th().canvas_a);
+            let edge = darker(base, 0.42);
+            paint_part(&painter, part, to_s, base, Stroke::new(1.5, edge), th().canvas_a);
             // Every contour in its state or quality colour (CS7).
-            crate::cutpanel::paint_contour_colours(&painter, part, &mt, &to_s, 1.6, self.cut_panel.open);
+            crate::cutpanel::paint_contour_colours(&painter, part, &mt, &to_s, 1.6, self.cut_panel.open, (!machined).then_some(edge));
         }
         // Painting with the cut technology panel (CS6), or picking the cut
         // order (CO11): clicks, boxes and sweeps take contours instead of

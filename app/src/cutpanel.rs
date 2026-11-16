@@ -603,6 +603,21 @@ impl PaintTarget for JobPart<'_> {
 }
 
 impl App {
+    /// The part screen draws its cut contours in their quality colours
+    /// (CS8): once the part is machined (Machine part, until Clear
+    /// machining), or while its cut technology is being set (the cut
+    /// technology panel or Quality by size open).
+    pub fn part_shows_machined(&self) -> bool {
+        self.dv.machining || self.cut_panel.open || self.show_cut_ranges
+    }
+
+    /// The sheet draws its cut contours in their quality colours (CS8): once
+    /// it is machined (Machine all or Cutting path, until Clear cut order),
+    /// or while Quality by size is open.
+    pub fn sheet_shows_machined(&self) -> bool {
+        self.show_path || self.show_cut_ranges
+    }
+
     /// The engine's paint (`contours::paint`) on the open job, without an
     /// undo step: the message, or the refusal.
     fn paint_now(&mut self, part: usize, picks: &[usize], row: Row, same: bool) -> Result<String, String> {
@@ -816,14 +831,25 @@ fn contour_line(p: &egui::Painter, pts: &[egui::Pos2], look: Look, c: Color32, w
     }
 }
 
+/// The colour a contour is drawn in: its look's (CS7), except a cut
+/// contour while its part or sheet isn't machined, which takes `plain`
+/// (CS8). Mark, No cut, Bend line and Leave out keep their colours.
+pub fn contour_colour(look: Look, names: &CutQualities, plain: Option<Color32>) -> Color32 {
+    match (look, plain) {
+        (Look::Cut(_), Some(c)) => c,
+        _ => look_colour(look, names),
+    }
+}
+
 /// A part's contours in their colours through `map` (CS7): every cut
-/// contour in its cut quality's colour, the others in their state's; Leave
-/// out contours only with `left_out` (the panel is open, so they can be
-/// painted back). Drawn on the part's drawing screen and on the sheet.
-pub fn paint_contour_colours(painter: &egui::Painter, part: &crate::nest::Part, mt: &crate::ct1::MachineTech, map: &dyn Fn(P) -> egui::Pos2, w: f32, left_out: bool) {
+/// contour in its cut quality's colour, or in `plain` while it isn't
+/// machined (CS8), the others in their state's; Leave out contours only
+/// with `left_out` (the panel is open, so they can be painted back). Drawn
+/// on the part's drawing screen and on the sheet.
+pub fn paint_contour_colours(painter: &egui::Painter, part: &crate::nest::Part, mt: &crate::ct1::MachineTech, map: &dyn Fn(P) -> egui::Pos2, w: f32, left_out: bool, plain: Option<Color32>) {
     for (c, look) in contours::list(part).iter().zip(contours::looks(part, mt)) {
         let pts: Vec<egui::Pos2> = c.path().into_iter().map(map).collect();
-        contour_line(painter, &pts, look, look_colour(look, &mt.qualities), w, left_out);
+        contour_line(painter, &pts, look, contour_colour(look, &mt.qualities, plain), w, left_out);
     }
 }
 
@@ -865,6 +891,46 @@ pub(crate) mod tests {
 
     fn hand_qualities(a: &App) -> Vec<Option<usize>> {
         contours::list(&a.parts[0]).iter().map(|c| c.quality.map(|q| q.number())).collect()
+    }
+
+    #[test]
+    fn cut_contours_take_their_quality_colour_only_once_machined() {
+        // CS8: a cut contour is plain until machined; the other states keep
+        // their colours either way.
+        let names = CutQualities::default();
+        let q1 = CutQuality::new(1).unwrap();
+        let plain = Color32::from_rgb(1, 2, 3);
+        assert_eq!(contour_colour(Look::Cut(q1), &names, Some(plain)), plain);
+        assert_eq!(contour_colour(Look::Cut(q1), &names, None), crate::techui::quality_colour(&names, q1));
+        for (look, own) in [(Look::Mark, MARK), (Look::NoCut, NO_CUT), (Look::BendLine, BEND), (Look::LeaveOut, LEAVE_OUT)] {
+            assert_eq!(contour_colour(look, &names, Some(plain)), own);
+            assert_eq!(contour_colour(look, &names, None), own);
+        }
+    }
+
+    #[test]
+    fn machine_part_and_machine_all_turn_on_the_quality_colours_and_clearing_turns_them_off() {
+        let mut a = app_with_plate();
+        // A part opens machined (its leads and order are automatic); a
+        // sheet waits for Machine all.
+        assert!(a.part_shows_machined() && !a.sheet_shows_machined());
+        a.dv.machining = false; // Clear machining
+        assert!(!a.part_shows_machined());
+        a.machine_part();
+        assert!(a.part_shows_machined());
+        a.dv.machining = false; // Clear machining
+        assert!(!a.part_shows_machined());
+        // Setting the technology shows the qualities it sets, machined or not.
+        a.cut_panel.open = true;
+        assert!(a.part_shows_machined());
+        a.cut_panel.open = false;
+        a.show_cut_ranges = true;
+        assert!(a.part_shows_machined() && a.sheet_shows_machined());
+        a.show_cut_ranges = false;
+        a.show_path = true; // Machine all
+        assert!(a.sheet_shows_machined() && !a.part_shows_machined(), "the sheet and the part screen are machined apart");
+        a.show_path = false; // Clear cut order
+        assert!(!a.sheet_shows_machined());
     }
 
     #[test]

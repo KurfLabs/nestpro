@@ -2364,6 +2364,7 @@ impl App {
             // one part's glow never paints over the parts placed before it.
             let halo_slot = painter.add(EShape::Noop);
             let mut halos: Vec<EShape> = vec![];
+            let machined = self.sheet_shows_machined();
             for (i, pl) in sheet.iter().enumerate() {
                 let part = &self.parts[pl.part];
                 let base = part_color(part.color);
@@ -2406,8 +2407,10 @@ impl App {
                     halos.extend(selection_halo(part, pl, |q| to_s(q) - Vec2::new(0.0, drop)));
                 }
                 paint_part_placed(&painter, part, pl, |q| to_s(q) - Vec2::new(0.0, drop), fill, edge, th().sheet);
-                // Every contour in its cut quality's or state's colour (CS7).
-                crate::cutpanel::paint_contour_colours(&painter, part, &mt, &|q| to_s(pl.map(q)) - Vec2::new(0.0, drop), 1.2, false);
+                // Every contour in its cut quality's or state's colour (CS7);
+                // cut contours only once the sheet is machined (CS8).
+                let plain = (!machined).then(|| darker(base, 0.42).gamma_multiply(ease));
+                crate::cutpanel::paint_contour_colours(&painter, part, &mt, &|q| to_s(pl.map(q)) - Vec2::new(0.0, drop), 1.2, false, plain);
                 // Micro-joints as the cut plan places them (automatic ones too, holes
                 // included): small uncut bridges on the contours.
                 let planned: Vec<(&[P], (f64, f64))> = if !self.moving_parts() {
@@ -3274,6 +3277,11 @@ fn main() -> eframe::Result {
                 let total: f64 = app.part_sim_ops().0.iter().map(|o| o.secs).sum();
                 app.dv.sim = Some(total * f.clamp(0.0, 1.0));
                 app.dv.sim_follow = true;
+            }
+            // --part-cleared: the part after Clear machining, its cut contours
+            // in the plain colour (CS8).
+            if args.iter().any(|a| a == "--part-cleared") {
+                app.dv.machining = false;
             }
             // --part-zoom=<z>: the part view zoomed in (with --part-sim-at, on the head).
             if let Some(z) = args.iter().find_map(|a| a.strip_prefix("--part-zoom=").and_then(|v| v.parse::<f32>().ok())) {

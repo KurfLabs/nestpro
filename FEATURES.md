@@ -270,6 +270,7 @@ original (or a real job).
 | DRW-8 | Colours of No cut contours (grey), Bend lines (dashed purple), Mark contours (the marking green) and Leave out contours while painting (faint, dashed) are our own, the same on the part, the sheet and the cut technology panel: the original's colours for no-cut and bending geometry aren't studied | Estimate | ★ | MECHANICS CS3, CS7, DR4 |
 | DRW-9 | Each cut contour is drawn in its cut quality's colour on the part and the sheet; the original mixes an element's colour with its cut technology's colour (DR4, DR5), not studied further | Estimate | ★ | MECHANICS CS7 |
 | DRW-10 | Which way a selection box is dragged (SW1) follows CAD programs: to the right takes what is wholly inside, to the left what it touches. The original's nesting and drawing screens aren't studied for this, and its new import assistant's notes give the opposite (dragged right = touching, JOB-46). If the shop wants the original's way it could be a setting | Estimate | ★ | MECHANICS SW1–SW5 |
+| DRW-11 | A machined part or sheet shows by its cut contours turning from the plain contour colour to their cut quality's colours (CS8). The original turns them its technology colour (red by default); a fixed "machined" colour (the original's red) could be a setting for shops that want it | Estimate | ★ | MECHANICS CS8, CS7 |
 | DRW-7 | Export DXF writes only the cut and marked contours: No cut contours and Bend lines aren't in it (a bending program would want the bend lines) | Missing | ★ | MECHANICS DF1, CS3 |
 
 ## Simulation, reports, machine link (OUT)
