@@ -7566,7 +7566,7 @@ fn machine_switches_reads_and_sets_a_bystar_post_and_refuses_what_isnt_one() {
     let sw = r["data"]["switches"].as_array().unwrap();
     assert_eq!(sw.len(), crate::bystar::SWITCHES.len());
     let b013 = sw.iter().find(|v| v["switch"] == "B013").unwrap();
-    assert_eq!((b013["value"].as_str(), b013["from"].as_str(), b013["programs"].as_str()), (Some("0.2"), Some("default"), Some("not yet")));
+    assert_eq!((b013["value"].as_str(), b013["from"].as_str(), b013["programs"].as_str()), (Some("0.2"), Some("default"), Some("written")), "B013 is written since #127 (BV65)");
     let r = switches(&mut s, "b015=1");
     assert_eq!(r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "B015").unwrap()["from"], json!("set"));
     // Saved with the settings.
@@ -7584,9 +7584,18 @@ fn machine_switches_reads_and_sets_a_bystar_post_and_refuses_what_isnt_one() {
 fn a_bystar_sheet_with_what_its_programs_cant_carry_yet_is_refused() {
     let d = dir("bystar_refused");
     let mut s = bystar_job(&d, false);
+    // A remnant line is written since #127 (BV64); corner loops still aren't.
     call(&mut s, "remnant", None, json!({"sheet": 1, "mode": "line", "x": 900}));
+    call(&mut s, "export", None, json!({}));
+    call(&mut s, "loops", None, json!({"on": true, "parts": 1}));
     let e = err(&mut s, "export", json!({}));
-    assert!(e.contains("remnant or cut-off lines") && e.contains("nothing was exported"), "{e}");
+    assert!(e.contains("corner loops") && e.contains("nothing was exported"), "{e}");
+    call(&mut s, "loops", None, json!({"on": false, "parts": 1}));
+    // Micro-joints with their own leads (B019, B023 left out, BV63).
+    call(&mut s, "tech-set", None, json!({"parts": 2, "joint_type": "leads"}));
+    call(&mut s, "joints", None, json!({"mode": "auto", "every": 60, "parts": 2}));
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("micro-joints with their own leads"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -7619,7 +7628,7 @@ fn an_opened_bvc_goes_on_the_bystar_laser_or_says_to_add_one() {
 }
 
 #[test]
-fn a_mark_is_written_in_mode_2_without_a_pierce_and_b036_is_refused_until_built() {
+fn a_mark_is_written_in_mode_2_without_a_pierce_and_reopens_as_a_mark() {
     let d = dir("bystar_marks");
     let mut s = Session::new(Ctx::builtin());
     s.ctx.cfg = bystar_settings(&d, true);
@@ -7646,11 +7655,11 @@ fn a_mark_is_written_in_mode_2_without_a_pierce_and_b036_is_refused_until_built(
     call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": bystar_dir(&d, "DEMO-MARK").join("DEMOMARKX1.bvc").to_str().unwrap()}));
     let j = jobfile::load(&back).unwrap();
     assert!(j.parts[0].custom.as_ref().unwrap().contours.iter().any(|c| c.state == crate::dxf::ContourState::Mark));
-    // B036 (new marking treatment) isn't written yet: a sheet with marking is refused.
+    // B036 (new marking treatment) is written since #127 (BV65): the opened
+    // job's mark too.
     call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "set": "B036=1"}));
     call(&mut s, "import-program", Some(d.join("AGAIN.snjob").to_str().unwrap()), json!({"path": bystar_dir(&d, "DEMO-MARK").join("DEMOMARKX1.bvc").to_str().unwrap()}));
-    let e = err(&mut s, "export", json!({}));
-    assert!(e.contains("B036") && e.contains("marking"), "{e}");
+    call(&mut s, "export", None, json!({}));
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -7734,8 +7743,13 @@ fn a_contour_in_the_b026_marking_quality_counts_as_marking_for_b036() {
     let mut s = bystar_job(&d, false);
     call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "quality": 4}));
     switches(&mut s, "B026=4, B036=1");
-    let e = err(&mut s, "export", json!({}));
-    assert!(e.contains("B036") && e.contains("marking"), "{e}");
+    // Written since #127 (BV65): the hole as engraving, Interior, uncompensated.
+    call(&mut s, "export", None, json!({}));
+    let cmds = ccp_commands(&bystar_program_text(&mut s, 1));
+    let k = cmds.iter().position(|c| c.0 == "SetOperationMode" && attr(c, "Value") == Some("2")).unwrap();
+    let b = k + cmds[k..].iter().position(|c| c.0 == "BeginCutOut").unwrap();
+    assert_eq!(attr(&cmds[b], "Contour"), Some("Interior"));
+    assert!(!cmds[k..b].iter().any(|c| c.0 == "SetToolCorrection"), "{:?}", &cmds[k..b]);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -7940,5 +7954,435 @@ fn the_job_file_names_the_gas_only_with_the_apps_own_switch() {
     let r = call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser"}));
     let x = r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "X001").unwrap().clone();
     assert_eq!((x["value"].as_str(), x["from"].as_str()), (Some("0"), Some("default")), "{x}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// #127: micro-joints, cut-off lines, marks and the remaining switches
+// (MECHANICS BV63–BV66), made-up jobs.
+// ---------------------------------------------------------------------------
+
+/// The commands of subprogram `name` and where the main program calls it.
+fn sub_commands(ccp: &str, name: &str) -> (P, Vec<(String, Vec<(String, String)>)>) {
+    let head = format!("Name=\"{name}\"");
+    let a = ccp.find(&head).unwrap_or_else(|| panic!("no subprogram {name}: {ccp}"));
+    let b = a + ccp[a..].find("</SubProgram>").unwrap();
+    let call = ccp_commands(ccp).into_iter().find(|c| c.0 == "CallSubProgram" && attr(c, "SubProgramName") == Some(name)).unwrap();
+    let at = [attr(&call, "X").unwrap().parse().unwrap(), attr(&call, "Y").unwrap().parse().unwrap()];
+    (at, ccp_commands(&ccp[a..b]))
+}
+
+/// A command's X, Y moved by the call at `o` (turned 0°): on the sheet.
+fn on_sheet(c: &(String, Vec<(String, String)>), o: P) -> P {
+    [attr(c, "X").unwrap().parse::<f64>().unwrap() + o[0], attr(c, "Y").unwrap().parse::<f64>().unwrap() + o[1]]
+}
+
+fn close(a: P, b: P) -> bool {
+    (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-6
+}
+
+#[test]
+fn micro_joints_are_marked_at_each_gaps_middle_and_read_back() {
+    // BV63: automatic joints on DEMO-001 (outline, holes and the slot's arcs).
+    let d = dir("bystar_joints");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "joints", None, json!({"mode": "auto", "every": 60, "parts": 1}));
+    let r = call(&mut s, "export", None, json!({}));
+    let ccp = std::fs::read_to_string(bystar_dir(&d, "DEMO-BVC").join("DEMOBVCX1.ccp")).unwrap();
+    let j = jobfile::load(&d.join("DEMO-BVC.snjob")).unwrap();
+    let plan = &j.plans()[0];
+    let planned: usize = plan.contours.iter().map(|c| c.joints.len()).sum();
+    assert!(planned >= 4, "{r}");
+    assert_eq!(ccp.matches("<ExecMicrojoint").count(), planned, "one marker per planned joint");
+    // No rapid or pierce inside a cut-out: the path runs on through the gap.
+    let cmds = ccp_commands(&ccp);
+    let mut open = false;
+    for c in &cmds {
+        match c.0.as_str() {
+            "BeginCutOut" => open = true,
+            "EndCutOut" => open = false,
+            "MoveLineTo" | "ExecPiercing" => assert!(!open, "{} inside a cut-out", c.0),
+            _ => {}
+        }
+    }
+    // Every marker of DEMO-001 (called at its own origin) is a gap's middle.
+    let (o, sub) = sub_commands(&ccp, "1");
+    let mids: Vec<P> = plan.contours.iter().filter(|c| c.part_no == 1).flat_map(|c| c.joints.iter().map(|g| crate::cnc::point_at(&c.points, (g.0 + g.1) / 2.0))).collect();
+    let marks: Vec<P> = (1..sub.len()).filter(|&k| sub[k].0 == "ExecMicrojoint").map(|k| on_sheet(&sub[k - 1], o)).collect();
+    assert_eq!(marks.len(), mids.len());
+    for m in &marks {
+        assert!(mids.iter().any(|g| (g[0] - m[0]).hypot(g[1] - m[1]) < 0.125), "marker {m:?} not at a gap's middle {mids:?}");
+    }
+    // Opened again, the part keeps a joint at each.
+    let back = d.join("BACK.snjob");
+    call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": bystar_dir(&d, "DEMO-BVC").join("DEMOBVCX1.bvc").to_str().unwrap()}));
+    let again = jobfile::load(&back).unwrap();
+    let picks = again.parts.iter().find(|p| p.name == "DEMO-001").unwrap().tech.as_ref().unwrap().joint_picks.iter().flatten().count();
+    assert_eq!(picks, mids.len().min(12));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_joint_gap_cut_through_is_refused_by_the_read_back() {
+    // BV63: a joint marker dropped leaves the path running through the gap.
+    let d = dir("bystar_joint_through");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "joints", None, json!({"mode": "auto", "every": 60, "parts": 1}));
+    let drop_one = |t: String| -> String {
+        let k = t.find("<ExecMicrojoint").unwrap();
+        let a = t[..k].rfind("\r\n").unwrap();
+        let b = k + t[k..].find("\r\n").unwrap();
+        format!("{}{}", &t[..a], &t[b..])
+    };
+    let e = export_edited(&mut s, drop_one);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("micro-joint")), "{e:?}");
+    assert!(!bystar_dir(&d, "DEMO-BVC").join("DEMOBVCX1.bvc").exists());
+    // B038: a cut-out that runs on through a gap instead of stopping.
+    switches(&mut s, "B038=1");
+    call(&mut s, "export", None, json!({}));
+    let join = |t: String| -> String {
+        // The first restart's rapid and cut-out start taken out: the cut runs
+        // straight on from the gap's start to the far end of the gap.
+        let mut lines: Vec<String> = t.split("\r\n").map(str::to_string).collect();
+        let e = lines.iter().position(|l| l.contains("<EndCutOut")).unwrap();
+        let b = e + lines[e..].iter().position(|l| l.contains("<BeginCutOut")).unwrap();
+        let mv = e + lines[e..].iter().position(|l| l.contains("<MoveLineTo")).unwrap();
+        lines[mv] = lines[mv].replace("MoveLineTo", "LineTo");
+        let keep: Vec<String> = lines.iter().enumerate().filter(|(k, _)| *k < e || *k > b || *k == mv).map(|(_, l)| l.clone()).collect();
+        keep.join("\r\n")
+    };
+    let e = export_edited(&mut s, join);
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The made-up job with a cut line drawn through `points` on sheet 1.
+fn with_cut_line(s: &mut Session, points: &str) {
+    call(s, "cut-line", None, json!({"sheet": 1, "points": points}));
+}
+
+#[test]
+fn a_remnant_cut_off_is_pierced_inside_sensed_off_near_each_edge_and_run_past_it() {
+    // BV38, BV64: B003 = 3 (overrun), B004 = 5 (sensing off), B005 = 2 (run-up).
+    let d = dir("bystar_cutoff");
+    let mut s = bystar_job(&d, false);
+    with_cut_line(&mut s, "900,0;900,500");
+    // The shipped values (all 0): pierced on the edge, no overrun, one piece.
+    let ccp = bystar_program_text(&mut s, 1);
+    let (o, c) = sub_commands(&ccp, "ResidualSheetCuts");
+    assert_eq!(o, [0.0, 0.0], "no B003, no shift");
+    let names: Vec<&str> = c.iter().map(|x| x.0.as_str()).collect();
+    assert_eq!(names, ["SetOperationMode", "SetToolCorrection", "SetSensingSensor", "SetToolCorrection", "MoveLineTo", "BeginCutOut", "SetPiercingMode", "ExecPiercing", "LineTo", "SetSensingSensor", "SetSensingSensor", "EndCutOut", "ExecHighPositioning", "SetToolCorrection"], "{ccp}");
+    assert_eq!((attr(&c[0], "Value"), attr(&c[1], "Value"), attr(&c[2], "Value"), attr(&c[3], "Value")), (Some("0"), Some("None"), Some("Off"), Some("Right")));
+    assert!(close(on_sheet(&c[4], o), [900.0, 0.0]) && close(on_sheet(&c[8], o), [900.0, 500.0]));
+    assert_eq!((attr(&c[6], "Value"), attr(&c[5], "Contour")), (Some("Fine"), Some("Exterior")));
+    // The cut-off subprogram cuts no part: no PlanPartInfo for it (BV64).
+    call(&mut s, "export", None, json!({}));
+    let info = std::fs::read_to_string(bystar_dir(&d, "DEMO-BVC").join("JobInfo.xml")).unwrap();
+    assert!(!info.contains("ResidualSheetCuts"), "{info}");
+
+    switches(&mut s, "B003=3, B004=5, B005=2");
+    let ccp = bystar_program_text(&mut s, 1);
+    let (o, c) = sub_commands(&ccp, "ResidualSheetCuts");
+    // BV27: the call moved B003 outward from the start edge (the bottom).
+    assert_eq!(o, [0.0, -3.0]);
+    let seq: Vec<String> = c.iter().map(|x| match x.0.as_str() {
+        "MoveLineTo" | "LineTo" => {
+            let p = on_sheet(x, o);
+            format!("{} {} {}", x.0, p[0], p[1])
+        }
+        _ => format!("{} {}", x.0, attr(x, "Value").or(attr(x, "Contour")).unwrap_or("")).trim().to_string(),
+    }).collect();
+    assert_eq!(seq, [
+        // (The sensor is on already, from the parts' pierces.)
+        "SetOperationMode 0", "SetToolCorrection None", "SetToolCorrection Right",
+        // Pierced B004 + B005 inside the start edge, cut B005 back, sensing off
+        // for the last B004, out B003 past the edge, the head lifted.
+        "MoveLineTo 900 7", "BeginCutOut Exterior", "SetPiercingMode Fine", "ExecPiercing", "LineTo 900 5", "SetSensingSensor Off", "LineTo 900 -3", "SetSensingSensor On", "EndCutOut", "ExecHighPositioning",
+        // Pierced again where it was (no time), on B005, sensing off B004
+        // before the far edge, out B003 past it, lifted, compensation off.
+        "MoveLineTo 900 7", "BeginCutOut Exterior", "SetPiercingMode NoTime", "ExecPiercing", "LineTo 900 9", "LineTo 900 495", "SetSensingSensor Off", "LineTo 900 503", "SetSensingSensor On", "EndCutOut", "ExecHighPositioning", "SetToolCorrection None",
+    ], "{ccp}");
+    // In the subprogram's own coordinates the pierce reads B003 + B004 + B005.
+    let mv = c.iter().find(|x| x.0 == "MoveLineTo").unwrap();
+    assert_eq!((attr(mv, "X"), attr(mv, "Y")), (Some("900"), Some("10")));
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_remnant_line_from_each_sheet_edge_is_pierced_inside_that_edge_and_run_past_the_far_one() {
+    let d = dir("bystar_cutoff_edges");
+    let mut s = bystar_job(&d, false);
+    switches(&mut s, "B003=4, B004=3, B005=1");
+    // (points, the pierce, the far end's overrun, the call's shift)
+    let cases = [
+        ("0,275;1000,275", [4.0, 275.0], [1004.0, 275.0], [-4.0, 0.0]),
+        ("1000,275;0,275", [996.0, 275.0], [-4.0, 275.0], [4.0, 0.0]),
+        ("900,0;900,500", [900.0, 4.0], [900.0, 504.0], [0.0, -4.0]),
+        ("900,500;900,0", [900.0, 496.0], [900.0, -4.0], [0.0, 4.0]),
+    ];
+    for (pts, pierce, far, shift) in cases {
+        with_cut_line(&mut s, pts);
+        let ccp = bystar_program_text(&mut s, 1);
+        let (o, c) = sub_commands(&ccp, "ResidualSheetCuts");
+        assert_eq!(o, shift, "{pts}");
+        let moves: Vec<P> = c.iter().filter(|x| x.0 == "MoveLineTo").map(|x| on_sheet(x, o)).collect();
+        assert!(moves.len() == 2 && moves.iter().all(|m| close(*m, pierce)), "{pts}: {moves:?}");
+        let last = c.iter().filter(|x| x.0 == "LineTo").last().unwrap();
+        assert!(close(on_sheet(last, o), far), "{pts}: {:?}", on_sheet(last, o));
+        call(&mut s, "export", None, json!({}));
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_cut_off_that_misses_the_edge_is_refused_by_the_read_back() {
+    let d = dir("bystar_cutoff_short");
+    let mut s = bystar_job(&d, false);
+    with_cut_line(&mut s, "900,0;900,500");
+    call(&mut s, "export", None, json!({}));
+    // The cut stops 20 mm short of the top edge.
+    let e = export_edited(&mut s, |t| t.replace("<LineTo Id=", "<LineTo Id=").replacen("X=\"900\" Y=\"500\"", "X=\"900\" Y=\"480\"", 1));
+    assert!(e.as_deref().is_some_and(|e| e.contains("wouldn't cut what's planned") && e.contains("cut-off line")), "{e:?}");
+    // The head lift after it left out.
+    let e = export_edited(&mut s, |t| {
+        let k = t.find("<ExecHighPositioning").unwrap();
+        let a = t[..k].rfind("\r\n").unwrap();
+        let b = k + t[k..].find("\r\n").unwrap();
+        format!("{}{}", &t[..a], &t[b..])
+    });
+    assert!(e.as_deref().is_some_and(|e| e.contains("head lift")), "{e:?}");
+    // The sensor left on past the edge.
+    switches(&mut s, "B003=3");
+    let e = export_edited(&mut s, |t| t.split("\r\n").filter(|l| !(l.contains("SetSensingSensor") && l.contains("Off"))).collect::<Vec<_>>().join("\r\n"));
+    assert!(e.as_deref().is_some_and(|e| e.contains("height sensor is on")), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn cut_off_switches_b025_b045_b016_and_b028() {
+    let d = dir("bystar_cutoff_switches");
+    let mut s = bystar_job(&d, false);
+    // A free cut path that starts inside the sheet, then the remnant line.
+    with_cut_line(&mut s, "700,450;950,450");
+    with_cut_line(&mut s, "900,0;900,500");
+    let ccp = bystar_program_text(&mut s, 1);
+    let (_, c) = sub_commands(&ccp, "ResidualSheetCuts");
+    // Free path first (RM6): from its start, no pierce of its own (BV49).
+    let first_end = c.iter().position(|x| x.0 == "EndCutOut").unwrap();
+    assert!(!c[..first_end].iter().any(|x| x.0 == "ExecPiercing"), "{ccp}");
+    assert_eq!(c.iter().filter(|x| x.0 == "SetOperationMode").count(), 2, "the mode for every cut-off line (BV51)");
+    // B025: its own pierce.
+    switches(&mut s, "B025=1");
+    let (_, c) = sub_commands(&bystar_program_text(&mut s, 1), "ResidualSheetCuts");
+    let first_end = c.iter().position(|x| x.0 == "EndCutOut").unwrap();
+    assert!(c[..first_end].iter().any(|x| x.0 == "ExecPiercing"));
+    // B045: the cut-off lines' quality (4 → mode 4).
+    switches(&mut s, "B045=4");
+    let (_, c) = sub_commands(&bystar_program_text(&mut s, 1), "ResidualSheetCuts");
+    assert!(c.iter().filter(|x| x.0 == "SetOperationMode").all(|x| attr(x, "Value") == Some("4")));
+    // B016 and B028: named like the parts' subprograms (the running count).
+    for k in ["B016", "B028"] {
+        switches(&mut s, &format!("{k}=1"));
+        let ccp = bystar_program_text(&mut s, 1);
+        assert!(!ccp.contains("ResidualSheetCuts") && ccp.contains("Name=\"4\" PartWidth"), "{k}: {ccp}");
+        switches(&mut s, &format!("{k}=0"));
+    }
+    call(&mut s, "export", None, json!({}));
+    // Changed, the cut-off modes this writer doesn't follow yet refuse the sheet.
+    for k in ["B035", "B046", "B048"] {
+        switches(&mut s, &format!("{k}=1"));
+        let e = err(&mut s, "export", json!({}));
+        assert!(e.contains(k) && e.contains("cut-off"), "{e}");
+        switches(&mut s, &format!("{k}=0"));
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn switches_that_change_nothing_in_this_apps_programs_leave_them_as_they_are() {
+    // B002 (all in subprograms: they are), B012 (compensation off after a
+    // mark: it is after every cut-out), B020 (every cut line is a cut-off
+    // line), B027 (every subprogram has PartHeight), B032 (no subprogram ends
+    // inside a cut-out): BV66.
+    let d = dir("bystar_no_change");
+    let mut s = bystar_job(&d, false);
+    call(&mut s, "joints", None, json!({"mode": "auto", "every": 60, "parts": 1}));
+    with_cut_line(&mut s, "900,0;900,500");
+    let before = bystar_program_text(&mut s, 1);
+    for k in ["B002", "B012", "B020", "B027", "B032"] {
+        switches(&mut s, &format!("{k}=1"));
+        assert_eq!(bystar_program_text(&mut s, 1), before, "{k}");
+        switches(&mut s, &format!("{k}=0"));
+    }
+    // The switches left out (FEATURES): changed where they would act, refused.
+    switches(&mut s, "B047=1");
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("B047") && e.contains("micro-joints"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn engraved_lines_are_pierced_only_as_b044_b024_or_b036_say() {
+    let d = dir("bystar_engraving");
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    let job = d.join("DEMO-MARK.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let mark = |s: &mut Session| contour_block(&ccp_commands(&bystar_program_text(s, 1)), 0);
+    let mark_cmds = |s: &mut Session| {
+        let cmds = ccp_commands(&bystar_program_text(s, 1));
+        let k = cmds.iter().position(|c| c.0 == "BeginCutOut").unwrap();
+        (attr(&cmds[k], "Contour").unwrap().to_string(), cmds[..k].iter().filter(|c| c.0 == "SetPiercingMode").map(|c| attr(c, "Value").unwrap().to_string()).collect::<Vec<_>>(), cmds[..k].iter().any(|c| c.0 == "SetToolCorrection" && attr(c, "Value") == Some("Right")))
+    };
+    // Shipped: no pierce, Unknown, compensated Right (BV29–BV31).
+    assert_eq!(mark_cmds(&mut s), ("Unknown".to_string(), vec![], true));
+    // B044: pierced Normal before the cut-out.
+    switches(&mut s, "B044=1");
+    assert_eq!(mark_cmds(&mut s), ("Unknown".to_string(), vec!["Normal".to_string()], true));
+    assert_eq!(&mark(&mut s)[3..7], ["MoveLineTo", "SetPiercingMode", "ExecPiercing", "BeginCutOut"]);
+    switches(&mut s, "B044=0");
+    // B036: the new marking treatment, Interior, uncompensated, pierced Fine; 2: Normal.
+    switches(&mut s, "B036=1");
+    assert_eq!(mark_cmds(&mut s), ("Interior".to_string(), vec!["Fine".to_string()], false));
+    switches(&mut s, "B036=2");
+    assert_eq!(mark_cmds(&mut s), ("Interior".to_string(), vec!["Normal".to_string()], false));
+    call(&mut s, "export", None, json!({}));
+    // A contour in the B026 marking quality is engraving too.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "quality": 4}));
+    switches(&mut s, "B026=4, B036=1");
+    let cmds = ccp_commands(&bystar_program_text(&mut s, 1));
+    // Each engraving cut-out: in mode 2, Interior, pierced Fine since its rapid, uncompensated.
+    let interior_fine = (0..cmds.len())
+        .filter(|&k| cmds[k].0 == "BeginCutOut" && attr(&cmds[k], "Contour") == Some("Interior"))
+        .filter(|&k| {
+            let m = cmds[..k].iter().rposition(|c| c.0 == "MoveLineTo").unwrap();
+            let mode = cmds[..k].iter().rev().find(|c| c.0 == "SetOperationMode").and_then(|c| attr(c, "Value"));
+            mode == Some("2") && cmds[m..k].iter().any(|c| c.0 == "SetPiercingMode" && attr(c, "Value") == Some("Fine")) && !cmds[m..k].iter().any(|c| c.0 == "SetToolCorrection")
+        })
+        .count();
+    assert_eq!(interior_fine, 2, "the mark and the B026 hole");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_inch_bystar_program_cuts_off_in_whole_inches() {
+    // BV25, BV54: with the inch post library B003–B005 are whole inches.
+    let d = dir("bystar_inch_cutoff");
+    let mut s = bystar_job(&d, false);
+    let cf1 = d.join("DEMO-INCH.CF1");
+    std::fs::write(&cf1, "A005 0.005 ; tolerance\nA006 25.4 ; inch\n").unwrap();
+    call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "cf1": cf1.to_str().unwrap()}));
+    switches(&mut s, "B001=1, B003=1, B004=1, B005=1");
+    call(&mut s, "joints", None, json!({"mode": "auto", "every": 60, "parts": 1}));
+    with_cut_line(&mut s, "900,0;900,500");
+    let ccp = bystar_program_text(&mut s, 1);
+    let (o, c) = sub_commands(&ccp, "ResidualSheetCuts");
+    assert_eq!(o, [0.0, -1.0], "moved one inch");
+    let first = c.iter().find(|x| x.0 == "MoveLineTo").unwrap();
+    // 900 mm = 35.433070866 in; pierced 2 in inside the edge (3 in the subprogram).
+    assert_eq!((attr(first, "X"), attr(first, "Y")), (Some("35.433070866"), Some("3")), "{ccp}");
+    let last = c.iter().filter(|x| x.0 == "LineTo").last().unwrap();
+    assert_eq!(attr(last, "Y"), Some("21.68503937"), "500 mm + 1 in past the edge, + 1 in shift: {ccp}");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The made-up test job for the machine proof (#129), built from scratch:
+/// a 1000 × 500 × 3 mild steel sheet with a plain rectangle and a disc, a
+/// plate with small holes in two cut qualities (Ø6 at quality 3, Ø10 at
+/// quality 4) and an engraved label, micro-joints on the rectangle and the
+/// plate, and a remnant cut-off at X 800.
+fn make_bystar_proof_job(d: &Path, s: &mut Session) -> PathBuf {
+    let job = d.join("DEMO-PROOF.snjob");
+    call(s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-RECT"}));
+    call(s, "add-shape", None, json!({"shape": "disc", "w": 150, "h": 150, "qty": 1, "name": "DEMO-DISC"}));
+    let sq = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n240\n20\n0\n10\n240\n20\n160\n10\n0\n20\n160\n";
+    let hole = |x: f64, y: f64, r: f64| format!("0\nCIRCLE\n8\n0\n10\n{x}\n20\n{y}\n30\n0\n40\n{r}\n");
+    let dxf = d.join("DEMO-PLATE.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{sq}{}{}{}{}0\nENDSEC\n0\nEOF\n", hole(30.0, 30.0, 3.0), hole(210.0, 30.0, 3.0), hole(30.0, 130.0, 5.0), hole(210.0, 130.0, 5.0))).unwrap();
+    call(s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 1}));
+    call(s, "text", None, json!({"mode": "add", "parts": 3, "text": "DEMO", "height": 12, "kind": "mark"}));
+    call(s, "leads", None, json!({"mode": "auto"}));
+    // The Ø6 holes at quality 3, the Ø10 ones at quality 4 (holes first, CS1).
+    call(s, "contour-tech", None, json!({"part": 3, "contours": "1,2", "quality": 3}));
+    call(s, "contour-tech", None, json!({"part": 3, "contours": "3,4", "quality": 4}));
+    call(s, "joints", None, json!({"mode": "auto", "every": 150, "parts": "1,3"}));
+    call(s, "place", None, json!({"part": 1, "x": 30, "y": 30}));
+    call(s, "place", None, json!({"part": 2, "x": 300, "y": 30}));
+    call(s, "place", None, json!({"part": 3, "x": 30, "y": 200}));
+    call(s, "remnant", None, json!({"sheet": 1, "mode": "line", "x": 800}));
+    job
+}
+
+#[test]
+fn the_machine_proof_job_writes_a_bvc_that_opens_back_to_the_same_job() {
+    // #129's made-up test nest, kept in testdata (NESTPRO_RECORD rebuilds it).
+    let stored = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine/testdata/bystar-proof.snjob");
+    let d = dir("bystar_proof");
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    if std::env::var_os("NESTPRO_RECORD").is_some() {
+        let made = make_bystar_proof_job(&d, &mut s);
+        std::fs::copy(&made, &stored).unwrap();
+    }
+    let job = d.join("DEMO-PROOF.snjob");
+    std::fs::copy(&stored, &job).unwrap();
+    let orig = jobfile::load(&job).unwrap();
+    assert!(orig.spec.w <= 1000.0 && orig.spec.h <= 500.0);
+    let r = call(&mut s, "export", Some(job.to_str().unwrap()), json!({}));
+    let bvc = bystar_dir(&d, "DEMO-PROOF").join("DEMOPROOFX1.bvc");
+    assert!(bvc.is_file(), "{r}");
+    let bytes = std::fs::read(&bvc).unwrap();
+    let ccp = std::fs::read_to_string(bystar_dir(&d, "DEMO-PROOF").join("DEMOPROOFX1.ccp")).unwrap();
+    // What the proof is for: joints, a cut-off, engraving, two hole qualities.
+    let plan = &orig.plans()[0];
+    let joints: usize = plan.contours.iter().map(|c| c.joints.len()).sum();
+    assert!(joints >= 4 && ccp.matches("<ExecMicrojoint").count() == joints, "{joints}");
+    assert!(ccp.contains("Name=\"ResidualSheetCuts\"") && ccp.contains("<ExecHighPositioning"));
+    assert!(ccp.contains("<SetOperationMode Id=") && ccp.contains("Value=\"2\" />") && ccp.contains("Value=\"3\" />") && ccp.contains("Value=\"4\" />"), "modes 2, 3 and 4");
+    assert!(orig.cut_lines.iter().flatten().any(|c| c.kind == crate::cutoff::CutKind::Remnant));
+
+    // Opened again: the same parts, placements, qualities, marks, joints and remnant line.
+    let back = d.join("BACK.snjob");
+    let r = call(&mut s, "import-program", Some(back.to_str().unwrap()), json!({"path": bvc.to_str().unwrap()}));
+    assert!(!r["message"].as_str().unwrap().contains("different ways"), "{r}");
+    let again = jobfile::load(&back).unwrap();
+    let names = |j: &JobFile| j.parts.iter().map(|p| (p.name.clone(), p.qty)).collect::<Vec<_>>();
+    let mut a = names(&orig);
+    let mut b = names(&again);
+    a.sort();
+    b.sort();
+    assert_eq!(a, b);
+    assert_eq!((again.sheets.len(), again.sheets[0].len()), (1, 3));
+    assert_eq!((again.spec.w, again.spec.h, again.spec.thickness), (1000.0, 500.0, 3.0));
+    let quals = |j: &JobFile| {
+        let mut q: Vec<usize> = j.plans()[0].contours.iter().map(|c| c.quality).collect();
+        q.sort();
+        q
+    };
+    assert_eq!(quals(&again), quals(&orig));
+    let marks = |j: &JobFile| j.plans()[0].marks.len();
+    assert_eq!(marks(&again), marks(&orig), "the label's strokes come back as marks");
+    let joints_again: usize = again.plans()[0].contours.iter().map(|c| c.joints.len()).sum();
+    assert_eq!(joints_again, joints);
+    let remnant = |j: &JobFile| j.cut_lines.iter().flatten().filter(|c| c.kind == crate::cutoff::CutKind::Remnant).map(|c| c.pts.clone()).collect::<Vec<_>>();
+    let (ra, rb) = (remnant(&orig), remnant(&again));
+    assert_eq!(ra.len(), 1);
+    assert!(rb.len() == 1 && on_path(&ra[0], &rb[0], 0.01) && on_path(&rb[0], &ra[0], 0.01), "{ra:?} {rb:?}");
+    // Written again from the opened job: the same cuts and joint markers.
+    call(&mut s, "export", None, json!({}));
+    let twice = std::fs::read(bystar_dir(&d, "DEMO-PROOF").join("DEMOPROOFX1.bvc")).unwrap();
+    let (c1, c2) = (bvc_cuts(&bytes), bvc_cuts(&twice));
+    assert_eq!(c1.len(), c2.len());
+    for x in &c1 {
+        assert!(c2.iter().any(|y| on_path(x, y, 0.125) && on_path(y, x, 0.125)), "a cut isn't written again: {:?}", &x[..2]);
+    }
     let _ = std::fs::remove_dir_all(&d);
 }

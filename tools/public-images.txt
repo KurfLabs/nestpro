@@ -6,3 +6,4 @@ abc383e32d684c8f6e8176b48b1231675c116bcdf1fa106652343712ea6a11a1  app/shots/bvc-
 4638aa680d3fe1d6c01dbe13cef76a572c0a0b27d227ce91c770cee2552f7484  app/shots/sheet-machines-nesting.png
 af05d9e7d49cf3cee26261dd8cfd60078d07aa16c0715dd6eb26580e19c6b360  app/shots/bystar-settings.png
 a3b2520aefc7f87f4b616a8eab5c3662c1efb714bc6ae6c19458c6234f9ac518  app/shots/bystar-switches.png
+d4b8e5eef1d797b57696b2b49ddb013328f3f886b96e840aa8ce6e5e0e67a12b  app/shots/bystar-proof-sheet.png

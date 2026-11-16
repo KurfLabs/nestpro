@@ -1752,7 +1752,7 @@ fn bystar_group(job_name: &str, job_spec: &SheetSpec, f0: &SheetFormat, machine:
         let w = sheetmachine::on_sheet(f0, || crate::bystar::write(&job, ins, &nos, post));
         let bvcs: Vec<(String, Vec<u8>, Vec<usize>)> = w.bvcs.iter().map(|f| (f.file.clone(), crate::blm::zip(&f.entries), f.nests.clone())).collect();
         let nests: Vec<(String, Vec<usize>)> = w.nests.iter().map(|n| (n.name.clone(), n.sheets.clone())).collect();
-        let back: Vec<readback::BystarSheet> = ks.iter().zip(ins).map(|(&k, s)| readback::BystarSheet { sheet_no: k + 1, parts, sheet: s.sheet, spec: s.spec, plan: s.plan }).collect();
+        let back: Vec<readback::BystarSheet> = ks.iter().zip(ins).map(|(&k, s)| readback::BystarSheet { sheet_no: k + 1, parts, sheet: s.sheet, spec: s.spec, plan: s.plan, cuts: s.cuts }).collect();
         let issues = readback::check_bvc(&bvcs, &nests, &back, job_spec.thickness, post);
         if !issues.is_empty() {
             return Err(readback::bystar_refusal(&issues));

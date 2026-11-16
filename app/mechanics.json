@@ -7594,13 +7594,13 @@
  {
   "name": "read-back compares",
   "group": "ByStar Fiber writer",
-  "value": "sheet size, thickness, run count; every planned sheet once, each sheet of a fold compared; every cut both ways with the compensation and mode in force during its moves, cut-out side, pierce mode and point, part named; the height sensor through the calls; no unplanned command",
+  "value": "sheet size, thickness, run count; every planned sheet once, each sheet of a fold compared; every cut both ways with the compensation and mode in force during its moves, cut-out side, pierce mode and point, joint markers, part named; the cut-off lines (BV64); the height sensor through the calls; no unplanned command",
   "source": "MECHANICS BV59"
  },
  {
   "name": "refused until built",
   "group": "ByStar Fiber writer",
-  "value": "micro-joints, corner loops, punched holes, remnant/cut-off lines, cuts stopping short, system or no kerf compensation, B012/B036 changed with marking",
+  "value": "corner loops, punched holes, joints with their own leads, cuts stopping short, system or no kerf compensation, the switches left out changed where they act (BV66)",
   "source": "MECHANICS BV60"
  },
  {
@@ -7638,6 +7638,102 @@
   "group": "ByStar Fiber writer",
   "value": "the first ByStar Fiber laser in Settings, else the job's machine with a note",
   "source": "MECHANICS BV62"
+ },
+ {
+  "name": "micro-joint marker",
+  "group": "ByStar Fiber writer",
+  "value": "at each gap's middle, along the move it lies on; no rapid, no pierce (B038 off)",
+  "source": "MECHANICS BV63"
+ },
+ {
+  "name": "arc after a joint",
+  "group": "ByStar Fiber writer",
+  "value": "true sweep measured from the gap's middle (the original's from the gap's far end isn't offered)",
+  "source": "MECHANICS BV63"
+ },
+ {
+  "name": "B038 on",
+  "group": "ByStar Fiber writer",
+  "value": "cut-out ends at the gap's start; the cut after it starts like a contour without a lead-in",
+  "source": "MECHANICS BV63"
+ },
+ {
+  "name": "B049 on",
+  "group": "ByStar Fiber writer",
+  "value": "a gap on one arc cut straight to its chord's middle",
+  "source": "MECHANICS BV63"
+ },
+ {
+  "name": "read-back joint check",
+  "group": "ByStar Fiber writer",
+  "value": "a marker at each planned gap's middle in order; each gap's middle passed once (B038: never)",
+  "source": "MECHANICS BV63"
+ },
+ {
+  "name": "cut-off subprogram",
+  "group": "ByStar Fiber writer",
+  "value": "one per sheet, ResidualSheetCuts (B016/B028: numbered), no PlanPartInfo",
+  "source": "MECHANICS BV64"
+ },
+ {
+  "name": "cut-off call shift",
+  "group": "ByStar Fiber writer",
+  "value": "B003 outward from the first line's start edge",
+  "source": "MECHANICS BV64"
+ },
+ {
+  "name": "cut-off pierce (on the sheet)",
+  "group": "ByStar Fiber writer",
+  "value": "where the line first comes B004 + B005 inside the sheet",
+  "source": "MECHANICS BV64"
+ },
+ {
+  "name": "cut-off sequence",
+  "group": "ByStar Fiber writer",
+  "value": "pierce, B005 back, sensing off, B003 past the start, on, end, lift; NoTime re-pierce, B005 on, off B004 before the far edge, B003 past it, on, end, lift, compensation off",
+  "source": "MECHANICS BV64"
+ },
+ {
+  "name": "cut-off quality",
+  "group": "ByStar Fiber writer",
+  "value": "B045, else 1 (mode 0)",
+  "source": "MECHANICS BV64"
+ },
+ {
+  "name": "cut-off line starting inside",
+  "group": "ByStar Fiber writer",
+  "value": "rapid to its start; pierced only with B025",
+  "source": "MECHANICS BV64"
+ },
+ {
+  "name": "B036 engraving",
+  "group": "ByStar Fiber writer",
+  "value": "no compensation, Interior, pierced Fine (2: Normal) before the cut-out",
+  "source": "MECHANICS BV65"
+ },
+ {
+  "name": "point mark circle",
+  "group": "ByStar Fiber writer",
+  "value": "diameter B013, mode 3 (B033: 2), lead-in to x + d/2, two 180-degree arcs",
+  "source": "MECHANICS BV65"
+ },
+ {
+  "name": "point mark with B050",
+  "group": "ByStar Fiber writer",
+  "value": "on/off point (A004 = 2): mode 0, Interior, Fine, LineTo x - 0.05",
+  "source": "MECHANICS BV65"
+ },
+ {
+  "name": "switches changing nothing here",
+  "group": "ByStar Fiber writer",
+  "value": "B002, B012, B020, B027, B032",
+  "source": "MECHANICS BV66"
+ },
+ {
+  "name": "switches left out (refused where they act)",
+  "group": "ByStar Fiber writer",
+  "value": "B019, B023, B034, B035, B046, B047, B048 with R000-R007; B037 (no common cuts)",
+  "source": "MECHANICS BV66"
  }
 ]
 }

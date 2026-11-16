@@ -73,55 +73,55 @@ use Status::*;
 pub const SWITCHES: &[SwitchDef] = &[
     sw("B000", "Not used by the post", OnOff, "0", "BV45", NoEffect),
     sw("B001", "Measurement system text: inch (Imperial)", OnOff, "0", "BV25", Built),
-    sw("B002", "Put every cut, cut-off lines too, into subprograms", OnOff, "0", "BV28", Later),
-    sw("B003", "Cut-off lines: overrun past each sheet edge", Length, "0", "BV38", Later),
-    sw("B004", "Cut-off lines: height sensing off for this distance before each edge", Length, "0", "BV38", Later),
-    sw("B005", "Cut-off lines: run-up between the pierce and the sensing-off point", Length, "0", "BV38", Later),
+    sw("B002", "Put every cut, cut-off lines too, into subprograms", OnOff, "0", "BV28", Built),
+    sw("B003", "Cut-off lines: overrun past each sheet edge", Length, "0", "BV38", Built),
+    sw("B004", "Cut-off lines: height sensing off for this distance before each edge", Length, "0", "BV38", Built),
+    sw("B005", "Cut-off lines: run-up between the pierce and the sensing-off point", Length, "0", "BV38", Built),
     sw("B006", "Split the first move of a contour without a lead-in at this distance", Length, "0", "BV34", Built),
     sw("B007", "Quality that pierces Normal", Quality, "0", "BV33", Built),
     sw("B008", "Quality that pierces Fine", Quality, "0", "BV33", Built),
     sw("B009", "Quality that pierces NoTime", Quality, "0", "BV33", Built),
     sw("B010", "Keep only the .bvc, delete the loose files", OnOff, "0", "BV22", Built),
     sw("B011", "Compensation after the rapid instead of before it", OnOff, "0", "BV29", Built),
-    sw("B012", "Compensation off after a mark", OnOff, "0", "BV31", Later),
-    sw("B013", "Point marks as circles of this diameter", Size, "0.2", "BV40", Later),
+    sw("B012", "Compensation off after a mark", OnOff, "0", "BV31", Built),
+    sw("B013", "Point marks as circles of this diameter", Size, "0.2", "BV40", Built),
     sw("B014", "Pierce mode from the technology table", OnOff, "0", "BV33", Built),
     sw("B015", "Operation mode from the technology table", OnOff, "0", "BV32", Built),
     sw("B016", "Subprogram name also as PartNumber; cut-off subprograms numbered", OnOff, "0", "BV26", Built),
     sw("B017", "All sheets of one run in one .bvc", OnOff, "0", "BV22", Built),
     sw("B018", "Split arcs of 360° or more into half circles", OnOff, "0", "BV35", Built),
     sw("B019", "Joint marker at the end: before the next rapid or cut-out end", OnOff, "0", "BV48", Later),
-    sw("B020", "Only lines marked as cut-off lines are cut-offs", OnOff, "0", "BV39", Later),
+    sw("B020", "Only lines marked as cut-off lines are cut-offs", OnOff, "0", "BV39", Built),
     sw("B021", "Part call positions with 3 decimals instead of whole units", OnOff, "0", "BV52", Built),
     sw("B022", "Part id and quantity under 0.5 are fixed", OnOff, "0", "BV44", Built),
     sw("B023", "Pierce at a joint's lead-in", OnOff, "0", "BV48", Later),
     sw("B024", "Lead-in bracket and pierce at every contour start", OnOff, "0", "BV34", Built),
-    sw("B025", "A cut-off line not starting on an edge gets its own rapid and pierce", OnOff, "0", "BV39", Later),
+    sw("B025", "A cut-off line not starting on an edge gets its own rapid and pierce", OnOff, "0", "BV39", Built),
     sw("B026", "Quality used for marking: mode 2, Normal pierce", Quality, "0", "BV32", Built),
-    sw("B027", "PartHeight in every subprogram header", OnOff, "0", "BV26", Later),
-    sw("B028", "Cut-off subprograms named like part subprograms", OnOff, "0", "BV26", Later),
+    sw("B027", "PartHeight in every subprogram header", OnOff, "0", "BV26", Built),
+    sw("B028", "Cut-off subprograms named like part subprograms", OnOff, "0", "BV26", Built),
     sw("B029", "Empty ResidualSheetInfos in the job file", OnOff, "0", "BV43", Built),
     sw("B030", "Empty BigPartInfos in the job file", OnOff, "0", "BV43", Built),
     sw("B031", "No compensation on marks and point marks", OnOff, "0", "BV31", Built),
-    sw("B032", "Close an open cut-out at the end of a subprogram", OnOff, "0", "BV28", Later),
-    sw("B033", "Point-mark circles in marking mode 2", OnOff, "0", "BV40", Later),
+    sw("B032", "Close an open cut-out at the end of a subprogram", OnOff, "0", "BV28", Built),
+    sw("B033", "Point-mark circles in marking mode 2", OnOff, "0", "BV40", Built),
     sw("B034", "Point marks as a cross of this size instead of a circle", Size, "0", "BV40", Later),
     sw("B035", "Two-line cut-off mode", OnOff, "0", "BV39", Later),
-    sw("B036", "New marking treatment: compensation off, Interior, pierce Fine (2: Normal)", Choice, "0", "BV29", Later),
+    sw("B036", "New marking treatment: compensation off, Interior, pierce Fine (2: Normal)", Choice, "0", "BV29", Built),
     sw("B037", "Never NoTime on partly cut common-cut contours", OnOff, "0", "BV33", Later),
-    sw("B038", "New micro-joint treatment: stop at the gap and start again", OnOff, "0", "BV48", Later),
+    sw("B038", "New micro-joint treatment: stop at the gap and start again", OnOff, "0", "BV48", Built),
     sw("B039", "Height sensor: 1 not switched on for marks, 2 only in the cut-off sequence", Choice, "0", "BV37", Built),
     sw("B040", "Compensation after the lead-in", OnOff, "0", "BV31", Built),
     sw("B041", "ToolArrangement=\"Vertical\" in the header", OnOff, "0", "BV23", Built),
     sw("B042", "Quality that replaces quality 7", Quality, "0", "BV32", Built),
     sw("B043", "Quality that replaces quality 3", Quality, "0", "BV32", Built),
     sw("B044", "Pierce contours that have no lead-in", OnOff, "0", "BV29", Built),
-    sw("B045", "Quality for cut-off lines", Quality, "0", "BV32", Later),
+    sw("B045", "Quality for cut-off lines", Quality, "0", "BV32", Built),
     sw("B046", "New cut-off management", OnOff, "0", "BV39", Later),
     sw("B047", "Joint marker before a joint cut in the contour's second-to-last place", OnOff, "0", "BV48", Later),
     sw("B048", "Per-edge cut-off distances R000–R007", OnOff, "0", "BV39", Later),
-    sw("B049", "Joints always straight", OnOff, "0", "BV46", Later),
-    sw("B050", "On/off points cut as a tiny cut when no circle is made", OnOff, "0", "BV55", Later),
+    sw("B049", "Joints always straight", OnOff, "0", "BV46", Built),
+    sw("B050", "On/off points cut as a tiny cut when no circle is made", OnOff, "0", "BV55", Built),
     sw("C001", "Material user info 1", Text, "", "BV45", NoEffect),
     sw("C002", "Material user info 2", Text, "", "BV45", NoEffect),
     sw("C003", "Material user info 3", Text, "", "BV45", NoEffect),
@@ -236,6 +236,8 @@ pub struct Post {
     pub modes: [i64; 13],
     /// Pierce text by quality (index 0 = marking, 1–12).
     pub pierces: [String; 13],
+    /// CF1 A004: the point cycle's type (1 punch-mark point, 2 on/off point; BV55).
+    pub point_type: i64,
     /// The post file couldn't be read: why.
     pub file_error: Option<String>,
 }
@@ -311,7 +313,8 @@ impl Post {
             modes[q] = m.modes.get(&(q as u8)).copied().unwrap_or(seed_mode(q));
             pierces[q] = m.pierces.get(&(q as u8)).cloned().unwrap_or_else(|| seed_pierce(q).to_string());
         }
-        Post { values, from, tol: num("A005").unwrap_or(0.005), unit: num("A006").unwrap_or(1.0), modes, pierces, file_error: None }
+        let point_type = cf1.and_then(|t| line_value(t, "A004")).and_then(|v| v.parse::<f64>().ok()).map_or(2, |v| v.round() as i64);
+        Post { values, from, tol: num("A005").unwrap_or(0.005), unit: num("A006").unwrap_or(1.0), modes, pierces, point_type, file_error: None }
     }
 
     pub fn raw(&self, key: &str) -> &str {
@@ -658,17 +661,325 @@ struct State {
     sensor: bool,
 }
 
+/// One step of a contour's cut-out as written: a move, a micro-joint marker
+/// at the gap's middle (BV36, BV46), or with B038 the end of the cut-out at a
+/// gap and a new start at the gap's far end (BV48).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Step {
+    Mv(Mv),
+    Joint,
+    Gap(P),
+}
+
+/// The moves through `pts` as `moves` gives them, with the distance along
+/// `pts` (mm) at each move's end: where a joint given as a distance along the
+/// drawn contour falls on the moves.
+fn moves_ends(pts: &[P], unit: f64) -> (Vec<Mv>, Vec<f64>) {
+    let mut v: Vec<P> = pts.iter().map(|p| [p[0] * unit, p[1] * unit]).collect();
+    v.dedup_by(|b, a| d(*a, *b) < 1e-9);
+    let mv = moves(pts, unit);
+    let mut cum = vec![0.0; v.len()];
+    for i in 1..v.len() {
+        cum[i] = cum[i - 1] + d(v[i - 1], v[i]);
+    }
+    let mut ends = vec![];
+    let mut i = 0;
+    for m in &mv {
+        let e = m.end();
+        let e = [e[0] * unit, e[1] * unit];
+        let j = (i + 1..v.len()).find(|&j| d(v[j], e) < 1e-6).unwrap_or(v.len() - 1);
+        ends.push(cum[j]);
+        i = j;
+    }
+    (mv, ends)
+}
+
+/// The point a share `t` of the way along move `m` from `from`.
+fn mv_at(from: P, m: &Mv, t: f64) -> P {
+    match *m {
+        Mv::Line(b) => [from[0] + (b[0] - from[0]) * t, from[1] + (b[1] - from[1]) * t],
+        Mv::Arc { c, sweep, .. } => turn(from, c, sweep * t),
+    }
+}
+
+/// The piece of move `m` (from `from`) between shares `t0` and `t1`, as a move from the `t0` point.
+fn mv_piece(from: P, m: &Mv, t0: f64, t1: f64) -> Mv {
+    match *m {
+        Mv::Line(_) => Mv::Line(mv_at(from, m, t1)),
+        Mv::Arc { c, sweep, .. } => Mv::Arc { to: mv_at(from, m, t1), c, sweep: sweep * (t1 - t0) },
+    }
+}
+
+/// BV36, BV46–BV49, BV63: a contour's moves with its micro-joints. Each
+/// joint is a gap (start and end, mm along the drawn contour). B038 off: the
+/// cut runs on to the gap's middle, taken along the move it lies on (an arc's
+/// middle along the arc), and a joint marker is written there; the cut goes
+/// on from the middle, an arc with its true sweep from there (the owner's
+/// answer on #122, BV47). A held cut and the half gap on one move are one
+/// move; a gap across a corner follows the corner. B049: a gap that lies on
+/// one arc is cut straight (its chord) to the chord's middle. B038 on: the
+/// cut-out stops at the gap's start and starts again at its end.
+fn joint_steps(from: P, mv: &[Mv], ends: &[f64], joints: &[(f64, f64)], b038: bool, b049: bool) -> Vec<Step> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Ev {
+        Mid,
+        Chord(usize),
+        GapStart,
+        GapEnd,
+    }
+    let mut js: Vec<(f64, f64)> = joints.to_vec();
+    js.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut ev: Vec<(f64, Ev)> = vec![];
+    for (k, &(a, b)) in js.iter().enumerate() {
+        if b038 {
+            ev.push((a, Ev::GapStart));
+            ev.push((b, Ev::GapEnd));
+        } else {
+            if b049 {
+                ev.push((a, Ev::Chord(k)));
+            }
+            ev.push(((a + b) / 2.0, Ev::Mid));
+        }
+    }
+    ev.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Where a distance along the drawn contour falls: (move, share of it).
+    let locate = |s: f64| -> (usize, f64) {
+        let k = ends.iter().position(|&e| e >= s - 1e-9).unwrap_or(ends.len().saturating_sub(1));
+        let s0 = if k == 0 { 0.0 } else { ends[k - 1] };
+        let t = if ends[k] - s0 > 0.0 { ((s - s0) / (ends[k] - s0)).clamp(0.0, 1.0) } else { 1.0 };
+        (k, t)
+    };
+    let starts: Vec<P> = std::iter::once(from).chain(mv.iter().map(Mv::end)).collect();
+    let mut out = vec![];
+    let mut skip = false;
+    // B049: the chord's middle the next piece ends at instead.
+    let mut chord: Option<P> = None;
+    let mut e = 0;
+    for (k, m) in mv.iter().enumerate() {
+        let mut t0 = 0.0;
+        while e < ev.len() && locate(ev[e].0).0 == k {
+            let t = locate(ev[e].0).1;
+            let piece = mv_piece(starts[k], m, t0, t);
+            let long = d(mv_at(starts[k], m, t0), piece.end()) > 1e-9;
+            match (ev[e].1, chord.take()) {
+                (Ev::Mid, Some(cm)) => {
+                    out.push(Step::Mv(Mv::Line(cm)));
+                    out.push(Step::Joint);
+                }
+                (ev_k, _) => {
+                    let split = match ev_k {
+                        // B049 only on an arc whose gap lies on it: else as without B049.
+                        Ev::Chord(j) => {
+                            let (kb, tb) = locate(js[j].1);
+                            matches!(m, Mv::Arc { .. }) && kb == k && {
+                                chord = Some({
+                                    let (pa, pb) = (piece.end(), mv_at(starts[k], m, tb));
+                                    [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0]
+                                });
+                                true
+                            }
+                        }
+                        _ => true,
+                    };
+                    if !split {
+                        e += 1;
+                        continue;
+                    }
+                    if !skip && long {
+                        out.push(Step::Mv(piece));
+                    }
+                    match ev_k {
+                        Ev::Mid => out.push(Step::Joint),
+                        Ev::GapStart => skip = true,
+                        Ev::GapEnd => {
+                            skip = false;
+                            out.push(Step::Gap(piece.end()));
+                        }
+                        Ev::Chord(_) => {}
+                    }
+                }
+            }
+            t0 = t;
+            e += 1;
+        }
+        if !skip && t0 < 1.0 {
+            let piece = mv_piece(starts[k], m, t0, 1.0);
+            if d(mv_at(starts[k], m, t0), piece.end()) > 1e-9 {
+                out.push(Step::Mv(piece));
+            }
+        }
+    }
+    out
+}
+
+/// What a contour start writes (BV29–BV33), at the contour's first start and,
+/// with B038, after each joint gap (BV48).
+struct Start<'a> {
+    post: &'a Post,
+    f: &'a Frame,
+    w: f64,
+    h: f64,
+    /// Engraving: a mark or the B026 quality (BV30, BV31, BV37, B036).
+    marking: bool,
+    mode: i64,
+    comp: Option<&'static str>,
+    side: &'static str,
+    pierce: Option<String>,
+}
+
+/// The height sensor at a pierce (or cut start) at `at` (subprogram units):
+/// on inside the sheet, off on or past its edge (BV37).
+fn sensor_rule(out: &mut Vec<Cmd>, st: &mut State, s: &Start, at: P, marking: bool) {
+    let u = s.post.unit;
+    let p = s.f.place(at);
+    let pm = [p[0] * u, p[1] * u];
+    let tol = s.post.tol;
+    let inside = pm[0] > tol && pm[1] > tol && pm[0] < s.w - tol && pm[1] < s.h - tol;
+    match s.post.sensor_mode() {
+        2 => {}
+        m => {
+            if inside && !st.sensor && !(m == 1 && marking) {
+                out.push(val("SetSensingSensor", "On"));
+                st.sensor = true;
+            } else if !inside && st.sensor {
+                out.push(val("SetSensingSensor", "Off"));
+                st.sensor = false;
+            }
+        }
+    }
+}
+
+/// Moves written as `LineTo` / `ArcTo` (B018 splitting full turns, BV35).
+fn write_moves(out: &mut Vec<Cmd>, mv: &[Mv], from: &mut P, post: &Post, fault_once: &mut bool) {
+    for m in mv {
+        for piece in split_full(*from, *m, post.on("B018")) {
+            match piece {
+                Mv::Line(p) => {
+                    let mut p = p;
+                    if *fault_once && fault() != 0.0 {
+                        p[0] += fault() / post.unit;
+                        *fault_once = false;
+                    }
+                    out.push(at("LineTo", p));
+                }
+                Mv::Arc { to, sweep, .. } => out.push(Cmd("ArcTo", vec![("X", num(to[0])), ("Y", num(to[1])), ("SweepAngle", num(sweep))])),
+            }
+            *from = piece.end();
+        }
+    }
+}
+
+/// BV29–BV34: a contour's start up to its `BeginCutOut`: the mode (BV51),
+/// the sensor, compensation, the rapid, the lead-in with its pierce or, without
+/// one, the pierce B044 or B036 asks for. Returns whether it opened a lead-in
+/// bracket (B006 splits only a start without one).
+fn begin(out: &mut Vec<Cmd>, st: &mut State, s: &Start, start: P, lead: &[Mv]) -> bool {
+    let post = s.post;
+    if st.mode != Some(s.mode) {
+        out.push(val("SetOperationMode", s.mode.to_string()));
+        st.mode = Some(s.mode);
+    }
+    sensor_rule(out, st, s, start, s.marking);
+    let bracket = !lead.is_empty() || post.on("B024");
+    let comp_at_cut = post.on("B040") && bracket;
+    if let (Some(c), false, false) = (s.comp, post.on("B011"), comp_at_cut) {
+        out.push(val("SetToolCorrection", c));
+    }
+    out.push(at("MoveLineTo", start));
+    if let (Some(c), true, false) = (s.comp, post.on("B011"), comp_at_cut) {
+        out.push(val("SetToolCorrection", c));
+    }
+    let pierce = |out: &mut Vec<Cmd>| {
+        if let Some(p) = &s.pierce {
+            out.push(val("SetPiercingMode", p.clone()));
+            out.push(cmd("ExecPiercing"));
+        }
+    };
+    if bracket {
+        out.push(cmd("BeginLeadIn"));
+        pierce(out);
+        let mut from = start;
+        let mut no_fault = false;
+        write_moves(out, lead, &mut from, post, &mut no_fault);
+        out.push(cmd("EndLeadIn"));
+    } else if post.on("B044") || (s.marking && post.whole("B036") != 0) {
+        pierce(out);
+    }
+    if let (Some(c), true) = (s.comp, comp_at_cut) {
+        out.push(val("SetToolCorrection", c));
+    }
+    out.push(Cmd("BeginCutOut", vec![("Contour", s.side.into())]));
+    bracket
+}
+
+/// BV34: B006 splits the first move of a start without a lead-in.
+fn b006(from: P, mv: &mut Vec<Mv>, post: &Post) {
+    let b = post.whole("B006") as f64;
+    if b > 0.0 && !mv.is_empty() {
+        let first = mv.remove(0);
+        let mut s = split_first(from, first, b);
+        s.extend(mv.drain(..));
+        *mv = s;
+    }
+}
+
+/// BV40, BV55, BV65: a point mark at `p` (subprogram units): a circle of
+/// B013's diameter, or with B050 an on/off point as a tiny cut. Empty when
+/// the switches make nothing of it (refused before writing, BV60).
+fn point_mark(out: &mut Vec<Cmd>, st: &mut State, s: &Start, p: P) {
+    let post = s.post;
+    let dia = post.num("B013");
+    if dia > post.tol {
+        let r = dia / 2.0;
+        let mode = if post.on("B033") { 2 } else { 3 };
+        out.push(val("SetOperationMode", mode.to_string()));
+        st.mode = Some(mode);
+        sensor_rule(out, st, s, p, mode == 2);
+        out.push(at("MoveLineTo", p));
+        let comp = (!post.on("B031")).then_some("Right");
+        if let Some(c) = comp {
+            out.push(val("SetToolCorrection", c));
+        }
+        out.push(cmd("BeginLeadIn"));
+        if let Some(pm) = post.pierce(0, true) {
+            out.push(val("SetPiercingMode", pm));
+            out.push(cmd("ExecPiercing"));
+        }
+        out.push(at("LineTo", [p[0] + r, p[1]]));
+        out.push(cmd("EndLeadIn"));
+        out.push(Cmd("BeginCutOut", vec![("Contour", "Unknown".into())]));
+        out.push(Cmd("ArcTo", vec![("X", num(p[0] - r)), ("Y", num(p[1])), ("SweepAngle", "180".into())]));
+        out.push(Cmd("ArcTo", vec![("X", num(p[0] + r)), ("Y", num(p[1])), ("SweepAngle", "180".into())]));
+        out.push(cmd("EndCutOut"));
+        if comp.is_some() {
+            out.push(val("SetToolCorrection", "None"));
+        }
+    } else if post.on("B050") && post.point_type == 2 {
+        out.push(val("SetOperationMode", "0"));
+        st.mode = Some(0);
+        sensor_rule(out, st, s, p, false);
+        out.push(at("MoveLineTo", p));
+        out.push(Cmd("BeginCutOut", vec![("Contour", "Interior".into())]));
+        out.push(val("SetPiercingMode", "Fine"));
+        out.push(cmd("ExecPiercing"));
+        out.push(at("LineTo", [p[0] - 0.05, p[1]]));
+        out.push(cmd("EndCutOut"));
+    }
+}
+
 /// What one placed part's subprogram cuts, in writing order: its marks and
 /// contours in its cut order (CO9).
+#[allow(clippy::too_many_arguments)]
 fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f64, h: f64, st: &mut State, first_fault: &mut bool) -> Vec<Cmd> {
     let u = post.unit;
     let loc = |p: P| f.local(p, u);
     let mut out = vec![];
     // BV51: the mode is forgotten at each new subprogram (each new part).
     st.mode = None;
+    let b036 = post.whole("B036");
     for made in plan.part_order(part_no) {
-        let (q, mark, inner, lead, body, closed, out_path, comp_left) = match made {
-            Made::Mark(j) => (0usize, true, false, vec![], plan.marks[j].1.clone(), false, vec![], false),
+        let (q, mark, inner, lead, body, closed, out_path, comp_left, joints) = match made {
+            Made::Mark(j) => (0usize, true, false, vec![], plan.marks[j].1.clone(), false, vec![], false, vec![]),
             Made::Contour(k) => {
                 let c = &plan.contours[k];
                 if c.punch.is_some() {
@@ -680,10 +991,16 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
                 }
                 tail.extend(c.lead_out_path.iter().skip(1).copied());
                 let left = c.comp.word().is_some_and(|w| w.0 == crate::kerf::Side::Left);
-                (c.quality, false, c.inner, if c.lead_path.len() >= 2 { c.lead_path.clone() } else { vec![] }, c.points.clone(), true, tail, left)
+                (c.quality, false, c.inner, if c.lead_path.len() >= 2 { c.lead_path.clone() } else { vec![] }, c.points.clone(), true, tail, left, c.joints.clone())
             }
         };
         let marking = mark || post.is_marking(q);
+        // BV40, BV55: a mark that is one point is a point mark.
+        if mark && body.len() == 1 {
+            let s = Start { post, f, w, h, marking: true, mode: 0, comp: None, side: "Unknown", pierce: None };
+            point_mark(&mut out, st, &s, loc(body[0]));
+            continue;
+        }
         let mut body: Vec<P> = body.into_iter().map(loc).collect();
         if closed && body.len() > 1 {
             body.push(body[0]);
@@ -695,96 +1012,54 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
         let lead: Vec<P> = lead.into_iter().map(loc).collect();
         let has_lead = lead.len() >= 2 && !mark;
         let start = if has_lead { lead[0] } else { body[0] };
-        // BV32: the operation mode, written only when it changes (BV51).
-        let mode = if mark { 2 } else { post.mode(q) };
-        if st.mode != Some(mode) {
-            out.push(val("SetOperationMode", mode.to_string()));
-            st.mode = Some(mode);
-        }
-        // BV37: the height sensor at the contour start, by where it pierces.
-        let pierce_at = f.place(start);
-        let pm = [pierce_at[0] * u, pierce_at[1] * u];
-        let inside = pm[0] > post.tol && pm[1] > post.tol && pm[0] < w - post.tol && pm[1] < h - post.tol;
-        match post.sensor_mode() {
-            2 => {}
-            s => {
-                if inside && !st.sensor && !(s == 1 && marking) {
-                    out.push(val("SetSensingSensor", "On"));
-                    st.sensor = true;
-                } else if !inside && st.sensor {
-                    out.push(val("SetSensingSensor", "Off"));
-                    st.sensor = false;
-                }
-            }
-        }
+        let new_marking = marking && b036 != 0;
         // BV31: compensation Left for a left side, Right for any other; marks
-        // too unless B031.
-        let comp = if marking && post.on("B031") { None } else { Some(if comp_left && !mark { "Left" } else { "Right" }) };
-        // BV29, BV34: a lead-in bracket and pierce with a lead-in, or with B024.
-        let bracket = has_lead || post.on("B024");
-        let comp_at_cut = post.on("B040") && bracket;
-        if let (Some(c), false, false) = (comp, post.on("B011"), comp_at_cut) {
-            out.push(val("SetToolCorrection", c));
-        }
-        out.push(at("MoveLineTo", start));
-        if let (Some(c), true, false) = (comp, post.on("B011"), comp_at_cut) {
-            out.push(val("SetToolCorrection", c));
-        }
-        let pierce = post.pierce(q, marking);
-        let pierce_cmds = |out: &mut Vec<Cmd>| {
-            if let Some(p) = &pierce {
-                out.push(val("SetPiercingMode", p.clone()));
-                out.push(cmd("ExecPiercing"));
+        // too unless B031; none on engraving with B036 (BV65).
+        let comp = if new_marking || (marking && post.on("B031")) { None } else { Some(if comp_left && !mark { "Left" } else { "Right" }) };
+        // BV30: Exterior for a part's outline, Interior for a hole, Unknown
+        // for marking (and the B026 quality); B036 engraving Interior.
+        let side = if new_marking { "Interior" } else if marking { "Unknown" } else if inner { "Interior" } else { "Exterior" };
+        // BV33: the pierce mode; B036 engraving Fine (2: Normal).
+        let pierce = if new_marking { Some(if b036 == 2 { "Normal" } else { "Fine" }.to_string()) } else { post.pierce(q, marking) };
+        let s = Start { post, f, w, h, marking, mode: if mark { 2 } else { post.mode(q) }, comp, side, pierce };
+        let lead_mv = if has_lead { moves(&lead, u) } else { vec![] };
+        let bracket = begin(&mut out, st, &s, start, &lead_mv);
+        let mut from = body[0];
+        let (mv, ends) = moves_ends(&body, u);
+        let mut steps: Vec<Step> = if joints.is_empty() { mv.into_iter().map(Step::Mv).collect() } else { joint_steps(from, &mv, &ends, &joints, post.on("B038"), post.on("B049")) };
+        // BV34: B006 splits the first move of a start without a lead-in.
+        let split_first_of = |steps: &mut Vec<Step>, at: usize, from: P| {
+            if let Some(Step::Mv(m)) = steps.get(at).copied() {
+                let mut v = vec![m];
+                b006(from, &mut v, post);
+                steps.splice(at..=at, v.into_iter().map(Step::Mv));
             }
         };
-        let mut from = start;
-        let write_moves = |out: &mut Vec<Cmd>, mv: &[Mv], from: &mut P, first_fault: &mut bool| {
-            for m in mv {
-                for piece in split_full(*from, *m, post.on("B018")) {
-                    match piece {
-                        Mv::Line(p) => {
-                            let mut p = p;
-                            if *first_fault && fault() != 0.0 {
-                                p[0] += fault() / u;
-                                *first_fault = false;
-                            }
-                            out.push(at("LineTo", p));
-                        }
-                        Mv::Arc { to, sweep, .. } => out.push(Cmd("ArcTo", vec![("X", num(to[0])), ("Y", num(to[1])), ("SweepAngle", num(sweep))])),
+        if !bracket {
+            split_first_of(&mut steps, 0, from);
+        }
+        let mut i = 0;
+        while i < steps.len() {
+            match steps[i] {
+                Step::Mv(m) => write_moves(&mut out, &[m], &mut from, post, first_fault),
+                Step::Joint => out.push(cmd("ExecMicrojoint")),
+                // BV48 (B038): the cut-out ends at the gap; the cut after it
+                // starts like a new contour, without a lead-in.
+                Step::Gap(p) => {
+                    out.push(cmd("EndCutOut"));
+                    if comp.is_some() {
+                        out.push(val("SetToolCorrection", "None"));
                     }
-                    *from = piece.end();
+                    let again = Start { pierce: s.pierce.clone(), ..s };
+                    let bracket = begin(&mut out, st, &again, p, &[]);
+                    from = p;
+                    if !bracket {
+                        split_first_of(&mut steps, i + 1, p);
+                    }
                 }
             }
-        };
-        if bracket {
-            out.push(cmd("BeginLeadIn"));
-            pierce_cmds(&mut out);
-            if has_lead {
-                let mut no_fault = false;
-                write_moves(&mut out, &moves(&lead, u), &mut from, &mut no_fault);
-            }
-            out.push(cmd("EndLeadIn"));
-        } else if post.on("B044") {
-            pierce_cmds(&mut out);
+            i += 1;
         }
-        if let (Some(c), true) = (comp, comp_at_cut) {
-            out.push(val("SetToolCorrection", c));
-        }
-        // BV30: Exterior for a part's outline, Interior for a hole, Unknown
-        // for marking (and the B026 quality).
-        let side = if marking { "Unknown" } else if inner { "Interior" } else { "Exterior" };
-        out.push(Cmd("BeginCutOut", vec![("Contour", side.into())]));
-        let mut mv = moves(&body, u);
-        if !bracket && !mv.is_empty() {
-            let b006 = post.whole("B006") as f64;
-            if b006 > 0.0 {
-                let first = mv.remove(0);
-                let mut s = split_first(from, first, b006);
-                s.extend(mv);
-                mv = s;
-            }
-        }
-        write_moves(&mut out, &mv, &mut from, first_fault);
         // BV34, BV57: the overlap and lead-out in their bracket, before EndCutOut.
         let tail: Vec<P> = out_path.into_iter().map(loc).collect();
         if !tail.is_empty() {
@@ -792,7 +1067,7 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
             let mut t = vec![from];
             t.extend(tail);
             let mut no_fault = false;
-            write_moves(&mut out, &moves(&t, u), &mut from, &mut no_fault);
+            write_moves(&mut out, &moves(&t, u), &mut from, post, &mut no_fault);
             out.push(cmd("EndLeadOut"));
         }
         out.push(cmd("EndCutOut"));
@@ -803,14 +1078,255 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
     out
 }
 
+/// BV64: the quality a cut-off line is cut in: B045's when set, else 1 (the
+/// machine's plain cutting column, mode 0; MAC-81).
+pub fn cutoff_quality(post: &Post) -> usize {
+    if post.num("B045") > 0.5 { post.num("B045").trunc() as usize } else { 1 }
+}
+
+/// One piece of a cut-off line on the sheet (mm): where it is pierced, how,
+/// and its moves, each with the height sensor switched after it (BV38).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CutOffPiece {
+    pub pierce_at: P,
+    /// None = no pierce command (a line starting inside the sheet without B025).
+    pub pierce: Option<String>,
+    pub runs: Vec<(Vec<P>, Option<bool>)>,
+}
+
+/// The sheet edge nearest `p` (mm), as (signed distance inside, outward normal).
+fn nearest_edge(p: P, w: f64, h: f64) -> (f64, P) {
+    [(p[0], [-1.0, 0.0]), (w - p[0], [1.0, 0.0]), (p[1], [0.0, -1.0]), (h - p[1], [0.0, 1.0])].into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap()
+}
+
+fn path_len(p: &[P]) -> f64 {
+    p.windows(2).map(|w| d(w[0], w[1])).sum()
+}
+
+/// The path from distance `s0` to `s1` along `p` (mm).
+fn sub_path(p: &[P], s0: f64, s1: f64) -> Vec<P> {
+    let at = |s: f64| {
+        let mut acc = 0.0;
+        for w in p.windows(2) {
+            let l = d(w[0], w[1]);
+            if acc + l >= s && l > 0.0 {
+                let t = ((s - acc) / l).clamp(0.0, 1.0);
+                return [w[0][0] + (w[1][0] - w[0][0]) * t, w[0][1] + (w[1][1] - w[0][1]) * t];
+            }
+            acc += l;
+        }
+        *p.last().unwrap()
+    };
+    let mut out = vec![at(s0)];
+    let mut acc = 0.0;
+    for w in p.windows(2) {
+        acc += d(w[0], w[1]);
+        if acc > s0 + 1e-9 && acc < s1 - 1e-9 {
+            out.push(w[1]);
+        }
+    }
+    out.push(at(s1));
+    out.dedup_by(|b, a| d(*a, *b) < 1e-9);
+    out
+}
+
+/// Where a path first comes `inset` mm inside the sheet's outline (mm along it).
+fn entry(p: &[P], w: f64, h: f64, inset: f64) -> Option<f64> {
+    let (lo, hi) = ([inset, inset], [w - inset, h - inset]);
+    let mut acc = 0.0;
+    for s in p.windows(2) {
+        let (a, b) = (s[0], s[1]);
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        let mut ok = true;
+        for k in 0..2 {
+            let dk = b[k] - a[k];
+            if dk.abs() < 1e-12 {
+                if a[k] < lo[k] - 1e-9 || a[k] > hi[k] + 1e-9 {
+                    ok = false;
+                }
+            } else {
+                let (ta, tb) = ((lo[k] - a[k]) / dk, (hi[k] - a[k]) / dk);
+                t0 = t0.max(ta.min(tb));
+                t1 = t1.min(ta.max(tb));
+            }
+        }
+        let l = d(a, b);
+        if ok && t0 <= t1 + 1e-12 {
+            return Some(acc + t0 * l);
+        }
+        acc += l;
+    }
+    None
+}
+
+/// BV38, BV49, BV64: a cut-off line (a remnant line or a free cut path) as it
+/// is cut on the sheet (mm), with B003 (overrun), B004 (sensing off) and
+/// B005 (run-up) in mm. A line starting on or past an edge (or within B004 +
+/// B005 of one) is pierced where it first comes B004 + B005 inside the
+/// sheet, cut back to its start and B003 past it with sensing off for the
+/// last B005 back, the head lifted, then pierced again (no-time) and cut on
+/// to its end, sensing off B004 before the far edge and running B003 past
+/// it. A line starting further inside is cut from its start, pierced only
+/// with B025. A far end inside the sheet just ends there.
+pub fn cutoff_pieces(pts: &[P], w: f64, h: f64, b003: f64, b004: f64, b005: f64, post: &Post) -> Vec<CutOffPiece> {
+    let mut p: Vec<P> = pts.to_vec();
+    p.dedup_by(|b, a| d(*a, *b) < 1e-9);
+    if p.len() < 2 {
+        return vec![];
+    }
+    let tol = post.tol;
+    let len = path_len(&p);
+    let first_pierce = post.pierce(cutoff_quality(post), false);
+    let ext = |a: P, b: P, by: f64| {
+        let l = d(a, b);
+        [b[0] + (b[0] - a[0]) / l * by, b[1] + (b[1] - a[1]) / l * by]
+    };
+    let (start_in, _) = nearest_edge(p[0], w, h);
+    let (end_in, _) = nearest_edge(p[p.len() - 1], w, h);
+    let from_edge = start_in <= b004 + b005 + tol;
+    let to_edge = end_in <= tol;
+    // Where it is pierced (mm along the line).
+    let sp = if from_edge {
+        match entry(&p, w, h, b004 + b005) {
+            Some(s) if s <= len / 2.0 => s,
+            _ => len / 4.0,
+        }
+    } else {
+        0.0
+    };
+    let pierce_at = sub_path(&p, sp, sp)[0];
+    let mut out = vec![];
+    // The far piece: from the pierce on to the end and past a far edge.
+    let mut far: Vec<(Vec<P>, Option<bool>)> = vec![];
+    if to_edge {
+        let off = if len - b004 >= sp { len - b004 } else { sp + (len - sp) / 2.0 };
+        let run_up = (sp + b005).min(off);
+        far.push((sub_path(&p, sp, run_up), None));
+        far.push((sub_path(&p, run_up, off), Some(false)));
+        let n = p.len();
+        let mut tail = sub_path(&p, off, len);
+        if b003 > 0.0 {
+            // Out past the edge in one move with the line's last stretch.
+            let e = ext(p[n - 2], p[n - 1], b003);
+            if tail.len() >= 2 { *tail.last_mut().unwrap() = e } else { tail.push(e) }
+        }
+        far.push((tail, Some(true)));
+    } else {
+        far.push((sub_path(&p, sp, len), None));
+    }
+    if from_edge && sp > 1e-9 {
+        // Back to the start edge and past it.
+        let back: Vec<P> = sub_path(&p, 0.0, sp).into_iter().rev().collect();
+        let off = b005.min(sp);
+        let mut tail = sub_path(&back, off, sp);
+        if b003 > 0.0 {
+            let e = ext(p[1], p[0], b003);
+            if tail.len() >= 2 { *tail.last_mut().unwrap() = e } else { tail.push(e) }
+        }
+        out.push(CutOffPiece { pierce_at, pierce: first_pierce, runs: vec![(sub_path(&back, 0.0, off), Some(false)), (tail, Some(true))] });
+        out.push(CutOffPiece { pierce_at, pierce: Some("NoTime".into()), runs: far });
+    } else {
+        let pierce = if from_edge || post.on("B025") { first_pierce } else { None };
+        out.push(CutOffPiece { pierce_at, pierce, runs: far });
+    }
+    out
+}
+
+/// BV64: the sheet's cut-off lines (free cut paths, then the remnant line, as
+/// cut after the parts) as one subprogram's commands, in its own coordinates
+/// (`f`), each line in the BV38 sequence.
+fn cutoff_commands(lines: &[&CutLine], f: &Frame, post: &Post, w: f64, h: f64, st: &mut State) -> Vec<Cmd> {
+    let u = post.unit;
+    let mm = |k: &str| post.whole(k).max(0) as f64 * u;
+    let mut out = vec![];
+    st.mode = None;
+    let q = cutoff_quality(post);
+    let s = Start { post, f, w, h, marking: false, mode: post.mode(q), comp: Some("Right"), side: "Exterior", pierce: None };
+    for line in lines {
+        let pieces = cutoff_pieces(&line.pts, w, h, mm("B003"), mm("B004"), mm("B005"), post);
+        let n = pieces.len();
+        for (k, pc) in pieces.iter().enumerate() {
+            let at_l = f.local(pc.pierce_at, u);
+            if k == 0 {
+                // BV38, BV51: the mode always, compensation off, then the
+                // contour start's sensor and compensation (BV29, BV31).
+                out.push(val("SetOperationMode", s.mode.to_string()));
+                st.mode = Some(s.mode);
+                out.push(val("SetToolCorrection", "None"));
+                sensor_rule(&mut out, st, &s, at_l, false);
+                if !post.on("B011") {
+                    out.push(val("SetToolCorrection", "Right"));
+                }
+                out.push(at("MoveLineTo", at_l));
+                if post.on("B011") {
+                    out.push(val("SetToolCorrection", "Right"));
+                }
+            } else {
+                out.push(at("MoveLineTo", at_l));
+            }
+            out.push(Cmd("BeginCutOut", vec![("Contour", "Exterior".into())]));
+            if let Some(pm) = &pc.pierce {
+                out.push(val("SetPiercingMode", pm.clone()));
+                out.push(cmd("ExecPiercing"));
+            }
+            let mut from = at_l;
+            for (run, sensor) in &pc.runs {
+                let pts: Vec<P> = run.iter().map(|&p| f.local(p, u)).collect();
+                if pts.len() >= 2 && d(pts[0], *pts.last().unwrap()) + path_len(&pts) > 1e-9 {
+                    let mut no_fault = false;
+                    write_moves(&mut out, &moves(&pts, u), &mut from, post, &mut no_fault);
+                }
+                if let Some(on) = sensor {
+                    out.push(val("SetSensingSensor", if *on { "On" } else { "Off" }));
+                    st.sensor = *on;
+                }
+            }
+            out.push(cmd("EndCutOut"));
+            out.push(cmd("ExecHighPositioning"));
+            if k + 1 == n {
+                out.push(val("SetToolCorrection", "None"));
+            }
+        }
+    }
+    out
+}
+
+/// The cut lines a sheet's program cuts, in order (free paths, then the
+/// remnant line), those with some length only.
+pub fn cut_lines_in_order(cuts: &[CutLine]) -> Vec<&CutLine> {
+    let by = |kind| cuts.iter().filter(move |c: &&CutLine| c.kind == kind && c.pts.iter().any(|q| d(*q, c.pts[0]) > 1e-6));
+    by(crate::cutoff::CutKind::Free).chain(by(crate::cutoff::CutKind::Remnant)).collect()
+}
+
+/// BV27, BV64: the cut-off subprogram's call: moved B003 outward from the
+/// edge the first line starts on (on the sheet origin when it starts inside).
+fn cutoff_frame(lines: &[&CutLine], post: &Post, w: f64, h: f64) -> Frame {
+    let u = post.unit;
+    let dec = if post.on("B021") { 3 } else { 0 };
+    let b003 = post.whole("B003").max(0) as f64;
+    let mut v = [0.0, 0.0];
+    if let Some(l) = lines.first() {
+        let (inside, n) = nearest_edge(l.pts[0], w, h);
+        let b = (post.whole("B004") + post.whole("B005")).max(0) as f64 * u;
+        if inside <= b + post.tol {
+            v = [n[0] * b003, n[1] * b003];
+        }
+    }
+    Frame { x: rounded(v[0], dec), y: rounded(v[1], dec), rot: 0.0 }
+}
+
 /// One subprogram written: its name, the part it cuts and how many times the
 /// nest calls it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SubOut {
     pub name: String,
+    /// The part it cuts (`CUTOFF` for the sheet's cut-off lines).
     pub part: usize,
     pub calls: usize,
 }
+
+/// `SubOut::part` of the subprogram that cuts a sheet's cut-off lines (BV64).
+pub const CUTOFF: usize = usize::MAX;
 
 /// One nest's cut program.
 #[derive(Clone, Debug)]
@@ -865,22 +1381,26 @@ fn subprograms(s: &SheetIn, post: &Post) -> (Vec<(Vec<Cmd>, usize, usize)>, Vec<
     let mut calls = vec![];
     let mut ext = [0.0f64; 2];
     let mut first_fault = true;
-    for &i in &order {
-        let pl = &s.sheet[i];
-        let f = Frame::of(pl, u, post.on("B021"));
+    // The parts, then the sheet's cut-off lines in one subprogram (BV64).
+    let mut items: Vec<(usize, Frame)> = order.iter().map(|&i| (s.sheet[i].part, Frame::of(&s.sheet[i], u, post.on("B021")))).collect();
+    let lines = cut_lines_in_order(s.cuts);
+    if !lines.is_empty() {
+        items.push((CUTOFF, cutoff_frame(&lines, post, s.spec.w, s.spec.h)));
+    }
+    for (n, &(part, f)) in items.iter().enumerate() {
         // A copy whose commands come out the same shares the subprogram;
         // working it out mustn't change what the program has written so far.
         let mut probe = State { mode: st.mode, sensor: st.sensor };
         let mut ff = first_fault;
-        let cmds = part_commands(s.plan, i + 1, &f, post, s.spec.w, s.spec.h, &mut probe, &mut ff);
+        let cmds = if part == CUTOFF { cutoff_commands(&lines, &f, post, s.spec.w, s.spec.h, &mut probe) } else { part_commands(s.plan, order[n] + 1, &f, post, s.spec.w, s.spec.h, &mut probe, &mut ff) };
         // BV37: the sensor is as the call leaves it, whether its subprogram
         // is new or one written before with the same commands.
         st = probe;
-        let k = match variants.iter().position(|v| v.1 == pl.part && v.0 == cmds) {
+        let k = match variants.iter().position(|v| v.1 == part && v.0 == cmds) {
             Some(k) => k,
             None => {
                 first_fault = ff;
-                variants.push((cmds, pl.part, 0));
+                variants.push((cmds, part, 0));
                 variants.len() - 1
             }
         };
@@ -949,6 +1469,26 @@ pub fn cut_program(s: &SheetIn, post: &Post) -> Ccp {
     };
     let mut subs = vec![];
     for (k, (cmds, part, n)) in variants.iter().enumerate() {
+        if *part == CUTOFF {
+            // BV26, BV64: named ResidualSheetCuts (numbered like the parts'
+            // with B016 or B028), with the extent of its cuts.
+            let name = if post.on("B016") || post.on("B028") { sub_name(post, k + 1) } else { "ResidualSheetCuts".to_string() };
+            let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+            for c in cmds.iter().filter(|c| matches!(c.0, "MoveLineTo" | "LineTo" | "ArcTo")) {
+                let v = |k: &str| c.1.iter().find(|a| a.0 == k).and_then(|a| a.1.parse::<f64>().ok()).unwrap_or(0.0);
+                let p = [v("X"), v("Y")];
+                lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+                hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+            }
+            let _ = write!(t, "    <SubProgram Id=\"{}\" Name=\"{}\" PartWidth=\"{}\" PartHeight=\"{}\">\r\n", next(), esc(&name), num(hi[0] - lo[0]), num(hi[1] - lo[1]));
+            t.push_str("      <ControlCommands>\r\n");
+            for c in cmds {
+                line(&mut t, 4, c, next());
+            }
+            t.push_str("      </ControlCommands>\r\n    </SubProgram>\r\n");
+            subs.push(SubOut { name, part: CUTOFF, calls: *n });
+            continue;
+        }
         let name = sub_name(post, k + 1);
         let p = &s.parts[*part];
         let (pw, ph) = p.bbox();
@@ -990,8 +1530,12 @@ pub fn unsupported(s: &SheetIn, post: &Post) -> Vec<String> {
     let name = |no: usize| s.sheet.get(no.wrapping_sub(1)).and_then(|pl| s.parts.get(pl.part)).map_or("?", |p| p.name.as_str()).to_string();
     for c in &s.plan.contours {
         let n = name(c.part_no);
-        if !c.joints.is_empty() {
-            add(format!("part {n} has micro-joints, which the ByStar Fiber laser's programs don't carry yet; take them off the part first"));
+        // BV63: joints with their own leads aren't written yet (B019, B023).
+        if c.joint_leads.iter().any(|(o, i)| o.len() >= 2 || i.len() >= 2) || c.closing {
+            add(format!("part {n} has micro-joints with their own leads, which the ByStar Fiber laser's programs don't carry yet; use a joint type without leads (gap) for this machine"));
+        }
+        if !c.joints.is_empty() && post.changed("B047") {
+            add(format!("switch B047 is changed, and part {n} has micro-joints, which this writer doesn't write that way yet; set B047 back to 0"));
         }
         if !c.loops.is_empty() {
             add(format!("part {n} has corner loops, which the ByStar Fiber laser's programs don't carry yet; take them off the part first"));
@@ -1006,16 +1550,22 @@ pub fn unsupported(s: &SheetIn, post: &Post) -> Vec<String> {
             add(format!("part {n} has cuts that stop short of their start, which the ByStar Fiber laser's programs don't carry yet"));
         }
     }
-    if s.cuts.iter().any(|c| c.pts.iter().any(|q| d(*q, c.pts[0]) > 1e-6)) {
-        add("the sheet has remnant or cut-off lines, which the ByStar Fiber laser's programs don't carry yet; take them off the sheet first".into());
+    // BV64: the cut-off modes this writer doesn't follow yet.
+    if !cut_lines_in_order(s.cuts).is_empty() {
+        for k in ["B035", "B046", "B048"] {
+            if post.on(k) {
+                add(format!("switch {k} is on, and the sheet has remnant or cut-off lines, which this writer doesn't cut that way yet; set {k} back to 0"));
+            }
+        }
     }
-    // BV60: a switch the writer doesn't follow yet, changed, that would
-    // change this sheet's program.
-    // A contour in the B026 marking quality is marking too (BV30–BV33).
-    if !s.plan.marks.is_empty() || s.plan.contours.iter().any(|c| c.punch.is_none() && post.is_marking(c.quality)) {
-        for k in ["B012", "B036"] {
-            if post.changed(k) {
-                add(format!("switch {k} is changed, and the sheet has marking, which this writer doesn't write that way yet; set {k} back to {}", switch(k).map_or("0", |d| d.default)));
+    // BV65: point marks the switches would write as nothing, or as a cross.
+    for (no, m) in &s.plan.marks {
+        if m.len() == 1 {
+            let n = name(*no);
+            if post.num("B034") > post.tol {
+                add(format!("switch B034 is set, and part {n} has point marks, which this writer doesn't write as a cross yet; set B034 back to 0"));
+            } else if post.num("B013") <= post.tol && !(post.on("B050") && post.point_type == 2) {
+                add(format!("part {n} has point marks, which these switches write as nothing (B013 at or below the machine tolerance, without B050 for an on/off point); set B013 to the circle's diameter"));
             }
         }
     }
@@ -1102,7 +1652,7 @@ pub fn job_info(job: &JobText, parts: &[Part], all: &[Nest], nests: &[usize], po
     let _ = write!(t, "<JobInfo Guid=\"{}\" Name=\"{}\" Material=\"{}\" Thickness=\"{}\" MeasurementSystem=\"Metric\" Parameter=\"\"{gas}>\r\n", esc(&job.guid), esc(&job.name), esc(&job.material), num(job.thickness));
     // The parts the nests place, in the part list's order (BV44: the id is
     // the place in the list).
-    let mut used: Vec<usize> = nests.iter().flat_map(|&n| all[n].ccp.subs.iter().map(|s| s.part)).collect();
+    let mut used: Vec<usize> = nests.iter().flat_map(|&n| all[n].ccp.subs.iter().map(|s| s.part)).filter(|&p| p != CUTOFF).collect();
     used.sort();
     used.dedup();
     let qty = |p: usize| {
@@ -1141,7 +1691,8 @@ pub fn job_info(job: &JobText, parts: &[Part], all: &[Nest], nests: &[usize], po
             num(nest.ccp.extent[1])
         );
         t.push_str("      <PlanPartInfos>\r\n");
-        for (k, s) in nest.ccp.subs.iter().enumerate() {
+        // BV64: the cut-off subprogram cuts no part: no PlanPartInfo.
+        for (k, s) in nest.ccp.subs.iter().enumerate().filter(|s| s.1.part != CUTOFF) {
             let id = s.part + 1;
             let id = if post.on("B022") && id < 1 { (k + 1).min(parts.len()) } else { id };
             let _ = write!(t, "        <PlanPartInfo PartId=\"{id}\" Quantity=\"{}\" SubProgramName=\"{}\" />\r\n", qty(s.part), esc(&s.name));
@@ -1327,5 +1878,183 @@ mod bystar_tests {
         assert_eq!(s, vec![Mv::Line([2.0, 0.0]), Mv::Line([10.0, 0.0])]);
         let s = split_first([0.0, 0.0], Mv::Line([3.0, 0.0]), 2.0);
         assert_eq!(s[0], Mv::Line([1.5, 0.0]));
+    }
+
+    // -----------------------------------------------------------------------
+    // #127: joints, point marks, cut-offs at the writer's seam, each file
+    // read back by the reader as an export does.
+    // -----------------------------------------------------------------------
+
+    use crate::nest::{Shape, SheetSpec};
+
+    fn spec() -> SheetSpec {
+        SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
+    }
+
+    /// A made-up 200 × 100 rectangle DEMO-001 at (100, 100) (or a Ø100 disc),
+    /// its plan changed by `edit`, written with switches `set` and read back:
+    /// (the cut program, the read-back's issues).
+    fn demo(disc: bool, set: &[(&str, &str)], cuts: &[CutLine], edit: impl Fn(&mut SheetPlan)) -> (String, Vec<String>) {
+        let (shape, w, h) = if disc { (Shape::Disc, 100.0, 100.0) } else { (Shape::Rectangle, 200.0, 100.0) };
+        let parts = vec![Part { name: "DEMO-001".into(), shape, w, h, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        let placed = vec![Placed { part: 0, x: 100.0, y: 100.0, w, h, turns: 0, mirror: false, spin: Default::default() }];
+        let sp = spec();
+        let mut plan = crate::cnc::plan(&parts, &placed, &sp);
+        edit(&mut plan);
+        let mut m = MachinePost::default();
+        for (k, v) in set {
+            m.set.insert(k.to_string(), v.to_string());
+        }
+        let post = Post::parse(None, None, &m);
+        let ins = [SheetIn { parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts }];
+        let job = JobText { name: "DEMO".into(), thickness: 3.0, ..Default::default() };
+        let w = write(&job, &ins, &[1], &post);
+        let files: Vec<(String, Vec<u8>, Vec<usize>)> = w.bvcs.iter().map(|f| (f.file.clone(), crate::blm::zip(&f.entries), f.nests.clone())).collect();
+        let nests: Vec<(String, Vec<usize>)> = w.nests.iter().map(|n| (n.name.clone(), n.sheets.clone())).collect();
+        let back = [crate::engine::readback::BystarSheet { sheet_no: 1, parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts }];
+        let mut issues = crate::engine::readback::check_bvc(&files, &nests, &back, 3.0, &post);
+        issues.extend(unsupported(&ins[0], &post));
+        (w.nests[0].ccp.text.clone(), issues)
+    }
+
+    /// The commands of a cut program as (name, X, Y) in order (X, Y NaN when none).
+    fn cmds(t: &str) -> Vec<(String, f64, f64)> {
+        t.lines()
+            .filter_map(|l| {
+                let l = l.trim().strip_prefix('<')?.strip_suffix("/>")?;
+                let name = l.split(' ').next()?.to_string();
+                let v = |k: &str| l.split(&format!(" {k}=\"")).nth(1).and_then(|r| r.split('"').next()).and_then(|x| x.parse::<f64>().ok()).unwrap_or(f64::NAN);
+                Some((name, v("X"), v("Y")))
+            })
+            .collect()
+    }
+
+    /// The local end points the joint markers follow (the move before each).
+    fn markers(t: &str) -> Vec<P> {
+        let c = cmds(t);
+        (1..c.len()).filter(|&k| c[k].0 == "ExecMicrojoint").map(|k| [c[k - 1].1, c[k - 1].2]).collect()
+    }
+
+    #[test]
+    fn joints_at_a_contours_start_its_end_and_several_on_one_side_are_each_marked_at_their_middle() {
+        // BV63: the outline 200 × 100 from its start; joints 1 mm wide.
+        let per = 600.0;
+        let cases: [(&str, Vec<(f64, f64)>); 3] = [("start", vec![(0.0, 1.0)]), ("end", vec![(per - 1.0, per)]), ("several", vec![(20.0, 21.0), (60.0, 61.0), (150.0, 152.0)])];
+        for (what, js) in cases {
+            let (t, issues) = demo(false, &[], &[], |p| {
+                let k = p.contours.iter().position(|c| !c.inner).unwrap();
+                assert!((crate::nest::perimeter(&p.contours[k].points) - per).abs() < 1e-6);
+                p.contours[k].joints = js.clone();
+            });
+            assert_eq!(issues, Vec::<String>::new(), "{what}: {t}");
+            let plan = {
+                let parts = vec![Part { name: "DEMO-001".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+                let placed = vec![Placed { part: 0, x: 100.0, y: 100.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }];
+                crate::cnc::plan(&parts, &placed, &spec())
+            };
+            let c = plan.contours.iter().find(|c| !c.inner).unwrap();
+            // The call is at the part's origin (100, 100), turned 0°.
+            let want: Vec<P> = js.iter().map(|j| crate::cnc::point_at(&c.points, (j.0 + j.1) / 2.0)).map(|p| [p[0] - 100.0, p[1] - 100.0]).collect();
+            let got = markers(&t);
+            assert_eq!(got.len(), want.len(), "{what}: {t}");
+            for (g, w) in got.iter().zip(&want) {
+                assert!(d(*g, *w) < 1e-6, "{what}: marker at {g:?}, gap middle {w:?}");
+            }
+            // No rapid and no pierce inside the cut-out (BV36).
+            let body = &t[t.find("BeginCutOut").unwrap()..t.find("EndCutOut").unwrap()];
+            assert!(!body.contains("MoveLineTo") && !body.contains("ExecPiercing"), "{what}");
+        }
+    }
+
+    #[test]
+    fn after_a_joint_on_an_arc_the_arc_is_written_with_its_true_sweep_from_the_gaps_middle() {
+        // The owner's answer on #122 (BV47): a Ø100 disc, one joint on its arc.
+        let (t, issues) = demo(true, &[], &[], |p| {
+            let k = p.contours.iter().position(|c| !c.inner).unwrap();
+            p.contours[k].joints = vec![(100.0, 102.0)];
+        });
+        assert_eq!(issues, Vec::<String>::new(), "{t}");
+        let c = cmds(&t);
+        let k = c.iter().position(|x| x.0 == "ExecMicrojoint").unwrap();
+        // The cut to the gap's middle is an arc (BV46), and the next one too.
+        assert_eq!((c[k - 1].0.as_str(), c[k + 1].0.as_str()), ("ArcTo", "ArcTo"), "{t}");
+        // The circle the arc after the joint makes, from the marker (where the
+        // path is) to its end, has the disc's own centre and radius.
+        let line_k = t.lines().position(|l| l.contains("ExecMicrojoint")).unwrap();
+        let next = t.lines().nth(line_k + 1).unwrap();
+        let sw: f64 = next.split("SweepAngle=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+        let from = [c[k - 1].1, c[k - 1].2];
+        let to = [c[k + 1].1, c[k + 1].2];
+        let cn = crate::bvc::arc_centre(from, to, sw).unwrap();
+        assert!(d(cn, [50.0, 50.0]) < 0.01 && (d(from, cn) - 50.0).abs() < 0.01 && (d(to, cn) - 50.0).abs() < 0.01, "centre {cn:?}: {t}");
+    }
+
+    #[test]
+    fn b038_restarts_after_each_gap_and_b049_cuts_an_arc_gap_straight() {
+        let (t, issues) = demo(true, &[("B038", "1")], &[], |p| {
+            let k = p.contours.iter().position(|c| !c.inner).unwrap();
+            p.contours[k].joints = vec![(100.0, 102.0)];
+        });
+        assert_eq!(issues, Vec::<String>::new(), "{t}");
+        // BV48: the outline in two cut-outs (the disc's hole is the third),
+        // the second after a rapid, no marker, no pierce.
+        assert_eq!((t.matches("<BeginCutOut").count(), t.matches("ExecMicrojoint").count(), t.matches("<ExecPiercing").count()), (3, 0, 2), "{t}");
+        let c = cmds(&t);
+        let e = c.iter().enumerate().filter(|x| x.1 .0 == "EndCutOut").nth(1).unwrap().0;
+        assert_eq!(c[e + 1].0, "SetToolCorrection");
+        assert!(c[e..].iter().position(|x| x.0 == "MoveLineTo").unwrap() < c[e..].iter().position(|x| x.0 == "BeginCutOut").unwrap());
+        // B044 pierces the restart too.
+        let (t, issues) = demo(true, &[("B038", "1"), ("B044", "1")], &[], |p| {
+            let k = p.contours.iter().position(|c| !c.inner).unwrap();
+            p.contours[k].joints = vec![(100.0, 102.0)];
+        });
+        assert_eq!(issues, Vec::<String>::new(), "{t}");
+        assert_eq!(t.matches("<ExecPiercing").count(), 3, "{t}");
+        // B049: the gap on the arc is cut straight to its chord's middle.
+        let (t, issues) = demo(true, &[("B049", "1")], &[], |p| {
+            let k = p.contours.iter().position(|c| !c.inner).unwrap();
+            p.contours[k].joints = vec![(100.0, 102.0)];
+        });
+        assert_eq!(issues, Vec::<String>::new(), "{t}");
+        let c = cmds(&t);
+        let k = c.iter().position(|x| x.0 == "ExecMicrojoint").unwrap();
+        assert_eq!((c[k - 2].0.as_str(), c[k - 1].0.as_str(), c[k + 1].0.as_str()), ("ArcTo", "LineTo", "ArcTo"), "{t}");
+        let mid = [c[k - 1].1, c[k - 1].2];
+        assert!(d(mid, [50.0, 50.0]) < 50.0 - 1e-4, "the chord's middle is inside the circle: {mid:?}");
+    }
+
+    #[test]
+    fn point_marks_are_circles_or_tiny_cuts_as_the_switches_say() {
+        // The app makes no point marks yet: one put in the plan by hand.
+        let pt = |p: &mut SheetPlan| p.marks.push((1, vec![[150.0, 150.0]]));
+        // BV40: B013 0.2 (shipped): a circle of 0.2 in mode 3, pierced, two half arcs.
+        let (t, issues) = demo(false, &[], &[], pt);
+        assert_eq!(issues, Vec::<String>::new(), "{t}");
+        let c = cmds(&t);
+        let k = c.iter().position(|x| x.0 == "MoveLineTo").unwrap();
+        let names: Vec<&str> = c[k - 2..k + 12].iter().map(|x| x.0.as_str()).collect();
+        assert_eq!(names, ["SetOperationMode", "SetSensingSensor", "MoveLineTo", "SetToolCorrection", "BeginLeadIn", "SetPiercingMode", "ExecPiercing", "LineTo", "EndLeadIn", "BeginCutOut", "ArcTo", "ArcTo", "EndCutOut", "SetToolCorrection"], "{t}");
+        assert_eq!(t.lines().find(|l| l.contains("SetOperationMode")).map(|l| l.contains("Value=\"3\"")), Some(true), "{t}");
+        assert_eq!([c[k + 5].1, c[k + 5].2], [50.1, 50.0], "the lead-in to x + d/2");
+        assert!(t.contains("SweepAngle=\"180\""));
+        // B033: marking mode 2; B031: no compensation.
+        let (t, issues) = demo(false, &[("B033", "1"), ("B031", "1"), ("B013", "3")], &[], pt);
+        assert_eq!(issues, Vec::<String>::new(), "{t}");
+        let first = t.find("Value=\"2\"").unwrap();
+        assert!(first < t.find("MoveLineTo").unwrap() && !t[..t.find("EndCutOut").unwrap()].contains("Value=\"Right\""), "{t}");
+        assert!(t.contains("X=\"48.5\" Y=\"50\" SweepAngle=\"180\""), "a 3 mm circle: {t}");
+        // BV55: B013 at the tolerance, B050: an on/off point as a tiny cut.
+        let (t, issues) = demo(false, &[("B013", "0"), ("B050", "1")], &[], pt);
+        assert_eq!(issues, Vec::<String>::new(), "{t}");
+        let c = cmds(&t);
+        let k = c.iter().position(|x| x.0 == "MoveLineTo").unwrap();
+        let names: Vec<&str> = c[k..k + 6].iter().map(|x| x.0.as_str()).collect();
+        assert_eq!(names, ["MoveLineTo", "BeginCutOut", "SetPiercingMode", "ExecPiercing", "LineTo", "EndCutOut"], "{t}");
+        assert!(t.contains("Contour=\"Interior\"") && t.contains("X=\"49.95\" Y=\"50\""), "{t}");
+        // Nothing, or a cross: refused, not written another way.
+        let (_, issues) = demo(false, &[("B013", "0")], &[], pt);
+        assert!(issues.iter().any(|m| m.contains("point marks") && m.contains("as nothing")), "{issues:?}");
+        let (_, issues) = demo(false, &[("B034", "2")], &[], pt);
+        assert!(issues.iter().any(|m| m.contains("B034")), "{issues:?}");
     }
 }
