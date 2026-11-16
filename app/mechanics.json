@@ -3522,6 +3522,12 @@
   "source": "MECHANICS F9; own design"
  },
  {
+  "name": "ERP reference sent as null",
+  "group": "erp (fulcrum)",
+  "value": "read as empty (the item is still listed)",
+  "source": "MECHANICS F34; observed on a live system"
+ },
+ {
   "name": "ERP units sent",
   "group": "erp (fulcrum)",
   "value": "inch (setting)",
@@ -7189,6 +7195,12 @@
   "group": "ByStar Fiber job (.bvc)",
   "value": "lines and true arcs, every move's ends and middle within the tolerance of the other path, both ways (however the moves are split)",
   "source": "MECHANICS BV20"
+ },
+ {
+  "name": "near stock thickness offered within",
+  "group": "sheet stock",
+  "value": "2 % of the job's thickness, at least 0.05 mm",
+  "source": "MECHANICS ST19"
  },
  {
   "name": "material fields",
