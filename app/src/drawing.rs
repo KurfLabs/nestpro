@@ -17,8 +17,10 @@ use egui::{Color32, CornerRadius, FontId, Pos2, Rect, RichText, Stroke, Vec2};
 // rule DR2).
 /// C002 255 0 0, style 2 (dashed): the axes.
 pub const C_AXES: [u8; 3] = [255, 0, 0];
-// C008 255 255 0 (yellow) is the original's cut contour colour; here each
-// contour is drawn in its cut quality's or its state's colour (CS7).
+/// C008 255 255 0: the original's cut contour colour. Here a cut contour
+/// takes it until the part is machined, then its cut quality's colour (CS7,
+/// CS8).
+pub const C_CUT: [u8; 3] = [255, 255, 0];
 /// C011 255 255 255, style 2: the cross cursor.
 pub const C_CURSOR: [u8; 3] = [255, 255, 255];
 /// C053 0 255 0: marking (machined) texts.
@@ -518,9 +520,10 @@ pub fn measure(a: P, b: P) -> (f64, f64, f64, f64) {
 
 /// The part as the Drawing module shows it: each contour in its state or
 /// cut quality's colour (CS7; Leave out ones too with `left_out`, while the
-/// cut technology panel is open), marking texts in green, notes thin and grey.
-pub fn paint_drawing_part(painter: &egui::Painter, part: &Part, mt: &crate::ct1::MachineTech, to_s: &dyn Fn(P) -> Pos2, texts: bool, left_out: bool) {
-    crate::cutpanel::paint_contour_colours(painter, part, mt, to_s, 1.4, left_out);
+/// cut technology panel is open), cut contours yellow until `machined`
+/// (CS8), marking texts in green, notes thin and grey.
+pub fn paint_drawing_part(painter: &egui::Painter, part: &Part, mt: &crate::ct1::MachineTech, to_s: &dyn Fn(P) -> Pos2, texts: bool, left_out: bool, machined: bool) {
+    crate::cutpanel::paint_contour_colours(painter, part, mt, to_s, 1.4, left_out, (!machined).then(|| rgb(C_CUT)));
     if !texts {
         return;
     }
