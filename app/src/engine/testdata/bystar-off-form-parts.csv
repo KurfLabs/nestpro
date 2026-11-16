@@ -1,0 +1,4 @@
+reference,shape,width_mm,height_mm,quantity,nested
+DEMO-001,Imported drawing,200.0,100.0,3,3
+DEMO-002,Imported drawing,200.0,100.0,2,2
+DEMO-003,Imported drawing,200.0,100.0,2,2

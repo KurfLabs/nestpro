@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<JobInfo Guid="00000000-0000-0000-0000-000000000000" Name="DEMO-PROOF" Material="STEEL" Thickness="3" MeasurementSystem="Metric" Parameter="">
+  <PartInfos>
+    <PartInfo Id="1" Name="DEMO-RECT" Quantity="1" />
+    <PartInfo Id="2" Name="DEMO-DISC" Quantity="1" />
+    <PartInfo Id="3" Name="DEMO-PLATE" Quantity="1" />
+  </PartInfos>
+  <MaterialInfos>
+    <MaterialInfo Id="1" Quantity="1" SizeX="1000" SizeY="500" FormatType="Sheet" ArticleInfo="" />
+  </MaterialInfos>
+  <PlanInfos>
+    <PlanInfo Multiplicity="1" Name="DEMOPROOFX1" MaterialId="1" EstimatedCuttingTime="83" SizeX="800" SizeY="500">
+      <PlanPartInfos>
+        <PlanPartInfo PartId="1" Quantity="1" SubProgramName="1" />
+        <PlanPartInfo PartId="3" Quantity="1" SubProgramName="2" />
+        <PlanPartInfo PartId="2" Quantity="1" SubProgramName="3" />
+      </PlanPartInfos>
+      <SortInfos />
+      <EstimatedCuttingTime>83</EstimatedCuttingTime>
+    </PlanInfo>
+  </PlanInfos>
+</JobInfo>

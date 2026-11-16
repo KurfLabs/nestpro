@@ -504,7 +504,7 @@ fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -
                     continue;
                 }
                 let bracket = post.on("B024");
-                let pierce = if bracket || post.on("B044") { post.pierce(0, true) } else { None };
+                let pierce = if bracket || post.on("B044") || post.on("X003") { post.pierce(0, true) } else { None };
                 let comp = (!post.on("B031")).then_some("Right");
                 out.push(Want { cut: Cut { pts: p, comp }, mode: 2, side: Side::Unknown, pierce, markers: vec![], gaps: vec![] });
             }
@@ -525,7 +525,7 @@ fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -
                 let comp = if new_marking || (marking && post.on("B031")) { None } else { Some(if left { "Left" } else { "Right" }) };
                 let side = if new_marking { Side::Interior } else if marking { Side::Unknown } else if c.inner { Side::Interior } else { Side::Exterior };
                 let pierce_of = |starts_with_lead: bool| {
-                    if !(starts_with_lead || post.on("B024") || post.on("B044") || new_marking) {
+                    if !(starts_with_lead || post.on("B024") || post.on("B044") || post.on("X003") || new_marking) {
                         None
                     } else if new_marking {
                         Some(if b036 == 2 { "Normal" } else { "Fine" }.to_string())
@@ -945,6 +945,83 @@ fn cutoff_issues(label: &str, written: &[(Cut, &crate::bvc::Cut)], place: &dyn F
     issues
 }
 
+/// The shortest distance from `p` to the path through `pts`.
+fn to_path(p: P, pts: &[P]) -> f64 {
+    let seg = |u: P, v: P| {
+        let (dx, dy) = (v[0] - u[0], v[1] - u[1]);
+        let l = dx * dx + dy * dy;
+        let t = if l == 0.0 { 0.0 } else { (((p[0] - u[0]) * dx + (p[1] - u[1]) * dy) / l).clamp(0.0, 1.0) };
+        (p[0] - u[0] - t * dx).hypot(p[1] - u[1] - t * dy)
+    };
+    if pts.len() == 1 {
+        return dist(p, pts[0]);
+    }
+    pts.windows(2).map(|w| seg(w[0], w[1])).fold(f64::MAX, f64::min)
+}
+
+/// BV71: the full job file (X008) read back against the plan: every part
+/// the file lists with its size and its outline and holes (each within the
+/// read-back tolerance of the part's own, both ways, in order), each nest's
+/// sheet margins and remnant sheets (the rectangle around what each remnant
+/// line cuts off).
+fn full_job_file(file: &str, job: &crate::bvc::JobInfo, in_it: &[usize], nests: &[(String, Vec<usize>)], sheets: &[BystarSheet]) -> Vec<String> {
+    let mut issues = vec![];
+    let tol = tolerance();
+    let Some(parts) = sheets.first().map(|s| s.parts) else { return issues };
+    for pi in &job.parts {
+        let Some(part) = usize::try_from(pi.id - 1).ok().and_then(|i| parts.get(i)) else {
+            issues.push(format!("{file}: its job file lists part id {}, which isn't one of the job's parts", pi.id));
+            continue;
+        };
+        let (w, h) = part.bbox();
+        match pi.size {
+            Some(s) if (s[0] - w).abs() <= 0.001 && (s[1] - h).abs() <= 0.001 => {}
+            s => issues.push(format!("{file}: its job file gives part {} the size {s:?}, but it is {w} × {h} mm", part.name)),
+        }
+        let g = part.geometry();
+        let rings: Vec<&Vec<P>> = std::iter::once(&g.outline).chain(g.holes.iter()).collect();
+        if rings.len() != pi.shapes.len() {
+            issues.push(format!("{file}: its job file draws part {} with {} contour(s), but it has {}", part.name, pi.shapes.len(), rings.len()));
+            continue;
+        }
+        for (k, (ring, shape)) in rings.iter().zip(&pi.shapes).enumerate() {
+            let mut closed = ring.to_vec();
+            if let Some(&f) = ring.first() {
+                closed.push(f);
+            }
+            let off = shape.iter().any(|p| to_path(*p, &closed) > tol) || closed.iter().any(|p| to_path(*p, shape) > tol);
+            if off {
+                issues.push(format!("{file}: its job file draws contour {} of part {} away from its shape", k + 1, part.name));
+            }
+        }
+    }
+    for &n in in_it {
+        let (name, ks) = &nests[n];
+        let Some(s) = ks.first().and_then(|&k| sheets.get(k)) else { continue };
+        let Some(plan) = job.plans.iter().find(|p| p.name == *name) else { continue };
+        let m = job.materials.iter().find(|m| m.id == plan.material_id).and_then(|m| m.margins);
+        if m.is_none_or(|m| m.iter().any(|v| (v - s.spec.margin).abs() > 0.001)) {
+            issues.push(format!("nest {name}: its job file gives the sheet margins {m:?}, but they are {} mm", s.spec.margin));
+        }
+        let want: Vec<[f64; 4]> = s
+            .cuts
+            .iter()
+            .filter(|c| c.kind == crate::cutoff::CutKind::Remnant)
+            .filter_map(|c| crate::cutoff::remnant_region(&c.pts, s.spec))
+            .map(|r| {
+                let lo = [r.iter().map(|p| p[0]).fold(f64::MAX, f64::min).max(0.0), r.iter().map(|p| p[1]).fold(f64::MAX, f64::min).max(0.0)];
+                let hi = [r.iter().map(|p| p[0]).fold(f64::MIN, f64::max).min(s.spec.w), r.iter().map(|p| p[1]).fold(f64::MIN, f64::max).min(s.spec.h)];
+                [lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]]
+            })
+            .collect();
+        let same = want.len() == plan.remnants.len() && want.iter().zip(&plan.remnants).all(|(a, b)| a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 0.001));
+        if !same {
+            issues.push(format!("nest {name}: its job file lists the remnant sheets {:?}, but the plan leaves {want:?}", plan.remnants));
+        }
+    }
+    issues
+}
+
 /// BV59, BV60: read every `.bvc` of a write back with the reader (`bvc.rs`,
 /// which shares nothing with the writer) and compare it with the plan: each
 /// nest's sheet, run count and thickness, and every part's every cut with
@@ -985,6 +1062,21 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
         };
         if (read.job.thickness - thickness).abs() > 0.001 {
             issues.push(format!("{file}: its job file says the sheets are {} mm thick, but they are {thickness} mm", read.job.thickness));
+        }
+        // BV72: X009's preview picture beside each nest's cut program.
+        if post.on("X009") {
+            let entries = crate::progimport::read_zip(bytes).unwrap_or_default();
+            for &n in in_it {
+                let want = format!("{}.png", nests[n].0).to_lowercase();
+                if !entries.iter().any(|e| e.0.to_lowercase() == want && e.1.starts_with(b"\x89PNG\r\n\x1a\n")) {
+                    issues.push(format!("{file}: nest {} has no preview picture", nests[n].0));
+                }
+            }
+        }
+        // BV71: X008's full job file: each part's size and shape, each
+        // sheet's margins and each nest's remnant sheets as planned.
+        if post.on("X008") {
+            issues.extend(full_job_file(file, &read.job, in_it, nests, sheets));
         }
         for &n in in_it {
             let (name, ks) = &nests[n];

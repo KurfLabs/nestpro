@@ -1272,7 +1272,7 @@ pub fn machine_switches_on(cfg: &mut AppSettings, a: &Args) -> Result<(Outcome, 
     if let Some(t) = a.str("set") {
         for (k, v) in pairs(&t)? {
             if v.eq_ignore_ascii_case("file") {
-                let key = crate::bystar::switch(&k).ok_or_else(|| format!("{k} isn't one of the post's switches (B000–B050, C001–C013, R000–R007, and this app's X001)"))?.key;
+                let key = crate::bystar::switch(&k).ok_or_else(|| format!("{k} isn't one of the post's switches (B000–B050, C001–C013, R000–R007, and this app's X001–X009)"))?.key;
                 m.set.remove(key);
             } else {
                 m.set_switch(&k, &v)?;

@@ -3251,7 +3251,7 @@ fn main() -> eframe::Result {
                     "shortcuts" => Shortcuts,
                     "about" => About,
                     "connections" => Connections,
-                    "machines" | "machines-order" | "machines-switches" => Machines,
+                    "machines" | "machines-order" | "machines-switches" | "machines-own-switches" => Machines,
                     "materials" => Materials,
                     "erp" | "integrations" => Integrations,
                     "folders" => Folders,
@@ -3261,7 +3261,8 @@ fn main() -> eframe::Result {
                 app.open_settings(sec);
                 // Screenshots of a machine's cut order scroll down to it.
                 app.setui.show_order = s == "machines-order";
-                app.setui.show_switches = s == "machines-switches";
+                app.setui.show_switches = s == "machines-switches" || s == "machines-own-switches";
+                app.setui.show_own_switches = s == "machines-own-switches";
                 // Screenshots of Settings → Materials with a material picked.
                 if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--settings-material=").map(str::to_string)) {
                     // The page lists the materials in the list's order.
@@ -3796,6 +3797,12 @@ fn main() -> eframe::Result {
                 let mut b = settings::Machine { name: "Demo ByStar Fiber laser".into(), output: settings::Output::ByStar, ..Default::default() };
                 let _ = b.bystar.set_switch("B015", "1");
                 let _ = b.bystar.set_switch("C004", "P");
+                // With --settings=machines-own-switches, three of this app's own on (BV67–BV72).
+                if std::env::args().any(|a| a == "--settings=machines-own-switches") {
+                    for k in ["X002", "X003", "X006"] {
+                        let _ = b.bystar.set_switch(k, "1");
+                    }
+                }
                 app.cfg.machines = vec![settings::Machine { name: "Demo BLM laser".into(), output: settings::Output::BlmSiemens, ..Default::default() }, b];
                 app.cfg.active_machine = 1;
                 app.setui.sel_machine = 1;

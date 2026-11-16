@@ -1730,7 +1730,7 @@ pub fn export_to(job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats
 pub struct BystarGroup {
     pub sheets: Vec<usize>,
     pub bvcs: Vec<(String, Vec<u8>)>,
-    pub loose: Vec<(String, String)>,
+    pub loose: Vec<(String, Vec<u8>)>,
     /// Each nest's program name and cut program text.
     pub programs: Vec<(String, String)>,
 }

@@ -10944,3 +10944,6 @@ fn two_pcs_with_settings_from_before_answer_from_the_first_ones_list() {
     assert_eq!((material::find("DEMO-INOX-A"), material::find("DEMO-INOX-B")), (Some(1), None));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// ByStar Fiber laser: this app's own switches for the machine maker's CAM form (#128).
+mod bysoft;

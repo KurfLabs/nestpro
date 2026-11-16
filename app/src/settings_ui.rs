@@ -159,6 +159,8 @@ pub struct SettingsUi {
     pub show_order: bool,
     /// Screenshots: scroll a ByStar Fiber laser's page to its switches.
     pub show_switches: bool,
+    /// Screenshots: scroll it on to this app's own switches (X001–X009).
+    pub show_own_switches: bool,
 }
 
 /// "lower left" → "Lower left".
@@ -1628,6 +1630,7 @@ impl App {
             ui.scroll_to_cursor(Some(egui::Align::TOP));
             self.setui.show_switches = self.shot_mode_now();
         }
+        let own = self.setui.show_own_switches;
         card(ui, "Post switches", "Each switch with the post's default. \"Written\": programs follow it. \"Not yet\": kept and shown; a sheet it would change is refused until it is built. \"No effect\": the post doesn't use it in the files either.", |ui| {
             let m = &mut self.cfg.machines[k];
             let p = Post::load(&m.bystar);
@@ -1637,6 +1640,9 @@ impl App {
                 }
                 ui.end_row();
                 for d in SWITCHES {
+                    if own && d.key == "R007" {
+                        ui.scroll_to_cursor(Some(egui::Align::TOP));
+                    }
                     let changed = p.changed(d.key);
                     let key = if p.from.get(d.key) == Some(&"set") { format!("{} •", d.key) } else { d.key.to_string() };
                     ui.label(RichText::new(key).monospace().size(12.0)).on_hover_text(format!("Rule {}", d.rule));
