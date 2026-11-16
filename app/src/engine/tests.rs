@@ -1245,7 +1245,7 @@ fn overlapping_parts_are_reported_and_the_export_warns() {
     let d = dir("overlap");
     let p = Part { name: "Plate".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 3, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let at = |x: f64| Placed { part: 0, x, y: 10.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
-    let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
     let parts = vec![p];
     let clear = vec![at(10.0), at(115.0)];
     assert!(overlapping(&parts, &clear, &spec).is_empty());
@@ -1364,7 +1364,7 @@ fn parts_of_one_file_keep_their_own_names() {
     // must not read as reference DEMO, quantity 2: part data comes from the file name.
     let mut cfg = AppSettings::default();
     cfg.name_format = "[Reference]-[Quantity]".into();
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
     let square = |x: f64| crate::dxf::Piece { layer: "0".into(), pts: vec![[x, 0.0], [x + 10.0, 0.0], [x + 10.0, 10.0], [x, 10.0]], closed: true };
     let part = |x: f64| crate::formats::ReadPart { drawing: crate::dxf::Drawing { pieces: vec![square(x)], ..Default::default() }, meta: Default::default(), mark_layers: vec![] };
     let inc = crate::formats::incoming("DEMO", vec![part(0.0), part(50.0)]);
@@ -1381,8 +1381,8 @@ fn parts_of_one_file_keep_their_own_names() {
     let (p, _) = part_from_read(&cfg, &spec, &one[0].file, &one[0].name, &one[0].part.drawing, &one[0].part.meta, &Default::default(), 0).unwrap();
     assert_eq!((p.name.as_str(), p.qty), ("BRACKET", 40));
     // Steel grades count as the material of their alias.
-    assert_eq!(material_like(&cfg, "S355J2"), Some(0));
-    assert_eq!(material_like(&cfg, "Unobtainium"), None);
+    assert_eq!(material_like("S355J2"), Some(0));
+    assert_eq!(material_like("Unobtainium"), None);
 }
 
 #[test]
@@ -1553,7 +1553,7 @@ fn an_agent_saving_into_the_library_under_a_name_another_job_holds_is_refused() 
     let d = dir("unique_job_names");
     let mut s = Session::new(stock_ctx(&d));
     // A programmer saved DEMO-001 frames in folder Acme.
-    let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+    let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
     let mut theirs = JobFile::new_job("DEMO-001 frames", spec);
     theirs.week = "Acme".into();
     crate::library::Library::open(&s.ctx.library_dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&theirs, crate::library::SaveTo::New).unwrap();
@@ -1587,7 +1587,7 @@ fn the_library_check_refuses_a_real_library() {
     let mut s = Session::new(Ctx::builtin());
     // A Library with a real job in it.
     let real = d.join("Library");
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
     crate::library::create(&real).unwrap();
     crate::library::Library::open(&real, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&JobFile::new_job("Frames", spec), crate::library::SaveTo::New).unwrap();
     let before = listing(&real);
@@ -1671,7 +1671,7 @@ fn check_folder(s: &mut Session, d: &Path, name: &str) -> PathBuf {
 fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
     let d = dir("check_unsure");
     let mut s = Session::new(Ctx::builtin());
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
     let refused = |s: &mut Session, f: &Path, why: &str| {
         let before = listing(f);
         let e = err(s, "library-check", json!({"folder": f.to_str().unwrap(), "rounds": 1}));
@@ -3431,7 +3431,7 @@ fn an_agent_moves_one_contours_lead_by_hand_and_puts_it_back() {
 fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     // A plate with a hole and no technology of its own: the machine's leads.
     let mut parts = vec![Part { name: "P".into(), shape: Shape::PlateHole, w: 200.0, h: 150.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
     let before = cnc::plan_part(&parts, 0, &spec);
     let hole0 = before.contours.iter().find(|c| c.contour == 0).unwrap().lead_path.clone();
     // Drag the outline's pierce (it starts at the bottom-left corner) out to the left.
@@ -3593,7 +3593,7 @@ fn an_agent_puts_one_holes_lead_on_every_hole_of_the_same_shape() {
 fn dragging_with_all_the_same_contours_moves_every_hole_of_that_shape() {
     // A flange plate with no technology of its own: the machine's leads.
     let mut parts = vec![Part { name: "F".into(), shape: Shape::Flange, w: 300.0, h: 200.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
     assert!(has_same_holes(&parts[0]));
     assert_eq!(same_holes(&parts[0], 0), vec![1, 2, 3]);
     assert!(same_holes(&parts[0], 4).is_empty() && same_holes(&parts[0], 5).is_empty(), "the centre hole and the outline");
@@ -5234,12 +5234,3314 @@ fn an_agent_sees_another_pcs_save_at_once() {
     call(&mut s, "new", Some(jp), json!({"w": 3000, "h": 1500, "thickness": 10}));
     let names = |s: &mut Session| call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| format!("{} ({})", e["name"].as_str().unwrap(), e["saved_by"].as_str().unwrap_or("-"))).collect::<Vec<_>>();
     assert!(names(&mut s).is_empty());
-    let mut j = JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() });
+    let mut j = JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() });
     let rec = lib.save_job(&j, crate::library::SaveTo::New).unwrap();
     assert_eq!(names(&mut s), ["DEMO-7 (sam on PROG-1)"]);
     j.parts = vec![crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 4, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
     lib.save_job(&j, crate::library::SaveTo::Read(rec)).unwrap();
     call(&mut s, "library", None, json!({"mode": "open", "name": "DEMO-7"}));
     assert_eq!(jobfile::load(Path::new(jp)).unwrap().parts.iter().map(|p| p.qty).collect::<Vec<_>>(), [4], "opened as saved now");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn files_with_only_a_material_number_open_with_the_same_material() {
+    // Spec #142, invariant 1: jobs, library parts and stock saved with only a
+    // material number (0, 1, 2) read back as mild steel, stainless steel and
+    // aluminium, and reading them rewrites nothing.
+    let d = dir("material_numbers");
+    let ctx = stock_ctx(&d);
+    let lib_dir = ctx.library_dir.clone();
+    let mut st = crate::stock::Stock::default();
+    for m in 0..3 {
+        st.add_sheet(crate::stock::Item::sheet(&format!("DEMO-S{m}"), m, 3.0, 1500.0, 750.0, 1), true).unwrap();
+    }
+    st.save(&lib_dir).unwrap();
+    let lib = crate::library::Library::open(&lib_dir, &Who::new("demo", "DEMO-PC"), &Clock::pc()).unwrap();
+    lib.save_product(&shape_part(Shape::Flange, 1, 0), "", 2, 3.0, crate::library::SaveTo::New).unwrap();
+    let jobs: Vec<PathBuf> = (0..3).map(|m| d.join(format!("DEMO-{m}.snjob"))).collect();
+    for (m, j) in jobs.iter().enumerate() {
+        jobfile::save(j, &JobFile::new_job(&format!("DEMO-{m}"), SheetSpec { material: m, ..default_spec() })).unwrap();
+        assert!(std::fs::read_to_string(j).unwrap().contains(&format!("\"material\": {m}")), "the file holds the number alone");
+    }
+    // As saved before names were stored: the number alone.
+    strip_material_names(&d);
+    // Every file in the folder (jobs, library, stock) and what it holds.
+    let files = |d: &Path| -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = vec![];
+        let mut todo = vec![d.to_path_buf()];
+        while let Some(p) = todo.pop() {
+            for e in std::fs::read_dir(&p).unwrap().flatten() {
+                if e.path().is_dir() { todo.push(e.path()) } else { out.push((e.path(), std::fs::read(e.path()).unwrap())) }
+            }
+        }
+        out.sort();
+        out
+    };
+    let before = files(&d);
+
+    let mut s = Session::new(ctx);
+    let names = ["Mild steel", "Stainless steel", "Aluminium"];
+    for (m, j) in jobs.iter().enumerate() {
+        let info = call(&mut s, "info", Some(j.to_str().unwrap()), json!({}));
+        assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some(names[m]), Some(m as u64)), "{info}");
+    }
+    let l = call(&mut s, "stock", None, json!({"mode": "list"}));
+    let mut on_rack: Vec<(String, String)> = l["data"]["sheets"].as_array().unwrap().iter().map(|i| (i["ref"].as_str().unwrap().to_string(), i["material"].as_str().unwrap().to_string())).collect();
+    on_rack.sort();
+    assert_eq!(on_rack, names.iter().enumerate().map(|(m, n)| (format!("DEMO-S{m}"), n.to_string())).collect::<Vec<_>>(), "{l}");
+    let parts = call(&mut s, "library", None, json!({"mode": "list"}));
+    assert!(parts["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "Aluminium"), "{parts}");
+    for (p, bytes) in &before {
+        assert!(std::fs::read(p).unwrap() == *bytes, "reading rewrote {}", p.display());
+    }
+
+    // Saved again, each file has the material's id and its name (invariant 3).
+    for (m, j) in jobs.iter().enumerate() {
+        call(&mut s, "set-sheet", Some(j.to_str().unwrap()), json!({"gap": 6}));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(j).unwrap()).unwrap();
+        assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(m as u64), Some(names[m])));
+    }
+    call(&mut s, "stock", None, json!({"mode": "add", "ref": "DEMO-S0"}));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(crate::stock::Stock::file(&lib_dir)).unwrap()).unwrap();
+    let mut saved: Vec<(u64, String)> = v["items"].as_array().unwrap().iter().map(|i| (i["material"].as_u64().unwrap(), i["material_name"].as_str().unwrap().to_string())).collect();
+    saved.sort();
+    assert_eq!(saved, names.iter().enumerate().map(|(m, n)| (m as u64, n.to_string())).collect::<Vec<_>>());
+    let pid = lib.read_index().unwrap().iter().find(|e| e.kind == crate::library::Kind::Product).unwrap().id;
+    let pf = lib.load_product(pid).unwrap();
+    assert_eq!((pf.material, pf.material_name.as_str()), (2, ""), "a library part read before names keeps its number");
+    lib.save_product(&pf.part, &pf.folder, pf.material, pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id: pid, revision: pf.revision })).unwrap();
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(lib.path(crate::library::Kind::Product, pid)).unwrap()).unwrap();
+    assert_eq!((v["material"].as_u64(), v["material_name"].as_str()), (Some(2), Some("Aluminium")));
+
+    // Plain numbers keep meaning the old three; a number past them is refused.
+    let jp = d.join("DEMO-new.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"material": 2, "thickness": 3}));
+    assert_eq!(call(&mut s, "info", None, json!({}))["data"]["sheet"]["material"], "Aluminium");
+    let refused = err(&mut s, "set-sheet", json!({"material": 3}));
+    assert!(refused.contains("There's no material 3 in the list: 0 Mild steel, 1 Stainless steel, 2 Aluminium."), "{refused}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// The material list (spec #142): a fourth material end to end.
+// ---------------------------------------------------------------------------
+
+/// Take every `material_name` out of the JSON files under `d`, as files
+/// saved before names were stored are.
+fn strip_material_names(d: &Path) {
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                m.remove("material_name");
+                m.values_mut().for_each(strip);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut todo = vec![d.to_path_buf()];
+    while let Some(p) = todo.pop() {
+        for e in std::fs::read_dir(&p).unwrap().flatten() {
+            let f = e.path();
+            if f.is_dir() {
+                todo.push(f);
+            } else if let Some(mut v) = std::fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+                strip(&mut v);
+                std::fs::write(&f, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+            }
+        }
+    }
+}
+
+fn add_demo_316(s: &mut Session) -> Value {
+    call(s, "material", None, json!({"mode": "add", "name": "DEMO 316 Stainless", "standard": "stainless", "other_names": "DEMO-316, DEMO 1.4401"}))
+}
+
+#[test]
+fn a_fourth_material_nests_only_on_its_own_sheets() {
+    // Ticket #145: DEMO 316, based on stainless, gets its own stock; a job in
+    // it, named by its name, never takes a stainless sheet.
+    let d = dir("fourth_material");
+    let jp = d.join("DEMO-316.snjob");
+    let jp = jp.to_str().unwrap();
+    let ctx = stock_ctx(&d);
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let added = add_demo_316(&mut s);
+    assert_eq!((added["data"]["material"].as_u64(), added["data"]["kind"].as_str(), added["data"]["density"].as_f64()), (Some(3), Some("stainless steel"), Some(8.0)), "{added}");
+    assert!(crate::materials::Home::Library(lib.clone()).file().is_file(), "the list is in the Library");
+    // Two stock sheets of each, the same thickness; the stainless ones bigger
+    // (largest first would take them first if the material didn't count).
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-A", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 3, "qty": 2}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-SS-A", "material": "stainless", "w": 3000, "h": 1500, "thickness": 3, "qty": 2}));
+    let l = call(&mut s, "stock", None, json!({"mode": "list", "material": "demo-316", "thickness": 3}));
+    let refs: Vec<&str> = l["data"]["sheets"].as_array().unwrap().iter().map(|i| i["ref"].as_str().unwrap()).collect();
+    assert_eq!(refs, ["DEMO-316-A"], "{l}");
+    assert_eq!(l["data"]["sheets"][0]["material"], "DEMO 316 Stainless", "{l}");
+
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3}));
+    call(&mut s, "set-sheet", None, json!({"material": "DEMO 316 Stainless"}));
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 316 Stainless"), Some(3)), "{info}");
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 20}));
+    let r = call(&mut s, "nest", None, json!({}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert!(!j.sheets.is_empty(), "{r}");
+    let used: Vec<String> = (0..j.sheets.len()).map(|k| j.format(k).stock_ref).collect();
+    assert!(used.iter().all(|r| r == "DEMO-316-A"), "only DEMO 316 sheets: {used:?} {r}");
+    assert_eq!(j.material_name, "DEMO 316 Stainless", "saved with its name");
+    let total: usize = j.sheets.iter().map(|s| s.len()).sum();
+    assert_eq!(total, 20, "{r}");
+
+    // With only stainless sheets in stock, a DEMO 316 job never falls back
+    // to them: stock only finds nothing, and auto nests on the job's own sheet.
+    call(&mut s, "stock", None, json!({"mode": "delete", "ref": "DEMO-316-A"}));
+    let refused = s.call("nest", None, &json!({"stock": "only"}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert!(refused.is_err() || j.sheets.is_empty(), "{:?}", refused.map(|r| r.json));
+    call(&mut s, "nest", None, json!({}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert!(!j.sheets.is_empty() && (0..j.sheets.len()).all(|k| j.format(k).stock_ref.is_empty()), "never a stainless stock sheet: {:?}", (0..j.sheets.len()).map(|k| j.format(k).stock_ref).collect::<Vec<_>>());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn stock_remnants_and_library_parts_of_a_new_material_keep_it() {
+    let d = dir("fourth_material_keeps");
+    let jp = d.join("DEMO-K.snjob");
+    let jp = jp.to_str().unwrap();
+    let ctx = stock_ctx(&d);
+    let lib_dir = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    add_demo_316(&mut s);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-B", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 4}));
+    call(&mut s, "new", Some(jp), json!({"w": 2000, "h": 1000, "material": "DEMO-316", "thickness": 4}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 3}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+
+    // Reopened by a new session (a new PC run): each keeps DEMO 316.
+    let mut s = Session::new(stock_ctx_again(&lib_dir));
+    let l = call(&mut s, "stock", None, json!({"mode": "list", "material": "DEMO 316 Stainless", "thickness": 4, "show_zero": true}));
+    let items = l["data"]["sheets"].as_array().unwrap();
+    assert!(items.iter().any(|i| i["ref"] == "DEMO-316-B") && items.iter().any(|i| i["kind"] != "sheet"), "the sheet and its remnant: {l}");
+    assert!(items.iter().all(|i| i["material"] == "DEMO 316 Stainless"), "{l}");
+    let text = std::fs::read_to_string(crate::stock::Stock::file(&lib_dir)).unwrap();
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert!(v["items"].as_array().unwrap().iter().all(|i| i["material"] == 3 && i["material_name"] == "DEMO 316 Stainless"), "{text}");
+    let parts = call(&mut s, "library", Some(jp), json!({"mode": "list"}));
+    assert!(parts["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "DEMO 316 Stainless"), "{parts}");
+    assert_eq!(jobfile::load(Path::new(jp)).unwrap().spec.material, 3);
+
+    // MA17: a job from another Library, where DEMO 316 has another number,
+    // finds it by its name; an unknown name keeps its number.
+    let other = d.join("DEMO-OTHER.snjob");
+    let mut j = jobfile::load(Path::new(jp)).unwrap();
+    j.spec.material = 41;
+    j.material_name = "demo 316 STAINLESS".into();
+    std::fs::write(&other, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(other.to_str().unwrap()), json!({}));
+    assert_eq!(info["data"]["sheet"]["material"], "DEMO 316 Stainless", "{info}");
+    // Another file: the session reads a job again only when its file's time
+    // changed, and two writes within one clock tick (about 16 ms on Windows)
+    // can keep the same time.
+    let unknown = d.join("DEMO-UNKNOWN.snjob");
+    j.material_name = "DEMO 904L".into();
+    std::fs::write(&unknown, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(unknown.to_str().unwrap()), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(41)), "{info}");
+    call(&mut s, "set-sheet", None, json!({"gap": 7}));
+    assert_eq!(jobfile::load(&unknown).unwrap().material_name, "DEMO 904L", "the name it came with stays");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Another session's context on the same Library folder.
+fn stock_ctx_again(lib: &Path) -> Ctx {
+    let mut c = Ctx::builtin();
+    c.library_dir = lib.to_path_buf();
+    c.cfg.stock = crate::stock::StockSettings::default();
+    c
+}
+
+#[test]
+fn two_sessions_adding_materials_at_once_both_count() {
+    // Invariant 5: each add re-reads the list under the Library's write lock.
+    let d = dir("materials_two_pcs");
+    let lib = stock_ctx(&d).library_dir;
+    let go = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let runs: Vec<_> = ["DEMO-A", "DEMO-B"]
+        .into_iter()
+        .map(|pc| {
+            let (lib, go) = (lib.clone(), go.clone());
+            std::thread::spawn(move || {
+                let mut c = stock_ctx_again(&lib);
+                c.who = Who::new("demo", pc).as_agent();
+                let mut s = Session::new(c);
+                go.wait();
+                for k in 0..5 {
+                    call(&mut s, "material", None, json!({"mode": "add", "name": format!("{pc} grade {k}"), "standard": "0010"}));
+                }
+            })
+        })
+        .collect();
+    for r in runs {
+        r.join().unwrap();
+    }
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    let ms = l["data"]["materials"].as_array().unwrap();
+    assert_eq!(ms.len(), 13, "{l}");
+    let mut ids: Vec<u64> = ms.iter().map(|m| m["material"].as_u64().unwrap()).collect();
+    ids.sort();
+    assert_eq!(ids, (0..13).collect::<Vec<_>>(), "every material its own number");
+    for pc in ["DEMO-A", "DEMO-B"] {
+        assert_eq!(ms.iter().filter(|m| m["name"].as_str().unwrap().starts_with(pc)).count(), 5, "{l}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_name_or_other_name_already_used_is_refused_naming_its_material() {
+    // Invariant 6: names and other names are unique, whatever the capitals
+    // or spaces; the refusal names the material that has it.
+    let d = dir("material_names");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    let before = std::fs::read(crate::materials::Home::Library(lib.clone()).file()).unwrap();
+    let add = |s: &mut Session, name: &str, other: &str| err(s, "material", json!({"mode": "add", "name": name, "standard": "stainless", "other_names": other}));
+    let e = add(&mut s, "demo 316 stainless", "");
+    assert!(e.contains("the name of material 3 (DEMO 316 Stainless)"), "{e}");
+    let e = add(&mut s, "  DEMO   316  STAINLESS ", "");
+    assert!(e.contains("material 3 (DEMO 316 Stainless)"), "{e}");
+    let e = add(&mut s, "Demo-316", "");
+    assert!(e.contains("another name of DEMO 316 Stainless (material 3)"), "{e}");
+    let e = add(&mut s, "DEMO 304", "DEMO-304, Stainless Steel");
+    assert!(e.contains("'Stainless Steel'") && e.contains("material 1 (Stainless steel)"), "{e}");
+    let e = add(&mut s, "DEMO 304", "aisi304");
+    assert!(e.contains("another name of Stainless steel (material 1)") && e.contains("Take it off Stainless steel first"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "DEMO 316 Stainless", "other_names": "DEMO-316, mild STEEL"}));
+    assert!(e.contains("material 0 (Mild steel)"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "stainless steel", "name": "DEMO-316"}));
+    assert!(e.contains("DEMO 316 Stainless"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "add", "name": "DEMO 2205", "standard": "duplex"}));
+    assert!(e.contains("not a standard") && e.contains("0100 Stainless steel"), "{e}");
+    assert_eq!(std::fs::read(crate::materials::Home::Library(lib.clone()).file()).unwrap(), before, "nothing refused was stored");
+    // Its own name again among its other names is no clash; the list stays clean.
+    let ok = call(&mut s, "material", None, json!({"mode": "edit", "material": "demo-316", "other_names": "DEMO-316, demo 316 stainless, DEMO-316 ", "density": 7.98}));
+    assert_eq!((ok["data"]["other_names"].clone(), ok["data"]["density"].as_f64()), (json!(["DEMO-316"]), Some(7.98)), "{ok}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn material_changes_are_refused_while_the_library_cant_be_reached() {
+    // Invariant 5: the Library's folder disappears mid-session (the share
+    // went down): a change is refused, saying what to do; reading goes on
+    // with the list read last; once it is back, changes work again.
+    let d = dir("material_unreachable");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    let e = err(&mut s, "material", json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    assert!(e.contains("can't be reached") && e.contains("The material list wasn't changed: try again once it can be reached."), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "DEMO-316", "density": 7.9}));
+    assert!(e.contains("can't be reached"), "{e}");
+    assert!(!lib.exists(), "nothing made in its place");
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["materials"].as_array().unwrap().len(), 4, "the list read last: {l}");
+    std::fs::rename(&away, &lib).unwrap();
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    assert_eq!(call(&mut s, "material", None, json!({"mode": "list"}))["data"]["materials"].as_array().unwrap().len(), 5);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Names from outside find any material (ticket #151, MA32).
+// ---------------------------------------------------------------------------
+
+/// DEMO 316, based on stainless, with its own name and code in programs and
+/// the other names AISI 316 and DEMO-316.
+fn add_demo_316_named(s: &mut Session) -> u64 {
+    let r = call(s, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless", "other_names": "AISI 316, DEMO-316", "program_name": "DEMO316", "program_code": "0316"}));
+    r["data"]["material"].as_u64().unwrap()
+}
+
+#[test]
+fn an_xml_import_finds_any_material_by_any_of_its_names() {
+    let d = dir("xml_any_material");
+    std::fs::write(d.join("brk.dxf"), crate::dxf::SAMPLE_DXF).unwrap();
+    let mut s = Session::new(stock_ctx(&d));
+    assert_eq!(add_demo_316_named(&mut s), 3);
+    // One product per material text, each its own thickness so each makes a job.
+    let texts = ["aisi 316", "  AISI   316 ", "DEMO316", "0316", "demo 316", "DEMO-316L", "AISI316", "STAINLESS", "1", "", "DEMO-COPPER"];
+    let products: String = texts.iter().enumerate().map(|(k, m)| format!("  <Product Reference=\"DEMO-{k}\" Material=\"{m}\" Thickness=\"{}\" Quantity=\"1\" Fich=\"brk.dxf\"/>\n", k + 1)).collect();
+    let xml = d.join("DEMO-ORDER.xml");
+    std::fs::write(&xml, format!("<?xml version=\"1.0\"?><Import>\n{products}</Import>")).unwrap();
+    let r = call(&mut s, "import-xml", None, json!({"path": xml.to_str().unwrap(), "dir": d.join("jobs").to_str().unwrap()}));
+    let by_thk = |r: &Value| -> Vec<(u64, String)> { r["data"]["jobs"].as_array().unwrap().iter().map(|j| (j["thickness"].as_f64().unwrap() as u64, j["material"].as_str().unwrap().to_string())).collect() };
+    let got = by_thk(&r);
+    let want: Vec<(u64, String)> = ["DEMO 316", "DEMO 316", "DEMO 316", "DEMO 316", "DEMO 316", "DEMO 316", "Stainless steel", "Stainless steel", "Mild steel", "Mild steel", "Mild steel"].iter().enumerate().map(|(k, m)| (k as u64 + 1, m.to_string())).collect();
+    assert_eq!(got, want, "{r}");
+    // The job file is in DEMO 316, by its id and name.
+    let j = jobfile::load(Path::new(r["data"]["jobs"][0]["job"].as_str().unwrap())).unwrap();
+    assert_eq!((j.spec.material, j.material_name.as_str()), (3, "DEMO 316"));
+    // A name that matches nothing keeps the job's material and says so, as
+    // before; a plain number is no material number in a file; an empty
+    // material says nothing.
+    let notes = r["data"]["notes"].to_string();
+    assert!(notes.contains("material '1' isn't one of the app's — set to Mild steel") && notes.contains("material 'DEMO-COPPER' isn't one of the app's"), "{notes}");
+    assert_eq!(notes.matches("isn't one of the app's").count(), 2, "{notes}");
+
+    // AISI 316 taken off DEMO 316: the same file no longer finds it there.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "other_names": "DEMO-316"}));
+    let r = call(&mut s, "import-xml", None, json!({"path": xml.to_str().unwrap(), "dir": d.join("jobs").to_str().unwrap(), "force": true}));
+    assert_eq!(by_thk(&r)[0], (1, "Mild steel".to_string()), "{r}");
+    assert!(r["data"]["notes"].to_string().contains("material 'aisi 316' isn't one of the app's"), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_opened_program_finds_any_material_its_header_names() {
+    let d = dir("program_any_material");
+    let mut s = Session::new(stock_ctx(&d));
+    add_demo_316_named(&mut s);
+    // The sheet program's header names the material; a name that matches no
+    // material is guessed by its words, as before.
+    let cases = [("DEMO316", "DEMO 316"), ("demo 316", "DEMO 316"), ("AISI 316", "DEMO 316"), ("0316", "DEMO 316"), ("STAINLESS", "Stainless steel"), ("STEEL", "Mild steel"), ("X5CRNI18", "Stainless steel"), ("DEMO-COPPER", "Mild steel"), ("", "Mild steel")];
+    for (k, (header, want)) in cases.iter().enumerate() {
+        let set = lc5_set_of(&d, &format!("DEMOMAT{k}"), header, None, None);
+        let job = d.join(format!("DEMO-MAT-{k}.snjob"));
+        let r = call(&mut s, "import-program", Some(job.to_str().unwrap()), json!({"path": set.to_str().unwrap()}));
+        let info = call(&mut s, "info", None, json!({}));
+        assert_eq!(info["data"]["sheet"]["material"].as_str(), Some(*want), "header '{header}': {r}");
+    }
+    let j = jobfile::load(&d.join("DEMO-MAT-0.snjob")).unwrap();
+    assert_eq!((j.spec.material, j.material_name.as_str()), (3, "DEMO 316"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_file_name_naming_the_jobs_material_by_any_name_gives_no_warning() {
+    let d = dir("filename_any_material");
+    let mut ctx = stock_ctx(&d);
+    ctx.cfg.name_format = "[Reference]_[Material]".into();
+    let mut s = Session::new(ctx);
+    add_demo_316_named(&mut s);
+    let jp = d.join("DEMO-316-JOB.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"material": "DEMO 316", "thickness": 3}));
+    let import = |s: &mut Session, stem: &str| -> String {
+        let f = d.join(format!("{stem}.dxf"));
+        std::fs::write(&f, crate::dxf::SAMPLE_DXF).unwrap();
+        let r = call(s, "import-drawing", None, json!({"path": f.to_str().unwrap()}));
+        r["data"]["notes"].to_string()
+    };
+    for stem in ["DEMO-A_DEMO 316", "DEMO-B_demo316", "DEMO-C_AISI 316", "DEMO-D_0316", "DEMO-E_DEMO-316L", "DEMO-F_ aisi  316 "] {
+        let notes = import(&mut s, stem);
+        assert!(!notes.contains("the name says"), "{stem}: {notes}");
+    }
+    // Another material, or none of the list, still warns.
+    for (stem, said) in [("DEMO-G_AISI316", "material AISI316 (the job is DEMO 316 3 mm)"), ("DEMO-H_DEMO-COPPER", "material DEMO-COPPER"), ("DEMO-I_2", "material 2")] {
+        let notes = import(&mut s, stem);
+        assert!(notes.contains("the name says") && notes.contains(said), "{stem}: {notes}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn this_pcs_settings_seed_the_list_once() {
+    // MA15: the three materials as this PC's settings have them (renamed in
+    // programs, an empty row, extra other names) start the list with ids 0
+    // to 2; once stored, the settings no longer count.
+    let d = dir("material_seed");
+    let lib = stock_ctx(&d).library_dir;
+    let mut c = stock_ctx_again(&lib);
+    c.cfg = crate::settings::AppSettings { stock: c.cfg.stock.clone(), ..crate::settings::AppSettings::parse("[general]\nmaterial0 = DEMO-MS|0011\nmaterial_alias0 = DEMO-A36, demo-a36, Stainless\nmaterial1 = |\nmaterial_ref1 =\nmaterial_alias1 =\n") };
+    let mut s = Session::new(c);
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    // The Library had no list: it takes this PC's three, stored (MA28).
+    assert!(!l["message"].as_str().unwrap().contains("not stored yet"), "{l}");
+    let stored: crate::engine::material::List = serde_json::from_str(&std::fs::read_to_string(crate::materials::Home::Library(lib.clone()).file()).unwrap()).unwrap();
+    assert_eq!((stored.materials.len(), stored.materials[0].program_name.as_deref()), (3, Some("DEMO-MS")));
+    let ms = l["data"]["materials"].as_array().unwrap();
+    assert_eq!(ms.iter().map(|m| m["name"].as_str().unwrap()).collect::<Vec<_>>(), ["Mild steel", "Stainless steel", "Aluminium"]);
+    assert_eq!((ms[0]["program_name"].as_str(), ms[0]["program_code"].as_str()), (Some("DEMO-MS"), Some("0011")));
+    assert_eq!(ms[0]["other_names"], json!(["DEMO-A36", "Stainless"]), "each other name once");
+    assert_eq!((ms[1]["program_name"].as_str(), ms[1]["program_code"].as_str(), ms[1]["machine_key"].as_str()), (Some(""), Some(""), Some("")), "an empty row stays empty");
+    assert_eq!(ms[1]["other_names"], json!([]));
+    assert_eq!(ms[2]["program_name"], "ALUMINIUM", "a row the file lacks is a new install's");
+    // A change stores it with the change.
+    add_demo_316(&mut s);
+    let stored: crate::engine::material::List = serde_json::from_str(&std::fs::read_to_string(crate::materials::Home::Library(lib.clone()).file()).unwrap()).unwrap();
+    assert_eq!((stored.materials.len(), stored.materials[0].program_name.as_deref()), (4, Some("DEMO-MS")));
+    // Another PC with other settings now reads the Library's list.
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["materials"][0]["program_name"], "DEMO-MS", "{l}");
+    assert_eq!(l["data"]["materials"][3]["name"], "DEMO 316 Stainless");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_pc_without_a_library_keeps_its_own_list() {
+    // MA14: no Library made or picked (this PC's own default folder holds
+    // none): the list is kept in this PC's settings folder.
+    let d = dir("material_pc");
+    let mut c = Ctx::builtin();
+    c.library_dir = crate::library::default_dir();
+    c.pc_dir = d.join("settings");
+    assert!(!crate::library::holds_library(&c.library_dir));
+    let mut s = Session::new(c);
+    add_demo_316(&mut s);
+    assert!(d.join("settings").join(crate::materials::FILE).is_file());
+    assert!(!crate::library::default_dir().exists(), "no Library made for it");
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert!(l["message"].as_str().unwrap().contains("this PC's own"), "{l}");
+    assert_eq!(l["data"]["materials"][3]["name"], "DEMO 316 Stainless");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Each job is cut with its own gas (MAC-39, GS10–GS14).
+// ---------------------------------------------------------------------------
+
+/// A made-up laser's machine file with two sections for 2.2–3.2 mm mild
+/// steel: oxygen first (5 mm leads, part gap 9 mm), then nitrogen (2 mm
+/// leads, part gap 4 mm).
+fn gas_machine_file() -> String {
+    // Leads of every contour class (quality 1): distance in/out `d` and arc radius d + 0.5.
+    let leads = |d: f64| (0..8).map(|k| format!("Z{:03} {d}\nZ{:03} {d}\nZ{:03} {}\nZ{:03} {}\n", 68 + 6 * k, 69 + 6 * k, 72 + 6 * k, d + 0.5, 73 + 6 * k, d + 0.5)).collect::<String>();
+    let section = |gas: u32, lead: f64, gap: f64| format!("Z000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ343 {gas}\nZ006 {gap}\n{}Z999 0\n", leads(lead));
+    format!("# Demo laser\nA051 40000\nA058 3000\nA093 OFF\nB056 6.0\n{}{}", section(3, 5.0, 9.0), section(1, 2.0, 4.0))
+}
+
+/// Its technology table: 2.2–3.2 mm mild steel with oxygen (slow, booster
+/// pierce at quality 3), then nitrogen (fast, the default record).
+const GAS_TABLE: &str = "#- LASER -#\nW000 3\n\
+    A000 \"##MATEXP0010##\"\nA001 2.2\nA002 3.2\nA005 3\nA008 0\nC009 3000\nD007 900\nD057 2900\nD107 2000\nD126 4\n\
+    A000 \"##MATEXP0010##\"\nA001 2.2\nA002 3.2\nA005 1\nA008 1\nC009 7500\nD007 1500\nD057 5000\nD107 9000\nD126 2\n";
+
+/// Its time settings: times from the table's speeds.
+const GAS_TIMES: &str = "D014 3\nD017 2\nD018 2\nH006 0.7\nP001 0 999999 10000 10000 10000 10000 114000 140000\n";
+
+/// A session on that laser in a made-up Lantek folder under `d`: its one
+/// machine on the LC5 (`blm`) or the G-code post, saved in Settings →
+/// Machines with gas number and name `gas`.
+fn gas_session(d: &Path, blm: bool, gas: (u32, &str)) -> (Session, OnMachine) {
+    gas_session_on(d, blm, gas, &gas_machine_file())
+}
+
+/// `gas_session` with the machine file `file`.
+fn gas_session_on(d: &Path, blm: bool, gas: (u32, &str), file: &str) -> (Session, OnMachine) {
+    let root = d.join("Lantek");
+    let m = crate::settings::Machine { gas_id: gas.0, gas_name: gas.1.into(), ..demo_machine_with("Demo laser", blm, Default::default()) };
+    let cfg = shop_settings(&root, file, vec![m]);
+    std::fs::write(root.join("MchFiles").join("PstAdi06.TT1"), GAS_TABLE).unwrap();
+    std::fs::write(root.join("MchFiles").join("PstAdi06.TM1"), GAS_TIMES).unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = cfg;
+    let on = apply_machine(&mut s);
+    (s, on)
+}
+
+/// A made-up job on that laser, as saved before jobs carried a gas: two
+/// plates with two holes and a mark, one turned, a hole's lead moved by hand.
+fn job_saved_before_gas(d: &Path, s: &mut Session) -> PathBuf {
+    let job = d.join("DEMO-GAS.snjob");
+    call(s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "force": true}));
+    call(s, "import-drawing", None, json!({"path": plate_with_two_holes(d).to_str().unwrap(), "qty": 2, "layers": "MARK=mark"}));
+    call(s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(s, "place", None, json!({"part": 1, "x": 450, "y": 50, "angle": 90}));
+    call(s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 4, "in_angle": 90}));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    v["spec"].as_object_mut().unwrap().remove("gas");
+    std::fs::write(&job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    job
+}
+
+/// The programs a job saved before jobs carried a gas writes on the made-up
+/// laser: sheet 1's program and, on the LC5, its XML job sheet.
+fn programs_of_job_saved_before_gas(post: &str, blm: bool, gas: (u32, &str)) -> (String, Option<String>) {
+    let d = dir(&format!("gas_old_{post}"));
+    let (mut s, _on) = gas_session(&d, blm, gas);
+    let job = job_saved_before_gas(&d, &mut s);
+    let saved = std::fs::read(&job).unwrap();
+    // Opened afresh, as on the next day.
+    let (mut s, _on) = gas_session(&d, blm, gas);
+    call(&mut s, "info", Some(job.to_str().unwrap()), json!({}));
+    // It opens with the machine's gas, as saved in Settings → Machines.
+    assert_eq!(info_gas(&mut s), (gas.1.to_string(), gas.0 as u64, "machine".to_string()), "{post}");
+    let text = programs(&mut s).remove(0);
+    let xml = blm.then(|| {
+        let e = call(&mut s, "export", None, json!({"dir": d.join("cnc").to_str().unwrap()}));
+        let f = e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).find(|f| f.ends_with(".XML")).unwrap();
+        std::fs::read_to_string(f).unwrap()
+    });
+    // Opening it and writing its programs leaves its file as it was.
+    assert_eq!(std::fs::read(&job).unwrap(), saved, "{post}: the job file was rewritten");
+    let _ = std::fs::remove_dir_all(&d);
+    (text, xml)
+}
+
+#[test]
+fn a_job_saved_before_jobs_carried_a_gas_writes_the_programs_it_wrote_before() {
+    // The G-code post and the LC5 on a nitrogen machine, and an LC5 saved in
+    // Settings as gas 2 named Oxygen or gas 5 named Water, neither of which
+    // is a pair the LC5 list writes (5 is H2O there, GS2).
+    for (post, blm, gas) in [("iso", false, (1, "Nitrogen")), ("lc5", true, (1, "Nitrogen")), ("lc5-saved-2-oxygen", true, (2, "Oxygen")), ("lc5-saved-5-water", true, (5, "Water"))] {
+        let (text, xml) = programs_of_job_saved_before_gas(post, blm, gas);
+        same_as_recorded(&format!("gas-old-{post}-sheet1.txt"), &text);
+        if let Some(xml) = xml {
+            same_as_recorded(&format!("gas-old-{post}-sheet1.xml"), &xml);
+        }
+    }
+}
+
+/// The job's gas as `info` shows it: (name, number, whose).
+fn info_gas(s: &mut Session) -> (String, u64, String) {
+    let i = call(s, "info", None, json!({}));
+    let sh = &i["data"]["sheet"];
+    (sh["gas"].as_str().unwrap_or_else(|| panic!("{i}")).to_string(), sh["gas_no"].as_u64().unwrap(), sh["gas_from"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn an_agent_sets_the_jobs_gas_by_name_or_number() {
+    let d = dir("gas_set");
+    let job = d.join("DEMO-1.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"material": "mild steel", "thickness": 12}));
+    // A new job starts with the machine's gas (built-in: nitrogen) and keeps it in its file.
+    assert_eq!(info_gas(&mut s), ("Nitrogen".into(), 1, "job".into()));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    assert_eq!(v["spec"]["gas"].as_u64(), Some(1));
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    assert!(r["message"].as_str().unwrap().contains("Oxygen (3)"), "{r}");
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    call(&mut s, "set-sheet", None, json!({"gas": "NITROGEN"}));
+    assert_eq!(info_gas(&mut s).1, 1);
+    // By number, as a number or as text.
+    call(&mut s, "set-sheet", None, json!({"gas": 3}));
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    call(&mut s, "set-sheet", None, json!({"gas": "2"}));
+    assert_eq!(info_gas(&mut s).0, "Air");
+    // The job file keeps the number, beside the material and thickness.
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    assert_eq!((v["spec"]["gas"].as_u64(), v["spec"]["thickness"].as_f64()), (Some(2), Some(12.0)));
+    // `new` takes the gas too.
+    let other = d.join("DEMO-2.snjob");
+    let r = call(&mut s, "new", Some(other.to_str().unwrap()), json!({"material": "mild steel", "thickness": 12, "gas": "Oxygen"}));
+    assert!(r["message"].as_str().unwrap().contains("Oxygen (3)"), "{r}");
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_unknown_gas_is_refused_with_the_list_of_gases() {
+    let d = dir("gas_refused");
+    let job = d.join("DEMO-1.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"thickness": 3}));
+    let before = std::fs::read(&job).unwrap();
+    for bad in [json!("helium"), json!(0), json!(6), json!("2.5"), json!("")] {
+        let e = err(&mut s, "set-sheet", json!({"gas": bad}));
+        assert!(e.contains("1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water"), "{bad}: {e}");
+    }
+    assert_eq!(std::fs::read(&job).unwrap(), before, "a refused gas changed the job");
+    // `new` refuses it too, and writes no job.
+    let other = d.join("DEMO-2.snjob");
+    let e = s.call("new", Some(other.to_str().unwrap()), &json!({"gas": "helium"})).err().expect("new with gas helium should be refused");
+    assert!(e.contains("5 Water"), "{e}");
+    assert!(!other.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_lc5_job_set_to_oxygen_names_oxygen_3_in_every_program_and_xml() {
+    let d = dir("gas_lc5");
+    let job = d.join("DEMO-OX.snjob");
+    let mut ctx = Ctx::builtin();
+    ctx.blm.on = true;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 2, "name": "DEMO-P1"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 50, "y": 50}));
+    call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    // Every sheet program of the job names the job's gas (one gas per job).
+    for text in programs(&mut s) {
+        assert!(text.contains(";IDGAS=3\r\n;NOMEGAS=Oxygen\r\n"), "{text}");
+    }
+    let e = call(&mut s, "export", None, json!({"dir": d.join("cnc").to_str().unwrap()}));
+    let xmls: Vec<String> = e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).filter(|f| f.ends_with(".XML")).map(|f| std::fs::read_to_string(f).unwrap()).collect();
+    assert_eq!(xmls.len(), 2);
+    for x in &xmls {
+        assert!(x.contains("\t<GasId>3</GasId>\r\n\t<GasName>Oxygen</GasName>\r\n"), "{x}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_lc5_job_set_to_water_names_gas_5_h2o_as_the_lc5_list_does() {
+    // GS2: the LC5 names gas 5 H2O; people see Water. Agents may say either.
+    for given in ["water", "H2O", "h2o"] {
+        let d = dir(&format!("gas_water_{given}"));
+        let job = d.join("DEMO-H2O.snjob");
+        let mut ctx = Ctx::builtin();
+        ctx.blm.on = true;
+        let mut s = Session::new(ctx);
+        call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "stainless", "thickness": 3}));
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-P1"}));
+        call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+        let r = call(&mut s, "set-sheet", None, json!({"gas": given}));
+        assert!(r["message"].as_str().unwrap().contains("Water (5)"), "{r}");
+        assert_eq!(info_gas(&mut s), ("Water".into(), 5, "job".into()), "{given}");
+        let text = programs(&mut s).remove(0);
+        assert!(text.contains(";IDGAS=5\r\n;NOMEGAS=H2O\r\n"), "{given}: {text}");
+        let e = call(&mut s, "export", None, json!({"dir": d.join("cnc").to_str().unwrap()}));
+        let f = e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).find(|f| f.ends_with(".XML")).unwrap();
+        let x = std::fs::read_to_string(f).unwrap();
+        assert!(x.contains("\t<GasId>5</GasId>\r\n\t<GasName>H2O</GasName>\r\n"), "{given}: {x}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// A job on the made-up gas laser: plates with two holes and a mark, two on
+/// sheet 1 (one turned) and one on sheet 2, a hole's lead moved by hand.
+fn gas_job(d: &Path, s: &mut Session) -> PathBuf {
+    let job = d.join("DEMO-GAS.snjob");
+    call(s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "force": true}));
+    call(s, "import-drawing", None, json!({"path": plate_with_two_holes(d).to_str().unwrap(), "qty": 3, "layers": "MARK=mark"}));
+    call(s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(s, "place", None, json!({"part": 1, "x": 450, "y": 50, "angle": 90}));
+    call(s, "place", None, json!({"part": 1, "sheet": "new", "x": 50, "y": 50}));
+    call(s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 4, "in_angle": 90}));
+    job
+}
+
+/// Part 1's lead-ins as cut: (the one moved by hand, the longest other one), mm.
+fn gas_leads(s: &mut Session) -> (f64, f64) {
+    let pi = call(s, "part-info", None, json!({"part": 1}));
+    let mut hand = None;
+    let mut auto: f64 = 0.0;
+    for c in pi["data"]["contours"].as_array().unwrap().iter().filter(|c| c["lead_in"].is_object()) {
+        let l = c["lead_in"]["length_mm"].as_f64().unwrap();
+        if c["lead_by_hand"] == true {
+            hand = Some(l);
+        } else {
+            auto = auto.max(l);
+        }
+    }
+    (hand.unwrap_or_else(|| panic!("no lead moved by hand: {pi}")), auto)
+}
+
+#[test]
+fn switching_the_gas_switches_the_section_the_record_the_leads_and_the_cut_time() {
+    for blm in [false, true] {
+        let d = dir(&format!("gas_switch_{blm}"));
+        let (mut s, _on) = gas_session(&d, blm, (1, "Nitrogen"));
+        gas_job(&d, &mut s);
+        let look = |s: &mut Session| {
+            let t = call(s, "machine-tech", None, json!({}));
+            let time = call(s, "info", None, json!({}))["data"]["totals"]["time_s"].as_f64().unwrap();
+            (t, time)
+        };
+        // Nitrogen (the machine's): the nitrogen section and record.
+        let (t, n_time) = look(&mut s);
+        assert_eq!((t["data"]["section"]["number"].as_u64(), t["data"]["section"]["gas"].as_i64()), (Some(2), Some(1)), "{t}");
+        assert_eq!((t["data"]["gas"]["number"].as_u64(), t["data"]["speeds"]["gas"].as_u64()), (Some(1), Some(1)), "{t}");
+        assert!(t["data"]["speeds"]["source"].as_str().unwrap().contains("Nitrogen (1)"), "{t}");
+        assert!(t["message"].as_str().unwrap().contains("Nitrogen (1)"), "{t}");
+        assert_eq!(t["data"]["spacing"]["machine_gap"], 4.0);
+        assert_eq!(t["data"]["speeds"]["cut_mm_min_by_quality"][2], 9000.0);
+        let (n_hand, n_auto) = gas_leads(&mut s);
+        // Oxygen: the oxygen section (5 mm leads) and record (slower).
+        call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+        let (t, o_time) = look(&mut s);
+        assert_eq!((t["data"]["section"]["number"].as_u64(), t["data"]["section"]["gas"].as_i64()), (Some(1), Some(3)), "{t}");
+        assert_eq!((t["data"]["gas"]["number"].as_u64(), t["data"]["speeds"]["gas"].as_u64()), (Some(3), Some(3)), "{t}");
+        assert!(t["data"]["speeds"]["source"].as_str().unwrap().contains("Oxygen (3)"), "{t}");
+        assert!(t["data"]["table"].as_str().unwrap().contains("Oxygen (3)"), "{t}");
+        assert_eq!(t["data"]["spacing"]["machine_gap"], 9.0);
+        assert_eq!(t["data"]["speeds"]["cut_mm_min_by_quality"][2], 2000.0);
+        let (o_hand, o_auto) = gas_leads(&mut s);
+        assert_eq!(o_hand, n_hand, "the lead moved by hand stays");
+        assert!(o_auto > n_auto + 1.0, "oxygen leads {o_auto} mm vs nitrogen {n_auto} mm");
+        assert!(o_time > n_time, "oxygen {o_time} s vs nitrogen {n_time} s");
+        // The LC5 pierces quality 3 with the record's pierce mode: 4 for oxygen.
+        if blm {
+            let text = programs(&mut s).remove(0);
+            assert!(next_l_codes(&text).contains(&(4, 3)), "{text}");
+        }
+        // machine-tech looks at another gas without changing the job.
+        let t = call(&mut s, "machine-tech", None, json!({"gas": "nitrogen"}));
+        assert_eq!(t["data"]["section"]["number"].as_u64(), Some(2), "{t}");
+        assert_eq!(info_gas(&mut s).1, 3);
+        assert!(err(&mut s, "machine-tech", json!({"gas": "helium"})).contains("3 Oxygen"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
+fn changing_the_gas_of_a_nested_job_keeps_every_sheet_and_says_what_changed() {
+    let d = dir("gas_nested");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let job = gas_job(&d, &mut s);
+    // Nested afresh on a larger sheet, so nothing is marked changed since;
+    // the first piece then turned by hand to 30° (NST-14).
+    call(&mut s, "set-sheet", None, json!({"w": 2000, "h": 1000}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    call(&mut s, "turn", None, json!({"sheet": 1, "item": 1, "angle": 30}));
+    let placed = |job: &Path| jobfile::load(job).unwrap().sheets.iter().map(|sh| sh.iter().map(|p| (p.x, p.y, p.turns, p.spin)).collect::<Vec<_>>()).collect::<Vec<_>>();
+    let before = placed(&job);
+    let (spin, turned_hand, turned_auto) = piece_leads(&job, 1);
+    assert!(spin.deg > 0.0, "{spin:?}");
+    let (hand, _) = gas_leads(&mut s);
+    // No question about the nestings, unlike a thickness change.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Gas: Nitrogen (1) → Oxygen (3)"), "{m}");
+    assert!(m.contains(&format!("{} nested sheet(s) kept", before.len())), "{m}");
+    assert!(m.contains("0010 mild steel 2.2–3.2 mm, Nitrogen (1)") && m.contains("0010 mild steel 2.2–3.2 mm, Oxygen (3)"), "{m}");
+    assert!(m.contains("lead") && m.contains("time"), "{m}");
+    assert_eq!(placed(&job), before, "every sheet and part stays where it was, turned as it was");
+    assert_eq!(gas_leads(&mut s).0, hand, "the lead moved by hand stays");
+    // The turned piece keeps its turn and its lead moved by hand, point for
+    // point; its automatic leads follow the oxygen section.
+    let (spin_after, hand_after, auto_after) = piece_leads(&job, 1);
+    assert_eq!(spin_after, spin);
+    assert_eq!(hand_after, turned_hand, "the turned piece's lead moved by hand stays");
+    assert!(auto_after > turned_auto, "oxygen leads {auto_after} mm vs nitrogen {turned_auto} mm on the turned piece");
+    let i = call(&mut s, "info", None, json!({}));
+    assert_eq!(i["data"]["changed_since_nest"], false, "{i}");
+    // The same gas again: nothing changes.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": 3}));
+    assert!(r["message"].as_str().unwrap().contains("already"), "{r}");
+    // With a thickness change too, the nestings question still comes first.
+    assert!(err(&mut s, "set-sheet", json!({"gas": "nitrogen", "thickness": 2})).contains("nestings=keep"));
+    assert_eq!(info_gas(&mut s).1, 3, "a refused change changed the gas");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Sheet 1's piece `item` (from 1) as planned: its turn beyond the quarter
+/// turns, the path of its lead-in moved by hand, and its longest other lead-in, mm.
+fn piece_leads(job: &Path, item: usize) -> (crate::nest::Spin, Vec<P>, f64) {
+    let j = jobfile::load(job).unwrap();
+    let plan = j.plans().remove(0);
+    let mine: Vec<&crate::cnc::Contour> = plan.contours.iter().filter(|c| c.part_no == item).collect();
+    let hand = mine.iter().find(|c| c.lead_hand).unwrap_or_else(|| panic!("no lead moved by hand on #{item}")).lead_path.clone();
+    let auto = mine.iter().filter(|c| !c.lead_hand).map(|c| crate::leads::path_len(&c.lead_path)).fold(0.0, f64::max);
+    (j.sheets[0][item - 1].spin, hand, auto)
+}
+
+#[test]
+fn setting_the_sheet_a_job_already_has_saves_nothing_and_adds_no_undo_step() {
+    let d = dir("gas_same");
+    let job = d.join("DEMO-SAME.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"material": "mild steel", "thickness": 3}));
+    call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let backup = backup_path(&job);
+    let (file, kept) = (std::fs::read(&job).unwrap(), std::fs::read(&backup).unwrap());
+    // The gas it has, then the material and thickness it has: nothing to save.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "OXYGEN"}));
+    assert!(r["message"].as_str().unwrap().contains("Gas: already Oxygen (3)."), "{r}");
+    call(&mut s, "set-sheet", None, json!({"material": "mild steel", "thickness": 3}));
+    assert_eq!(std::fs::read(&job).unwrap(), file, "the job file was written");
+    assert_eq!(std::fs::read(&backup).unwrap(), kept, "the backup was replaced");
+    // No undo step either: undo takes back the last real change, oxygen.
+    call(&mut s, "undo", None, json!({}));
+    assert_eq!(info_gas(&mut s), ("Nitrogen".into(), 1, "job".into()));
+    // A job saved before jobs carried a gas: picking the gas it shows (the
+    // machine's) is a change, and the job keeps it.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    v["spec"].as_object_mut().unwrap().remove("gas");
+    std::fs::write(&job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!(info_gas(&mut s), ("Nitrogen".into(), 1, "machine".into()));
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert!(r["message"].as_str().unwrap().contains("Gas: Nitrogen (1) (the machine's) → Nitrogen (1);"), "{r}");
+    assert_eq!(info_gas(&mut s), ("Nitrogen".into(), 1, "job".into()));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    assert_eq!(v["spec"]["gas"].as_u64(), Some(1));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_new_job_starts_with_the_machines_gas_and_keeps_it() {
+    let d = dir("gas_new");
+    // A machine saved with oxygen: new jobs are oxygen jobs.
+    let (mut s, _on) = gas_session(&d, true, (3, "Oxygen"));
+    let job = d.join("DEMO-NEW.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3}));
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    // The machine's gas changed in Settings later: the job keeps its own.
+    s.ctx.cfg.machines[0].gas_id = 1;
+    s.ctx.cfg.machines[0].gas_name = "Nitrogen".into();
+    let _on2 = apply_machine(&mut s);
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    // A machine saved as 2 named Oxygen (not the list's pair): a new job has
+    // no gas of its own and writes the machine's as saved.
+    s.ctx.cfg.machines[0].gas_id = 2;
+    s.ctx.cfg.machines[0].gas_name = "Oxygen".into();
+    let _on3 = apply_machine(&mut s);
+    let other = d.join("DEMO-NEW2.snjob");
+    call(&mut s, "new", Some(other.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3}));
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 2, "machine".into()));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&other).unwrap()).unwrap();
+    assert!(v["spec"].get("gas").is_none(), "{}", v["spec"]);
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    assert!(programs(&mut s)[0].contains(";IDGAS=2\r\n;NOMEGAS=Oxygen\r\n"));
+    // Saved as 5 named Water: not the LC5's pair (5 is H2O, GS2), so a new
+    // job keeps writing it as saved. Saved as 5 named H2O: a water job.
+    for (name, own, written) in [("Water", "machine", ";IDGAS=5\r\n;NOMEGAS=Water\r\n"), ("H2O", "job", ";IDGAS=5\r\n;NOMEGAS=H2O\r\n")] {
+        s.ctx.cfg.machines[0].gas_id = 5;
+        s.ctx.cfg.machines[0].gas_name = name.into();
+        let _on = apply_machine(&mut s);
+        let job = d.join(format!("DEMO-NEW-{name}.snjob"));
+        call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3}));
+        let (shown, no, from) = info_gas(&mut s);
+        assert_eq!((no, from.as_str()), (5, own), "{name}");
+        assert_eq!(shown, if own == "job" { "Water" } else { name }, "{name}");
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+        call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+        assert!(programs(&mut s)[0].contains(written), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_saved_with_a_gas_opens_with_it_on_another_pc_sharing_the_library() {
+    let d = dir("gas_shared");
+    let lib = d.join("Shared").join("Library");
+    let pc = |who: Who, gas: (u32, &str)| {
+        let (mut s, on) = gas_session(&d.join(&who.pc), true, gas);
+        s.ctx.library_dir = lib.clone();
+        s.ctx.who = who.as_agent();
+        (s, on)
+    };
+    crate::library::create(&lib).unwrap();
+    // PROG-1, its machine on nitrogen, makes an oxygen job and saves it in the Library.
+    let (mut one, _on) = pc(Who::new("sam", "PROG-1"), (1, "Nitrogen"));
+    let jp = d.join("DEMO-SHARED.snjob");
+    call(&mut one, "new", Some(jp.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3, "gas": "oxygen"}));
+    call(&mut one, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-P1"}));
+    let id = call(&mut one, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    // The part saved in the Library carries no gas.
+    call(&mut one, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    for e in std::fs::read_dir(&lib).unwrap().flatten().filter(|e| e.path().is_dir()) {
+        for f in walk(&e.path()) {
+            let t = std::fs::read_to_string(&f).unwrap_or_default();
+            if t.contains("DEMO-P1") && !t.contains("DEMO-SHARED") {
+                assert!(!t.contains("\"gas\""), "a library part carries a gas: {}", f.display());
+            }
+        }
+    }
+    drop(_on);
+    // PROG-2, its machine on air, opens it: oxygen still.
+    let (mut two, _on2) = pc(Who::new("kim", "PROG-2"), (2, "Air"));
+    let jp2 = d.join("DEMO-SHARED-2.snjob");
+    call(&mut two, "new", Some(jp2.to_str().unwrap()), json!({}));
+    call(&mut two, "library", None, json!({"mode": "open", "id": id}));
+    assert_eq!(info_gas(&mut two), ("Oxygen".into(), 3, "job".into()));
+    let t = call(&mut two, "machine-tech", None, json!({}));
+    assert_eq!(t["data"]["section"]["gas"].as_i64(), Some(3), "{t}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+
+// ---------------------------------------------------------------------------
+// The job's gas on screen (MAC-39, GS15–GS17).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn picking_oxygen_on_the_sheet_tab_gives_the_same_job_as_set_sheet_gas_oxygen() {
+    // GS15: the Sheet tab's pick and set-sheet gas= change the job through
+    // one engine function. A nested job with a lead moved by hand.
+    let d = dir("gas_pick");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let job = gas_job(&d, &mut s);
+    let as_saved = jobfile::load(&job).unwrap();
+    // The agent.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let by_agent = jobfile::load(&job).unwrap();
+    // The Sheet tab: the window's copy of the job, picked Oxygen.
+    let mut spec = as_saved.spec.clone();
+    let pick = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &mut as_saved.parts.clone(), &as_saved.sheets, &as_saved.formats, &as_saved.manual_cuts, &s.ctx.blm);
+    assert!(pick.changed);
+    assert_eq!(spec, by_agent.spec, "the same sheet settings");
+    assert_eq!(spec.gas, Some(crate::gas::Gas::Oxygen));
+    // Nothing else of the job changes: sheets, parts, leads, not marked changed.
+    assert_eq!((&by_agent.sheets, by_agent.stale), (&as_saved.sheets, as_saved.stale));
+    assert_eq!(serde_json::to_string(&by_agent.parts).unwrap(), serde_json::to_string(&as_saved.parts).unwrap());
+    // The same words on screen as in the agent's reply.
+    assert!(pick.note.starts_with("Gas: Nitrogen (1) → Oxygen (3)"), "{}", pick.note);
+    assert!(r["message"].as_str().unwrap().ends_with(&pick.note), "{r}\n{}", pick.note);
+    // Picking the gas it has: no change, so the window adds no undo step.
+    let again = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &mut by_agent.parts.clone(), &by_agent.sheets, &by_agent.formats, &by_agent.manual_cuts, &s.ctx.blm);
+    assert!(!again.changed);
+    assert_eq!(again.note, "Gas: already Oxygen (3).");
+    assert_eq!(spec, by_agent.spec);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_library_list_shows_each_jobs_gas_and_listing_rewrites_nothing() {
+    // GS16: jobs of several gases, and one saved before jobs carried a gas,
+    // which shows the machine's (as saved in Settings → Machines).
+    let d = dir("gas_lib_list");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let lib = d.join("Library");
+    crate::library::create(&lib).unwrap();
+    s.ctx.library_dir = lib.clone();
+    for (name, gas) in [("DEMO-OX", Some("oxygen")), ("DEMO-WATER", Some("H2O")), ("DEMO-AIR", Some("2")), ("DEMO-OLD", None)] {
+        let jp = d.join(format!("{name}.snjob"));
+        call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": name, "material": "mild steel", "thickness": 3, "gas": gas.unwrap_or("nitrogen")}));
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": format!("{name}-P1")}));
+        if gas.is_none() {
+            // As saved before jobs carried a gas.
+            let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+            v["spec"].as_object_mut().unwrap().remove("gas");
+            std::fs::write(&jp, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+            call(&mut s, "info", Some(jp.to_str().unwrap()), json!({}));
+        }
+        call(&mut s, "library", None, json!({"mode": "save-job"}));
+    }
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    let files: Vec<(PathBuf, Vec<u8>)> = walk(&lib).into_iter().map(|f| (f.clone(), std::fs::read(&f).unwrap())).collect();
+    let l = call(&mut s, "library", None, json!({"mode": "list"}));
+    let rows = l["data"].as_array().unwrap();
+    let job = |name: &str| rows.iter().find(|r| r["kind"] == "job" && r["name"] == name).unwrap_or_else(|| panic!("{name}: {l}"));
+    let gas = |name: &str| {
+        let r = job(name);
+        (r["gas"].as_str().unwrap().to_string(), r["gas_no"].as_u64().unwrap(), r["gas_from"].as_str().unwrap().to_string())
+    };
+    assert_eq!(gas("DEMO-OX"), ("Oxygen".into(), 3, "job".into()));
+    assert_eq!(gas("DEMO-WATER"), ("Water".into(), 5, "job".into()));
+    assert_eq!(gas("DEMO-AIR"), ("Air".into(), 2, "job".into()));
+    assert_eq!(gas("DEMO-OLD"), ("Nitrogen".into(), 1, "machine".into()));
+    assert_eq!((job("DEMO-OX")["material"].as_str(), job("DEMO-OX")["thickness"].as_f64()), (Some("Mild steel"), Some(3.0)));
+    // A library part never carries a gas.
+    let part = rows.iter().find(|r| r["kind"] == "product").unwrap_or_else(|| panic!("{l}"));
+    assert!(part.get("gas").is_none() && part.get("gas_no").is_none(), "{part}");
+    // Listing reads; it writes no record and no list.
+    for (f, bytes) in &files {
+        assert_eq!(&std::fs::read(f).unwrap(), bytes, "{} was rewritten by listing", f.display());
+    }
+    // The machine saved as 2 named Oxygen: the old job shows it as saved.
+    s.ctx.cfg.machines[0].gas_id = 2;
+    s.ctx.cfg.machines[0].gas_name = "Oxygen".into();
+    let _on2 = apply_machine(&mut s);
+    let l = call(&mut s, "library", None, json!({"mode": "list"}));
+    let old = l["data"].as_array().unwrap().iter().find(|r| r["name"] == "DEMO-OLD").unwrap().clone();
+    assert_eq!((old["gas"].as_str(), old["gas_no"].as_u64(), old["gas_from"].as_str()), (Some("Oxygen"), Some(2), Some("machine")), "{old}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_message_after_programs_are_written_names_the_material_thickness_and_gas() {
+    // GS16: "3 programs written: Mild steel 12.7 mm, Oxygen".
+    for blm in [true, false] {
+        let d = dir(&format!("gas_written_{blm}"));
+        let (mut s, _on) = gas_session(&d, blm, (1, "Nitrogen"));
+        let job = d.join("DEMO-WRITTEN.snjob");
+        call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 12.7, "gas": "oxygen"}));
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 3}));
+        // One piece on each of three sheets.
+        call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+        for _ in 0..2 {
+            call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50, "sheet": "new"}));
+        }
+        let out = d.join("cnc");
+        let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+        let m = e["message"].as_str().unwrap();
+        assert!(m.starts_with("3 programs written: Mild steel 12.7 mm, Oxygen. "), "{m}");
+        assert!(m.contains("a parts report") && m.contains(&out.join("DEMO-WRITTEN").display().to_string()), "{m}");
+        // A job saved before jobs carried a gas names the machine's, as such.
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+        v["spec"].as_object_mut().unwrap().remove("gas");
+        std::fs::write(&job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        let e = call(&mut s, "export", Some(job.to_str().unwrap()), json!({"dir": out.to_str().unwrap()}));
+        let m = e["message"].as_str().unwrap();
+        assert!(m.starts_with("3 programs written: Mild steel 12.7 mm, Nitrogen (the machine's). "), "{m}");
+        // ... and a machine saved as 2 named Oxygen, as saved, with its number.
+        s.ctx.cfg.machines[0].gas_id = 2;
+        s.ctx.cfg.machines[0].gas_name = "Oxygen".into();
+        let _on2 = apply_machine(&mut s);
+        let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+        let m = e["message"].as_str().unwrap();
+        assert!(m.starts_with("3 programs written: Mild steel 12.7 mm, Oxygen (gas 2, the machine's as saved). "), "{m}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    // One program, and the thickness in inches as the window shows it.
+    let spec = SheetSpec { thickness: 12.7, gas: Some(crate::gas::Gas::Water), ..crate::engine::default_spec() };
+    let base = crate::blm::BlmSettings::for_machine("Demo laser");
+    assert_eq!(crate::engine::programs_written(1, &spec, &base, crate::units::LenUnit::Mm), "1 program written: Mild steel 12.7 mm, Water");
+    assert_eq!(crate::engine::programs_written(2, &spec, &base, crate::units::LenUnit::Inch), "2 programs written: Mild steel 0.5 in (1/2\"), Water");
+}
+
+#[test]
+fn the_machines_report_flags_a_saved_gas_that_isnt_on_the_list() {
+    // GS17: as Settings → Machines shows it.
+    for (gas, flagged) in [((2, "Oxygen"), true), ((5, "Water"), true), ((5, "H2O"), false), ((3, "Oxygen"), false)] {
+        let d = dir(&format!("gas_machines_{}_{}", gas.0, gas.1));
+        let (mut s, _on) = gas_session(&d, true, gas);
+        let r = call(&mut s, "machines", None, json!({}));
+        let m = &r["data"]["machines"][0];
+        assert_eq!((m["gas"].as_str(), m["gas_no"].as_u64()), (Some(gas.1), Some(gas.0 as u64)), "{m}");
+        assert_eq!(m.get("gas_note").is_some(), flagged, "{m}");
+        if flagged {
+            assert!(m["gas_note"].as_str().unwrap().contains("until you pick a gas"), "{m}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
+fn a_new_gas_with_a_new_thickness_and_nestings_removed_says_no_sheet_was_kept() {
+    // GS14: the reply says what the gas changed on the sheets that stay. With
+    // nestings=remove there are none left: no sheet kept, no cut time.
+    let d = dir("gas_remove");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let job = gas_job(&d, &mut s);
+    let r = call(&mut s, "set-sheet", None, json!({"thickness": 2.5, "gas": "oxygen", "nestings": "remove"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Mild steel 2.5 mm, Oxygen (3)") && m.contains("Removed 2 nested sheet(s)"), "{m}");
+    assert!(m.contains("Gas: Nitrogen (1) → Oxygen (3)") && m.contains("no nested sheets"), "{m}");
+    assert!(!m.contains("kept") && !m.contains("cut time"), "{m}");
+    let j = jobfile::load(&job).unwrap();
+    assert!(j.sheets.is_empty() && j.formats.is_empty(), "{:?}", j.sheets);
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    // nestings=keep: the sheets stay, and the reply says so with their cut time.
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    gas_job(&d, &mut s);
+    let r = call(&mut s, "set-sheet", None, json!({"thickness": 2.5, "gas": "oxygen", "nestings": "keep"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Kept the nested sheets") && m.contains("2 nested sheet(s) kept; cut time"), "{m}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// A new job's gas, on every path a job is made (MAC-39, #104: GS12, GS18).
+// ---------------------------------------------------------------------------
+
+/// A made-up LC5 program set in `d` as the LC5 post writes it: `<name>.zip`
+/// with the sheet program (3 mm STEEL on a 1000 × 500 sheet, a 100 × 50
+/// plate placed twice) and `<name>.XML` beside it. `gas` is the sheet
+/// program's `;IDGAS=` / `;NOMEGAS=` pair (None: no gas lines), `xml_gas`
+/// the job sheet's `GasId` / `GasName` (None: no gas tags).
+fn lc5_set(d: &Path, name: &str, gas: Option<(&str, &str)>, xml_gas: Option<(&str, &str)>) -> PathBuf {
+    lc5_set_of(d, name, "STEEL", gas, xml_gas)
+}
+
+/// `lc5_set` whose sheet program's header (`;<material>,1000,500,3`) names
+/// `material`.
+fn lc5_set_of(d: &Path, name: &str, material: &str, gas: Option<(&str, &str)>, xml_gas: Option<(&str, &str)>) -> PathBuf {
+    let sub = format!("{name}701");
+    let gas_lines = gas.map_or(String::new(), |(n, g)| format!(";IDGAS={n}\r\n;NOMEGAS={g}\r\n"));
+    let call_at = |k: usize, x: u32| format!("ORIG({x},10,0)\r\nN{k} CALL\"/_n_wks_dir/_n_sheet_wpd/_n_{sub}_spf\"\r\n");
+    let sheet = format!(
+        ";ADILAS\r\n;{material},1000,500,3\r\n;IDMAT=0010\r\n;NOMEMAT=STEEL\r\n;ALIASMAT=STEEL\r\n{gas_lines};Postprocessor version 2.0.0\r\nR12=3\r\nR21=1000\r\nR22=500\r\nINITNEST\r\n{}{}ENDNEST\r\nRET\r\n",
+        call_at(1, 10),
+        call_at(2, 200)
+    );
+    let part = "INITPART(1)\r\nNEXT_L(0,0,0,1,3)\r\nPROFILE\r\nG01 X100. Y0.\r\nG01 X100. Y50.\r\nG01 X0. Y50.\r\nLASTLINE(0,0,0,1,0.,50.,0.,0.,0,0)\r\nENDGEO\r\n";
+    let files = vec![(format!("{name}.SPF"), sheet), (format!("{sub}.SPF"), part.to_string())];
+    let zip = d.join(format!("{name}.zip"));
+    std::fs::write(&zip, crate::blm::zip(&files)).unwrap();
+    let gas_tags = xml_gas.map_or(String::new(), |(n, g)| format!("\t<GasId>{n}</GasId>\r\n\t<GasName>{g}</GasName>\r\n"));
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<General>\r\n\t<NestingName>{name}</NestingName>\r\n\t<JobName>DEMO-SET</JobName>\r\n\t<MatName>STEEL</MatName>\r\n\t<Thickness>3</Thickness>\r\n{gas_tags}\t<Files>\r\n\t\t<SubPrg>\r\n\t\t\t<CNCSub>{sub}</CNCSub>\r\n\t\t\t<PartRef>DEMO-PLATE</PartRef>\r\n\t\t</SubPrg>\r\n\t</Files>\r\n</General>\r\n"
+    );
+    std::fs::write(d.join(format!("{name}.XML")), xml).unwrap();
+    zip
+}
+
+#[test]
+fn a_job_opened_from_an_lc5_set_written_with_oxygen_is_an_oxygen_job() {
+    // GS18: the set names its gas, and the job takes it, whatever the
+    // machine's gas (here nitrogen).
+    let d = dir("gas_set_oxygen");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let set = lc5_set(&d, "DEMOOXY", Some(("3", "Oxygen")), Some(("3", "Oxygen")));
+    let job = d.join("DEMO-OXY.snjob");
+    let r = call(&mut s, "import-program", Some(job.to_str().unwrap()), json!({"path": set.to_str().unwrap()}));
+    assert!(r["message"].as_str().unwrap().contains("Oxygen (3)"), "{r}");
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    assert_eq!(v["spec"]["gas"].as_u64(), Some(3), "kept in the job file");
+    // Its programs name oxygen again.
+    assert!(programs(&mut s)[0].contains(";IDGAS=3\r\n;NOMEGAS=Oxygen\r\n"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Open the made-up set `set` as job `name` in `d`: the reply's message, and
+/// the job's gas as `info` shows it.
+fn open_set(s: &mut Session, d: &Path, name: &str, set: &Path) -> (String, (String, u64, String)) {
+    let job = d.join(format!("{name}.snjob"));
+    let r = call(s, "import-program", Some(job.to_str().unwrap()), json!({"path": set.to_str().unwrap()}));
+    (r["message"].as_str().unwrap().to_string(), info_gas(s))
+}
+
+#[test]
+fn a_set_that_names_no_gas_of_the_list_starts_the_job_with_the_machines() {
+    // GS18 with GS2: the LC5 writes 5 as H2O, so a set naming 5 H2O is a
+    // water job. A set naming no gas (empty, GS2), none at all, or a pair
+    // the LC5 list doesn't write gives the job a new job's gas (GS12), and
+    // the reply says what the set named.
+    let d = dir("gas_set_awkward");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let (m, g) = open_set(&mut s, &d, "DEMO-H2O", &lc5_set(&d, "DEMOH2O", Some(("5", "H2O")), Some(("5", "H2O"))));
+    assert_eq!(g, ("Water".into(), 5, "job".into()), "{m}");
+    assert!(m.contains("Water (5)") && !m.contains("name"), "{m}");
+    assert!(programs(&mut s)[0].contains(";IDGAS=5\r\n;NOMEGAS=H2O\r\n"));
+    for (name, gas, said) in [
+        ("DEMOEMPTY", Some(("", "")), "the programs name no gas, so the job starts with the machine's gas, Nitrogen"),
+        ("DEMONONE", None, "the programs name no gas, so the job starts with the machine's gas, Nitrogen"),
+        ("DEMOOFF", Some(("7", "Helium")), "the programs name gas 7 \"Helium\", which isn't one of the LC5's gases (1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O), so the job starts with the machine's gas, Nitrogen"),
+        ("DEMOZERO", Some(("0", "")), "the programs name gas 0 \"\", which isn't one of the LC5's gases"),
+        ("DEMOWATER", Some(("5", "Water")), "the programs name gas 5 \"Water\", which isn't one of the LC5's gases"),
+    ] {
+        let (m, g) = open_set(&mut s, &d, name, &lc5_set(&d, name, gas, gas));
+        assert_eq!(g, ("Nitrogen".into(), 1, "job".into()), "{name}: {m}");
+        assert!(m.contains(said), "{name}: {m}");
+    }
+    // On a machine saved as 2 named Oxygen (not the list's pair), a set
+    // naming no gas gives a job without one of its own, cut with the
+    // machine's as saved, as a new job would be.
+    let (mut s, _on) = gas_session(&d, true, (2, "Oxygen"));
+    let (m, g) = open_set(&mut s, &d, "DEMO-EMPTY-2", &lc5_set(&d, "DEMOEMPTY2", Some(("", "")), Some(("", ""))));
+    assert_eq!(g, ("Oxygen".into(), 2, "machine".into()), "{m}");
+    assert!(m.contains("so the job has none of its own and is cut with the machine's: Oxygen (gas 2, the machine's as saved)"), "{m}");
+    assert!(programs(&mut s)[0].contains(";IDGAS=2\r\n;NOMEGAS=Oxygen\r\n"));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("DEMO-EMPTY-2.snjob")).unwrap()).unwrap();
+    assert!(v["spec"].get("gas").is_none(), "{}", v["spec"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn when_the_sheet_program_and_its_xml_name_different_gases_the_program_wins() {
+    // One gas per job: the sheet program is what the LC5 runs, so its gas
+    // decides, and the reply says the XML named another (MAC-71). Without
+    // gas lines in the program, the XML's gas decides.
+    let d = dir("gas_set_disagree");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let (m, g) = open_set(&mut s, &d, "DEMO-MIX", &lc5_set(&d, "DEMOMIX", Some(("3", "Oxygen")), Some(("1", "Nitrogen"))));
+    assert_eq!(g, ("Oxygen".into(), 3, "job".into()), "{m}");
+    assert!(m.contains("the sheet program names Oxygen (3) and its XML job sheet Nitrogen (1): the job takes the sheet program's"), "{m}");
+    let (m, g) = open_set(&mut s, &d, "DEMO-XML", &lc5_set(&d, "DEMOXML", None, Some(("4", "Argon"))));
+    assert_eq!(g, ("Argon".into(), 4, "job".into()), "{m}");
+    assert!(!m.contains("name"), "{m}");
+    // A folder with two sheets' programs naming different gases: only the
+    // sheet picked is opened, so each job takes its own sheet's gas.
+    let folder = d.join("two-sheets");
+    std::fs::create_dir_all(&folder).unwrap();
+    for (n, gas) in [("DEMOA", "3\r\n;NOMEGAS=Oxygen"), ("DEMOB", "1\r\n;NOMEGAS=Nitrogen")] {
+        std::fs::write(folder.join(format!("{n}.SPF")), format!(";ADILAS\r\n;STEEL,1000,500,3\r\n;IDGAS={gas}\r\nINITNEST\r\nORIG(10,10,0)\r\nN1 CALL\"/_n_wks_dir/_n_sheet_wpd/_n_{n}701_spf\"\r\nENDNEST\r\n")).unwrap();
+        std::fs::write(folder.join(format!("{n}701.SPF")), "NEXT_L(0,0,0,1,3)\r\nPROFILE\r\nG01 X100. Y0.\r\nG01 X100. Y50.\r\nG01 X0. Y50.\r\nLASTLINE(0,0,0,1,0.,50.,0.,0.,0,0)\r\nENDGEO\r\n").unwrap();
+    }
+    let (m, g) = open_set(&mut s, &d, "DEMO-A", &folder.join("DEMOA.SPF"));
+    assert_eq!(g, ("Oxygen".into(), 3, "job".into()), "{m}");
+    let (m, g) = open_set(&mut s, &d, "DEMO-B", &folder.join("DEMOB.SPF"));
+    assert_eq!(g, ("Nitrogen".into(), 1, "job".into()), "{m}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn every_way_an_agent_makes_a_job_gives_it_the_machines_gas() {
+    // GS12: `new`, a job per material from `import-xml`, and a job opened
+    // from programs that name no gas (GS18), on a machine saved with oxygen:
+    // the same machine, material and thickness give the same gas, kept in
+    // each job's file.
+    let d = dir("gas_paths");
+    let (mut s, _on) = gas_session(&d, true, (3, "Oxygen"));
+    let job = d.join("DEMO-NEW.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3}));
+    let xml = d.join("DEMO-ORDER.xml");
+    std::fs::write(&xml, "<Import>\n<Product Reference=\"DEMO-1\" Material=\"Mild steel\" Thickness=\"3\" Quantity=\"2\"/>\n<Product Reference=\"DEMO-2\" Material=\"AISI304\" Thickness=\"1.5\" Quantity=\"1\"/>\n</Import>\n").unwrap();
+    let r = call(&mut s, "import-xml", None, json!({"path": xml.to_str().unwrap(), "dir": d.join("xml").to_str().unwrap()}));
+    let from_xml: Vec<PathBuf> = r["files"].as_array().unwrap().iter().map(|f| PathBuf::from(f.as_str().unwrap())).collect();
+    assert_eq!(from_xml.len(), 2, "one job per material: {r}");
+    let set = lc5_set(&d, "DEMONOGAS", Some(("", "")), Some(("", "")));
+    let opened = d.join("DEMO-OPENED.snjob");
+    call(&mut s, "import-program", Some(opened.to_str().unwrap()), json!({"path": set.to_str().unwrap()}));
+    for f in [job.clone(), from_xml[0].clone(), from_xml[1].clone(), opened.clone()] {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(v["spec"]["gas"].as_u64(), Some(3), "{}", f.display());
+        call(&mut s, "info", Some(f.to_str().unwrap()), json!({}));
+        assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()), "{}", f.display());
+    }
+    // The ones for mild steel 3 mm (new, the XML's first, the programs): one gas.
+    for f in [&job, &from_xml[0], &opened] {
+        let j = jobfile::load(f).unwrap();
+        assert_eq!((j.spec.material, j.spec.thickness, j.spec.gas), (0, 3.0, Some(crate::gas::Gas::Oxygen)), "{}", f.display());
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_saved_with_its_gas_keeps_it_when_the_machines_gas_changes() {
+    // A new job keeps the gas it started with (GS12): opened again after the
+    // machine's gas changed in Settings → Machines, it is still an oxygen
+    // job, writes oxygen, and opening it rewrites nothing.
+    let d = dir("gas_kept");
+    let (mut s, _on) = gas_session(&d, true, (3, "Oxygen"));
+    let job = d.join("DEMO-KEPT.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let saved = std::fs::read(&job).unwrap();
+    drop(_on);
+    // The next day, the machine is saved with nitrogen.
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    call(&mut s, "info", Some(job.to_str().unwrap()), json!({}));
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    assert!(programs(&mut s)[0].contains(";IDGAS=3\r\n;NOMEGAS=Oxygen\r\n"));
+    assert_eq!(std::fs::read(&job).unwrap(), saved, "opening the job rewrote it");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Automatic micro-joints follow the job's gas (GS14).
+// ---------------------------------------------------------------------------
+
+/// The made-up laser of `gas_machine_file` with micro-joints in its 2.2–3.2
+/// mm mild steel sections: oxygen 2 mm joints, one every 40 mm at quality 1
+/// and 60 mm at quality 3; nitrogen 0.5 mm joints every 150 and 200 mm; an
+/// air section that gives no joint values (the built-in table's then, MTL7);
+/// no section for argon or water (the machine's own: 0.8 mm, every 90 and
+/// 120 mm).
+fn gas_joints_machine_file() -> String {
+    let leads = |d: f64| (0..8).map(|k| format!("Z{:03} {d}\nZ{:03} {d}\nZ{:03} {}\nZ{:03} {}\n", 68 + 6 * k, 69 + 6 * k, 72 + 6 * k, d + 0.5, 73 + 6 * k, d + 0.5)).collect::<String>();
+    let section = |gas: u32, lead: f64, joints: &str| format!("Z000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ343 {gas}\nZ006 6\n{}{joints}Z999 0\n", leads(lead));
+    format!(
+        "# Demo laser\nA051 40000\nA058 3000\nA093 OFF\nB056 6.0\nF005 0.8\nF150 90\nF158 120\n{}{}{}",
+        section(3, 5.0, "X005 2.0\nX150 40\nX158 60\n"),
+        section(1, 2.0, "X005 0.5\nX150 150\nX158 200\n"),
+        section(2, 3.0, "")
+    )
+}
+
+/// A nitrogen job on that laser: a 300 × 200 mm plate on the sheet.
+fn joints_job(d: &Path, s: &mut Session) -> PathBuf {
+    let job = d.join("DEMO-JOINTS.snjob");
+    call(s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "gas": "nitrogen", "force": true}));
+    call(s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1}));
+    call(s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    job
+}
+
+/// Piece `item` (from 1) of sheet 1 as cut: how many micro-joints its outline
+/// gets, and their gaps in mm (to 0.01 mm).
+fn outline_joints(job: &Path, item: usize) -> (usize, Vec<f64>) {
+    let plan = jobfile::load(job).unwrap().plans().remove(0);
+    let c = plan.contours.iter().find(|c| c.part_no == item && !c.inner).unwrap_or_else(|| panic!("no outline for #{item}"));
+    let mut gaps: Vec<f64> = c.joints.iter().map(|(a, b)| ((b - a) * 100.0).round() / 100.0).collect();
+    gaps.dedup();
+    (c.joints.len(), gaps)
+}
+
+#[test]
+fn automatic_micro_joints_follow_the_gas_to_the_new_sections_gap_and_spacing() {
+    let d = dir("gas_joints_follow");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    // Nitrogen: 0.5 mm joints, one per 200 mm of the 1000 mm outline, made even (AM1).
+    assert_eq!(outline_joints(&job, 1), (6, vec![0.5]));
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("automatic micro-joints follow the new gas on 1 part"), "{m}");
+    // Oxygen: 2 mm joints, one per 60 mm (17, made even).
+    assert_eq!(outline_joints(&job, 1), (18, vec![2.0]));
+    let t = &call(&mut s, "part-info", None, json!({"part": 1}))["data"]["technology"];
+    assert_eq!((t["joint_width"].as_f64(), t["joint_every"].as_f64()), (Some(2.0), Some(60.0)), "{t}");
+    // The program is the one an oxygen job given Automatic joints writes.
+    let oxygen = programs(&mut s);
+    let d2 = dir("gas_joints_fresh");
+    let (mut s2, _on2) = gas_session_on(&d2, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let fresh = joints_job(&d2, &mut s2);
+    call(&mut s2, "set-sheet", None, json!({"gas": "oxygen"}));
+    call(&mut s2, "joints", None, json!({"mode": "auto"}));
+    assert_eq!(outline_joints(&fresh, 1), (18, vec![2.0]));
+    assert_eq!(oxygen, programs(&mut s2));
+    // Automatic again: the oxygen spacing it has now stays.
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    assert_eq!(outline_joints(&job, 1), (18, vec![2.0]));
+    // Oxygen again: nothing changes, nothing is saved.
+    let file = std::fs::read(&job).unwrap();
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    assert!(r["message"].as_str().unwrap().contains("Gas: already Oxygen (3)."), "{r}");
+    assert_eq!(std::fs::read(&job).unwrap(), file);
+    // Back to nitrogen: its joints again.
+    call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert_eq!(outline_joints(&job, 1), (6, vec![0.5]));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&d2);
+}
+
+#[test]
+fn each_part_takes_the_joint_spacing_of_its_own_cut_quality_for_the_new_gas() {
+    let d = dir("gas_joints_quality");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    // A second plate, cut at quality 1; the first is cut at the machine's.
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 450, "y": 50}));
+    call(&mut s, "tech-set", None, json!({"parts": 2, "quality": 1}));
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    // Nitrogen: quality 3 one per 200 mm, quality 1 one per 150 mm (7, made even).
+    assert_eq!((outline_joints(&job, 1), outline_joints(&job, 2)), ((6, vec![0.5]), (8, vec![0.5])));
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints follow the new gas on 2 parts"), "{r}");
+    // Oxygen: one per 60 mm and one per 40 mm (25, made even).
+    assert_eq!((outline_joints(&job, 1), outline_joints(&job, 2)), ((18, vec![2.0]), (26, vec![2.0])));
+    let every = |s: &mut Session, p: usize| call(s, "part-info", None, json!({"part": p}))["data"]["technology"]["joint_every"].as_f64();
+    assert_eq!((every(&mut s, 1), every(&mut s, 2)), (Some(60.0), Some(40.0)));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_joint_gap_or_spacing_set_by_hand_stays_when_the_gas_changes() {
+    let d = dir("gas_joints_hand");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    for (k, (x, y)) in [(450, 50), (50, 280), (450, 280)].into_iter().enumerate() {
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1}));
+        call(&mut s, "place", None, json!({"part": k + 2, "x": x, "y": y}));
+    }
+    // 1: Automatic, one per 100 mm given. 2: Automatic, then a 1 mm gap set.
+    // 3: Automatic, then a spacing set: the nitrogen one, 200 mm.
+    // 4: two joints placed on its lines, no Automatic: its own 0.5 mm gap.
+    call(&mut s, "joints", None, json!({"mode": "auto", "parts": 1, "every": 100}));
+    call(&mut s, "joints", None, json!({"mode": "auto", "parts": "2,3"}));
+    call(&mut s, "tech-set", None, json!({"parts": 2, "joint_width": 1.0}));
+    call(&mut s, "tech-set", None, json!({"parts": 3, "joint_every": 200}));
+    call(&mut s, "joint-at", None, json!({"part": 4, "elements": "1,3"}));
+    let all = |job: &Path| (1..=4).map(|k| outline_joints(job, k)).collect::<Vec<_>>();
+    assert_eq!(all(&job), vec![(10, vec![0.5]), (6, vec![1.0]), (6, vec![0.5]), (2, vec![0.5])]);
+    let program = programs(&mut s);
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints follow the new gas on 3 parts"), "{r}");
+    // 1 keeps its spacing and takes oxygen's gap; 2 keeps its gap and takes
+    // oxygen's spacing; 3 keeps its spacing; 4 keeps its joints as they were.
+    assert_eq!(all(&job), vec![(10, vec![2.0]), (18, vec![1.0]), (6, vec![2.0]), (2, vec![0.5])]);
+    // And back: the same joints as before, so the same program.
+    call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert_eq!(programs(&mut s), program);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Take `keys` out of every part's technology in the job file at `job`, and
+/// the gas out of its sheet with `gas`, as a job saved before them reads.
+fn saved_before(job: &Path, keys: &[&str], gas: bool) {
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(job).unwrap()).unwrap();
+    if gas {
+        v["spec"].as_object_mut().unwrap().remove("gas");
+    }
+    for p in v["parts"].as_array_mut().unwrap() {
+        if let Some(t) = p["tech"].as_object_mut() {
+            for k in keys {
+                t.remove(*k);
+            }
+        }
+    }
+    std::fs::write(job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+}
+
+#[test]
+fn a_job_saved_before_with_automatic_joints_writes_the_same_program_and_keeps_its_joints() {
+    let d = dir("gas_joints_old");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    // Saved before jobs carried a gas: its section is the first for the
+    // material and thickness, oxygen's, so Automatic gave oxygen's joints.
+    saved_before(&job, &[], true);
+    call(&mut s, "joints", Some(job.to_str().unwrap()), json!({"mode": "auto"}));
+    assert_eq!(outline_joints(&job, 1), (18, vec![2.0]));
+    let program = programs(&mut s);
+    // Saved before nestpro kept which joint values were the machine's.
+    saved_before(&job, &["joint_width_machine", "joint_every_machine"], false);
+    let saved = std::fs::read(&job).unwrap();
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    call(&mut s, "info", Some(job.to_str().unwrap()), json!({}));
+    assert_eq!(programs(&mut s), program, "the same program as before");
+    assert_eq!(std::fs::read(&job).unwrap(), saved, "opening the job rewrote it");
+    // A change that isn't about joints writes its parts as they were.
+    call(&mut s, "set-sheet", None, json!({"margin": 6}));
+    let parts = |b: &[u8]| serde_json::from_slice::<Value>(b).unwrap()["parts"].clone();
+    assert_eq!(parts(&std::fs::read(&job).unwrap()), parts(&saved));
+    // A gas picked: its joints aren't known to be the machine's, so they stay.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints unchanged"), "{r}");
+    assert_eq!(outline_joints(&job, 1), (18, vec![2.0]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn joints_take_the_built_in_values_or_the_machines_own_when_the_gas_has_none_of_its_own() {
+    let d = dir("gas_joints_none");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    assert_eq!(outline_joints(&job, 1), (6, vec![0.5]));
+    // What the machine gives for the job's gas now: (gap, spacing at quality 3).
+    let machine = |s: &mut Session| {
+        let j = &call(s, "machine-tech", None, json!({}))["data"]["joints"];
+        (j["gap"].as_f64().unwrap(), call(s, "part-info", None, json!({"part": 1}))["data"]["technology"]["joint_every"].as_f64().unwrap())
+    };
+    // Air: a section that gives no joint values, so the built-in table's
+    // (MTL7), as Automatic gives there: 5 mm, one per 100 mm.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "air"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints follow the new gas on 1 part"), "{r}");
+    assert_eq!(outline_joints(&job, 1), (10, vec![5.0]));
+    assert_eq!(machine(&mut s), (5.0, 100.0));
+    // Argon: no section, so the machine's own (MTL6): 0.8 mm, one per 120 mm (9, made even).
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "argon"}));
+    assert!(r["message"].as_str().unwrap().contains("machine table section 0010 mild steel 2.2–3.2 mm, Air (2) → none"), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints follow the new gas on 1 part"), "{r}");
+    assert_eq!(outline_joints(&job, 1), (10, vec![0.8]));
+    assert_eq!(machine(&mut s), (0.8, 120.0));
+    // Back to nitrogen: its own joints again.
+    call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert_eq!(outline_joints(&job, 1), (6, vec![0.5]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn picking_the_gas_on_the_sheet_tab_moves_the_joints_as_set_sheet_does() {
+    // GS15: the Sheet tab's pick and set-sheet gas= change the joints
+    // through one engine function.
+    let d = dir("gas_joints_pick");
+    let (mut s, _on) = gas_session_on(&d, true, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    let as_saved = jobfile::load(&job).unwrap();
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let by_agent = jobfile::load(&job).unwrap();
+    let (mut spec, mut parts) = (as_saved.spec.clone(), as_saved.parts.clone());
+    let pick = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &mut parts, &as_saved.sheets, &as_saved.formats, &as_saved.manual_cuts, &s.ctx.blm);
+    assert!(pick.changed);
+    assert_eq!(spec, by_agent.spec);
+    assert_eq!(serde_json::to_string(&parts).unwrap(), serde_json::to_string(&by_agent.parts).unwrap());
+    assert_ne!(serde_json::to_string(&parts).unwrap(), serde_json::to_string(&as_saved.parts).unwrap(), "the joints didn't follow");
+    assert!(r["message"].as_str().unwrap().ends_with(&pick.note), "{r}\n{}", pick.note);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agent_finds_materials_grouped_by_kind_and_sees_which_are_in_stock() {
+    // MA23: `material mode=list find=…` offers what the window's Material ▾
+    // offers for the same typed text, grouped by kind; `info` gives the
+    // counts it shows beside each material in stock at the job's thickness.
+    let d = dir("material_find");
+    let jp = d.join("DEMO-002.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(stock_ctx(&d));
+    add_demo_316(&mut s);
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 5052 Aluminium", "standard": "aluminium", "other_names": "DEMO-AlMg2.5"}));
+    let l = call(&mut s, "material", None, json!({"mode": "list", "find": " 316 "}));
+    assert_eq!(
+        l["data"]["groups"],
+        json!([{"kind": "Stainless steel", "materials": [
+            {"material": 3, "name": "DEMO 316 Stainless", "matched": null},
+            {"material": 1, "name": "Stainless steel", "matched": "316"},
+        ]}]),
+        "{l}"
+    );
+    assert_eq!(l["message"], "2 materials match '316': Stainless steel: DEMO 316 Stainless, Stainless steel (316).", "{l}");
+    let l = call(&mut s, "material", None, json!({"mode": "list", "find": "almg2.5"}));
+    assert_eq!(l["data"]["groups"], json!([{"kind": "Aluminium", "materials": [{"material": 4, "name": "DEMO 5052 Aluminium", "matched": "DEMO-AlMg2.5"}]}]), "{l}");
+    let l = call(&mut s, "material", None, json!({"mode": "list", "find": "DEMO-NOTHING"}));
+    assert_eq!((l["data"]["groups"].clone(), l["message"].as_str()), (json!([]), Some("No material matches 'DEMO-NOTHING': try fewer letters, or another name.")), "{l}");
+    // Without find: every material, grouped, besides the full list.
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    let kinds: Vec<&str> = l["data"]["groups"].as_array().unwrap().iter().map(|g| g["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, vec!["Carbon steel", "Stainless steel", "Aluminium"], "{l}");
+    assert_eq!(l["data"]["materials"].as_array().unwrap().len(), 5);
+    // Deleted (MA20), DEMO 5052 is offered no more; "5052" still finds
+    // Aluminium by its other name.
+    delete_material(&mut s, "DEMO 5052 Aluminium").unwrap();
+    let l = call(&mut s, "material", None, json!({"mode": "list", "find": "5052"}));
+    assert_eq!(l["data"]["groups"], json!([{"kind": "Aluminium", "materials": [{"material": 2, "name": "Aluminium", "matched": "5052"}]}]), "{l}");
+
+    // Stock at the job's 3 mm: two DEMO 316, one stainless; a 5 mm mild
+    // steel sheet and a locked aluminium sheet don't count.
+    call(&mut s, "new", Some(jp), json!({"w": 2000, "h": 1000, "thickness": 3, "material": "DEMO-316"}));
+    let on = |s: &mut Session| call(s, "info", None, json!({}))["data"]["nest_on"]["materials_in_stock"].clone();
+    assert_eq!(on(&mut s), json!([]), "nothing in stock yet");
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-A", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 3, "qty": 2}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-SS-A", "material": "stainless", "w": 3000, "h": 1500, "thickness": 3, "qty": 1}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-MS-5", "material": "mild steel", "w": 3000, "h": 1500, "thickness": 5, "qty": 4}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-AL-L", "material": "aluminium", "w": 3000, "h": 1500, "thickness": 3, "qty": 4}));
+    call(&mut s, "stock", None, json!({"mode": "block", "ref": "DEMO-AL-L"}));
+    assert_eq!(
+        on(&mut s),
+        json!([{"material": 1, "name": "Stainless steel", "qty": 1}, {"material": 3, "name": "DEMO 316 Stainless", "qty": 2}]),
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Renaming and deleting materials (spec #142, ticket #146: MA19, MA20).
+// ---------------------------------------------------------------------------
+
+/// A job in `material` saved into the Library under `name`, from a job file
+/// in `d` that the session then closes (only the Library record is left).
+fn library_job_in(s: &mut Session, d: &Path, name: &str, material: &str) {
+    let jp = d.join(format!("{name}.snjob"));
+    call(s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": material, "thickness": 3}));
+    call(s, "library", None, json!({"mode": "save-job"}));
+    std::fs::remove_file(&jp).unwrap();
+}
+
+fn delete_material(s: &mut Session, which: &str) -> Result<Value, String> {
+    s.call("material", None, &json!({"mode": "delete", "material": which})).map(|r| r.json)
+}
+
+fn material_names(s: &mut Session) -> Vec<String> {
+    call(s, "material", None, json!({"mode": "list"}))["data"]["materials"].as_array().unwrap().iter().map(|m| m["name"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn a_renamed_material_shows_its_new_name_and_no_file_changes_until_saved() {
+    // MA19: files point at the material's number, so renaming DEMO 316
+    // rewrites nothing; a job and a stock sheet reopened show the new name.
+    let d = dir("material_rename");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-A", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 3}));
+    let jp = d.join("DEMO-R1.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "DEMO-316", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    let stock_file = crate::stock::Stock::file(&lib);
+    let record = crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc()).path(crate::library::Kind::Job, 1);
+    let files = [PathBuf::from(jp), stock_file.clone(), record.clone()];
+    let bytes = |fs: &[PathBuf]| fs.iter().map(|f| std::fs::read(f).unwrap()).collect::<Vec<_>>();
+    let before = bytes(&files);
+
+    // A rename onto another material's name or other name is refused (invariant 6).
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "DEMO 316 Stainless", "name": "stainless STEEL"}));
+    assert!(e.contains("material 1 (Stainless steel)"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "edit", "material": "DEMO 316 Stainless", "name": "AISI304"}));
+    assert!(e.contains("another name of Stainless steel"), "{e}");
+    // Only the capitals: allowed (MA9).
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Stainless", "name": "DEMO 316 STAINLESS"}));
+    let r = call(&mut s, "material", None, json!({"mode": "edit", "material": "demo-316", "name": "DEMO 316L Stainless"}));
+    assert_eq!((r["data"]["material"].as_u64(), r["data"]["name"].as_str()), (Some(3), Some("DEMO 316L Stainless")), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("renamed"), "{r}");
+    assert_eq!(bytes(&files), before, "renaming rewrote nothing");
+
+    // Reopened by another session (another PC): the new name everywhere.
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let info = call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 316L Stainless"), Some(3)), "{info}");
+    let l = call(&mut s, "stock", None, json!({"mode": "list", "material": "DEMO 316L Stainless", "thickness": 3}));
+    assert_eq!((l["data"]["sheets"][0]["ref"].as_str(), l["data"]["sheets"][0]["material"].as_str()), (Some("DEMO-316-A"), Some("DEMO 316L Stainless")), "{l}");
+    let lj = call(&mut s, "library", None, json!({"mode": "list"}));
+    assert!(lj["data"].as_array().unwrap().iter().any(|e| e["kind"] == "job" && e["material"] == "DEMO 316L Stainless"), "{lj}");
+    let parts = info["data"]["parts"].clone();
+    assert_eq!(bytes(&files), before, "opening and listing rewrote nothing");
+
+    // Saved again: the new name goes in beside the same number; nothing else moved.
+    call(&mut s, "set-sheet", None, json!({"gap": 6}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert_eq!((j.spec.material, j.material_name.as_str(), j.parts.len()), (3, "DEMO 316L Stainless", 1));
+    assert_eq!(call(&mut s, "info", None, json!({}))["data"]["parts"], parts);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_a_job_and_a_stock_sheet_use_cant_be_deleted_and_the_refusal_names_both() {
+    // MA20, invariant 4.
+    let d = dir("material_delete_used");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-A", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 3}));
+    library_job_in(&mut s, &d, "DEMO-J1", "DEMO-316");
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list_file).unwrap();
+    let e = delete_material(&mut s, "DEMO 316 Stainless").unwrap_err();
+    assert!(e.contains("DEMO 316 Stainless can't be deleted"), "{e}");
+    assert!(e.contains("1 job (DEMO-J1)") && e.contains("1 stock item (DEMO-316-A)"), "{e}");
+    assert!(!e.contains("library part"), "nothing it doesn't use: {e}");
+    assert_eq!(std::fs::read(&list_file).unwrap(), before, "nothing changed");
+    assert!(material_names(&mut s).contains(&"DEMO 316 Stainless".to_string()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_first_three_materials_are_never_deleted() {
+    // MA20: 0 mild steel, 1 stainless steel and 2 aluminium are what files
+    // saved before the list mean (invariant 1), by name or by number.
+    let d = dir("material_delete_old_three");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    for which in ["Mild steel", "1", "aluminum", "0"] {
+        let e = delete_material(&mut s, which).unwrap_err();
+        assert!(e.contains("can't be deleted") && e.contains("first three materials") && e.contains("rename"), "{which}: {e}");
+    }
+    // Renamed, it is still kept.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "0", "name": "DEMO Mild"}));
+    assert!(delete_material(&mut s, "DEMO Mild").unwrap_err().contains("first three materials"));
+    assert_eq!(material_names(&mut s), ["DEMO Mild", "Stainless steel", "Aluminium"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_nothing_uses_is_deleted_by_name_or_number_and_its_number_never_comes_back() {
+    let d = dir("material_delete_unused");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let e = delete_material(&mut s, "DEMO 9999").unwrap_err();
+    assert!(e.contains("'DEMO 9999' isn't in the list"), "{e}");
+    let r = delete_material(&mut s, "demo 2205").unwrap();
+    assert!(r["message"].as_str().unwrap().contains("Deleted material DEMO 2205 (4)"), "{r}");
+    let r = delete_material(&mut s, "3").unwrap();
+    assert!(r["message"].as_str().unwrap().contains("DEMO 316 Stainless (3)"), "{r}");
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium"]);
+    let e = delete_material(&mut s, "3").unwrap_err();
+    assert!(e.contains("There's no material 3"), "{e}");
+    // MA16: a number is never given twice.
+    let a = call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 316 Stainless", "standard": "stainless"}));
+    assert_eq!(a["data"]["material"].as_u64(), Some(5), "{a}");
+    // Its name is free again, and so is a deleted material's other name.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Stainless", "other_names": "DEMO-316"}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_used_only_by_a_remnant_a_library_part_or_a_library_job_is_kept() {
+    // MA20: each of them alone stops the delete.
+    let d = dir("material_delete_each_user");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    // A remnant left from a sheet that is gone from stock.
+    add_demo_316(&mut s);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-316-B", "material": "DEMO 316 Stainless", "w": 2000, "h": 1000, "thickness": 4}));
+    let jp = d.join("DEMO-REM.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "material": "DEMO-316", "thickness": 4}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 3}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    call(&mut s, "stock", None, json!({"mode": "delete", "ref": "DEMO-316-B"}));
+    std::fs::remove_file(&jp).unwrap();
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let rem = call(&mut s, "stock", None, json!({"mode": "list", "material": "DEMO-316", "show_zero": true}));
+    let rem = rem["data"]["sheets"].as_array().unwrap();
+    assert!(rem.len() == 1 && rem[0]["kind"] != "sheet", "only the remnant: {rem:?}");
+    let e = delete_material(&mut s, "DEMO-316").unwrap_err();
+    assert!(e.contains(&format!("1 stock item ({})", rem[0]["ref"].as_str().unwrap())) && !e.contains("job"), "{e}");
+
+    // A library part whose job was never saved into the Library.
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = d.join("DEMO-PART.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "DEMO 2205", "thickness": 2}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 50, "qty": 1, "name": "DEMO-BRACKET"}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    std::fs::remove_file(&jp).unwrap();
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let e = delete_material(&mut s, "DEMO 2205").unwrap_err();
+    assert!(e.contains("1 library part (DEMO-BRACKET)") && !e.contains("stock item") && !e.contains("job"), "{e}");
+
+    // A job in the Library's jobs only.
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 904", "standard": "stainless"}));
+    library_job_in(&mut s, &d, "DEMO-J2", "DEMO 904");
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let e = delete_material(&mut s, "DEMO 904").unwrap_err();
+    assert!(e.contains("1 job (DEMO-J2)") && !e.contains("stock item") && !e.contains("library part"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_job_open_in_the_session_keeps_its_material_and_a_job_file_elsewhere_shows_a_question_mark() {
+    // JOB-88 (estimated): the job open here counts as a use, saved into the
+    // Library or not. A job file outside the Library that nothing has open
+    // can't be seen: once its material is gone it keeps its number and
+    // name, and shows `?` (JOB-86).
+    let d = dir("material_delete_open_job");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = d.join("DEMO-OPEN.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "DEMO 2205", "thickness": 3}));
+    let e = delete_material(&mut s, "DEMO 2205").unwrap_err();
+    assert!(e.contains("the job open here (DEMO-OPEN)"), "{e}");
+    let before = std::fs::read(jp).unwrap();
+    let mut s = Session::new(stock_ctx_again(&lib));
+    delete_material(&mut s, "DEMO 2205").unwrap();
+    let info = call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(3)), "{info}");
+    assert_eq!(std::fs::read(jp).unwrap(), before, "the file is left as it was");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_with_many_users_names_the_first_few_and_counts_the_rest() {
+    let d = dir("material_delete_many");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    for k in 1..=5 {
+        call(&mut s, "stock", None, json!({"mode": "create", "ref": format!("DEMO-S{k}"), "material": "DEMO-316", "w": 2000, "h": 1000, "thickness": k}));
+    }
+    for k in 1..=4 {
+        library_job_in(&mut s, &d, &format!("DEMO-J{k}"), "DEMO-316");
+    }
+    let e = delete_material(&mut s, "DEMO-316").unwrap_err();
+    assert!(e.contains("4 jobs (DEMO-J1, DEMO-J2, DEMO-J3 and 1 more)"), "{e}");
+    assert!(e.contains("5 stock items (DEMO-S1, DEMO-S2, DEMO-S3 and 2 more)"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn deleting_a_material_is_refused_while_the_library_cant_be_reached() {
+    // Invariant 5: nothing changed, nothing made in its place.
+    let d = dir("material_delete_unreachable");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    let e = delete_material(&mut s, "DEMO 2205").unwrap_err();
+    assert!(e.contains("can't be reached") && e.contains("The material list wasn't changed"), "{e}");
+    assert!(!lib.exists(), "nothing made in its place");
+    std::fs::rename(&away, &lib).unwrap();
+    assert_eq!(material_names(&mut s).len(), 4, "still there");
+    delete_material(&mut s, "DEMO 2205").unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_undo_copy_beside_a_library_job_is_never_read_as_the_job() {
+    // #146 review S1: the record scan reads only `<number>.snjob`. An agent
+    // changed a Library job's material from mild steel to DEMO 316 on the
+    // record file itself, leaving its undo copy (`1.snjob~`, mild steel)
+    // beside it; a stray copy with no record (`2.snjob~`) is no job either.
+    let d = dir("material_delete_undo_copy");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    add_demo_316(&mut s);
+    let jp = d.join("DEMO-B.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    let l = crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc());
+    let record = l.path(crate::library::Kind::Job, 1);
+    call(&mut s, "set-sheet", Some(record.to_str().unwrap()), json!({"material": "DEMO-316"}));
+    let undo = backup_path(&record);
+    assert_eq!(jobfile::load(&undo).unwrap().spec.material, 0, "the undo copy is the mild steel job");
+    std::fs::copy(&undo, backup_path(&l.path(crate::library::Kind::Job, 2))).unwrap();
+    let jobs: Vec<(u64, usize)> = l.rescan().iter().filter(|e| e.kind == crate::library::Kind::Job).map(|e| (e.id, e.material)).collect();
+    assert_eq!(jobs, [(1, 3)], "only the record, as it is now");
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let e = delete_material(&mut s, "DEMO-316").unwrap_err();
+    assert!(e.contains("1 job (DEMO-B)"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_stock_sheet_whose_material_is_deleted_before_it_is_stored_is_refused() {
+    // #146 review S2: this session picks DEMO 2205 for a new stock sheet;
+    // before it takes the Library's write lock, another session deletes
+    // DEMO 2205 (nothing used it yet). The sheet is refused under the lock.
+    let d = dir("material_delete_race_stock");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let other = lib.clone();
+    let mut once = true;
+    crate::shared::hooks::set(move |step| {
+        if step == "stock material picked" && std::mem::take(&mut once) {
+            let lib = other.clone();
+            std::thread::spawn(move || delete_material(&mut Session::new(stock_ctx_again(&lib)), "DEMO 2205").unwrap()).join().unwrap();
+        }
+    });
+    let r = s.call("stock", None, &json!({"mode": "create", "ref": "DEMO-2205-A", "material": "DEMO 2205", "w": 2000, "h": 1000, "thickness": 3}));
+    crate::shared::hooks::clear();
+    let e = r.map(|r| r.json).unwrap_err();
+    assert!(e.contains("DEMO 2205 (material 3) was deleted from the material list") && e.contains("Nothing was saved"), "{e}");
+    assert!(crate::stock::Stock::load(&lib).unwrap().items.iter().all(|i| i.material != 3), "no sheet in the deleted material");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_or_library_part_in_a_material_deleted_elsewhere_isnt_saved_into_the_library() {
+    // #146 review S2: a job open in one session (a file outside the
+    // Library) can't be seen by another, which deletes its material
+    // (JOB-88). Saving the job or one of its parts into the Library is then
+    // refused under the lock, so no Library record is in a deleted material.
+    let d = dir("material_delete_race_library");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = d.join("DEMO-LATE.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "DEMO 2205", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 50, "qty": 1, "name": "DEMO-LATE-P"}));
+    delete_material(&mut Session::new(stock_ctx_again(&lib)), "DEMO 2205").unwrap();
+    for args in [json!({"mode": "save-job"}), json!({"mode": "save-part", "parts": "1"})] {
+        let e = s.call("library", Some(jp.to_str().unwrap()), &args).map(|r| r.json).unwrap_err();
+        assert!(e.contains("was deleted from the material list") && e.contains("Nothing was saved"), "{args}: {e}");
+    }
+    assert!(crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc()).rescan().is_empty(), "nothing saved");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_open_jobs_file_is_read_again_before_a_material_is_deleted() {
+    // #146 review S3: the window changed the open job's material to DEMO
+    // 2205 in its file after this session read it.
+    let d = dir("material_delete_open_job_changed");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = d.join("DEMO-WIN.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    let mut j = jobfile::load(&jp).unwrap();
+    j.spec.material = 3;
+    jobfile::save(&jp, &j).unwrap();
+    let e = delete_material(&mut s, "DEMO 2205").unwrap_err();
+    assert!(e.contains("the job open here (DEMO-WIN)"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+
+// ---------------------------------------------------------------------------
+// Settings → Materials, the material list (spec #142, ticket #147: MA21, MA22).
+// The page keeps a draft (`Draft`) and Save materials stores every change of
+// it together (`crate::materials::apply`), as the `material` operation does
+// one change at a time.
+// ---------------------------------------------------------------------------
+
+use crate::engine::materialedit::{Draft, Field};
+
+/// The page's Save materials, as the window does it.
+fn save_page(s: &Session, draft: &Draft) -> Result<(), String> {
+    let changes = draft.changes()?;
+    let ctx = &s.ctx;
+    let lib = ctx.library_at();
+    let (_, l) = crate::materials::apply(&ctx.material_home(), &ctx.pc_dir, &ctx.cfg, || lib.saved(), &lib, &changes, &[])?;
+    material::install(l);
+    Ok(())
+}
+
+/// The page as it opens: the list as stored now.
+fn page(s: &Session) -> Draft {
+    s.ctx.reload_materials();
+    Draft::of(&material::current())
+}
+
+fn row_of(d: &Draft, name: &str) -> usize {
+    d.rows.iter().position(|r| r.m.name == name).unwrap_or_else(|| panic!("no row {name}"))
+}
+
+/// One material as `material mode=list` shows it.
+fn listed(s: &mut Session, name: &str) -> Value {
+    let l = call(s, "material", None, json!({"mode": "list"}));
+    l["data"]["materials"].as_array().unwrap().iter().find(|m| m["name"] == name).cloned().unwrap_or_else(|| panic!("{name} isn't listed: {l}"))
+}
+
+fn page_session(name: &str) -> (PathBuf, PathBuf, Session) {
+    let d = dir(name);
+    let lib = stock_ctx(&d).library_dir;
+    let s = Session::new(stock_ctx_again(&lib));
+    (d, lib, s)
+}
+
+#[test]
+fn adding_from_the_catalogue_takes_the_standards_name_and_follows_its_values() {
+    // MA21: any of the catalogue's 34 standards, by number or name; named
+    // as the standard unless a name is given; every value its standard's.
+    let (d, _lib, mut s) = page_session("material_from_catalogue");
+    let r = call(&mut s, "material", None, json!({"mode": "add", "standard": "0110"}));
+    let m = &r["data"];
+    assert_eq!((m["material"].as_u64(), m["name"].as_str(), m["standard"].as_str(), m["standard_kind"].as_str()), (Some(3), Some("X3CrNiMo 17-13-3"), Some("0110 X3CrNiMo 17-13-3"), Some("Stainless steel")), "{r}");
+    assert_eq!((m["kind"].as_str(), m["density"].as_f64(), m["machine_key"].as_str()), (Some("stainless steel"), Some(8.0), Some("##MATEXP0110##")), "{r}");
+    assert_eq!(m["from_standard"], json!(["density", "program_name", "program_code", "machine_ref"]), "nothing of its own yet: {r}");
+    // By name, with the shop's own name; a waterjet standard has no kind.
+    let r = call(&mut s, "material", None, json!({"mode": "add", "standard": "copper", "name": "DEMO Cu-ETP"}));
+    let m = &r["data"];
+    assert_eq!((m["name"].as_str(), m["standard"].as_str(), m["density"].as_f64(), m["standard_kind"].as_str()), (Some("DEMO Cu-ETP"), Some("0510 Copper"), Some(8.9), Some("Copper and brass")), "{r}");
+    // The list offers the whole catalogue to add from.
+    let l = call(&mut s, "material", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["standards"].as_array().unwrap().len(), 34);
+    assert_eq!((l["data"]["standards"][9]["standard"].as_str(), l["data"]["standards"][9]["kind"].as_str()), (Some("0110 X3CrNiMo 17-13-3"), Some("Stainless steel")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_standard_whose_name_is_taken_is_refused_naming_the_material_that_has_it() {
+    // MA16 + MA21: adding from a standard whose name another material has,
+    // as its name or one of its other names, is refused; given a name of
+    // its own it is added.
+    let (d, lib, mut s) = page_session("material_standard_taken");
+    call(&mut s, "material", None, json!({"mode": "add", "standard": "0110"}));
+    let file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&file).unwrap();
+    let e = err(&mut s, "material", json!({"mode": "add", "standard": "0110"}));
+    assert!(e.contains("the name of material 3 (X3CrNiMo 17-13-3)"), "{e}");
+    // AlMg3 is one of aluminium's other names (a new install's).
+    let e = err(&mut s, "material", json!({"mode": "add", "standard": "AlMg3"}));
+    assert!(e.contains("another name of Aluminium (material 2)"), "{e}");
+    // The same from the page: nothing is stored.
+    let mut p = page(&s);
+    p.add_from_standard(210).unwrap();
+    let e = save_page(&s, &p).unwrap_err();
+    assert!(e.contains("another name of Aluminium (material 2)"), "{e}");
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing refused was stored");
+    let r = call(&mut s, "material", None, json!({"mode": "add", "standard": "AlMg3", "name": "DEMO 5754"}));
+    assert_eq!((r["data"]["name"].as_str(), r["data"]["standard"].as_str()), (Some("DEMO 5754"), Some("0210 AlMg3")), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_blank_material_needs_a_name_of_its_own_and_starts_on_the_first_standard() {
+    // MA22: no standard given, a blank material; it needs a name, which no
+    // other material may have.
+    let (d, _lib, mut s) = page_session("material_blank");
+    let e = err(&mut s, "material", json!({"mode": "add"}));
+    assert!(e.contains("needs the new material's name"), "{e}");
+    let e = err(&mut s, "material", json!({"mode": "add", "name": "  MILD   steel "}));
+    assert!(e.contains("the name of material 0 (Mild steel)"), "{e}");
+    let r = call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Blank"}));
+    assert_eq!((r["data"]["standard"].as_str(), r["data"]["density"].as_f64()), (Some("0010 RST 37-2"), Some(7.85)), "{r}");
+    assert_eq!(r["data"]["from_standard"].as_array().unwrap().len(), 4, "{r}");
+    // The page's Add blank: saved without a name, refused; with a taken one, refused.
+    let mut p = page(&s);
+    let k = p.add_blank();
+    assert_eq!(save_page(&s, &p).unwrap_err(), "A material needs a name.");
+    p.rows[k].m.name = "demo blank".into();
+    assert!(save_page(&s, &p).unwrap_err().contains("the name of material 3 (DEMO Blank)"));
+    p.rows[k].m.name = "DEMO Blank 2".into();
+    save_page(&s, &p).unwrap();
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "DEMO Blank", "DEMO Blank 2"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_blank_field_shows_the_standards_value_a_typed_one_overrides_it_and_clearing_goes_back() {
+    // MA16, MA21: on the page, a value left blank is its standard's (shown
+    // greyed in the field); one typed is the material's own; cleared, it is
+    // the standard's again.
+    let (d, _lib, mut s) = page_session("material_page_values");
+    let mut p = page(&s);
+    let k = p.add_from_standard(110).unwrap();
+    p.rows[k].m.name = "DEMO 316L".into();
+    p.rows[k].other_names = "DEMO-AISI 316L, DEMO 1.4404".into();
+    assert_eq!(p.rows[k].text(Field::Density), "", "blank");
+    assert_eq!(FIELDS_SHOWN.map(|f| p.rows[k].standard_value(f)), ["8", "X3CrNiMo 17-13-3", "0110", "0110"], "greyed: the standard's (MA25)");
+    save_page(&s, &p).unwrap();
+    let m = listed(&mut s, "DEMO 316L");
+    assert_eq!((m["density"].as_f64(), m["machine_key"].as_str()), (Some(8.0), Some("##MATEXP0110##")), "{m}");
+
+    // Typed: its own.
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO 316L");
+    p.rows[k].set(Field::Density, "7,95");
+    p.rows[k].set(Field::MachineRef, "DEMO-KEY");
+    p.rows[k].set(Field::ProgramCode, "DEMO-0111");
+    assert!(p.changed());
+    save_page(&s, &p).unwrap();
+    let m = listed(&mut s, "DEMO 316L");
+    assert_eq!((m["density"].as_f64(), m["machine_key"].as_str(), m["program_code"].as_str()), (Some(7.95), Some("DEMO-KEY"), Some("DEMO-0111")), "{m}");
+    assert_eq!(m["from_standard"], json!(["program_name"]), "{m}");
+
+    // Cleared: the standard's again.
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO 316L");
+    assert_eq!(p.rows[k].text(Field::Density), "7.95", "its own, shown as typed");
+    p.rows[k].set(Field::Density, "");
+    p.rows[k].set(Field::MachineRef, "");
+    save_page(&s, &p).unwrap();
+    let m = listed(&mut s, "DEMO 316L");
+    assert_eq!((m["density"].as_f64(), m["machine_key"].as_str(), m["program_code"].as_str()), (Some(8.0), Some("##MATEXP0110##"), Some("DEMO-0111")), "{m}");
+    // A density that isn't one is refused, naming the material.
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO 316L");
+    p.rows[k].set(Field::Density, "heavy");
+    let e = save_page(&s, &p).unwrap_err();
+    assert!(e.starts_with("DEMO 316L: density heavy"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+const FIELDS_SHOWN: [Field; 4] = [Field::Density, Field::ProgramName, Field::ProgramCode, Field::MachineRef];
+
+#[test]
+fn save_materials_stores_every_change_of_the_page_together_or_none() {
+    // MA21: a rename, a new material from a standard, a blank one and a
+    // deletion are stored together; a page with one name taken stores none.
+    let (d, lib, mut s) = page_session("material_page_save");
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Old", "standard": "stainless"}));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Gone", "standard": "stainless"}));
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO Old");
+    p.rows[k].m.name = "DEMO Renamed".into();
+    let k = p.add_from_standard(300).unwrap();
+    p.rows[k].m.name = "DEMO G90".into();
+    let k = p.add_blank();
+    p.rows[k].m.name = "DEMO Old".into(); // the name the rename frees
+    let k = row_of(&p, "DEMO Gone");
+    let lib_ = s.ctx.library_at();
+    p.delete(k, |id| crate::engine::materialedit::check_delete(&material::current(), id, |id| crate::materials::uses(&lib_, id, &[]))).unwrap();
+    assert!(p.rows[k].delete, "marked, not gone until saved");
+    assert_eq!(material_names(&mut s).len(), 5, "nothing stored before Save");
+    save_page(&s, &p).unwrap();
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "DEMO Renamed", "DEMO G90", "DEMO Old"]);
+    assert_eq!(listed(&mut s, "DEMO Old")["material"].as_u64(), Some(6), "a new number: 4 was deleted and is never given again");
+
+    // Two materials swap names in one save.
+    let mut p = page(&s);
+    let (a, b) = (row_of(&p, "DEMO Renamed"), row_of(&p, "DEMO Old"));
+    p.rows[a].m.name = "DEMO Old".into();
+    p.rows[b].m.name = "DEMO Renamed".into();
+    save_page(&s, &p).unwrap();
+    assert_eq!((listed(&mut s, "DEMO Old")["material"].as_u64(), listed(&mut s, "DEMO Renamed")["material"].as_u64()), (Some(3), Some(6)));
+
+    // One name taken: nothing of the page is stored.
+    let file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&file).unwrap();
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO G90");
+    p.rows[k].m.name = "DEMO Z275".into();
+    let k = p.add_from_standard(10).unwrap();
+    p.rows[k].other_names = "DEMO-S1, aisi304".into();
+    let e = save_page(&s, &p).unwrap_err();
+    assert!(e.contains("'aisi304' is already another name of Stainless steel (material 1)"), "{e}");
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing stored");
+    assert!(material_names(&mut s).contains(&"DEMO G90".to_string()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn deleting_on_the_page_is_refused_for_the_first_three_and_for_what_is_used() {
+    // MA20 on the page: the refusal is shown and nothing is marked; a new
+    // material not saved yet just goes.
+    let (d, _lib, mut s) = page_session("material_page_delete");
+    add_demo_316(&mut s);
+    library_job_in(&mut s, &d, "DEMO-J1", "DEMO-316");
+    let mut p = page(&s);
+    let lib = s.ctx.library_at();
+    let check = |id| crate::engine::materialedit::check_delete(&material::current(), id, |id| crate::materials::uses(&lib, id, &[]));
+    let k = row_of(&p, "Mild steel");
+    let e = p.delete(k, check).unwrap_err();
+    assert!(e.contains("Mild steel can't be deleted: it is one of the first three materials"), "{e}");
+    let k = row_of(&p, "DEMO 316 Stainless");
+    let e = p.delete(k, check).unwrap_err();
+    assert!(e.contains("DEMO 316 Stainless can't be deleted: it is used by 1 job (DEMO-J1)"), "{e}");
+    assert!(!p.changed(), "nothing marked");
+    let k = p.add_blank();
+    p.delete(k, check).unwrap();
+    assert_eq!(p.rows.len(), 4, "the new row went");
+    assert!(!p.changed());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn undo_changes_after_several_edits_gives_back_the_list_as_stored() {
+    let (d, lib, mut s) = page_session("material_page_undo");
+    add_demo_316(&mut s);
+    let file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&file).unwrap();
+    let fresh = page(&s);
+    let mut p = fresh.clone();
+    let k = row_of(&p, "Stainless steel");
+    p.rows[k].m.name = "DEMO Inox".into();
+    p.rows[k].set(Field::ProgramName, "DEMO");
+    p.rows[k].other_names.clear();
+    p.add_from_standard(510).unwrap();
+    p.add_blank();
+    let k = row_of(&p, "DEMO 316 Stainless");
+    p.delete(k, |_| Ok(())).unwrap();
+    assert!(p.changed());
+    assert_eq!(p.changes().unwrap().len(), 4);
+    // Undo changes: the page reads the list again.
+    let p = page(&s);
+    assert_eq!(p, fresh);
+    assert!(!p.changed());
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing stored");
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316 Stainless"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_page_says_why_it_cant_edit_while_the_library_cant_be_reached() {
+    // MA14 + invariant 5: the page shows why; a save is refused and stores
+    // nothing; once the Library is back it saves.
+    let (d, lib, mut s) = page_session("material_page_unreachable");
+    add_demo_316(&mut s);
+    let home = s.ctx.material_home();
+    assert_eq!(crate::materials::can_change(&home), Ok(()));
+    let mut p = page(&s);
+    let k = row_of(&p, "DEMO 316 Stainless");
+    p.rows[k].m.name = "DEMO 316L".into();
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    let why = crate::materials::can_change(&home).unwrap_err();
+    assert!(why.contains("can't be reached") && why.contains("The material list can't be changed until it can be reached"), "{why}");
+    let e = save_page(&s, &p).unwrap_err();
+    assert!(e.contains("The material list wasn't changed: try again once it can be reached."), "{e}");
+    assert!(!lib.exists(), "nothing made in its place");
+    std::fs::rename(&away, &lib).unwrap();
+    save_page(&s, &p).unwrap();
+    assert!(material_names(&mut s).contains(&"DEMO 316L".to_string()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn try_a_name_finds_any_material_of_the_list_by_an_other_name() {
+    // The page's Try a name looks over the whole list (MA6, MA16).
+    let (d, _lib, s) = page_session("material_try_name");
+    let mut p = page(&s);
+    let k = p.add_from_standard(110).unwrap();
+    p.rows[k].m.name = "DEMO 316L".into();
+    p.rows[k].other_names = "DEMO-AISI 316L".into();
+    save_page(&s, &p).unwrap();
+    let id = s.ctx.cfg.material_for("  demo-aisi   316l ");
+    assert_eq!(id.map(|i| material::name_or(i, "?")).as_deref(), Some("DEMO 316L"));
+    assert_eq!(s.ctx.cfg.material_for("aisi304"), Some(1));
+    assert_eq!(s.ctx.cfg.material_for("DEMO-NOTHING"), None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn two_pcs_changing_different_values_of_one_material_both_count() {
+    // Invariant 5: a save takes only what its page changed, so another PC's
+    // change to another value meanwhile stays.
+    let (d, lib, mut s) = page_session("material_page_two_pcs");
+    add_demo_316(&mut s);
+    let other = Session::new(stock_ctx_again(&lib));
+    let mut a = page(&s);
+    let mut b = page(&other);
+    let k = row_of(&a, "DEMO 316 Stainless");
+    a.rows[k].set(Field::Density, "7.98");
+    b.rows[k].other_names = "DEMO-316, DEMO-1.4401, DEMO-316S".into();
+    save_page(&s, &a).unwrap();
+    save_page(&other, &b).unwrap();
+    let m = listed(&mut s, "DEMO 316 Stainless");
+    assert_eq!((m["density"].as_f64(), m["other_names"].clone()), (Some(7.98), json!(["DEMO-316", "DEMO-1.4401", "DEMO-316S"])), "{m}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_pages_kind_is_the_group_the_material_picker_puts_a_material_in() {
+    // MA21 + MA23: Settings → Materials and every Material ▾ name a
+    // material's kind the same way, from one engine function.
+    let (d, _lib, mut s) = page_session("material_page_kinds");
+    for (name, std) in [("DEMO 5754", "0210"), ("DEMO G90", "0300"), ("DEMO CuZn37", "0590"), ("DEMO Ti", "0400"), ("DEMO S355", "0040")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    let l = material::current();
+    for g in material::choose(&l, "") {
+        for c in g.choices {
+            let m = l.get(c.id).unwrap();
+            assert_eq!(crate::engine::catalogue::kind_name(m.standard), g.group.label(), "{}", m.name);
+        }
+    }
+    let kind = |n: &str| crate::engine::catalogue::kind_name(l.materials.iter().find(|m| m.name == n).unwrap().standard);
+    assert_eq!([kind("Aluminium"), kind("DEMO 5754"), kind("DEMO G90"), kind("DEMO CuZn37"), kind("DEMO Ti"), kind("DEMO S355")], ["Aluminium", "Aluminium", "Galvanized", "Copper and brass", "Other", "Carbon steel"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Grades cut, weigh and write programs from their own values (ticket #149:
+// MA24–MA27).
+// ---------------------------------------------------------------------------
+
+/// The stock item `r`'s weight as `stock mode=list` gives it, kg.
+fn stock_weight(s: &mut Session, r: &str) -> f64 {
+    let l = call(s, "stock", None, json!({"mode": "list", "show_zero": true}));
+    let it = l["data"]["sheets"].as_array().unwrap().iter().find(|i| i["ref"] == r).cloned().unwrap_or_else(|| panic!("{r} isn't listed: {l}"));
+    it["weight_kg"].as_f64().unwrap_or_else(|| panic!("no weight: {it}"))
+}
+
+#[test]
+fn a_grade_weighs_with_its_own_density_else_its_standards() {
+    // MA26: sheet, part and remnant weights use the material's own weight per
+    // volume, else its standard's (7.85 where the catalogue gives none).
+    let (d, lib, mut s) = page_session("material_weights");
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 5052 Aluminium", "standard": "aluminium", "density": 2.68}));
+    for (name, std) in [("DEMO 1050", "0200"), ("DEMO G90", "0300"), ("DEMO Cu", "0510"), ("DEMO Ti", "0400"), ("DEMO 316L", "0110")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    let sheet = |s: &mut Session, r: &str, m: &str| {
+        call(s, "stock", None, json!({"mode": "create", "ref": r, "material": m, "w": 1000, "h": 1000, "thickness": 2}));
+        stock_weight(s, r)
+    };
+    // The acceptance example: 1 000 × 1 000 × 2 mm at 2.68 g/cm³.
+    assert!((sheet(&mut s, "DEMO-AL-2", "DEMO 5052 Aluminium") - 5.36).abs() < 1e-9);
+    // Blank: the standard's (Al99 2.7, galvanized 7.9, copper 8.9, 0110 8.0);
+    // titanium has none in the catalogue: 7.85.
+    for (r, m, kg) in [("DEMO-1050", "DEMO 1050", 5.4), ("DEMO-G90", "DEMO G90", 15.8), ("DEMO-CU", "DEMO Cu", 17.8), ("DEMO-TI", "DEMO Ti", 15.7), ("DEMO-316L", "DEMO 316L", 16.0)] {
+        assert!((sheet(&mut s, r, m) - kg).abs() < 1e-9, "{m}: {}", stock_weight(&mut s, r));
+    }
+    // The old three weigh as before (MA18): 7.85, 8.0, 2.70.
+    for (r, m, kg) in [("DEMO-MS", "mild steel", 15.7), ("DEMO-SS", "stainless", 16.0), ("DEMO-AL", "aluminium", 5.4)] {
+        assert!((sheet(&mut s, r, m) - kg).abs() < 1e-9, "{m}");
+    }
+    // Its own weight changed: the sheet weighs with it; back to the standard's.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 1050", "density": 2.71}));
+    assert!((stock_weight(&mut s, "DEMO-1050") - 5.42).abs() < 1e-9);
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 1050", "density": "standard"}));
+    assert!((stock_weight(&mut s, "DEMO-1050") - 5.4).abs() < 1e-9);
+
+    // A part: 500 × 400 × 2 mm in DEMO 5052 = 0.2 m² × 2 mm × 2.68.
+    let jp = d.join("DEMO-W.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 1000, "material": "DEMO 5052 Aluminium", "thickness": 2}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 500, "h": 400, "qty": 1}));
+    let p = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert!((p["data"]["weight_kg"].as_f64().unwrap() - 1.072).abs() < 1e-9, "{p}");
+    // A remnant of the sheet: what it weighs is its area at the grade's density.
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "line", "x": 600.0}));
+    call(&mut s, "stock-book", None, json!({"mode": "book", "refs": "DEMO-AL-2-R"}));
+    let st = crate::stock::Stock::load(&lib).unwrap();
+    let rem = st.get("DEMO-AL-2-R").unwrap_or_else(|| panic!("no remnant: {:?}", st.items.iter().map(|i| &i.reference).collect::<Vec<_>>()));
+    assert_eq!(rem.material, 3);
+    assert!((stock_weight(&mut s, "DEMO-AL-2-R") - rem.area_m2() * 2.0 * 2.68).abs() < 0.0006, "rounded to grams");
+    assert!(rem.area_m2() > 0.3 && rem.area_m2() < 0.45, "{}", rem.area_m2());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A made-up laser's machine file with 2.2–3.2 mm sections for mild steel
+/// (part gap 9 mm), stainless (7), galvanized 0300 (13), a section named
+/// DEMO-KEY (11) and one named by the name STAINLESS (5).
+fn grade_machine_file() -> String {
+    let section = |key: &str, gap: f64| format!("Z000 \"{key}\"\nZ001 2.2\nZ002 3.2\nZ006 {gap}\nZ999 0\n");
+    format!(
+        "# Demo laser\nA051 40000\nA058 3000\nA093 OFF\nB056 6.0\n{}{}{}{}{}",
+        section("##MATEXP0010##", 9.0),
+        section("##MATEXP0100##", 7.0),
+        section("##MATEXP0300##", 13.0),
+        section("DEMO-KEY", 11.0),
+        section("STAINLESS", 5.0)
+    )
+}
+
+/// A session with a Library under `d`, on that laser, writing LC5 programs
+/// (`blm`) or G-code, with a 3 mm job open in mild steel.
+fn grade_session(d: &Path, blm: bool) -> (Session, OnMachine) {
+    let m = crate::settings::Machine { gas_id: 1, gas_name: "Nitrogen".into(), ..demo_machine_with("Demo laser", blm, Default::default()) };
+    let mut ctx = stock_ctx(d);
+    ctx.cfg = crate::settings::AppSettings { stock: ctx.cfg.stock.clone(), ..shop_settings(&d.join("Lantek"), &grade_machine_file(), vec![m]) };
+    let mut s = Session::new(ctx);
+    let on = apply_machine(&mut s);
+    call(&mut s, "new", Some(d.join("DEMO-G.snjob").to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "force": true}));
+    (s, on)
+}
+
+/// The machine-file key `material` is looked for by, and the key of the
+/// section that applies at 3 mm (None: the machine's own values, MTL6).
+fn section_for(s: &mut Session, material: &str) -> (String, Option<String>) {
+    let r = call(s, "machine-tech", None, json!({"material": material, "thickness": 3}));
+    (r["data"]["material_key"].as_str().unwrap_or_default().to_string(), r["data"]["section"]["material_key"].as_str().map(str::to_string))
+}
+
+#[test]
+fn a_grade_with_no_key_of_its_own_cuts_with_its_standards_sections() {
+    // MA24 (acceptance): DEMO 316 on stainless, no key of its own, picks the
+    // stainless section; given its own key it picks that section instead.
+    let d = dir("grade_sections");
+    let (mut s, _on) = grade_session(&d, false);
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    let stainless = section_for(&mut s, "stainless");
+    assert_eq!(stainless, ("##MATEXP0100##".to_string(), Some("##MATEXP0100##".to_string())));
+    assert_eq!(section_for(&mut s, "DEMO 316"), stainless, "the same section as a stainless job");
+    let r = call(&mut s, "machine-tech", None, json!({"material": "DEMO 316", "thickness": 3}));
+    assert_eq!(r["data"]["spacing"]["machine_gap"].as_f64(), Some(7.0), "{r}");
+
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "machine_ref": "DEMO-KEY"}));
+    assert_eq!(section_for(&mut s, "DEMO 316"), ("DEMO-KEY".to_string(), Some("DEMO-KEY".to_string())));
+    assert_eq!(section_for(&mut s, "stainless"), stainless, "stainless keeps its own");
+
+    // Its own key that the file has no section for: the machine's own values
+    // (MTL6), not the standard's section.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "machine_ref": "DEMO-NONE"}));
+    assert_eq!(section_for(&mut s, "DEMO 316"), ("DEMO-NONE".to_string(), None));
+    let r = call(&mut s, "machine-tech", None, json!({"material": "DEMO 316", "thickness": 3}));
+    assert!(r["data"]["table"].as_str().unwrap().contains("no section for this material"), "{r}");
+    // An empty key of its own: the name in programs (MTL2), here STAINLESS.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "machine_ref": ""}));
+    assert_eq!(section_for(&mut s, "DEMO 316"), ("STAINLESS".to_string(), Some("STAINLESS".to_string())));
+    // Back to the standard's.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "machine_ref": "standard"}));
+    assert_eq!(section_for(&mut s, "DEMO 316"), stainless);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn each_standard_gives_its_grades_its_own_machine_file_key() {
+    // MA24: a grade with no key of its own on each of the first three
+    // standards and on the catalogue's others: its standard's number.
+    let d = dir("grade_keys");
+    let (mut s, _on) = grade_session(&d, false);
+    for (name, std) in [("DEMO A36", "mild steel"), ("DEMO 304", "stainless"), ("DEMO 1050", "aluminium"), ("DEMO 5754", "0210"), ("DEMO G90", "0300"), ("DEMO Cu", "0510"), ("DEMO S355", "0040")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    let key = |s: &mut Session, m: &str| section_for(s, m);
+    assert_eq!(key(&mut s, "DEMO A36"), ("##MATEXP0010##".into(), Some("##MATEXP0010##".into())));
+    assert_eq!(key(&mut s, "DEMO 304"), ("##MATEXP0100##".into(), Some("##MATEXP0100##".into())));
+    assert_eq!(key(&mut s, "DEMO G90"), ("##MATEXP0300##".into(), Some("##MATEXP0300##".into())), "galvanized reaches its section");
+    // No section in the file for these: the machine's own values.
+    assert_eq!(key(&mut s, "DEMO 1050"), ("##MATEXP0200##".into(), None), "on 0200, not the old aluminium's 0210");
+    assert_eq!(key(&mut s, "DEMO 5754"), ("##MATEXP0210##".into(), None));
+    assert_eq!(key(&mut s, "DEMO Cu"), ("##MATEXP0510##".into(), None));
+    assert_eq!(key(&mut s, "DEMO S355"), ("##MATEXP0040##".into(), None), "0040 is its own key, not mild steel's");
+    // The old three keep theirs (aluminium 0210).
+    assert_eq!(["mild steel", "stainless", "aluminium"].map(|m| key(&mut s, m).0), ["##MATEXP0010##", "##MATEXP0100##", "##MATEXP0210##"]);
+    // A material number not in the list: no key, only a `*` section fits.
+    assert_eq!(crate::ct1::key_of_material(41), "");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The LC5 sheet program's material lines for the open job's sheet 1.
+fn blm_material_lines(s: &mut Session) -> Vec<String> {
+    let text = call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    text.lines().filter(|l| l.starts_with(";IDMAT=") || l.starts_with(";NOMEMAT=") || l.starts_with(";ALIASMAT=")).map(str::to_string).collect()
+}
+
+/// The open job put in `material`, with one plate placed.
+fn grade_job(s: &mut Session, d: &Path, material: &str) {
+    let jp = d.join(format!("DEMO-{}.snjob", material.replace(' ', "-")));
+    call(s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": material, "thickness": 3, "force": true}));
+    call(s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-PLATE"}));
+    call(s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+}
+
+fn lines(id: &str, name: &str) -> Vec<String> {
+    vec![format!(";IDMAT={id}"), format!(";NOMEMAT={name}"), format!(";ALIASMAT={name}")]
+}
+
+#[test]
+fn a_grades_lc5_program_carries_its_standards_code_until_it_has_its_own() {
+    // MA25 (acceptance): DEMO 316 (stainless, no code of its own) writes the
+    // stainless code; given its own code, that code.
+    let d = dir("grade_blm");
+    let (mut s, _on) = grade_session(&d, true);
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    grade_job(&mut s, &d, "stainless");
+    assert_eq!(blm_material_lines(&mut s), lines("0100", "STAINLESS"));
+    grade_job(&mut s, &d, "DEMO 316");
+    assert_eq!(blm_material_lines(&mut s), lines("0100", "STAINLESS"), "the stainless code and name");
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "program_code": "0316"}));
+    assert_eq!(blm_material_lines(&mut s), lines("0316", "STAINLESS"), "its own code; the name still the standard's");
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "program_name": "DEMO316"}));
+    assert_eq!(blm_material_lines(&mut s), lines("0316", "DEMO316"));
+    // Renamed: the program still carries the name in programs, not the name shown.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316", "name": "DEMO 316 Brushed"}));
+    assert_eq!(blm_material_lines(&mut s), lines("0316", "DEMO316"));
+    // An empty code of its own is written empty (as for a material without
+    // one, MA11); "standard" gives the standard's again.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Brushed", "program_code": ""}));
+    assert_eq!(blm_material_lines(&mut s), lines("", "DEMO316"));
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Brushed", "program_code": "standard", "program_name": "standard"}));
+    assert_eq!(blm_material_lines(&mut s), lines("0100", "STAINLESS"));
+    // The job sheet (XML) says the same.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 316 Brushed", "program_code": "0316"}));
+    let out = d.join("cnc");
+    let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    let xml = e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).find(|f| f.to_uppercase().ends_with(".XML")).map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_else(|| panic!("no XML: {e}"));
+    assert!(xml.contains("<MatName>STAINLESS</MatName>") && xml.contains("<MatId>0316</MatId>") && xml.contains("<MatAlias>STAINLESS</MatAlias>"), "{xml}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_grade_on_a_newer_standard_writes_that_standards_name_and_number() {
+    // MA25: the catalogue's other standards are written with their name and
+    // their number (as the original writes its starter materials, MA11);
+    // the first three keep STEEL 0010, STAINLESS 0100, ALUMINIUM 0200.
+    let d = dir("grade_blm_catalogue");
+    let (mut s, _on) = grade_session(&d, true);
+    for (name, std) in [("DEMO G90", "0300"), ("DEMO Cu", "0510"), ("DEMO 316L", "0110"), ("DEMO A36", "mild steel"), ("DEMO 1050", "aluminium")] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": name, "standard": std}));
+    }
+    for (m, id, name) in [("DEMO G90", "0300", "Galvanized"), ("DEMO Cu", "0510", "Copper"), ("DEMO 316L", "0110", "X3CrNiMo 17-13-3"), ("DEMO A36", "0010", "STEEL"), ("DEMO 1050", "0200", "ALUMINIUM"), ("mild steel", "0010", "STEEL"), ("aluminium", "0200", "ALUMINIUM")] {
+        grade_job(&mut s, &d, m);
+        assert_eq!(blm_material_lines(&mut s), lines(id, name), "{m}");
+    }
+    // An empty name in programs of its own is written empty.
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO Cu", "program_name": ""}));
+    grade_job(&mut s, &d, "DEMO Cu");
+    assert_eq!(blm_material_lines(&mut s), lines("0510", ""));
+    // A material number not in the list writes mild steel's (JOB-86).
+    let spec = SheetSpec { material: 41, ..crate::engine::default_spec() };
+    let set = crate::engine::blm_for(&spec, &s.ctx.blm, "DEMO");
+    assert_eq!((set.mat_name.as_str(), set.mat_id.as_str()), ("STEEL", "0010"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Joining a Library, the starting list and unknown materials (spec #142,
+// ticket #150: MA28–MA31).
+// ---------------------------------------------------------------------------
+
+/// A PC with no Library (MA14): its own list in `d/settings`.
+fn pc_without_library(d: &Path) -> Session {
+    let mut c = Ctx::builtin();
+    c.library_dir = crate::library::default_dir();
+    c.pc_dir = d.join("settings");
+    assert!(!crate::library::holds_library(&c.library_dir));
+    Session::new(c)
+}
+
+/// A shop Library in `d/library` whose list has DEMO 316L as material 3.
+fn shop_library_with_316l(d: &Path) -> PathBuf {
+    let lib = stock_ctx(d).library_dir;
+    let mut shop = Session::new(stock_ctx_again(&lib));
+    call(&mut shop, "material", None, json!({"mode": "add", "name": "DEMO 316L", "standard": "stainless"}));
+    lib
+}
+
+#[test]
+fn a_pc_joining_a_library_keeps_one_mild_steel_and_both_grades() {
+    let d = dir("join_library");
+    // The PC, before it has a Library: mild steel and its own DEMO 316 (3).
+    let mut pc = pc_without_library(&d);
+    let r = call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless", "other_names": "DEMO-1.4401"}));
+    assert_eq!(r["data"]["material"].as_u64(), Some(3));
+    let jp = d.join("DEMO-PC-316.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut pc, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO 316"}));
+    assert_eq!((jobfile::load(Path::new(jp)).unwrap().spec.material, jobfile::load(Path::new(jp)).unwrap().material_name), (3, "DEMO 316".to_string()));
+    // The shop's Library, whose 3 is DEMO 316L.
+    let lib = shop_library_with_316l(&d);
+    // The PC points at it: its own list joins the Library's.
+    pc.ctx.library_dir = lib.clone();
+    let info = call(&mut pc, "info", None, json!({}));
+    assert_eq!(info["materials_joined"], "This PC's materials joined the Library's material list: added DEMO 316.", "{info}");
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 316"), Some(4)), "the open job keeps its grade: {info}");
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316"]);
+    // Every PC on the Library sees it; the job reopens on DEMO 316.
+    let mut other = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut other), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316"]);
+    let info = call(&mut other, "info", Some(jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64(), info["data"]["sheet"]["material_known"].as_bool()), (Some("DEMO 316"), Some(4), Some(true)), "{info}");
+    // A job of the PC's found only by an other name.
+    let mut j = jobfile::load(Path::new(jp)).unwrap();
+    j.material_name = "demo-1.4401".into();
+    let by_other = d.join("DEMO-PC-OTHER.snjob");
+    std::fs::write(&by_other, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut other, "info", Some(by_other.to_str().unwrap()), json!({}));
+    assert_eq!(info["data"]["sheet"]["material"], "DEMO 316", "{info}");
+    // Joining twice adds nothing: the Library renames DEMO 316, and the PC
+    // reading the list again doesn't bring its old name back.
+    call(&mut other, "material", None, json!({"mode": "edit", "material": "DEMO 316", "name": "DEMO 316 Brushed"}));
+    let again = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert!(again.get("materials_joined").is_none(), "{again}");
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316 Brushed"]);
+    // The PC's job saved before the rename still means it.
+    let info = call(&mut other, "info", Some(jp), json!({}));
+    assert_eq!(info["data"]["sheet"]["material"], "DEMO 316 Brushed", "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_pc_joins_once_the_library_can_be_reached() {
+    let d = dir("join_unreachable");
+    let mut pc = pc_without_library(&d);
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    let lib = shop_library_with_316l(&d);
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list_file).unwrap();
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    pc.ctx.library_dir = lib.clone();
+    let r = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert!(r.get("materials_joined").is_none(), "{r}");
+    assert!(!lib.exists(), "nothing made in its place");
+    std::fs::rename(&away, &lib).unwrap();
+    assert_eq!(std::fs::read(&list_file).unwrap(), before, "nothing stored while away");
+    let r = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert!(r["materials_joined"].as_str().unwrap().contains("added DEMO 316"), "{r}");
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L", "DEMO 316"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_library_with_no_list_yet_takes_the_joining_pcs_own() {
+    let d = dir("join_no_list");
+    let mut pc = pc_without_library(&d);
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    let lib = stock_ctx(&d).library_dir;
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    assert!(!list_file.exists());
+    pc.ctx.library_dir = lib.clone();
+    let r = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert_eq!(r["materials_joined"], "This PC's materials joined the Library's material list: each was there already.", "{r}");
+    assert!(list_file.is_file(), "stored, so every PC sees the same list");
+    let mut other = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut other), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_pc_with_settings_from_before_joins_with_nothing_to_add() {
+    // Its three are the Library's first three: nothing is stored or noted.
+    let d = dir("join_old_settings");
+    let lib = shop_library_with_316l(&d);
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list_file).unwrap();
+    let mut pc = pc_without_library(&d);
+    pc.ctx.cfg = crate::settings::AppSettings { stock: pc.ctx.cfg.stock.clone(), ..crate::settings::AppSettings::parse("[general]\nmaterial0 = DEMO-MS|0011\n") };
+    pc.ctx.library_dir = lib.clone();
+    let r = call(&mut pc, "material", None, json!({"mode": "list"}));
+    assert!(r.get("materials_joined").is_none(), "{r}");
+    assert_eq!(std::fs::read(&list_file).unwrap(), before);
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 316L"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_new_install_without_a_library_starts_with_the_starter_materials() {
+    let d = dir("starter_list");
+    let mut c = Ctx::builtin();
+    c.cfg = crate::settings::AppSettings::load_from(&d.join("settings").join("settings.ini"));
+    c.library_dir = crate::library::default_dir();
+    c.pc_dir = d.join("settings");
+    let mut s = Session::new(c);
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "X5CrNi + Film", "AlMg3", "Galvanized", "Copper", "Brass"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_whose_material_is_missing_says_so_and_keeps_its_name() {
+    let d = dir("unknown_material");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let jp = d.join("DEMO-904.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3}));
+    // A job from elsewhere: material 41, DEMO 904L, which this list has by
+    // neither its number nor its name.
+    let mut j = jobfile::load(&jp).unwrap();
+    j.spec.material = 41;
+    j.material_name = "DEMO 904L".into();
+    let unknown = d.join("DEMO-904-OTHER.snjob");
+    std::fs::write(&unknown, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(unknown.to_str().unwrap()), json!({}));
+    let sheet = &info["data"]["sheet"];
+    assert_eq!((sheet["material"].as_str(), sheet["material_no"].as_u64(), sheet["material_known"].as_bool()), (Some("?"), Some(41), Some(false)), "{info}");
+    assert_eq!(sheet["material_unknown"]["name"], "DEMO 904L");
+    assert_eq!(sheet["material_unknown"]["note"], "This job's material, DEMO 904L, isn't in the material list. The job keeps it (number 41) until another material is picked, or DEMO 904L is added to the list.");
+    assert!(sheet["material_unknown"]["todo"].as_str().unwrap().contains("material mode=add name=\"DEMO 904L\""), "{info}");
+    assert_eq!(info["data"]["warnings"][0], sheet["material_unknown"]["note"]);
+    // Never switched: a change saves it with its number and name.
+    call(&mut s, "set-sheet", None, json!({"gap": 7}));
+    let saved = jobfile::load(&unknown).unwrap();
+    assert_eq!((saved.spec.material, saved.material_name.as_str()), (41, "DEMO 904L"));
+    // Added to the list, the job finds it by its name.
+    let r = call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 904L"}));
+    let id = r["data"]["material"].as_u64().unwrap();
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64(), info["data"]["sheet"]["material_known"].as_bool()), (Some("DEMO 904L"), Some(id), Some(true)), "{info}");
+    assert!(info["data"]["sheet"].get("material_unknown").is_none());
+    // A file with only the number: no name to add it by.
+    let mut j = jobfile::load(&jp).unwrap();
+    j.spec.material = 42;
+    j.material_name = String::new();
+    let bare = d.join("DEMO-904-BARE.snjob");
+    std::fs::write(&bare, serde_json::to_string(&j).unwrap()).unwrap();
+    let info = call(&mut s, "info", Some(bare.to_str().unwrap()), json!({}));
+    assert_eq!(info["data"]["sheet"]["material_unknown"]["note"], "This job's material (number 42) isn't in the material list. The job keeps it until another material is picked.");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A shop Library in `d/library` whose list has DEMO 304 as material 3 and
+/// `then` after it.
+fn shop_library_with_304(d: &Path, then: &[&str]) -> PathBuf {
+    let lib = stock_ctx(d).library_dir;
+    let mut shop = Session::new(stock_ctx_again(&lib));
+    for name in std::iter::once(&"DEMO 304").chain(then) {
+        call(&mut shop, "material", None, json!({"mode": "add", "name": name, "standard": "stainless"}));
+    }
+    lib
+}
+
+#[test]
+fn a_pc_grade_taken_as_a_library_one_by_an_other_name_keeps_its_jobs() {
+    // MA28, MA31: the PC's DEMO Inox 316 (3), also called DEMO 316, is the
+    // Library's DEMO 316 (4); the PC's job (3, DEMO Inox 316) reopens on it,
+    // not on the Library's 3 (DEMO 304).
+    let d = dir("join_by_other_name");
+    let mut pc = pc_without_library(&d);
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO Inox 316", "standard": "stainless", "other_names": "DEMO 316"}));
+    let jp = d.join("DEMO-PC-INOX.snjob");
+    call(&mut pc, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO Inox 316"}));
+    let lib = shop_library_with_304(&d, &["DEMO 316"]);
+    pc.ctx.library_dir = lib.clone();
+    call(&mut pc, "material", None, json!({"mode": "list"}));
+    let mut other = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut other), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 304", "DEMO 316"], "nothing added: the names stay the Library's");
+    let info = call(&mut other, "info", Some(jp.to_str().unwrap()), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 316"), Some(4)), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_pc_grade_renamed_before_joining_keeps_jobs_saved_before_the_rename() {
+    let d = dir("join_renamed");
+    let mut pc = pc_without_library(&d);
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    let jp = d.join("DEMO-PC-316.snjob");
+    call(&mut pc, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO 316"}));
+    call(&mut pc, "material", None, json!({"mode": "edit", "material": "DEMO 316", "name": "DEMO 316 Polished"}));
+    assert_eq!(jobfile::load(&jp).unwrap().material_name, "DEMO 316", "saved before the rename");
+    let lib = shop_library_with_304(&d, &[]);
+    pc.ctx.library_dir = lib.clone();
+    call(&mut pc, "material", None, json!({"mode": "list"}));
+    let mut other = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut other), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 304", "DEMO 316 Polished"]);
+    let info = call(&mut other, "info", Some(jp.to_str().unwrap()), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 316 Polished"), Some(4)), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn starting_offline_after_joining_never_takes_this_pcs_own_numbers() {
+    // MA28: a new install (starter list) joins the Library, whose 3 is
+    // DEMO 304. Started again while the Library can't be reached, a job in
+    // DEMO 304 is unknown (not this PC's starter 3, X5CrNi + Film), keeps its
+    // number and name when saved, and is DEMO 304 again once it is back.
+    let d = dir("join_offline_start");
+    let lib = shop_library_with_304(&d, &[]);
+    let fresh = |lib: &Path| {
+        let mut c = Ctx::builtin();
+        c.cfg = crate::settings::AppSettings { stock: c.cfg.stock.clone(), ..crate::settings::AppSettings::load_from(&d.join("settings").join("settings.ini")) };
+        c.library_dir = lib.to_path_buf();
+        c.pc_dir = d.join("settings");
+        let ctx = c.library_at();
+        load_materials(&c.library_dir, &c.pc_dir, &c.cfg, true, Some(&|| ctx.saved())).ok();
+        Session::new(c)
+    };
+    let mut pc = fresh(&lib);
+    assert!(crate::materials::has_joined(&d.join("settings"), &lib));
+    let jp = d.join("DEMO-304.snjob");
+    call(&mut pc, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO 304"}));
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    let mut pc = fresh(&lib);
+    let info = call(&mut pc, "info", Some(jp.to_str().unwrap()), json!({}));
+    let sheet = &info["data"]["sheet"];
+    assert_eq!((sheet["material"].as_str(), sheet["material_no"].as_u64(), sheet["material_known"].as_bool()), (Some("?"), Some(3), Some(false)), "{info}");
+    call(&mut pc, "set-sheet", None, json!({"gap": 7}));
+    let saved = jobfile::load(&jp).unwrap();
+    assert_eq!((saved.spec.material, saved.material_name.as_str()), (3, "DEMO 304"));
+    std::fs::rename(&away, &lib).unwrap();
+    let info = call(&mut pc, "info", None, json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 304"), Some(3)), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn two_pcs_whose_old_names_clash_leave_their_jobs_unknown_not_switched() {
+    // MA31: both PCs' material 3 was once DEMO Shared; A's joins as 4
+    // (stainless), B's as 5 (copper). The name now means neither: each PC's
+    // old job opens unknown, keeps its number and name, and is never taken
+    // as the other PC's grade.
+    let d = dir("join_shared_old_name");
+    let lib = shop_library_with_304(&d, &[]);
+    let mut jobs = vec![];
+    for (pc_name, standard, now) in [("a", "stainless", "DEMO A Stainless"), ("b", "copper", "DEMO B Copper")] {
+        let mut pc = pc_without_library(&d.join(pc_name));
+        call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": standard}));
+        let jp = d.join(format!("DEMO-{pc_name}.snjob"));
+        call(&mut pc, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO Shared"}));
+        call(&mut pc, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": now}));
+        pc.ctx.library_dir = lib.clone();
+        call(&mut pc, "material", None, json!({"mode": "list"}));
+        jobs.push(jp);
+    }
+    let mut other = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut other), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 304", "DEMO A Stainless", "DEMO B Copper"]);
+    for jp in &jobs {
+        let info = call(&mut other, "info", Some(jp.to_str().unwrap()), json!({}));
+        let sheet = &info["data"]["sheet"];
+        assert_eq!((sheet["material"].as_str(), sheet["material_no"].as_u64(), sheet["material_known"].as_bool()), (Some("?"), Some(3), Some(false)), "{info}");
+        assert!(sheet["material_unknown"]["note"].as_str().unwrap().contains("several materials had that name before"), "{info}");
+        assert!(!sheet["material_unknown"]["todo"].as_str().unwrap().contains("material mode=add"), "adding it wouldn't say which: {info}");
+        // Saved, it keeps its number and name.
+        call(&mut other, "set-sheet", None, json!({"gap": 7}));
+        let saved = jobfile::load(jp).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(jp).unwrap()).unwrap();
+        assert_eq!((v["spec"]["material"].as_u64(), saved.material_name.as_str()), (Some(3), "DEMO Shared"));
+    }
+    // Picked by hand, it is that grade.
+    call(&mut other, "set-sheet", None, json!({"material": "DEMO B Copper"}));
+    let info = call(&mut other, "info", None, json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO B Copper"), Some(5)), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn starting_offline_after_joining_never_reads_a_grade_through_this_pcs_other_names() {
+    // MA28: this PC's mild steel has an old other name DEMO 304; the
+    // Library's 3 is DEMO 304. Started while the Library can't be reached,
+    // the job in DEMO 304 is unknown, not mild steel, and saves unchanged.
+    let d = dir("join_offline_other_name");
+    let lib = shop_library_with_304(&d, &[]);
+    let fresh = |lib: &Path| {
+        let mut c = Ctx::builtin();
+        let mut cfg = crate::settings::AppSettings::load_from(&d.join("settings").join("settings.ini"));
+        cfg.material_aliases[0] = "S235, DEMO 304".into();
+        c.cfg = crate::settings::AppSettings { stock: c.cfg.stock.clone(), ..cfg };
+        c.library_dir = lib.to_path_buf();
+        c.pc_dir = d.join("settings");
+        let ctx = c.library_at();
+        load_materials(&c.library_dir, &c.pc_dir, &c.cfg, true, Some(&|| ctx.saved())).ok();
+        Session::new(c)
+    };
+    let mut pc = fresh(&lib);
+    assert!(crate::materials::has_joined(&d.join("settings"), &lib));
+    let jp = d.join("DEMO-304.snjob");
+    call(&mut pc, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO 304"}));
+    assert_eq!(jobfile::load(&jp).unwrap().spec.material, 3);
+    let away = d.join("library-away");
+    std::fs::rename(&lib, &away).unwrap();
+    let mut pc = fresh(&lib);
+    let info = call(&mut pc, "info", Some(jp.to_str().unwrap()), json!({}));
+    let sheet = &info["data"]["sheet"];
+    assert_eq!((sheet["material"].as_str(), sheet["material_no"].as_u64(), sheet["material_known"].as_bool()), (Some("?"), Some(3), Some(false)), "{info}");
+    call(&mut pc, "set-sheet", None, json!({"gap": 7}));
+    let saved = jobfile::load(&jp).unwrap();
+    assert_eq!((saved.spec.material, saved.material_name.as_str()), (3, "DEMO 304"));
+    std::fs::rename(&away, &lib).unwrap();
+    let info = call(&mut pc, "info", None, json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 304"), Some(3)), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_whose_material_cant_be_told_writes_its_own_number_everywhere() {
+    // MA31: while open, a job whose name several materials had before is
+    // unresolved; everything it writes or reports carries the file's own
+    // number (7) and name, never the stand-in the session holds.
+    let d = dir("unresolved_outputs");
+    let lib = stock_ctx(&d).library_dir;
+    let mut ctx = stock_ctx_again(&lib);
+    ctx.blm.on = true;
+    let mut s = Session::new(ctx);
+    for now in ["DEMO A", "DEMO B"] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "stainless"}));
+        call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": now}));
+    }
+    let jp = d.join("DEMO-SHARED.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3}));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    v["spec"]["material"] = json!(7);
+    v["material_name"] = json!("DEMO Shared");
+    std::fs::write(&jp, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let stand_in = (material::UNRESOLVED + 7).to_string();
+    let mut replies = vec![];
+    let info = call(&mut s, "info", Some(jp.to_str().unwrap()), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64(), info["data"]["sheet"]["material_unknown"]["number"].as_u64()), (Some("?"), Some(7), Some(7)), "{info}");
+    replies.push(info);
+    replies.push(call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 200, "qty": 1})));
+    replies.push(call(&mut s, "nest", None, json!({})));
+    replies.push(call(&mut s, "part-info", None, json!({"part": 1})));
+    replies.push(call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1})));
+    replies.push(call(&mut s, "stock-book", None, json!({"mode": "book"})));
+    replies.push(call(&mut s, "stock", None, json!({"mode": "list", "show_zero": true})));
+    replies.push(call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"})));
+    replies.push(call(&mut s, "library", None, json!({"mode": "list"})));
+    let prog = call(&mut s, "program", None, json!({"sheet": 1}));
+    let text = prog["data"].as_str().unwrap().to_string();
+    assert!(text.contains(";IDMAT=0010"), "a material not in the list is written as mild steel (JOB-86): {text}");
+    replies.push(prog);
+    for r in &replies {
+        assert!(!r.to_string().contains(&stand_in), "{r}");
+    }
+    // The job file.
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(7), Some("DEMO Shared")));
+    // The remnant it stored, and the library part saved from it.
+    let stock = std::fs::read_to_string(crate::stock::Stock::file(&lib)).unwrap();
+    let st: Value = serde_json::from_str(&stock).unwrap();
+    let rems: Vec<&Value> = st["items"].as_array().unwrap().iter().filter(|i| i["material"] != json!(null)).collect();
+    assert!(!rems.is_empty(), "{stock}");
+    assert!(rems.iter().all(|i| i["material"] == 7 && i["material_name"] == "DEMO Shared"), "{stock}");
+    let mut found = 0;
+    let mut todo = vec![lib.clone()];
+    while let Some(p) = todo.pop() {
+        for e in std::fs::read_dir(&p).unwrap().flatten() {
+            let f = e.path();
+            if f.is_dir() {
+                todo.push(f);
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap_or_default();
+            assert!(!text.contains(&stand_in), "{}", f.display());
+            if let Some(v) = serde_json::from_str::<Value>(&text).ok().filter(|v| v.get("part").is_some()) {
+                assert_eq!((v["material"].as_u64(), v["material_name"].as_str()), (Some(7), Some("DEMO Shared")), "{}", f.display());
+                found += 1;
+            }
+        }
+    }
+    assert_eq!(found, 1, "the library part");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A session on a Library that two PCs joined, each with its own material
+/// 3 once called DEMO Shared: the first's joined as 3 (now DEMO Inox,
+/// stainless), the second's as 4 (now DEMO Cu, copper). Job
+/// `DEMO-SHARED.snjob` is stored as (3, DEMO Shared), as either PC saved
+/// it: its material can't be told (MA28, MA31).
+fn shared_name_session(d: &Path) -> (PathBuf, PathBuf, Session) {
+    let lib = stock_ctx(d).library_dir;
+    for (pc_name, standard, now) in [("a", "stainless", "DEMO Inox"), ("b", "copper", "DEMO Cu")] {
+        let mut pc = pc_without_library(&d.join(pc_name));
+        call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": standard}));
+        call(&mut pc, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": now}));
+        pc.ctx.library_dir = lib.clone();
+        call(&mut pc, "material", None, json!({"mode": "list"}));
+    }
+    let mut s = Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut s), ["Mild steel", "Stainless steel", "Aluminium", "DEMO Inox", "DEMO Cu"]);
+    let jp = d.join("DEMO-SHARED.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3}));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    v["spec"]["material"] = json!(3);
+    v["material_name"] = json!("DEMO Shared");
+    std::fs::write(&jp, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    (lib, jp, s)
+}
+
+#[test]
+fn a_job_saved_before_a_rename_keeps_its_material_when_another_takes_the_old_name() {
+    // MA31, spec #142 user story 17: 3 renamed DEMO 304 -> DEMO 304
+    // Brushed, then a new 4 named DEMO 304. A job and a stock sheet saved as
+    // (3, DEMO 304) stay on 3 through open, save, reload, save.
+    let d = dir("rename_round_trip");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 304", "standard": "stainless"}));
+    let jp = d.join("DEMO-304.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO 304"}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "DEMO-S304", "material": "DEMO 304", "w": 1000, "h": 500, "thickness": 3}));
+    call(&mut s, "material", None, json!({"mode": "edit", "material": "DEMO 304", "name": "DEMO 304 Brushed"}));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 304", "standard": "stainless"}));
+    let stock_of = || -> Value { serde_json::from_str::<Value>(&std::fs::read_to_string(crate::stock::Stock::file(&lib)).unwrap()).unwrap()["items"].as_array().unwrap().iter().find(|i| i["reference"] == "DEMO-S304").cloned().unwrap() };
+    assert_eq!((jobfile::load(Path::new(jp)).unwrap().material_name, stock_of()["material_name"].as_str().map(str::to_string)), ("DEMO 304".to_string(), Some("DEMO 304".to_string())), "saved before the rename");
+    for round in 0..2 {
+        let mut s = Session::new(stock_ctx_again(&lib));
+        let info = call(&mut s, "info", Some(jp), json!({}));
+        assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("DEMO 304 Brushed"), Some(3)), "round {round}: {info}");
+        call(&mut s, "set-sheet", None, json!({"gap": 6 + round}));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(jp).unwrap()).unwrap();
+        assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(3), Some("DEMO 304 Brushed")), "round {round}");
+        let l = call(&mut s, "stock", None, json!({"mode": "list", "show_zero": true}));
+        assert!(l["data"]["sheets"].as_array().unwrap().iter().any(|i| i["ref"] == "DEMO-S304" && i["material"] == "DEMO 304 Brushed"), "round {round}: {l}");
+        // An unrelated stock change saves the stock again.
+        call(&mut s, "stock", None, json!({"mode": "create", "ref": format!("DEMO-MS-{round}"), "material": "mild steel", "w": 1000, "h": 500, "thickness": 3}));
+        assert_eq!((stock_of()["material"].as_u64(), stock_of()["material_name"].as_str().map(str::to_string)), (Some(3), Some("DEMO 304 Brushed".to_string())), "round {round}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A record's stored material: (number, name).
+fn stored_material(v: &Value) -> (Option<u64>, Option<&str>) {
+    (v["material"].as_u64(), v["material_name"].as_str())
+}
+
+#[test]
+fn a_job_whose_number_is_one_of_the_former_holders_stays_unknown_through_saves() {
+    // S7 (MA31): 3 and 4 both had DEMO Shared; the file's number 3 doesn't
+    // break the tie. Open, save, reopen in a new session, save again.
+    let d = dir("unresolved_job_round_trip");
+    let (lib, jp, mut s) = shared_name_session(&d);
+    let jp = jp.to_str().unwrap();
+    for round in 0..2 {
+        let info = call(&mut s, "info", Some(jp), json!({}));
+        assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(3)), "round {round}: {info}");
+        call(&mut s, "set-sheet", None, json!({"gap": 6 + round}));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(jp).unwrap()).unwrap();
+        assert_eq!((v["spec"]["material"].as_u64(), v["material_name"].as_str()), (Some(3), Some("DEMO Shared")), "round {round}");
+        s = Session::new(stock_ctx_again(&lib));
+    }
+    // Even once a material has the name now, the number's material had it
+    // before a rename here and a joining PC brought it for another: it
+    // still can't be told (MA31 step 2).
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "stainless"}));
+    let info = call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(3)), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_library_part_from_a_job_whose_material_cant_be_told_keeps_its_number_and_name() {
+    // S8: saved, read back, saved again: (3, DEMO Shared) every time.
+    let d = dir("unresolved_part_round_trip");
+    let (lib, jp, mut s) = shared_name_session(&d);
+    call(&mut s, "add-shape", Some(jp.to_str().unwrap()), json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    let l = crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc());
+    let id = l.entries().into_iter().find(|e| e.kind == crate::library::Kind::Product).map(|e| e.id).unwrap();
+    let file = l.path(crate::library::Kind::Product, id);
+    let on_disk = || serde_json::from_str::<Value>(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(stored_material(&on_disk()), (Some(3), Some("DEMO Shared")));
+    // Read back: unknown, not DEMO Inox (3).
+    let list = call(&mut s, "library", None, json!({"mode": "list"}));
+    assert!(list["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "?"), "{list}");
+    let pf = l.load_product(id).unwrap();
+    assert!(!material::exists(pf.material), "unresolved when read back");
+    // Saved again over itself, as read.
+    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
+    assert_eq!(stored_material(&on_disk()), (Some(3), Some("DEMO Shared")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_remnant_from_a_job_whose_material_cant_be_told_keeps_its_number_and_name() {
+    // S9: stored, read back, and saved again by an unrelated stock change.
+    let d = dir("unresolved_stock_round_trip");
+    let (lib, jp, mut s) = shared_name_session(&d);
+    call(&mut s, "add-shape", Some(jp.to_str().unwrap()), json!({"shape": "rectangle", "w": 200, "h": 200, "qty": 1}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let on_disk = || serde_json::from_str::<Value>(&std::fs::read_to_string(crate::stock::Stock::file(&lib)).unwrap()).unwrap();
+    let rems = |v: &Value| v["items"].as_array().unwrap().iter().filter(|i| i["material"] != 0).map(|i| (i["material"].as_u64(), i["material_name"].as_str().map(str::to_string))).collect::<Vec<_>>();
+    let first = rems(&on_disk());
+    assert!(!first.is_empty() && first.iter().all(|r| *r == (Some(3), Some("DEMO Shared".to_string()))), "{first:?}");
+    // Read back in another session: unknown, not DEMO Inox (3).
+    let mut other = Session::new(stock_ctx_again(&lib));
+    let l = call(&mut other, "stock", None, json!({"mode": "list", "show_zero": true}));
+    assert!(l["data"]["sheets"].as_array().unwrap().iter().all(|i| i["material"] == "?"), "{l}");
+    // An unrelated change saves the stock again.
+    call(&mut other, "stock", None, json!({"mode": "create", "ref": "DEMO-OTHER", "material": "mild steel", "w": 1000, "h": 500, "thickness": 3}));
+    assert_eq!(rems(&on_disk()), first);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_joining_pcs_name_the_library_shows_now_still_leaves_a_renamed_number_unknown() {
+    // S10 (MA28, MA31): the Library's 3 was renamed from DEMO Shared and its
+    // 4 is called DEMO Shared now. A PC joins with its own 3, DEMO Shared,
+    // taken as the Library's 4. The PC's job (3, DEMO Shared) could be the
+    // Library's job from before the rename or the PC's: it opens unknown, and
+    // it, a library part saved from it and a remnant it stores keep
+    // (3, DEMO Shared) through every read and save, in fresh sessions.
+    let d = dir("join_shown_name");
+    let lib = stock_ctx(&d).library_dir;
+    let mut shop = Session::new(stock_ctx_again(&lib));
+    call(&mut shop, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "stainless"}));
+    call(&mut shop, "material", None, json!({"mode": "edit", "material": "DEMO Shared", "name": "DEMO Inox"}));
+    call(&mut shop, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "copper"}));
+    let mut pc = pc_without_library(&d.join("pc"));
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO Shared", "standard": "copper"}));
+    let jp = d.join("DEMO-PC-SHARED.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut pc, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3, "material": "DEMO Shared"}));
+    pc.ctx.library_dir = lib.clone();
+    call(&mut pc, "material", None, json!({"mode": "list"}));
+    let fresh = || Session::new(stock_ctx_again(&lib));
+    assert_eq!(material_names(&mut fresh()), ["Mild steel", "Stainless steel", "Aluminium", "DEMO Inox", "DEMO Shared"], "the PC's grade is the Library's 4");
+    let unknown = |s: &mut Session, job: Option<&str>| {
+        let info = call(s, "info", job, json!({}));
+        assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(3)), "{info}");
+        let u = &info["data"]["sheet"]["material_unknown"];
+        assert!(u["note"].as_str().unwrap().contains("can't be told") && !u["todo"].as_str().unwrap().contains("material mode=add"), "adding DEMO Shared wouldn't say which: {info}");
+    };
+    let job_on_disk = || -> (Option<u64>, Option<String>) {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(jp).unwrap()).unwrap();
+        (v["spec"]["material"].as_u64(), v["material_name"].as_str().map(str::to_string))
+    };
+    let kept = (Some(3), Some("DEMO Shared".to_string()));
+    // The job: open, save, reopen in a fresh session, save again.
+    for round in 0..2 {
+        let mut s = fresh();
+        unknown(&mut s, Some(jp));
+        call(&mut s, "set-sheet", None, json!({"gap": 6 + round}));
+        assert_eq!(job_on_disk(), kept, "round {round}");
+    }
+    // A library part saved from it, read back and saved again.
+    let mut s = fresh();
+    call(&mut s, "add-shape", Some(jp), json!({"shape": "rectangle", "w": 200, "h": 200, "qty": 1}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    let l = crate::library::Library::at(&lib, &Who::new("demo", "DEMO-PC"), &Clock::pc());
+    let id = l.entries().into_iter().find(|e| e.kind == crate::library::Kind::Product).map(|e| e.id).unwrap();
+    let part_on_disk = || -> (Option<u64>, Option<String>) {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(l.path(crate::library::Kind::Product, id)).unwrap()).unwrap();
+        (v["material"].as_u64(), v["material_name"].as_str().map(str::to_string))
+    };
+    assert_eq!(part_on_disk(), kept);
+    let mut s2 = fresh();
+    let list = call(&mut s2, "library", Some(jp), json!({"mode": "list"}));
+    assert!(list["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "?"), "{list}");
+    let pf = l.load_product(id).unwrap();
+    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
+    assert_eq!(part_on_disk(), kept);
+    // A remnant it stores, read back in a fresh session and saved again by
+    // an unrelated stock change.
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let rems = || -> Vec<(Option<u64>, Option<String>)> {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(crate::stock::Stock::file(&lib)).unwrap()).unwrap();
+        v["items"].as_array().unwrap().iter().filter(|i| i["material"] != 0).map(|i| (i["material"].as_u64(), i["material_name"].as_str().map(str::to_string))).collect()
+    };
+    assert!(!rems().is_empty() && rems().iter().all(|r| *r == kept), "{:?}", rems());
+    let mut s3 = fresh();
+    let st = call(&mut s3, "stock", None, json!({"mode": "list", "show_zero": true}));
+    assert!(st["data"]["sheets"].as_array().unwrap().iter().all(|i| i["material"] == "?"), "{st}");
+    call(&mut s3, "stock", None, json!({"mode": "create", "ref": "DEMO-MS", "material": "mild steel", "w": 1000, "h": 500, "thickness": 3}));
+    assert!(rems().iter().all(|r| *r == kept), "{:?}", rems());
+    assert_eq!(job_on_disk(), kept);
+    unknown(&mut fresh(), Some(jp));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Spec #142 final review (r1): what uses a material is read against the list
+// as stored now (MA35); an unknown job is never switched by its number
+// (MA34); a Library with no list takes the first upgraded PC's (MA28).
+// ---------------------------------------------------------------------------
+
+/// The `.snjob` record files of the Library in `lib`.
+fn job_records(lib: &Path) -> Vec<PathBuf> {
+    fn walk(p: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+            let q = e.path();
+            if q.is_dir() {
+                walk(&q, out);
+            } else if q.extension().is_some_and(|x| x == "snjob") {
+                out.push(q);
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(lib, &mut out);
+    out
+}
+
+#[test]
+fn a_delete_reads_what_uses_the_material_against_the_list_as_stored_now() {
+    // MA35: since this page read the list, another PC swapped the names of
+    // DEMO A (3) and DEMO B (4) and saved a job in 4 (now called DEMO A).
+    // Deleting 4 from the page is refused: the job uses it.
+    let d = dir("material_delete_stale_list");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    for n in ["DEMO A", "DEMO B"] {
+        call(&mut s, "material", None, json!({"mode": "add", "name": n, "standard": "stainless"}));
+    }
+    let _ = page(&s);
+    let read_before = material::current();
+    let mut other = Session::new(stock_ctx_again(&lib));
+    call(&mut other, "material", None, json!({"mode": "edit", "material": "DEMO A", "name": "DEMO X"}));
+    call(&mut other, "material", None, json!({"mode": "edit", "material": "DEMO B", "name": "DEMO A"}));
+    call(&mut other, "material", None, json!({"mode": "edit", "material": "DEMO X", "name": "DEMO B"}));
+    library_job_in(&mut other, &d, "DEMO-J4", "DEMO A");
+    let rec = job_records(&lib);
+    assert_eq!(rec.iter().map(|p| { let v: Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap(); (v["spec"]["material"].as_u64(), v["material_name"].as_str().map(str::to_string)) }).collect::<Vec<_>>(), [(Some(4), Some("DEMO A".to_string()))]);
+    // This window still has the list it read before.
+    material::install((*read_before).clone());
+    let ctx = &s.ctx;
+    let l = ctx.library_at();
+    let e = crate::materials::apply(&ctx.material_home(), &ctx.pc_dir, &ctx.cfg, || l.saved(), &l, &[crate::engine::materialedit::Change::Delete(4)], &[]).unwrap_err();
+    assert!(e.contains("1 job (DEMO-J4)"), "{e}");
+    let stored = crate::materials::read(&crate::materials::Home::Library(lib.clone()).file()).unwrap().unwrap();
+    assert_eq!(stored.get(4).map(|m| m.name.as_str()), Some("DEMO A"), "not deleted");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_rename_elsewhere_while_a_delete_looks_counts_the_files_it_now_names() {
+    // MA35: a Library job from another Library is (41, DEMO C), which this
+    // list doesn't have. While this session looks at what uses DEMO Y (3),
+    // before it takes the lock, another PC renames DEMO Y to DEMO C: the job
+    // now means it, so the delete is refused.
+    let d = dir("material_delete_race_rename");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Y", "standard": "stainless"}));
+    library_job_in(&mut s, &d, "DEMO-J41", "mild steel");
+    let rec = job_records(&lib);
+    assert_eq!(rec.len(), 1);
+    let mut j = jobfile::load(&rec[0]).unwrap();
+    j.spec.material = 41;
+    j.material_name = "DEMO C".into();
+    jobfile::save(&rec[0], &j).unwrap();
+    let lib2 = lib.clone();
+    let mut done = false;
+    crate::shared::hooks::set(move |step| {
+        if step == "materials scanned" && !done {
+            done = true;
+            // Another PC: its list never reaches this session's.
+            let before = material::current();
+            let mut other = Session::new(stock_ctx_again(&lib2));
+            call(&mut other, "material", None, json!({"mode": "edit", "material": "DEMO Y", "name": "DEMO C"}));
+            material::install((*before).clone());
+        }
+    });
+    let r = delete_material(&mut s, "DEMO Y");
+    crate::shared::hooks::clear();
+    let e = r.unwrap_err();
+    assert!(e.contains("1 job (DEMO-J41)"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A job file `d/<name>.snjob` from elsewhere, in material `number` named
+/// `material` (which the list hasn't), opened in `s`: unknown (`?`).
+fn open_unknown_job(s: &mut Session, d: &Path, name: &str, number: usize, material: &str) -> String {
+    let made = d.join(format!("{name}-made.snjob"));
+    call(s, "new", Some(made.to_str().unwrap()), json!({"w": 1000, "h": 500, "thickness": 3}));
+    let mut j = jobfile::load(&made).unwrap();
+    j.spec.material = number;
+    j.material_name = material.into();
+    let jp = d.join(format!("{name}.snjob"));
+    std::fs::write(&jp, serde_json::to_string(&j).unwrap()).unwrap();
+    let jp = jp.to_str().unwrap().to_string();
+    let info = call(s, "info", Some(&jp), json!({}));
+    assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some("?"), Some(number as u64)), "{info}");
+    jp
+}
+
+/// The open job's material as `info` says it: (name, number, known).
+fn job_material(s: &mut Session) -> (String, u64, bool) {
+    let info = call(s, "info", None, json!({}));
+    let sh = &info["data"]["sheet"];
+    (sh["material"].as_str().unwrap().to_string(), sh["material_no"].as_u64().unwrap(), sh["material_known"].as_bool().unwrap())
+}
+
+#[test]
+fn an_unknown_job_open_when_the_pc_joins_is_found_by_its_name_never_by_its_number() {
+    // MA34: the PC has DEMO 316 as 3; its open job is (4, DEMO 304), which
+    // the PC hasn't. The Library has DEMO 304 as 3, and joining gives the
+    // PC's DEMO 316 the number 4: the job is DEMO 304, never DEMO 316.
+    let d = dir("join_unknown_job");
+    let lib = shop_library_with_304(&d, &[]);
+    let mut pc = pc_without_library(&d.join("pc"));
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    open_unknown_job(&mut pc, &d, "DEMO-304-JOB", 4, "DEMO 304");
+    pc.ctx.library_dir = lib.clone();
+    let info = call(&mut pc, "info", None, json!({}));
+    assert!(info["materials_joined"].as_str().unwrap().contains("added DEMO 316"), "{info}");
+    assert_eq!(material_names(&mut pc), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 304", "DEMO 316"]);
+    assert_eq!(job_material(&mut pc), ("DEMO 304".into(), 3, true));
+
+    // A job whose name the Library hasn't either stays unknown, keeping its
+    // number and name when saved.
+    let mut pc2 = pc_without_library(&d.join("pc2"));
+    call(&mut pc2, "material", None, json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"}));
+    let jp = open_unknown_job(&mut pc2, &d, "DEMO-904-JOB", 5, "DEMO 904L");
+    pc2.ctx.library_dir = lib.clone();
+    let info = call(&mut pc2, "info", None, json!({}));
+    assert!(info["materials_joined"].as_str().unwrap().contains("added DEMO 2205"), "{info}");
+    assert_eq!(material_names(&mut pc2), ["Mild steel", "Stainless steel", "Aluminium", "DEMO 304", "DEMO 316", "DEMO 2205"]);
+    assert_eq!(job_material(&mut pc2), ("?".into(), 5, false), "not DEMO 2205, which has number 5 now");
+    call(&mut pc2, "set-sheet", None, json!({"gap": 7}));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    assert_eq!((saved["spec"]["material"].as_u64(), saved["material_name"].as_str()), (Some(5), Some("DEMO 904L")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_unknown_jobs_number_given_to_a_new_material_elsewhere_doesnt_switch_it() {
+    // MA34: the open job is (3, DEMO 2507). Another PC adds DEMO A, which
+    // takes number 3: the job stays unknown. Once DEMO 2507 is added, the
+    // job finds it by its name.
+    let d = dir("unknown_number_taken");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    open_unknown_job(&mut s, &d, "DEMO-2507", 3, "DEMO 2507");
+    let mut other = Session::new(stock_ctx_again(&lib));
+    call(&mut other, "material", None, json!({"mode": "add", "name": "DEMO A", "standard": "stainless"}));
+    assert_eq!(job_material(&mut s), ("?".into(), 3, false));
+    assert_eq!(job_material(&mut s), ("?".into(), 3, false), "and on every call after");
+    let mut other = Session::new(stock_ctx_again(&lib));
+    call(&mut other, "material", None, json!({"mode": "add", "name": "DEMO 2507", "standard": "stainless"}));
+    assert_eq!(job_material(&mut s), ("DEMO 2507".into(), 4, true));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_material_this_session_adds_never_takes_its_unknown_jobs_number() {
+    // MA34: the open job is (3, DEMO 304), which the list hasn't. This
+    // session adds DEMO 316, which takes number 3: the job stays unknown,
+    // on every call after, and is saved with its own number and name.
+    let d = dir("session_add_unknown_number");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    let jp = open_unknown_job(&mut s, &d, "DEMO-304-JOB", 3, "DEMO 304");
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    assert_eq!(material::name(3).as_deref(), Some("DEMO 316"));
+    assert_eq!(job_material(&mut s), ("?".into(), 3, false));
+    assert_eq!(job_material(&mut s), ("?".into(), 3, false), "and on every call after");
+    call(&mut s, "set-sheet", None, json!({"gap": 7}));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+    assert_eq!((saved["spec"]["material"].as_u64(), saved["material_name"].as_str()), (Some(3), Some("DEMO 304")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_rename_elsewhere_while_a_delete_looks_counts_the_open_job_it_now_names() {
+    // MA35: the open job is (41, DEMO C), which this list doesn't have.
+    // While this session looks at what uses DEMO Y (3), before it takes the
+    // lock, another PC renames DEMO Y to DEMO C: the open job now means it,
+    // so the delete is refused.
+    let d = dir("material_delete_race_open_job");
+    let lib = stock_ctx(&d).library_dir;
+    let mut s = Session::new(stock_ctx_again(&lib));
+    call(&mut s, "material", None, json!({"mode": "add", "name": "DEMO Y", "standard": "stainless"}));
+    open_unknown_job(&mut s, &d, "DEMO-J41", 41, "DEMO C");
+    let lib2 = lib.clone();
+    let mut done = false;
+    crate::shared::hooks::set(move |step| {
+        if step == "materials scanned" && !done {
+            done = true;
+            // Another PC: its list never reaches this session's.
+            let before = material::current();
+            let mut other = Session::new(stock_ctx_again(&lib2));
+            call(&mut other, "material", None, json!({"mode": "edit", "material": "DEMO Y", "name": "DEMO C"}));
+            material::install((*before).clone());
+        }
+    });
+    let r = delete_material(&mut s, "DEMO Y");
+    crate::shared::hooks::clear();
+    let e = r.unwrap_err();
+    assert!(e.contains("DEMO-J41"), "{e}");
+    let stored = crate::materials::read(&crate::materials::Home::Library(lib.clone()).file()).unwrap().unwrap();
+    assert_eq!(stored.get(3).map(|m| m.name.as_str()), Some("DEMO C"), "not deleted");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn two_pcs_with_settings_from_before_answer_from_the_first_ones_list() {
+    // MA28: a Library with no list yet takes the first upgraded PC's three
+    // (as its settings had them), stored; the next PC answers from it, not
+    // from its own settings.
+    let d = dir("join_old_settings_no_list");
+    let lib = stock_ctx(&d).library_dir;
+    let list_file = crate::materials::Home::Library(lib.clone()).file();
+    assert!(!list_file.exists());
+    let old_pc = |sub: &str, ini: &str| {
+        let mut pc = pc_without_library(&d.join(sub));
+        pc.ctx.cfg = crate::settings::AppSettings { stock: pc.ctx.cfg.stock.clone(), ..crate::settings::AppSettings::parse(ini) };
+        pc.ctx.library_dir = lib.clone();
+        pc
+    };
+    let mut a = old_pc("a", "[general]\nmaterial0 = DEMO-STEEL-A|0011\nmaterial_alias1 = DEMO-INOX-A\n");
+    let mut b = old_pc("b", "[general]\nmaterial0 = DEMO-STEEL-B|0012\nmaterial_alias1 = DEMO-INOX-B\n");
+    call(&mut a, "material", None, json!({"mode": "list"}));
+    assert!(list_file.is_file(), "stored, so every PC answers from it");
+    let stored = std::fs::read(&list_file).unwrap();
+    let r = call(&mut b, "material", None, json!({"mode": "list"}));
+    assert!(r.get("materials_joined").is_none(), "nothing of its own to add: {r}");
+    assert_eq!(std::fs::read(&list_file).unwrap(), stored, "B adds nothing");
+    assert_eq!(material::program(0), ("DEMO-STEEL-A".to_string(), "0011".to_string()));
+    assert_eq!((material::find("DEMO-INOX-A"), material::find("DEMO-INOX-B")), (Some(1), None));
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -376,7 +376,7 @@ impl PaintTarget for PreviewPaint<'_> {
 /// The settings a preview depends on: a preview read with other ones is read again.
 fn preview_key(cfg: &AppSettings, spec: &crate::nest::SheetSpec) -> String {
     // Material names and aliases decide whether the file's material matches the job's.
-    format!("{:?}|{}|{}|{}|{}|{:?}|{:?}|{}|{}", cfg.nesting.units, cfg.name_format, cfg.ref_prefix, cfg.ref_suffix, cfg.lantek_dir, cfg.materials, cfg.material_aliases, spec.material, spec.thickness)
+    format!("{:?}|{}|{}|{}|{}|{}|{}|{}", cfg.nesting.units, cfg.name_format, cfg.ref_prefix, cfg.ref_suffix, cfg.lantek_dir, crate::engine::material::fingerprint(), spec.material, spec.thickness)
 }
 
 /// Read a file for the preview (runs off the window's thread).
@@ -1500,7 +1500,9 @@ impl App {
                 let col = part_color(self.color_seq);
                 paint_part(&p, part, to_s, col, Stroke::new(1.2, darker(col, 0.5)), th().card);
                 let mt = crate::ct1::for_spec(&self.spec);
-                cutpanel::paint_contour_colours(&p, part, &mt, &to_s, 1.4, self.importui.panel.open);
+                // A drawing about to be imported is never machined: its contours show
+                // the qualities being set for it (CS7, CS8).
+                cutpanel::paint_contour_colours(&p, part, &mt, &to_s, 1.4, self.importui.panel.open, None);
                 // Width under the part, height on its right.
                 let dim = Stroke::new(1.0, th().text_dim);
                 let (x0, x1, y0, y1) = (o.x, o.x + w as f32 * s, o.y - h as f32 * s, o.y);
@@ -1693,7 +1695,7 @@ mod tests {
         let mut iu = ImportUi { sync: true, ..Default::default() };
         assert!(iu.go(d.clone()));
         iu.focus = Some(f.clone());
-        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let width = |iu: &ImportUi| match iu.cache.get(&f) {
             Some((_, _, Shown::Drawing(p))) => p.parts[0].part.as_ref().unwrap().0.w,
             _ => panic!("no preview"),
@@ -1961,7 +1963,7 @@ mod tests {
         assert_eq!(iu.picked.iter().collect::<Vec<_>>(), [&d.join("DEMO-PLATE.dxf")]);
         assert_eq!(iu.picked_names(), "DEMO-PLATE.dxf");
         let cfg = AppSettings::default();
-        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         match read_preview(&cfg, &spec, &d.join("DEMO-PLATE.dxf")) {
             Shown::Drawing(p) => {
                 let (part, _) = p.parts[0].part.as_ref().unwrap();

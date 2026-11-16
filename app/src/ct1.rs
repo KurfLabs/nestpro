@@ -201,14 +201,12 @@ impl Default for MachineTech {
 }
 
 static ACTIVE: std::sync::RwLock<Option<MachineTech>> = std::sync::RwLock::new(None);
-/// The machine-file keys of the app's materials (Settings → Materials →
-/// Machine table), already normalised; None = the built-in ones.
-static KEYS: std::sync::RwLock<Option<Vec<String>>> = std::sync::RwLock::new(None);
-/// Bumped whenever the machine or the material keys change (empties the cache).
+/// Bumped whenever the machine changes (empties the cache).
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// The last values picked for a material and thickness: (generation, material, thickness bits).
+/// The last values picked for a material and thickness: (generation, the
+/// material's machine-file key, thickness bits).
 #[allow(clippy::type_complexity)]
-static PICKED: std::sync::Mutex<Option<((u64, usize, u64), MachineTech)>> = std::sync::Mutex::new(None);
+static PICKED: std::sync::Mutex<Option<((u64, String, u64, i32), MachineTech)>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 thread_local! {
@@ -239,47 +237,29 @@ pub fn set_thread_active(t: Option<MachineTech>) {
     LOCAL.with(|l| *l.borrow_mut() = t);
 }
 
-/// Set the machine-file key of each app material: what the user typed in
-/// Settings → Materials (normalised by `material_key`), or the material's
-/// name in programs when that is empty (MTL2: an empty internal reference
-/// keeps the material's name).
-pub fn set_material_keys(refs: &[String], names: &[String]) {
-    let keys: Vec<String> = (0..refs.len().max(names.len()))
-        .map(|i| {
-            let r = refs.get(i).map(|s| material_key(s)).unwrap_or_default();
-            if r.is_empty() { names.get(i).map(|n| n.trim().to_string()).unwrap_or_default() } else { r }
-        })
-        .collect();
-    if let Ok(mut g) = KEYS.write() {
-        if g.as_ref() != Some(&keys) {
-            *g = Some(keys);
-            GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
-
-/// The machine-file key of app material `i` (index into `cnc::MATERIALS`).
+/// The machine-file key of app material `i` (its id; MTL2), from the
+/// material list.
 pub fn key_of_material(i: usize) -> String {
-    if let Some(k) = KEYS.read().ok().and_then(|g| g.as_ref().and_then(|v| v.get(i).cloned())) {
-        return k;
-    }
-    crate::settings::default_material_refs().get(i).map(|r| material_key(r)).unwrap_or_default()
+    crate::engine::material::machine_key(i)
 }
 
 /// The active machine's values for a sheet: the first section of its file
-/// that fits the sheet's material and thickness, else its own values (MTL1–MTL6).
+/// that fits the sheet's material, thickness and gas, else its own values
+/// (MTL1–MTL6, GS13).
 pub fn for_spec(spec: &crate::nest::SheetSpec) -> MachineTech {
-    for_material(spec.material, spec.thickness)
+    for_material(spec.material, spec.thickness, spec.gas)
 }
 
-/// The active machine's values for app material `material` at `thickness` mm.
-pub fn for_material(material: usize, thickness: f64) -> MachineTech {
-    let keys = JobKeys::new(&key_of_material(material), thickness);
+/// The active machine's values for app material `material` at `thickness`
+/// mm, cut with `gas` (None: a job without a gas of its own, GS13).
+pub fn for_material(material: usize, thickness: f64, gas: Option<crate::gas::Gas>) -> MachineTech {
+    let key = key_of_material(material);
+    let keys = JobKeys::for_job(&key, thickness, gas);
     #[cfg(test)]
     if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
         return t.for_job(&keys);
     }
-    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), material, thickness.to_bits());
+    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), key, thickness.to_bits(), keys.gas);
     if let Some((k, t)) = PICKED.lock().ok().and_then(|g| g.clone()) {
         if k == id {
             return t;
@@ -395,7 +375,8 @@ impl Section {
     /// "0010 mild steel 0.4–1.6 mm" (the material key in shop words).
     pub fn label(&self) -> String {
         let range = if self.t_min < 0.0 { "any thickness".to_string() } else { format!("{}–{} mm", self.t_min, self.t_max) };
-        format!("{} {range}", material_label(&self.material))
+        let gas = if self.gas == 0 { String::new() } else { format!(", {}", crate::gas::number_label(self.gas as i64)) };
+        format!("{} {range}{gas}", material_label(&self.material))
     }
 }
 
@@ -468,7 +449,10 @@ pub const CATALOGUE: [(&str, &str); 7] = [
     ("0590", "brass"),
 ];
 
-/// A material key for people: "0010 mild steel", "any material", or the name.
+/// A material key for people: "0010 mild steel", "any material", or the
+/// name. A number of the material catalogue (MA12) beyond those above is
+/// named as the catalogue shows it ("0110 X3CrNiMo 17-13-3"), so the section
+/// a grade on it cuts with (MA24) reads as its standard.
 pub fn material_label(key: &str) -> String {
     if key == "*" {
         return "any material".into();
@@ -476,14 +460,18 @@ pub fn material_label(key: &str) -> String {
     match key.strip_prefix("##MATEXP").and_then(|r| r.strip_suffix("##")) {
         Some(n) => match CATALOGUE.iter().find(|c| c.0 == n) {
             Some((_, name)) => format!("{n} {name}"),
-            None => n.to_string(),
+            None => match n.parse::<u32>().ok().and_then(crate::engine::catalogue::entry) {
+                Some(e) => format!("{n} {}", e.name),
+                None => n.to_string(),
+            },
         },
         None => key.to_string(),
     }
 }
 
-/// What the job brings to the section choice (MTL3, MTL4). Our jobs carry no
-/// gas, lens, power, nozzle, abrasive or alias: those stay "not given" (0 / ""),
+/// What the job brings to the section choice (MTL3, MTL4). Our jobs bring
+/// their gas (GS13; none for a job saved before jobs carried one) but no
+/// lens, power, nozzle, abrasive or alias: those stay "not given" (0 / ""),
 /// which every section accepts (a design choice; FEATURES TEC-10).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct JobKeys {
@@ -501,9 +489,17 @@ impl JobKeys {
         JobKeys { material: material_key(material), thickness, ..Default::default() }
     }
 
-    /// Nothing but material and thickness given (the default-technology rule, MTL5).
-    pub fn unset(&self) -> bool {
-        self.gas == 0 && self.torch_gas == 0 && self.numbers.iter().all(|&v| v <= NOT_GIVEN) && (self.abrasive.is_empty() || self.abrasive == "*") && self.alias.is_empty()
+    /// A job's keys: its material and thickness, and its gas (GS13).
+    pub fn for_job(material: &str, thickness: f64, gas: Option<crate::gas::Gas>) -> JobKeys {
+        JobKeys { gas: crate::gas::section_gas(gas), ..JobKeys::new(material, thickness) }
+    }
+
+    /// Nothing but material, thickness and gas given: the default-technology
+    /// rule applies (MTL5). The gas counts as not given here (GS13): our jobs
+    /// carry it without lens or power, which the original never meets (our
+    /// estimate, FEATURES MAC-69). The gas still filters the sections (MTL4).
+    pub fn only_material_thickness_gas(&self) -> bool {
+        self.torch_gas == 0 && self.numbers.iter().all(|&v| v <= NOT_GIVEN) && (self.abrasive.is_empty() || self.abrasive == "*") && self.alias.is_empty()
     }
 }
 
@@ -521,12 +517,13 @@ pub fn thickness_fits(from: f64, to: f64, t: f64) -> bool {
 
 /// Does a section fit the job (MTL2–MTL4)? The material key must be equal
 /// (case counts) or the section's "*"; the thickness in range; every other key
-/// equal or not given by the job.
+/// equal or not given by the job. A section without a gas fits a job of any
+/// gas (GS13).
 pub fn section_fits(s: &Section, k: &JobKeys) -> bool {
     let num_ok = |job: f64, sec: f64| job <= NOT_GIVEN || (job - sec).abs() <= NUMBER_TOL;
     (s.material == "*" || s.material == k.material)
         && thickness_fits(s.t_min, s.t_max, k.thickness)
-        && (k.gas == 0 || k.gas == s.gas)
+        && (k.gas == 0 || s.gas == 0 || k.gas == s.gas)
         && (k.torch_gas == 0 || k.torch_gas == s.torch_gas)
         && k.numbers.iter().zip(&s.numbers).all(|(&j, &v)| num_ok(j, v))
         && (k.abrasive.is_empty() || k.abrasive == "*" || k.abrasive == s.abrasive)
@@ -539,7 +536,7 @@ pub fn section_fits(s: &Section, k: &JobKeys) -> bool {
 /// a fallback: the first such one is kept while the search goes on, and a later
 /// fitting section marked default wins. None = no section fits (MTL6).
 pub fn pick_section(sections: &[Section], k: &JobKeys, default_rule: bool) -> Option<usize> {
-    let defaults = default_rule && k.unset();
+    let defaults = default_rule && k.only_material_thickness_gas();
     let mut fallback = None;
     for (i, s) in sections.iter().enumerate() {
         if !section_fits(s, k) {
@@ -963,10 +960,63 @@ mod ct1_tests {
         assert_eq!(material_key("210"), "##MATEXP0210##");
         assert_eq!(material_key(" AISI304 "), "AISI304");
         assert_eq!(material_label("##MATEXP0300##"), "0300 galvanised steel");
+        // MA24: the catalogue names the other standards; a number it lacks stays a number.
+        assert_eq!(material_label("##MATEXP0110##"), "0110 X3CrNiMo 17-13-3");
+        assert_eq!(material_label("##MATEXP0400##"), "0400 Titanium");
+        assert_eq!(material_label("##MATEXP9999##"), "9999");
         // A plain-name section fits only the same name, case and all.
         let s = Section { material: "AISI304".into(), t_min: 0.0, t_max: 10.0, ..Default::default() };
         assert!(section_fits(&s, &JobKeys::new("AISI304", 2.0)));
         assert!(!section_fits(&s, &JobKeys::new("aisi304", 2.0)));
+    }
+
+    #[test]
+    fn the_jobs_gas_picks_the_section_of_that_gas_and_a_section_without_a_gas_fits_any() {
+        use crate::gas::Gas;
+        // GS13, MTL4: oxygen first, then nitrogen, for the same material and thickness.
+        let sec = |gas: i32, gap: f64| format!("Z000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ343 {gas}\nZ006 {gap}\nZ999 0\n");
+        let m = MachineTech::from_text(&format!("A093 OFF\n{}{}", sec(3, 9.0), sec(1, 4.0)));
+        let pick = |gas: Option<Gas>| m.for_job(&JobKeys::for_job("0010", 3.0, gas));
+        assert_eq!(pick(Some(Gas::Oxygen)).part_gap, Some(9.0));
+        assert_eq!(pick(Some(Gas::Nitrogen)).part_gap, Some(4.0));
+        assert_eq!(pick(Some(Gas::Oxygen)).table_label(), "Machine table: 0010 mild steel 2.2–3.2 mm, Oxygen (3)");
+        // A gas no section has: none fits, the machine's own values stand (MTL6).
+        assert_eq!(pick(Some(Gas::Argon)).section, None);
+        // A job without a gas of its own: the first that fits, whatever its gas, as before.
+        assert_eq!(pick(None).section, Some(0));
+        // A section with no gas fits every gas.
+        let any = MachineTech::from_text(&format!("Z000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ006 5\nZ999 0\n{}", sec(1, 4.0)));
+        for g in Gas::ALL {
+            assert_eq!(any.for_job(&JobKeys::for_job("0010", 3.0, Some(g))).part_gap, Some(5.0), "{g:?}");
+        }
+        // MTL5 with a gas (GS13): a job giving only material, thickness and
+        // gas still prefers, among the sections its gas fits, a later one
+        // marked default over an earlier one that isn't.
+        let def = |gas: i32, on: bool, gap: f64| format!("Z000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ343 {gas}\nZ006 {gap}\nZ350 {}\nZ999 0\n", if on { "ON" } else { "OFF" });
+        let gap = |m: &MachineTech, k: JobKeys| m.for_job(&k).part_gap;
+        let job = |gas| JobKeys::for_job("0010", 3.0, gas);
+        let two = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(1, true, 6.0)));
+        assert_eq!(gap(&two, job(Some(Gas::Nitrogen))), Some(6.0));
+        assert_eq!(gap(&two, job(None)), Some(6.0), "a job without a gas, as before");
+        // A later default-marked section without a gas wins too.
+        let any = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(0, true, 7.0)));
+        assert_eq!(gap(&any, job(Some(Gas::Nitrogen))), Some(7.0));
+        // A default-marked section of another gas never wins: the nitrogen one is kept.
+        let other = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(3, true, 9.0)));
+        assert_eq!(gap(&other, job(Some(Gas::Nitrogen))), Some(4.0));
+        assert_eq!(gap(&other, job(Some(Gas::Oxygen))), Some(9.0));
+        let off = MachineTech::from_text(&format!("A093 OFF\n{}{}", def(1, false, 4.0), def(1, true, 6.0)));
+        assert_eq!(gap(&off, job(Some(Gas::Nitrogen))), Some(4.0), "A093 off: the first that fits");
+        // More than material, thickness and gas given (a lens): the first that fits.
+        let lensed = |m: &MachineTech| {
+            let mut k = job(Some(Gas::Nitrogen));
+            k.numbers[0] = 5.0;
+            m.for_job(&k).section
+        };
+        let with_lens = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(1, true, 6.0)).replace("Z343 1\n", "Z343 1\nZ342 5\n"));
+        assert_eq!(lensed(&with_lens), Some(0), "a job giving a lens takes the first that fits");
+        // A section's gas off the list is shown by its number.
+        assert!(MachineTech::from_text(&sec(7, 1.0)).for_job(&JobKeys::new("0010", 3.0)).table_label().ends_with("3.2 mm, gas 7"));
     }
 
     #[test]
@@ -1045,7 +1095,7 @@ mod ct1_tests {
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 1180.0, h: 73.2, qty: 14, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let mut placed: Vec<Placed> = (0..14).map(|k| Placed { part: 0, x: 10.0, y: 10.0 + 83.2 * k as f64, w: 1180.0, h: 73.2, turns: 0, mirror: false, spin: Default::default() }).collect();
         placed.reverse();
-        let spec = SheetSpec { w: 1200.15, h: 1219.2, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 1200.15, h: 1219.2, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let plan = crate::cnc::plan(&parts, &placed, &spec);
         let ys: Vec<f64> = plan.contours.iter().map(|c| placed[c.part_no - 1].y).collect();
         assert!(ys.windows(2).all(|w| w[0] <= w[1]), "{ys:?}");

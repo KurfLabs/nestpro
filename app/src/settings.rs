@@ -70,6 +70,42 @@ pub struct Machine {
     pub order: crate::ct1::OrderChanges,
 }
 
+impl Machine {
+    /// GS17: the gas of the list this machine is saved with, when its saved
+    /// number and name are one of the list's pairs as the LC5 writes them
+    /// (GS2, GS12). None for a pair that isn't (2 named Oxygen, 5 named
+    /// Water): it is kept and written as saved until someone picks a gas.
+    pub fn gas(&self) -> Option<crate::gas::Gas> {
+        crate::gas::Gas::listed(self.gas_id, &self.gas_name)
+    }
+
+    /// GS17: pick the machine's gas from the list. It writes both the number
+    /// and the name the LC5 program writes (Water: 5 named H2O). Picking the
+    /// gas it already has changes nothing (false).
+    pub fn pick_gas(&mut self, g: crate::gas::Gas) -> bool {
+        let (id, name) = (g.number(), g.program_name());
+        let changed = self.gas_id != id || self.gas_name != name;
+        self.gas_id = id;
+        self.gas_name = name.to_string();
+        changed
+    }
+
+    /// GS17: what Settings → Machines says about a saved gas number and name
+    /// that aren't one of the list's pairs; None when they are.
+    pub fn gas_mismatch(&self) -> Option<String> {
+        self.gas().is_none().then(|| {
+            format!(
+                "Saved as gas {} named \"{}\", which isn't one of the list's gases ({}, as programs write them). Jobs without a gas of their own keep being written with {} \"{}\", and new jobs start without one, until you pick a gas here.",
+                self.gas_id,
+                self.gas_name,
+                crate::gas::program_words(),
+                self.gas_id,
+                self.gas_name
+            )
+        })
+    }
+}
+
 impl Default for Machine {
     fn default() -> Self {
         Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default() }
@@ -118,6 +154,10 @@ pub struct AppSettings {
     /// sections (a catalogue number such as 0010, or a plain name; empty = the
     /// material's name in programs). MTL2.
     pub material_refs: Vec<String>,
+    /// A new install: this PC's own material list starts with the
+    /// original's starter materials, not just the first three (MA29).
+    /// Settings saved before it keep their three.
+    pub starter_materials: bool,
     /// Appearance: "system" (follow Windows), "light" or "dark".
     pub theme: String,
     /// Ask before changing a part that has its own technology.
@@ -259,27 +299,6 @@ pub const LANTEK_STYLES: [(&str, bool); 5] = [
     ("Office 2016 White", false),
 ];
 
-/// Default aliases per material (common grades and shop names; estimated).
-pub fn default_material_aliases() -> Vec<String> {
-    vec![
-        "Mild steel, S235, S235JR, S275, S355, DC01, CR, HR, MS".into(),
-        "Stainless, 304, 304L, 316, 316L, AISI304, AISI316, 1.4301, INOX, SS".into(),
-        "Aluminum, AL, 5052, 5754, 6061, AlMg3".into(),
-    ]
-}
-
-/// Default machine-file keys of the materials (MTL2 catalogue numbers): mild
-/// steel 0010, stainless 0100, aluminium 0210 (the aluminium-magnesium grades
-/// the aliases list; pure aluminium is 0200 — our choice, editable).
-pub fn default_material_refs() -> Vec<String> {
-    vec!["0010".into(), "0100".into(), "0210".into()]
-}
-
-/// Default material names and codes (BLM codes from PstAdi06.PS1's D-lines).
-pub fn default_materials() -> Vec<(String, String)> {
-    vec![("STEEL".into(), "0010".into()), ("STAINLESS".into(), "0100".into()), ("ALUMINIUM".into(), "0200".into())]
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
@@ -298,9 +317,10 @@ impl Default for AppSettings {
             active_conn: 0,
             machines: vec![Machine::default()],
             active_machine: 0,
-            materials: default_materials(),
-            material_aliases: default_material_aliases(),
-            material_refs: default_material_refs(),
+            materials: crate::engine::material::default_pc_programs(),
+            material_aliases: crate::engine::material::default_pc_other_names(),
+            material_refs: crate::engine::material::default_pc_machine_refs(),
+            starter_materials: false,
             theme: "system".into(),
             warn_tech: true,
             in_use_warn: true,
@@ -375,17 +395,11 @@ impl AppSettings {
     /// The app's material for a name from outside (an import, a program, a
     /// file name): the material's own name, its name in programs, its code or
     /// one of its aliases, without case. As in the original (MA6), an
-    /// alias gives its main material; an unknown name gives None.
+    /// alias gives its main material; an unknown name gives None. Asked of
+    /// the material list (`engine::material::find`), which these settings
+    /// only seed (MA15).
     pub fn material_for(&self, name: &str) -> Option<usize> {
-        let n = name.trim().to_lowercase();
-        if n.is_empty() {
-            return None;
-        }
-        (0..crate::cnc::MATERIALS.len()).find(|&i| {
-            crate::cnc::MATERIALS[i].to_lowercase() == n
-                || self.materials.get(i).is_some_and(|(p, c)| p.to_lowercase() == n || c.to_lowercase() == n)
-                || self.material_aliases.get(i).is_some_and(|a| a.split(',').any(|x| x.trim().to_lowercase() == n))
-        })
+        crate::engine::material::find(name)
     }
 
     pub fn conn(&self) -> Option<&Connection> {
@@ -427,15 +441,7 @@ impl AppSettings {
         s += &format!("refresh_minutes = {}\n", self.refresh_minutes);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
         s += &format!("nesting = {}\n", serde_json::to_string(&self.nesting).unwrap_or_default());
-        for (k, (n, id)) in self.materials.iter().enumerate() {
-            s += &format!("material{k} = {}|{}\n", esc(n), esc(id));
-        }
-        for (k, a) in self.material_aliases.iter().enumerate() {
-            s += &format!("material_alias{k} = {}\n", esc(a));
-        }
-        for (k, r) in self.material_refs.iter().enumerate() {
-            s += &format!("material_ref{k} = {}\n", esc(r));
-        }
+        crate::engine::material::write_pc(self, &mut s, |x| esc(x));
         for c in &self.connections {
             s += &format!(
                 "[connection]\nname = {}\nserver = {}\ndatabase = {}\nwindows = {}\nuser = {}\npassword_enc = {}\n",
@@ -537,26 +543,8 @@ impl AppSettings {
                     "nesting" => st.nesting = serde_json::from_str::<NestPrefs>(&v).unwrap_or_default().sane(),
                     "refresh_minutes" => st.refresh_minutes = crate::engine::refresh::period(v.parse::<i64>().unwrap_or(0)),
                     "scroll_speed" => st.scroll_speed = v.parse::<f32>().ok().filter(|x| (0.5..=6.0).contains(x)).unwrap_or(SCROLL_SPEED_DEFAULT),
-                    _ if k.starts_with("material_ref") => {
-                        if let Ok(i) = k["material_ref".len()..].parse::<usize>() {
-                            if i < st.material_refs.len() {
-                                st.material_refs[i] = v;
-                            }
-                        }
-                    }
-                    _ if k.starts_with("material_alias") => {
-                        if let Ok(i) = k["material_alias".len()..].parse::<usize>() {
-                            if i < st.material_aliases.len() {
-                                st.material_aliases[i] = v;
-                            }
-                        }
-                    }
                     _ if k.starts_with("material") => {
-                        if let (Ok(i), Some((n, id))) = (k["material".len()..].parse::<usize>(), v.split_once('|')) {
-                            if i < st.materials.len() {
-                                st.materials[i] = (n.to_string(), id.to_string());
-                            }
-                        }
+                        crate::engine::material::read_pc(&mut st, k, v);
                     }
                     _ => {}
                 },
@@ -660,7 +648,7 @@ impl AppSettings {
         match Self::read_from(&Self::file()) {
             Some(s) => s,
             None => {
-                let mut s = AppSettings::default();
+                let mut s = Self::load_from(&Self::file());
                 let dir = lantek_default_dir();
                 if Path::new(&dir).join("LANTEKIN.CNI").exists() {
                     s.import_lantek(&dir);
@@ -668,6 +656,12 @@ impl AppSettings {
                 s
             }
         }
+    }
+
+    /// The settings saved in `f`; with none there, a new install's: its
+    /// material list starts with the starter materials (MA29).
+    pub fn load_from(f: &Path) -> Self {
+        Self::read_from(f).unwrap_or_else(|| AppSettings { starter_materials: true, ..AppSettings::default() })
     }
 
     /// The settings saved in `f`, None when it can't be read.
@@ -879,6 +873,33 @@ mod settings_tests {
     }
 
     #[test]
+    fn a_machines_gas_is_picked_from_the_list_and_an_odd_saved_pair_stays_as_saved() {
+        use crate::gas::Gas;
+        // GS17: settings saved before the gas was a pick: 2 named Oxygen and 5
+        // named Water aren't pairs the LC5 list writes (3 Oxygen, 5 H2O).
+        let text = "[machine]\nname = LC5\noutput = blm\ngas_id = 2\ngas_name = Oxygen\nkind = laser\n[machine]\nname = Waterjet\noutput = blm\ngas_id = 5\ngas_name = Water\nkind = laser\n";
+        let s = AppSettings::parse(text);
+        let lc5 = s.machines.iter().find(|m| m.name == "LC5").unwrap();
+        assert_eq!((lc5.gas_id, lc5.gas_name.as_str(), lc5.gas()), (2, "Oxygen", None));
+        let note = lc5.gas_mismatch().unwrap();
+        assert!(note.contains("gas 2 named \"Oxygen\"") && note.contains("1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O") && note.contains("until you pick a gas"), "{note}");
+        let water = s.machines.iter().find(|m| m.name == "Waterjet").unwrap();
+        assert_eq!((water.gas(), water.gas_mismatch().is_some()), (None, true));
+        // Read and written back, they stay exactly as saved.
+        assert!(s.to_text().contains("gas_id = 2\ngas_name = Oxygen\n") && s.to_text().contains("gas_id = 5\ngas_name = Water\n"), "{}", s.to_text());
+        assert_eq!(AppSettings::parse(&s.to_text()), s);
+        // Picking writes the number and the name programs write.
+        let mut m = lc5.clone();
+        assert!(m.pick_gas(Gas::Oxygen));
+        assert_eq!((m.gas_id, m.gas_name.as_str(), m.gas(), m.gas_mismatch()), (3, "Oxygen", Some(Gas::Oxygen), None));
+        assert!(!m.pick_gas(Gas::Oxygen), "picking the gas it has is no change");
+        assert!(m.pick_gas(Gas::Water));
+        assert_eq!((m.gas_id, m.gas_name.as_str(), m.gas()), (5, "H2O", Some(Gas::Water)));
+        // The built-in machine is on the list: nitrogen.
+        assert_eq!((Machine::default().gas(), Machine::default().gas_mismatch()), (Some(Gas::Nitrogen), None));
+    }
+
+    #[test]
     fn settings_round_trip_through_text() {
         let s = AppSettings {
             lantek_dir: r"D:\Lantek\Expert".into(),
@@ -902,6 +923,7 @@ mod settings_tests {
             materials: vec![("S235".into(), "0010".into()), ("304".into(), "0100".into()), ("5052".into(), "0200".into())],
             material_aliases: vec!["A36, S275".into(), String::new(), "AL".into()],
             material_refs: vec!["10".into(), "AISI304".into(), String::new()],
+            starter_materials: true,
             theme: "dark".into(),
             warn_tech: false,
             in_use_warn: false,

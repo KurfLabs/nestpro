@@ -206,8 +206,13 @@ pub fn orient_for_machine(o: &Outline, rot: RemnantRotation, turn_over: bool) ->
 pub struct Item {
     pub reference: String,
     pub kind: Kind,
-    /// Index into the app's materials.
+    /// The material's id in the material list.
     pub material: usize,
+    /// The material's name, written on every save from the material list,
+    /// so the item finds its material again by name (MA17). Empty in a stock
+    /// saved before names were stored. Readers go by `material`.
+    #[serde(default)]
+    pub material_name: String,
     pub thickness: f64,
     /// Length (X) and width (Y) in mm. For a remnant, its outline's box.
     pub length: f64,
@@ -271,6 +276,7 @@ impl Item {
             reference: reference.into(),
             kind: Kind::Sheet,
             material,
+            material_name: crate::engine::material::stored_name(material, ""),
             thickness,
             length,
             width,
@@ -757,7 +763,7 @@ impl Stock {
     pub fn load(library_dir: &Path) -> Result<Self, String> {
         let f = Self::file(library_dir);
         match std::fs::read_to_string(&f) {
-            Ok(t) => serde_json::from_str(&t).map_err(|e| format!("{}: {e}", f.display())),
+            Ok(t) => serde_json::from_str::<Stock>(&t).map(Stock::with_materials).map_err(|e| format!("{}: {e}", f.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Stock::default()),
             Err(e) => Err(format!("{}: {e}", f.display())),
         }
@@ -791,8 +797,26 @@ impl Stock {
     /// Written through a temporary file of this writer's own and renamed into
     /// place, so a shared folder never shows half a file (LB3).
     fn store(&self, library_dir: &Path, lock: &crate::shared::WriteLock) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        // Every item with its material's id and name (invariant 3, MA17).
+        let mut named = self.clone();
+        for it in named.items.iter_mut() {
+            it.material_name = crate::engine::material::stored_name(it.material, &it.material_name);
+            // MA31: a remnant of a job whose material is unresolved keeps
+            // the job file's own number.
+            it.material = crate::engine::material::file_id(it.material);
+        }
+        let text = serde_json::to_string_pretty(&named).map_err(|e| e.to_string())?;
         crate::shared::write_file(&Self::file(library_dir), text.as_bytes(), Some(lock))
+    }
+
+    /// MA17: each item's material as the list has it: by id, else by the
+    /// name it was saved with. The file is left as it is until it is saved.
+    fn with_materials(mut self) -> Stock {
+        for it in self.items.iter_mut() {
+            it.material = crate::engine::material::read_material(it.material, &it.material_name);
+            it.material_name = crate::engine::material::stored_name(it.material, &it.material_name);
+        }
+        self
     }
 
     /// Re-read the stock, change it and save it, all under the Library's
@@ -807,6 +831,14 @@ impl Stock {
         let mut s = Stock::load(&lib.dir)?;
         let before = s.clone();
         let out = f(&mut s)?;
+        // MA20: an item made, or given a material, in one deleted since it
+        // was picked isn't stored (invariant 4).
+        let was: std::collections::HashMap<&str, usize> = before.items.iter().map(|i| (i.reference.as_str(), i.material)).collect();
+        let mut new: Vec<usize> = s.items.iter().filter(|i| was.get(i.reference.as_str()) != Some(&i.material)).map(|i| i.material).collect();
+        new.dedup();
+        for m in new {
+            crate::materials::not_deleted(&lib.dir, m, "the stock")?;
+        }
         s.sign(&before, &lib.saved());
         s.store(&lib.dir, &lock)?;
         Ok(out)
@@ -1056,6 +1088,7 @@ impl Stock {
             reference: reference.clone(),
             kind: Kind::NestRemnant,
             material: parent.material,
+            material_name: parent.material_name.clone(),
             thickness: parent.thickness,
             length,
             width,

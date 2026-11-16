@@ -116,6 +116,9 @@ impl App {
         if self.libui.loaded && lists {
             ok &= self.refresh_lists(&lib, list.clone(), full);
         }
+        if full || seen.as_ref().is_none_or(|s| s.materials != stamp.materials) {
+            self.reload_materials(false);
+        }
         if self.stockui.loaded && (full || seen.as_ref().is_none_or(|s| s.stock != stamp.stock)) {
             ok &= self.refresh_stock(&dir);
         }
@@ -134,6 +137,8 @@ impl App {
             return;
         }
         self.autorefresh.down = true;
+        // Settings → Materials can't change the list now (MA21).
+        self.materials_reach(Some(&e));
         if self.libui.loaded {
             self.libui.entries.clear();
             self.libui.products.clear();
@@ -158,6 +163,8 @@ impl App {
                 }
                 self.autorefresh.down = false;
                 self.status = format!("The Library on {} can be reached again.", dir.display());
+                // Settings → Materials can change the list again (MA21).
+                self.materials_reach(None);
                 true
             }
             Some(p) => {
@@ -475,6 +482,9 @@ mod refreshui_tests {
     fn watching(dir: &Path, user: &str, pc: &str, clock: &Clock, minutes: u32) -> App {
         let mut a = window(dir, user, pc, clock);
         a.cfg.refresh_minutes = minutes;
+        // As a window starting on this Library reads its material list (and
+        // stores it there when the Library has none yet, MA28).
+        a.reload_materials(false);
         a.lib_refresh();
         a.stockui.loaded = false;
         a.stock_reload();
@@ -485,7 +495,7 @@ mod refreshui_tests {
     /// PC 1 (sam on PROG-1) saves job `name` into the Library as a new job
     /// with one part.
     fn save_new_job(dir: &Path, clock: &Clock, name: &str) -> u64 {
-        let mut j = crate::jobfile::JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() });
+        let mut j = crate::jobfile::JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() });
         j.parts = vec![crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         Library::open(dir, &Who::new("sam", "PROG-1"), clock).unwrap().save_job(&j, SaveTo::New).unwrap().id
     }
@@ -1038,6 +1048,45 @@ mod refreshui_tests {
         assert_eq!(pc2.stockui.unreachable, None);
         assert_eq!(saved_jobs(&pc2), ["DEMO-7", "DEMO-8"]);
         assert!(pc2.job_unsaved(pc2.cur_job), "its changes still kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MA14, MA21 with LB14: the Materials page is open with a change typed
+    /// when the automatic look finds the Library gone: the page says why it
+    /// can't edit, at once, and keeps what was typed. When the automatic
+    /// look finds it back, the page can edit again and saves it.
+    #[test]
+    fn the_materials_page_follows_the_library_going_and_coming_back_by_itself() {
+        let dir = new_library("refresh_materials_page");
+        let clock = Clock::at(NOV_9_0920);
+        let mut pc2 = watching(&dir, "kim", "PROG-2", &clock, 1);
+        pc2.reload_materials(true);
+        pc2.open_settings(crate::settings_ui::Section::Materials);
+        pc2.materials_page_ready();
+        assert_eq!(pc2.setui.mat_locked, None);
+        pc2.setui.mat_draft.as_mut().unwrap().rows[1].m.name = "DEMO Inox".into();
+        let away = dir.with_extension("away");
+        let _ = std::fs::remove_dir_all(&away);
+        std::fs::rename(&dir, &away).unwrap();
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        let why = pc2.setui.mat_locked.clone().expect("the automatic look locks the page");
+        assert_eq!(why, crate::materials::cant_change(&crate::library::unreachable(&dir)));
+        pc2.materials_page_ready();
+        assert_eq!(pc2.setui.mat_locked.as_deref(), Some(why.as_str()), "still locked when drawn");
+        std::fs::rename(&away, &dir).unwrap();
+        for _ in 0..3 {
+            later(&clock, QUICK_S);
+            pc2.refresh_tick(false);
+            settle(&pc2);
+        }
+        assert_eq!(pc2.setui.mat_locked, None, "the automatic look unlocks it");
+        pc2.materials_page_ready();
+        assert_eq!(pc2.setui.mat_locked, None);
+        assert_eq!(pc2.setui.mat_draft.as_ref().unwrap().rows[1].m.name, "DEMO Inox", "what was typed stays");
+        pc2.save_materials();
+        let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
+        assert_eq!(stored.get(1).unwrap().name, "DEMO Inox");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

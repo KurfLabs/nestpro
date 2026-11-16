@@ -16,6 +16,10 @@ pub struct Session {
     /// When the open job's file was last read or written by us.
     stamp: Option<SystemTime>,
     undo: Vec<JobFile>,
+    /// The material list this session read last (MA34): whether the open
+    /// job's material was in it, whatever list another session in the same
+    /// process installed since.
+    seen: Option<std::sync::Arc<super::material::List>>,
 }
 
 /// What a call gave back: the JSON answer and, for render, the PNG.
@@ -43,7 +47,7 @@ pub fn job_path(s: &str) -> PathBuf {
 
 impl Session {
     pub fn new(ctx: Ctx) -> Session {
-        Session { ctx, job: None, path: None, stamp: None, undo: vec![] }
+        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None }
     }
 
     /// Open a job file (again, when it changed on disk).
@@ -84,12 +88,38 @@ impl Session {
     /// Run an operation. `job` names the job file (needed for `new`, and when
     /// no job is open yet).
     pub fn call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
+        // The material list may have changed on another PC since (MA14);
+        // the first time this PC points at a Library its own list joins it
+        // (MA28), and a job open in this PC's numbering takes the Library's.
+        // MA34: whether the open job's material was in the list read before.
+        let known = self.job.as_ref().map(|j| self.seen.as_ref().map_or_else(|| super::material::exists(j.spec.material), |l| l.get(j.spec.material).is_some()));
+        let joined = self.ctx.reload_materials();
+        self.seen = Some(super::material::current());
+        if let (Some(j), Some(known)) = (self.job.as_mut(), known) {
+            // MA30: a material added since the job was read is found by the
+            // name the job came with; never by its number alone (MA34).
+            j.spec.material = crate::materials::after_reload(joined.as_ref(), j.spec.material, &j.material_name, known);
+        }
+        let mut r = self.run_call(name, job, args)?;
+        if let (Some(n), Some(o)) = (joined, r.json.as_object_mut()) {
+            o.insert("materials_joined".into(), json!(n.note()));
+        }
+        Ok(r)
+    }
+
+    fn run_call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
         let op = ops::find(name).ok_or_else(|| format!("unknown operation '{name}' — see `nestpro ops`"))?;
         let args = if args.is_null() { json!({}) } else { args.clone() };
         ops::check_args(op, &args)?;
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };
         match op.kind {
-            Kind::Global => return ops::run_global(&self.ctx, name, &args).map(done),
+            Kind::Global => {
+                // The open job as its file is now (the window or another
+                // agent may have changed its material since it was read): a
+                // material it uses isn't deleted (MA20, JOB-88).
+                let now = if name == "material" { self.path.as_deref().and_then(|p| jobfile::load(p).ok()) } else { None };
+                return ops::run_global(&self.ctx, name, &args, now.as_ref().or(self.job.as_ref())).map(done);
+            }
             Kind::Create => {
                 let p = job_path(job.ok_or_else(|| format!("{name} needs the job file to make (job)"))?);
                 let force = ops::Args(&args).bool("force")?.unwrap_or(false);

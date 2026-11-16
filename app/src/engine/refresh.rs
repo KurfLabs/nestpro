@@ -78,6 +78,8 @@ type FileStamp = Option<(std::time::SystemTime, u64)>;
 pub struct Stamp {
     pub lists: [FileStamp; 3],
     pub stock: FileStamp,
+    /// The material list (MA14).
+    pub materials: FileStamp,
 }
 
 /// The Library's stamp now, or LB11's words when it can't be reached or
@@ -89,6 +91,7 @@ pub fn stamp(dir: &std::path::Path) -> Result<Stamp, String> {
     Ok(Stamp {
         lists: [file(dir.join(crate::library::INDEX)), file(folders(crate::library::Kind::Job)), file(folders(crate::library::Kind::Product))],
         stock: file(crate::stock::Stock::file(dir)),
+        materials: file(crate::materials::Home::Library(dir.to_path_buf()).file()),
     })
 }
 
@@ -214,7 +217,7 @@ mod refresh_tests {
         let clock = Clock::at(1_794_216_000);
         let lib = crate::library::Library::open(&dir, &crate::shared::Who::new("sam", "PROG-1"), &clock).unwrap();
         let b = stamp(&dir).unwrap();
-        let j = crate::jobfile::JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() });
+        let j = crate::jobfile::JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() });
         lib.save_job(&j, crate::library::SaveTo::New).unwrap();
         let c = stamp(&dir).unwrap();
         assert!(c.lists != b.lists && c.stock == b.stock, "a save changes the lists' stamp");

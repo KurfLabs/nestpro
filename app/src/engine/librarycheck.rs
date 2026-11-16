@@ -339,7 +339,7 @@ fn logged_records(folder: &Path) -> std::collections::HashSet<(bool, u64)> {
 }
 
 fn demo_spec() -> SheetSpec {
-    SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() }
+    SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
 }
 
 /// A made-up job; `rev` (how often it was saved over) goes in its method.
@@ -531,7 +531,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         // The same for a library part, filed in the part folder DEMO-CHECK
         // (JX19), which every run shares.
         let name = format!("{TAG} {pc} {stamp} part {n}");
-        match lib.save_product_in(&demo_part(&name, 0), TAG, 0, 3.0, SaveTo::New, &folders::PartsFolder::Path(TAG.into())) {
+        match lib.save_product_in(&demo_part(&name, 0), TAG, (0, ""), 3.0, SaveTo::New, &folders::PartsFolder::Path(TAG.into())) {
             Ok(Record { id, .. }) => log.parts.push(Saved { id, name, rev: 0, folder: None }),
             Err(e) => log.errors.push(format!("saving library part '{name}' reported an error: {e}")),
         }

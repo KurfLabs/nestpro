@@ -706,19 +706,20 @@ fn due_key(s: &str) -> String {
     if s.is_empty() { "~".into() } else { s.to_string() }
 }
 
-/// The app's material (index into `cnc::MATERIALS`) for a system's material:
-/// grade, then material name, then shape name, through Settings → Materials
-/// and its aliases, then by common words.
-pub fn pick_material(cfg: &crate::settings::AppSettings, m: &MaterialInfo) -> Option<usize> {
+/// The app's material (its id) for a system's material: grade, then
+/// material name, then shape name, each as any material of the list names
+/// it (MA32); then each of their words exactly; then by common words.
+pub fn pick_material(_cfg: &crate::settings::AppSettings, m: &MaterialInfo) -> Option<usize> {
+    use crate::engine::material;
     let names = [&m.grade, &m.material_name, &m.name];
     for n in names {
-        if let Some(i) = cfg.material_for(n) {
+        if let Some(i) = material::like(n) {
             return Some(i);
         }
     }
     for n in names {
         for w in n.split(|c: char| !(c.is_alphanumeric() || c == '.')).filter(|w| !w.is_empty()) {
-            if let Some(i) = cfg.material_for(w) {
+            if let Some(i) = material::find(w) {
                 return Some(i);
             }
         }
@@ -951,7 +952,7 @@ mod tests {
         // Two identical sheets (2× BRK-1 + 1× shop part each) and one with 1× PLT-2.
         let sheets = vec![vec![at(0, 5.0), at(0, 110.0), at(1, 220.0)], vec![at(0, 5.0), at(0, 110.0), at(1, 220.0)], vec![at(2, 5.0)]];
         let groups = [(0, 2), (2, 1)];
-        let spec = SheetSpec { w: 3048.0, h: 1524.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 3048.0, h: 1524.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let r = nest_report(Provider::Fulcrum, "W45", "Laser", &parts, &sheets, &[], &groups, &[120.0, 120.0, 60.0], &spec);
         assert_eq!(r.parts.len(), 2);
         assert_eq!((r.parts[0].number.as_str(), r.parts[0].qty), ("BRK-1", 4));
@@ -970,7 +971,7 @@ mod tests {
     fn duplicate_part_names_get_numbered() {
         let parts = vec![part("A", vec![demand("j", "o1", 1, "")]), part("A", vec![demand("j", "o2", 1, "")])];
         let sheets = vec![vec![at(0, 5.0), at(1, 110.0)]];
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let r = nest_report(Provider::Fulcrum, "J", "", &parts, &sheets, &[], &[(0, 1)], &[10.0], &spec);
         assert_eq!(r.parts.iter().map(|p| p.number.as_str()).collect::<Vec<_>>(), vec!["A", "A #2"]);
         assert_eq!(r.sheets[0].parts, vec![("A".into(), 1), ("A #2".into(), 1)]);
@@ -1014,6 +1015,24 @@ mod tests {
         assert_eq!(m("", "Aluminum 5052 Sheet"), Some(2));
         assert_eq!(m("A36", "Hot Rolled Steel Plate"), Some(0));
         assert_eq!(m("", "Copper"), None);
+    }
+
+    #[test]
+    fn an_erp_material_finds_any_material_of_the_list() {
+        // MA32: grade, material name, shape name, each through the whole list
+        // (DEMO 316 here) before their single words and the common words.
+        use crate::engine::material::{self, List, Material};
+        let cfg = crate::settings::AppSettings::default();
+        let mut l = List::seed(&cfg);
+        l.add(Material { id: 0, name: "DEMO 316".into(), other_names: vec!["AISI 316".into()], standard: 100, density: None, program_name: Some("DEMO316".into()), program_code: Some("0316".into()), machine_ref: None }).unwrap();
+        material::install(l);
+        let m = |grade: &str, name: &str| pick_material(&cfg, &MaterialInfo { grade: grade.into(), material_name: name.into(), ..Default::default() });
+        assert_eq!(m("aisi 316", "Stainless Steel Sheet"), Some(3), "the grade, by another name");
+        assert_eq!(m("", "DEMO 316 Sheet 10GA"), Some(3), "a name the material name holds, before its word 316");
+        assert_eq!(m("0316", ""), Some(3), "its code in programs");
+        assert_eq!(m("", "Stainless Steel 316 Sheet"), Some(1), "no DEMO name in it: stainless, as before");
+        assert_eq!(m("DEMO-COPPER", ""), None);
+        assert_eq!(m("1", ""), None, "a plain number is no material number");
     }
 
     #[test]

@@ -208,6 +208,7 @@ impl App {
         self.job_path = j.file.as_ref().map(|l| l.path.clone());
         self.job_link = j.file;
         self.erp_job = j.erp;
+        self.job_material_names = j.material_names;
         self.ghost = None;
         self.sel_cut = None;
         self.jobs_reindexed();
@@ -301,6 +302,7 @@ impl App {
             saved: None,
             library: None,
             library_parts: Default::default(),
+            material_name: crate::engine::material::read_name(j.spec.material, &j.material_names),
         }
     }
 
@@ -369,10 +371,12 @@ impl App {
         let qty: u32 = parts.iter().map(|p| p.qty).sum();
         let cam = if i == self.cur_job { self.cam_changed } else { j.cam_changed };
         format!(
-            "{name}\nFolder: {}\n{} product(s), {qty} piece(s)\n{sheets} nesting(s) · {} · {}\nLast nesting change: {}\nRight-click: open, add nesting, rename, delete",
+            "{name}\nFolder: {}\n{} product(s), {qty} piece(s)\n{sheets} nesting(s) · {} · {} · {}\nLast nesting change: {}\nRight-click: open, add nesting, rename, delete",
             j.week,
             parts.len(),
             self.mat_thk(spec.material, spec.thickness),
+            // GS16: the job's gas beside its material and thickness.
+            crate::engine::job_gas(spec, &self.blm).shown(),
             self.unit().size(spec.w, spec.h, 0),
             cam_date_label(cam)
         )
