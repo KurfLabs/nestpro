@@ -8545,3 +8545,42 @@ fn two_pcs_with_settings_from_before_answer_from_the_first_ones_list() {
     assert_eq!((material::find("DEMO-INOX-A"), material::find("DEMO-INOX-B")), (Some(1), None));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// SD2, SD3, SD8, BL40: an agent cuts the leftover into the shop's standard
+/// drops, lists the other ways and picks one with drops stacked across the
+/// strip; each drop is its own remnant, and the LC5 export (read back, BL39)
+/// cuts them.
+#[test]
+fn an_agent_cuts_the_leftover_into_standard_drops() {
+    let d = dir("drops");
+    let jp = d.join("drops.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut ctx = stock_ctx(&d);
+    ctx.blm.on = true;
+    ctx.cfg.stock.line.shape = crate::remline::LineShape::VerticalStrip;
+    ctx.cfg.stock.drops = super::drops::DropSettings { on: true, sizes: vec![[1000.0, 500.0], [500.0, 500.0]], keep_odd: false };
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(jp), json!({"w": 3000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 400, "qty": 4}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let r = call(&mut s, "remnant", None, json!({"mode": "auto"}));
+    assert!(r["message"].as_str().unwrap().starts_with("Standard drops, "), "{r}");
+    let list = call(&mut s, "remnant", None, json!({"mode": "drops"}));
+    let ways = list["data"].as_array().unwrap().clone();
+    assert!(ways[0]["auto"].as_bool().unwrap() && ways.len() >= 2, "{list}");
+    let stacked = ways.iter().find(|w| w["summary"].as_str().unwrap().starts_with("8 × 500 × 500")).unwrap_or_else(|| panic!("{list}"));
+    let n = stacked["layout"].as_u64().unwrap();
+    let r = call(&mut s, "remnant", None, json!({"mode": "drops", "layout": n}));
+    assert!(r["message"].as_str().unwrap().contains("8 × 500 × 500"), "{r}");
+    // Eight remnants, each 500 × 500 (one row short by the shared cut).
+    let st = call(&mut s, "stock-book", None, json!({"mode": "status"}));
+    let rows = st["data"]["would_store_remnants"].as_array().unwrap().clone();
+    assert_eq!(rows.len(), 8, "{st}");
+    // The LC5 set passes its read-back: the cross cuts stop on the cut between the rows.
+    let out = d.join("cnc");
+    let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    assert!(e["files"].as_array().unwrap().iter().any(|f| f.as_str().unwrap().ends_with(".zip")), "{e}");
+    assert!(err(&mut s, "remnant", json!({"mode": "drops", "layout": 99})).contains("give 1 to"));
+    assert!(err(&mut s, "remnant", json!({"mode": "drops", "sizes": "4000x2000"})).contains("No standard drop fits"));
+    let _ = std::fs::remove_dir_all(&d);
+}
