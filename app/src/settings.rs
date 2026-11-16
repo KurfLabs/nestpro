@@ -14,6 +14,9 @@ pub enum Output {
     /// BLM / Siemens 840D: sheet .SPF + one .SPF per part + list, zipped,
     /// with the .XML job sheet (see blm.rs).
     BlmSiemens,
+    /// OMAX waterjet: one `.omx` path file per sheet, the points with their
+    /// cut quality and kerf side, no G-code (see omax.rs).
+    Omax,
 }
 
 impl Output {
@@ -21,10 +24,17 @@ impl Output {
         match self {
             Output::Iso => "iso",
             Output::BlmSiemens => "blm",
+            Output::Omax => "omax",
         }
     }
     pub fn from_key(s: &str) -> Self {
-        if s.eq_ignore_ascii_case("blm") { Output::BlmSiemens } else { Output::Iso }
+        if s.eq_ignore_ascii_case("blm") {
+            Output::BlmSiemens
+        } else if s.eq_ignore_ascii_case("omax") {
+            Output::Omax
+        } else {
+            Output::Iso
+        }
     }
 }
 

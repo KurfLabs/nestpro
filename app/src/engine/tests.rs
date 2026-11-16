@@ -1217,7 +1217,7 @@ fn an_agent_sees_the_table_speeds_and_the_time_split() {
     let t = &sh["times_s"];
     let sum: f64 = ["cut", "mark", "rapid", "pierce", "head"].iter().map(|k| t[k].as_f64().unwrap()).sum();
     assert!((sum - sh["time_s"].as_f64().unwrap()).abs() < 0.3, "{sh}");
-    // Two 600 mm outsides at 9500 mm/min ≈ 7.6 s of cutting; two head-ups of 0.7 s.
+    // Two 600 mm outsides at 9500 mm/min ≈ 7.6 s of cutting; two head-downs of 0.7 s (H006).
     assert!((t["cut"].as_f64().unwrap() - 7.6).abs() < 0.5, "{t}");
     assert!((t["head"].as_f64().unwrap() - 1.4).abs() < 0.05, "{t}");
     crate::ct1::set_thread_active(None);
@@ -8635,5 +8635,39 @@ fn an_agent_cuts_the_leftover_into_standard_drops() {
     assert!(e["files"].as_array().unwrap().iter().any(|f| f.as_str().unwrap().ends_with(".zip")), "{e}");
     assert!(err(&mut s, "remnant", json!({"mode": "drops", "layout": 99})).contains("give 1 to"));
     assert!(err(&mut s, "remnant", json!({"mode": "drops", "sizes": "4000x2000"})).contains("No standard drop fits"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_omax_waterjet_gets_omax_path_files() {
+    // OM1–OM3: a machine set to OMAX output writes one .omx per sheet, which
+    // read back cuts what the plan cuts; a later G-code export removes it (EXP1).
+    let d = dir("omax_files");
+    let m = crate::settings::Machine { name: "Demo OMAX waterjet".into(), output: crate::settings::Output::Omax, kind: crate::machine::MachineKind::Waterjet, ..Default::default() };
+    let cfg = shop_settings(&d.join("Lantek"), "# Demo waterjet\n", vec![m]);
+    let mut s = squares_job(&d, cfg);
+    let _m = apply_machine(&mut s);
+    s.ctx.post = crate::engine::load_post(&s.ctx.cfg.machine());
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert!(text.starts_with("This is an OMAX (.OMX) file."), "{text}");
+    let recs = crate::omax::read(&text);
+    let (len, pierces) = crate::omax::cut_and_pierces(&recs);
+    // Four squares: four pierces, 1600 mm of sides plus their leads, each
+    // side with its kerf on the scrap side, and the file ends at quality 0.
+    assert_eq!(pierces, 4, "{text}");
+    assert!(len > 1600.0 && len < 1700.0, "{len}");
+    assert!(recs.iter().filter(|r| (1..=5).contains(&r.q)).all(|r| r.side == 1 || r.side == 2), "{text}");
+    assert_eq!(recs.last().map(|r| r.q), Some(0));
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!(info["data"]["machine"]["output"], "OMAX waterjet (.omx)");
+    let out = d.join("out");
+    call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    let omx = out.join("squares").join("SQUARESX1.omx");
+    assert!(omx.is_file());
+    assert_eq!(crate::omax::read(&std::fs::read_to_string(&omx).unwrap()).len(), recs.len());
+    s.ctx.cfg.machines[0].output = crate::settings::Output::Iso;
+    s.ctx.post = crate::engine::load_post(&s.ctx.cfg.machine());
+    call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    assert!(!omx.exists() && out.join("squares").join("SQUARESX1.CNC").is_file());
     let _ = std::fs::remove_dir_all(&d);
 }

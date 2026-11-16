@@ -1462,6 +1462,35 @@ Estimated: the low-edge tolerance (0.5 mm — the original's value couldn't be c
 of the sheet" is 0.5).
 
 
+## OMAX waterjet path files (.omx)
+
+An OMAX waterjet doesn't run G-code. Its own software reads a list of points and works out
+speeds, pierces and the kerf offset itself from each move's OMAX cut quality, so the file carries
+the path only: no speeds, pressures, abrasive or dwells. A machine gets it by picking **OMAX
+waterjet (.omx path file)** as its program format in Settings → Machines; the agents' `program` and
+`export` write it the same way. The original ships a flat and a 3D (bevel) OMAX post; the rebuild
+writes the flat file, with the corrections marked below.
+
+| # | Rule | Source |
+|---|------|--------|
+| OX1 | **File layout**: OMAX's banner line, `2` (tool path data), the file version, the date, six `[Reserved]` lines, a `[COMMENT]` … `[END]` block, an empty `[VARIABLES]` / `[END]` block, then one record per line. Lines end CR LF. One file per sheet, `<JOB>X<sheet>.omx`. | observed |
+| OX6 | **One record per move, written at the point the move starts**: `[0], X, Y, Z, tilt start, tilt end, bow, quality, side, R, R, R, 0, 0, 0,[END]`. The first record is the sheet's corner (0, 0); the last is where the last cut ends, at quality 0. Flat cutting writes Z and both tilts as 0. | observed |
+| OX7 | **Numbers**: X and Y in inches, X, Y and bow with exactly 9 decimals and never `-0.000000000`; quality and side as whole numbers. | observed (inches are the original's default) |
+| OX8 | **Arcs**: bow = tan(sweep / 4), counter-clockwise positive, 0 for a straight move. An arc longer than a half circle is split into equal pieces of at most a half circle, so a whole circle is two half circles (bow ±1). | observed |
+| OX12 | **Qualities**: a contour's cut quality 1–5 is written as OMAX quality 1–5 (OMAX counts 1 fastest … 5 finest, so name the machine's qualities in that order); quality 6 as 11 (minimum taper) and 7 as 8 (water only). Lead-ins, lead-outs and micro-joint leads are 9. Marking lines and remnant marks are 6 (etch), on the line. | observed; etch for every marking line is our estimate |
+| OX13 | **Traverses lift the head**: quality 10 (the original's default; it can keep the head down over short ones, not built). | observed |
+| OX19 | **A contour reads**: traverse to the pierce point, the lead-in (9), the contour at its quality with its loops and overlap, the lead-out (9). A micro-joint is a traverse over the gap and the cut starts again after it (OMAX pierces there by itself); a joint with leads leads out and back in at 9. No pierce, jet-on or dwell records. | observed |
+| OX21 | **Kerf side**: 1 left, 2 right of the cutting direction, from the contour's scrap side (KC2), so a hole cut clockwise has its kerf on the right and one cut counter-clockwise on the left (outsides the other way round); 0 when the path is already the offset path (system compensation) and on marking and free cut lines. | observed (the original takes the side from its compensation record and cuts every contour clockwise: outsides 1, holes 2) |
+| OM1 | **What stops an OMAX file**: a contour at cut quality 8–12 (no OMAX meaning; 10 would be read as a traverse) or a punched contour. Export and the agents' `program` stop and name the part. | rebuild (the original writes 8–12 unchanged) |
+| OM2 | **Free cut lines** (the remnant line, lines drawn on the sheet) are cut on the line at quality 1, the quality whose speed the G-code program gives them. | estimated |
+| OM3 | **Read back before it is written**: the file is parsed on its own and must pierce exactly as often as the plan and cut within 2 % + 0.5 mm of the plan's length (curves are written as true arcs where the plan holds short straights); otherwise export and `program` stop, and the job's earlier programs are removed (EXP1). | rebuild |
+| OM4 | **Header values**: file version `2`, as files written by OMAX's own layout program carry (the original writes `3`), and the date as days since 30 Dec 1899 plus the fraction of the day (UTC), where the original's date number is wrong. Two comment lines: the sheet with its size, thickness and material; parts, pierces and cut length. | estimated (OMAX accepting either version isn't confirmed on a machine) |
+| OM5 | **Curves are written as arcs**: runs of points on one circle become arcs with the LC5 programs' fit (BL38), so the OMAX doesn't slow at every short straight of a curve. | rebuild |
+
+Not built (FEATURES MAC-94 – MAC-98): the 3D file (tilt data, bevel lead pieces), common-cut contours
+as slits (quality + 20), head-down traverses over short gaps, `.ord` files and the hand-off to
+OMAX's time calculation. A file not yet loaded on an OMAX: MAC-96.
+
 ## Database tables (Expert's SQL Server database)
 
 | # | Table | What it holds (columns used by Expert) |
@@ -2735,7 +2764,7 @@ the plan's time by kind), `sheetsim.rs` (the simulation uses the same times). Ag
 | CTM9 | Marking speed source D017: 1 = the machine's marking speed (A063, the cutting head's); else the table's (TT6). | Observed (switch); A063 for laser marking is our estimate |
 | CTM10 | Pierce time D014: 1 = D016 seconds; 2 = D015 seconds per mm of plate; 3 = the table's (TT5). Every beam-on counts, joint re-pierces included, and the sheet's pierce count is the same count. | Observed (modes); counting every re-pierce is our estimate |
 | CTM11 | Beam off: D001 seconds when D169 = 1 (a laser's; the table's value is a waterjet's). | Observed |
-| CTM12 | Head: H006 seconds up, H007 down, once each per contour and per marking. | Observed (codes); once per marking is our estimate |
+| CTM12 | Head: H005 seconds up, H006 down, once each per contour and per marking. (H007 is a sheet-clamp time, not the head.) | Observed (codes); once per marking is our estimate |
 | CTM13 | Technology-change and quality-change times (D002–D013, a 12 × 12 table) and start/end-of-program times (L, M) are not counted (all 0 in the shipped template; FEATURES MAC-23). | Observed (codes); not built |
 | CTM14 | Kinds of time kept: cutting, marking, rapids, pierces, head up/down and beam off; the sheet's time is their sum. Factors N001 (rapids), N002 (cutting), N007 (marking), N008 (pierces) scale them. | Observed (factors exist); which factor is which kind is our estimate |
 | CTM15 | The times card shows the machine time split into those kinds, where the speeds came from (table record, machine default speed, or estimate) and which time file applies. | Ours |
