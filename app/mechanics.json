@@ -6555,6 +6555,12 @@
   "source": "MECHANICS ST18"
  },
  {
+  "name": "near stock thickness offered within",
+  "group": "sheet stock",
+  "value": "2 % of the job's thickness, at least 0.05 mm",
+  "source": "MECHANICS ST19"
+ },
+ {
   "name": "material fields",
   "group": "materials",
   "value": ["name", "density", "strength", "price", "scrap price", "price date", "machining factor", "norm", "catalogue number", "texture", "prices by thickness range"],
