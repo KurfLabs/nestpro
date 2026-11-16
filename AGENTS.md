@@ -69,6 +69,7 @@ database, customers) are in `research/public-denylist.txt`; the check reads it w
 
 ```bash
 tools/check.sh            # after every change: public check + Linux tests + Windows type-check
+tools/check.sh --boat     # the same, but the Linux tests + Windows check run on a boat.dev cloud machine (needs `boat login`; tools/boat-check.sh --make-base once)
 tools/shot.sh out.png     # build + screenshot (its own headless Xvfb display); add app flags e.g. --jobs, --part-tab=machining
 tools/install-hooks.sh    # once per clone: pre-commit public check
 cd app && cargo run       # run it (needs a display)

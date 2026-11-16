@@ -6453,6 +6453,18 @@
   "source": "MECHANICS LE8"
  },
  {
+  "name": "one lead's own shape: keeps how far the old lead reached off the contour",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE9"
+ },
+ {
+  "name": "one lead's own shape: ends moved by hand are dropped",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE9"
+ },
+ {
   "name": "hand-moved lead shared with turned or mirrored holes",
   "group": "leads",
   "value": false,

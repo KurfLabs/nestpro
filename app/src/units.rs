@@ -230,18 +230,33 @@ pub fn drag_len(ui: &mut egui::Ui, mm: &mut f64, unit: LenUnit, max_mm: f64) -> 
 /// `drag_len` between `min_mm` and `max_mm`. A value already outside stays
 /// until it is changed (a job may carry one).
 pub fn drag_len_in(ui: &mut egui::Ui, mm: &mut f64, unit: LenUnit, min_mm: f64, max_mm: f64) -> egui::Response {
+    ui.add(len_drag(mm, unit, min_mm, max_mm))
+}
+
+/// The box `drag_len_in` adds, for placing it yourself (`ui.put`).
+pub fn len_drag(mm: &mut f64, unit: LenUnit, min_mm: f64, max_mm: f64) -> egui::DragValue<'_> {
     let speed = match unit {
         LenUnit::Mm => 0.2,
         LenUnit::Inch => MM_PER_INCH / 64.0,
     };
-    ui.add(
-        egui::DragValue::new(mm)
-            .range(min_mm..=max_mm)
-            .clamp_existing_to_range(false)
-            .speed(speed)
-            .custom_formatter(move |v, _| unit.show(v))
-            .custom_parser(move |s| unit.parse(s)),
-    )
+    egui::DragValue::new(mm)
+        .range(min_mm..=max_mm)
+        .clamp_existing_to_range(false)
+        .speed(speed)
+        .custom_formatter(move |v, _| unit.show(v))
+        .custom_parser(move |s| unit.parse(s))
+}
+
+/// `len_drag` for a length where one value means something else ("Off",
+/// "No limit"): `is_word(v)` shows `word` instead of the number, and typing
+/// the word (or its start, or nothing) sets `word_mm`.
+pub fn len_drag_word<'a>(mm: &'a mut f64, unit: LenUnit, min_mm: f64, max_mm: f64, word: &'static str, is_word: fn(f64) -> bool, word_mm: f64) -> egui::DragValue<'a> {
+    len_drag(mm, unit, min_mm, max_mm)
+        .custom_formatter(move |v, _| if is_word(v) { word.to_string() } else { unit.show(v) })
+        .custom_parser(move |s| {
+            let t = s.trim().to_ascii_lowercase();
+            if t.is_empty() || (t.len() >= 2 && word.to_ascii_lowercase().starts_with(&t)) { Some(word_mm) } else { unit.parse(s) }
+        })
 }
 
 /// A typed sheet thickness (decimal or fraction, either unit) with a ▾ list
