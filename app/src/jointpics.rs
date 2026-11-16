@@ -74,6 +74,16 @@ fn label(p: &Painter, at: Pos2, align: Align2, s: &str, c: Color32) {
 
 fn canvas(p: &Painter, r: Rect) {
     p.rect_filled(r, CornerRadius::same(6), th().canvas_b);
+    p.rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, th().control_edge), egui::StrokeKind::Inside);
+}
+
+/// The lead angle, from the contour on the side away from the gap to the
+/// lead (rule AM6: the lean is D / tan A).
+fn angle_arc(p: &Painter, foot: Pos2, lead_end: Pos2, r: f32) {
+    let a0 = std::f32::consts::PI;
+    let a1 = (lead_end - foot).angle().rem_euclid(std::f32::consts::TAU);
+    let pts: Vec<Pos2> = (0..=10).map(|k| a0 + (a1 - a0) * k as f32 / 10.0).map(|a| foot + Vec2::angled(a) * r).collect();
+    p.add(Shape::line(pts, Stroke::new(1.0, DIM)));
 }
 
 /// The little picture on a joint-type tile (drawn in an 80 × 40 box).
@@ -150,7 +160,7 @@ pub fn joint(p: &Painter, r: Rect, jt: JointType) -> Marks {
         let pts: Vec<Pos2> = (0..=16)
             .map(|k| {
                 let t = k as f32 / 16.0;
-                let (a, c, b) = ((146.0, 24.0), (236.0, 22.0), (234.0, 108.0));
+                let (a, c, b) = ((146.0, 24.0), (260.0, 16.0), (234.0, 108.0));
                 let u = 1.0 - t;
                 q.p(u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0, u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1)
             })
@@ -162,8 +172,9 @@ pub fn joint(p: &Painter, r: Rect, jt: JointType) -> Marks {
         p.circle_filled(q.p(190.0, 64.0), 3.2, JOINT);
         dim(p, q.p(130.0, 24.0), q.p(130.0, 64.0));
         dim(p, q.p(190.0, 120.0), q.p(234.0, 120.0));
-        label(p, q.p(198.0, 60.0), Align2::LEFT_BOTTOM, "corner", LABEL);
-        return Marks { gap: q.p(150.0, 92.0), lead_out: Some(q.p(84.0, 44.0)), lead_in: Some(q.p(284.0, 84.0)), angle: Some(q.p(170.0, 20.0)) };
+        label(p, q.p(186.0, 68.0), Align2::RIGHT_TOP, "corner", LABEL);
+        angle_arc(p, q.p(168.0, 64.0), q.p(146.0, 24.0), 18.0 * q.s);
+        return Marks { gap: q.p(150.0, 92.0), lead_out: Some(q.p(84.0, 44.0)), lead_in: Some(q.p(284.0, 84.0)), angle: Some(q.p(192.0, 50.0)) };
     }
     let y = if jt == JointType::Gap { 52.0 } else { 82.0 };
     p.rect_filled(Rect::from_min_max(q.p(0.0, y), q.p(336.0, y + 44.0)), CornerRadius::ZERO, mat);
@@ -196,14 +207,7 @@ pub fn joint(p: &Painter, r: Rect, jt: JointType) -> Marks {
     let mid = (top + y) / 2.0 + 6.0;
     let mut m = Marks { gap, lead_out: Some(q.p(xo - 36.0, mid)), lead_in: Some(q.p(xi + 36.0, mid)), angle: None };
     if jt == JointType::LeadsInclined {
-        // The angle is the lead's to the contour, on the side away from the
-        // gap (rule AM6: the lean is D / tan A).
-        let c = q.p(148.0, y);
-        let r0 = 22.0 * q.s;
-        let a0 = std::f32::consts::PI;
-        let a1 = (q.p(out_end, top) - c).angle().rem_euclid(std::f32::consts::TAU);
-        let pts: Vec<Pos2> = (0..=10).map(|k| a0 + (a1 - a0) * k as f32 / 10.0).map(|a| c + Vec2::angled(a) * r0).collect();
-        p.add(Shape::line(pts, Stroke::new(1.0, DIM)));
+        angle_arc(p, q.p(148.0, y), q.p(out_end, top), 22.0 * q.s);
         m.angle = Some(q.p(168.0, (top + y) / 2.0));
     }
     m
