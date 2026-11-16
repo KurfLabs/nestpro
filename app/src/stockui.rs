@@ -89,7 +89,7 @@ impl App {
     }
 
     fn job_sheets(&self) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: stockflow::material_name(&self.cfg, self.spec.material) }
+        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: crate::engine::material::program_name_or_name(self.spec.material), read_name: crate::engine::material::read_name(self.spec.material, &self.job_material_names) }
     }
 
     /// The Library folder as whoever works at this window, without setting
@@ -230,6 +230,9 @@ impl App {
             return;
         };
         let before = self.spec.clone();
+        // MA17: the sheet's material name goes with its id, also when the
+        // switch waits for the question about the nested sheets.
+        crate::engine::material::remember_read(&mut self.job_material_names, it.material, &it.material_name);
         self.spec.material = it.material;
         self.spec.thickness = it.thickness;
         self.after_material_edit(before);
@@ -1005,8 +1008,8 @@ const CARD_DRAW_H: f32 = 60.0;
 /// The drawing at the start of each table row.
 const THUMB: egui::Vec2 = egui::vec2(48.0, 20.0);
 
-fn mat_name(m: usize) -> &'static str {
-    crate::cnc::MATERIALS[m.min(crate::cnc::MATERIALS.len() - 1)]
+fn mat_name(m: usize) -> String {
+    crate::engine::material::nearest_name(m)
 }
 
 /// The stock items the shelf picks, that the filters let through and whose
@@ -1100,7 +1103,10 @@ fn shelf_row(ui: &mut egui::Ui, on: bool, swatch: Option<&dyn Fn(&egui::Painter,
     }
     let font = egui::FontId::proportional(if swatch.is_some() { 13.5 } else { 12.5 });
     let col = if n == 0 && swatch.is_none() { th().text_dim } else if on { th().text_strong } else { th().text };
-    let g = p.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, name, font, col);
+    // A long name is cut short of the count (MA23: grades have long names).
+    let clip = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(rect.right() - 28.0, rect.bottom()));
+    let g = p.with_clip_rect(clip).text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, name, font, col);
+    let r = if g.right() > clip.right() { r.on_hover_text(name) } else { r };
     if !note.is_empty() {
         p.text(egui::pos2(g.right() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, note, egui::FontId::proportional(11.0), th().ok_fg);
     }
@@ -1119,25 +1125,40 @@ fn material_shelf(ui: &mut egui::Ui, su: &mut StockUi, job_m: usize, job_t: f64,
     if shelf_row(ui, shelf == Shelf::All, Some(all), "All materials", "", shown(&|_| true)).on_hover_text("Every sheet and remnant in stock").clicked() {
         pick = Some(Shelf::All);
     }
-    for m in 0..crate::cnc::MATERIALS.len() {
-        let open = matches!(shelf, Shelf::Material(x) | Shelf::Thickness(x, _) if x == m);
-        let sw: &dyn Fn(&egui::Painter, egui::Rect) = &move |p, r| stockpics::paint_swatch(p, r, m);
-        let note = if m == job_m { "● job" } else { "" };
-        if shelf_row(ui, shelf == Shelf::Material(m), Some(sw), mat_name(m), note, shown(&|i| i.material == m)).on_hover_text("Every thickness of this material; pick one below it").clicked() {
-            pick = Some(Shelf::Material(m));
-        }
-        if open {
-            for t in shelf_thicknesses(&su.stock, m, job_m, job_t) {
-                let n = shown(&|i| i.material == m && (i.thickness - t).abs() <= stock::TOL);
-                let on = matches!(shelf, Shelf::Thickness(x, y) if x == m && (y - t).abs() <= stock::TOL);
-                let job = m == job_m && (t - job_t).abs() <= stock::TOL;
-                let tip = if n == 0 { "Nothing of this thickness shows: none in stock, or hidden by the filters below" } else { "Show this thickness" };
-                if shelf_row(ui, on, None, &u.thickness(t), if job { "● job" } else { "" }, n).on_hover_text(tip).clicked() {
-                    pick = Some(Shelf::Thickness(m, t));
+    // MA23: the materials grouped by kind, filtered by what is typed above
+    // them, as in every Material ▾.
+    ui.add_space(2.0);
+    let (text, _) = crate::matpick::find_box(ui, "shelf", false, ui.available_width());
+    let groups = crate::matpick::groups(&text);
+    if groups.is_empty() {
+        crate::matpick::none_match(ui, &text);
+    }
+    egui::ScrollArea::vertical().id_salt("shelf_materials").max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
+        for g in &groups {
+            crate::matpick::group_heading(ui, g);
+            for c in &g.choices {
+                let m = c.id;
+                let open = matches!(shelf, Shelf::Material(x) | Shelf::Thickness(x, _) if x == m);
+                let sw: &dyn Fn(&egui::Painter, egui::Rect) = &move |p, r| stockpics::paint_swatch(p, r, m);
+                let note = if m == job_m { "● job" } else { "" };
+                let name = c.matched.as_ref().map_or_else(|| mat_name(m), |o| format!("{} · {o}", mat_name(m)));
+                if shelf_row(ui, shelf == Shelf::Material(m), Some(sw), &name, note, shown(&|i| i.material == m)).on_hover_text("Every thickness of this material; pick one below it").clicked() {
+                    pick = Some(Shelf::Material(m));
+                }
+                if open {
+                    for t in shelf_thicknesses(&su.stock, m, job_m, job_t) {
+                        let n = shown(&|i| i.material == m && (i.thickness - t).abs() <= stock::TOL);
+                        let on = matches!(shelf, Shelf::Thickness(x, y) if x == m && (y - t).abs() <= stock::TOL);
+                        let job = m == job_m && (t - job_t).abs() <= stock::TOL;
+                        let tip = if n == 0 { "Nothing of this thickness shows: none in stock, or hidden by the filters below" } else { "Show this thickness" };
+                        if shelf_row(ui, on, None, &u.thickness(t), if job { "● job" } else { "" }, n).on_hover_text(tip).clicked() {
+                            pick = Some(Shelf::Thickness(m, t));
+                        }
+                    }
                 }
             }
         }
-    }
+    });
     if let Some(p) = pick {
         su.shelf = Some(p);
     }
@@ -1245,12 +1266,10 @@ fn new_sheet_form(ui: &mut egui::Ui, su: &mut StockUi, job_m: usize, job_t: f64,
         ui.vertical(|ui| {
             ui.set_width(500.0);
             label(ui, "Material");
+            // MA23: the same grouped, searchable Material ▾ as everywhere.
             ui.horizontal(|ui| {
-                for m in 0..crate::cnc::MATERIALS.len() {
-                    if tile(ui, egui::vec2(112.0, 54.0), n.material == m, mat_name(m), |p, r| stockpics::paint_swatch(p, r, m)).clicked() {
-                        n.material = m;
-                    }
-                }
+                stockpics::swatch(ui, n.material, egui::vec2(26.0, 26.0));
+                crate::matpick::combo(ui, "new_sheet", &mut n.material, 240.0, &[]);
             });
             ui.add_space(4.0);
             label(ui, "Thickness");

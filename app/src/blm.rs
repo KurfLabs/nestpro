@@ -171,32 +171,24 @@ pub struct BlmSettings {
     pub gas_name: String,
 }
 
-/// Material name and BLM material code for our materials (codes from the
-/// PstAdi06.PS1 D-lines: "RST 37-2" 0010, "X5CrNi" 0100, "Al 1050 A" 0200).
-pub fn material_codes(material: usize) -> (&'static str, &'static str) {
-    match material {
-        1 => ("STAINLESS", "0100"),
-        2 => ("ALUMINIUM", "0200"),
-        _ => ("STEEL", "0010"),
-    }
-}
-
 impl BlmSettings {
     /// Settings for a machine before a job is open (on for an LC5 / BLM).
     pub fn for_machine(machine: &str) -> Self {
         let m = machine.to_uppercase();
-        let (n, id) = material_codes(1);
-        BlmSettings { on: m.contains("LC5") || m.contains("BLM"), machine: machine.to_string(), job: String::new(), mat_name: n.into(), mat_id: id.into(), gas_id: 1, gas_name: "Nitrogen".into() }
+        let (mat_name, mat_id) = crate::engine::material::default_program(1);
+        BlmSettings { on: m.contains("LC5") || m.contains("BLM"), machine: machine.to_string(), job: String::new(), mat_name, mat_id, gas_id: 1, gas_name: "Nitrogen".into() }
     }
 
     pub fn for_spec(spec: &SheetSpec, machine: &str, job: &str) -> Self {
-        let (n, id) = material_codes(spec.material);
+        // MA25: the material's name and code in programs, its own or its
+        // standard's (STEEL 0010 for a number not in the list, JOB-86).
+        let (mat_name, mat_id) = crate::engine::material::program(spec.material);
         let blm = machine.to_uppercase().contains("LC5") || machine.to_uppercase().contains("BLM");
         // The job's gas, as the LC5 names it (GS10, GS2); a job without one takes the
         // machine's in `engine::blm_for` (GS11), nitrogen until then, as for
         // a machine with no job open.
         let g = spec.gas.unwrap_or(crate::gas::Gas::Nitrogen);
-        BlmSettings { on: blm, machine: machine.to_string(), job: job.to_string(), mat_name: n.into(), mat_id: id.into(), gas_id: g.number(), gas_name: g.program_name().into() }
+        BlmSettings { on: blm, machine: machine.to_string(), job: job.to_string(), mat_name, mat_id, gas_id: g.number(), gas_name: g.program_name().into() }
     }
 }
 

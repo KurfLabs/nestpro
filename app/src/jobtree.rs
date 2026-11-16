@@ -212,6 +212,7 @@ impl App {
         self.job_path = j.file.as_ref().map(|l| l.path.clone());
         self.job_link = j.file;
         self.erp_job = j.erp;
+        self.job_material_names = j.material_names;
         self.ghost = None;
         self.sel_cut = None;
         self.jobs_reindexed();
@@ -306,6 +307,7 @@ impl App {
             saved: None,
             library: None,
             library_parts: Default::default(),
+            material_name: crate::engine::material::read_name(j.spec.material, &j.material_names),
         }
     }
 

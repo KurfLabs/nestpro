@@ -7191,6 +7191,228 @@
   "source": "MECHANICS BV20"
  },
  {
+  "name": "material fields",
+  "group": "materials",
+  "value": ["name", "density", "strength", "price", "scrap price", "price date", "machining factor", "norm", "catalogue number", "texture", "prices by thickness range"],
+  "source": "MA8"
+ },
+ {
+  "name": "material required fields",
+  "group": "materials",
+  "value": ["name"],
+  "source": "MA8"
+ },
+ {
+  "name": "material name unique ignoring case",
+  "group": "materials",
+  "value": true,
+  "source": "MA8"
+ },
+ {
+  "name": "new blank material numbers",
+  "group": "materials",
+  "value": 0,
+  "source": "MA8"
+ },
+ {
+  "name": "density change warning above",
+  "group": "materials",
+  "value": 0.001,
+  "unit": "kg/dm³",
+  "source": "MA8"
+ },
+ {
+  "name": "density unit",
+  "group": "materials",
+  "value": "kg/dm³",
+  "source": "MA8"
+ },
+ {
+  "name": "adding a standard whose catalogue number is in the list under another name",
+  "group": "materials",
+  "value": "ask: replace it, add beside it, or skip (answer can apply to the rest)",
+  "source": "MA8"
+ },
+ {
+  "name": "rebuild: adding a standard from the catalogue",
+  "group": "materials",
+  "value": "always adds a new material based on it, no prompt (the user's decision; ADR 0005)",
+  "source": "MA8"
+ },
+ {
+  "name": "rename may change only the case",
+  "group": "materials",
+  "value": true,
+  "source": "MA9"
+ },
+ {
+  "name": "rename carried to everything that uses the material",
+  "group": "materials",
+  "value": true,
+  "source": "MA9",
+  "estimated": true
+ },
+ {
+  "name": "rename rewrites machine files only for a material without a catalogue number",
+  "group": "materials",
+  "value": true,
+  "source": "MA9"
+ },
+ {
+  "name": "delete refused while used by",
+  "group": "materials",
+  "value": ["sheet", "part", "nesting", "catalogue element"],
+  "source": "MA10"
+ },
+ {
+  "name": "delete asks for confirmation",
+  "group": "materials",
+  "value": true,
+  "source": "MA10"
+ },
+ {
+  "name": "materials protected from deletion",
+  "group": "materials",
+  "value": [],
+  "source": "MA10"
+ },
+ {
+  "name": "deleted main material passes main to",
+  "group": "materials",
+  "value": "another material of its catalogue number",
+  "source": "MA10"
+ },
+ {
+  "name": "starter values corrected from the original",
+  "group": "materials",
+  "value": [
+   {"catalogue": "0510", "field": "name", "original": "Cooper", "rebuild": "Copper"},
+   {"catalogue": "3060", "field": "density", "original": 0.0, "rebuild": 8.0}
+  ],
+  "source": "MA11"
+ },
+ {
+  "name": "materials in a blank database",
+  "group": "materials",
+  "value": 0,
+  "source": "MA11"
+ },
+ {
+  "name": "starter materials",
+  "group": "materials",
+  "value": [
+   {"name": "RST 37-2", "catalogue": "0010", "kind": "Carbon Steel", "density": 7.8, "strength": 420, "price": 0.5},
+   {"name": "X5CrNi", "catalogue": "0100", "kind": "Stainless steel", "density": 8.0, "strength": 586, "price": 2.4},
+   {"name": "X5CrNi + Film", "catalogue": "3060", "kind": "Stainless steel", "density": 8.0, "strength": 0, "price": 0},
+   {"name": "Al99", "catalogue": "0200", "kind": "Aluminium alloy", "density": 2.7, "strength": 285.4, "price": 2.4},
+   {"name": "AlMg3", "catalogue": "0210", "kind": "Aluminium alloy", "density": 2.7, "strength": 1835.12, "price": 2.4},
+   {"name": "Galvanized", "catalogue": "0300", "kind": "Steel", "density": 7.9, "strength": 366, "price": 0.5},
+   {"name": "Copper", "catalogue": "0510", "kind": "Copper", "density": 8.9, "strength": 6, "price": 0},
+   {"name": "Brass", "catalogue": "0590", "kind": "Brass", "density": 8.5, "strength": 3, "price": 0}
+  ],
+  "source": "MA11"
+ },
+ {
+  "name": "starter material kinds the catalogue doesn't give",
+  "group": "materials",
+  "value": {"3060": "Stainless steel", "0510": "Copper", "0590": "Brass"},
+  "source": "MA11",
+  "estimated": true
+ },
+ {
+  "name": "LC5 material program name",
+  "group": "materials",
+  "value": "material name",
+  "source": "MA11"
+ },
+ {
+  "name": "LC5 material code",
+  "group": "materials",
+  "value": "catalogue number (empty without one)",
+  "source": "MA11"
+ },
+ {
+  "name": "LC5 material alias",
+  "group": "materials",
+  "value": "main material of its catalogue number when that is another material, else the material's name",
+  "source": "MA11"
+ },
+ {
+  "name": "ByStar Fiber material text",
+  "group": "materials",
+  "value": "material name",
+  "source": "MA11"
+ },
+ {
+  "name": "old three materials' program names and codes kept",
+  "group": "materials",
+  "value": [["STEEL", "0010"], ["STAINLESS", "0100"], ["ALUMINIUM", "0200"]],
+  "source": "MA11"
+ },
+ {
+  "name": "material catalogue",
+  "group": "materials",
+  "value": [
+   {"number": "0010", "name": "RST 37-2", "shown": "RST 37-2", "category": "punching", "kind": "Carbon Steel", "density": 7.8},
+   {"number": "0020", "name": "ST 42", "shown": "ST 42", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0030", "name": "ST 44-2", "shown": "ST 44-2", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0040", "name": "ST 52-3", "shown": "ST 52-3", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0050", "name": "AP 12", "shown": "AP 12", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0060", "name": "DC04", "shown": "DC04", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0070", "name": "S 380 MC", "shown": "S 380 MC", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0080", "name": "S 460 MC", "shown": "S 460 MC", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0100", "name": "X5CrNi", "shown": "X5CrNi", "category": "punching", "kind": "Stainless steel", "density": 8.0},
+   {"number": "0110", "name": "X3CrNiMo 17-13-3", "shown": "X3CrNiMo 17-13-3", "category": "punching", "kind": "Stainless steel", "density": 8.0},
+   {"number": "0200", "name": "Al99", "shown": "Al99", "category": "punching", "kind": "Aluminium alloy", "density": 2.7},
+   {"number": "0210", "name": "AlMg3", "shown": "AlMg3", "category": "punching", "kind": "Aluminium alloy", "density": 2.7},
+   {"number": "0300", "name": "Galvanizado", "shown": "Galvanized", "category": "punching", "kind": "Steel", "density": 7.9},
+   {"number": "0310", "name": "DC01+ZE", "shown": "DC01+ZE", "category": "punching", "kind": "Steel", "density": 7.9},
+   {"number": "0400", "name": "Titanio", "shown": "Titanium", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0410", "name": "Inconel 600", "shown": "Inconel", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0500", "name": "Absorbedor acustico", "shown": "Acoustic Absorber", "category": "waterjet", "kind": "", "density": 2.1},
+   {"number": "0510", "name": "Cobre", "shown": "Copper", "category": "waterjet", "kind": "", "density": 8.9},
+   {"number": "0520", "name": "Gres", "shown": "Sandstone", "category": "waterjet", "kind": "", "density": 1.9},
+   {"number": "0530", "name": "Nylon", "shown": "Nylon", "category": "waterjet", "kind": "", "density": 2.1},
+   {"number": "0540", "name": "Madera", "shown": "Wood", "category": "waterjet", "kind": "", "density": 0.8},
+   {"number": "0550", "name": "Marmol", "shown": "Marble", "category": "waterjet", "kind": "", "density": 2.8},
+   {"number": "0560", "name": "Cristal", "shown": "Glass", "category": "waterjet", "kind": "", "density": 2.6},
+   {"number": "0570", "name": "Alabastro", "shown": "Alabaster", "category": "waterjet", "kind": "", "density": 2.4},
+   {"number": "0580", "name": "Pizarra", "shown": "Slate", "category": "waterjet", "kind": "", "density": 2.8},
+   {"number": "0590", "name": "Laton", "shown": "Brass", "category": "waterjet", "kind": "", "density": 8.5},
+   {"number": "0600", "name": "Arenisca", "shown": "Gritty", "category": "waterjet", "kind": "", "density": 2.6},
+   {"number": "0610", "name": "Linoleo", "shown": "linoleum", "category": "waterjet", "kind": "", "density": 1.2},
+   {"number": "0620", "name": "Metacrilato", "shown": "Plexiglas", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0630", "name": "Goma", "shown": "Rubber", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0640", "name": "Grafito", "shown": "Graphite", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0650", "name": "Granito", "shown": "Granite", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0660", "name": "Papel", "shown": "Paper", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0670", "name": "PVC", "shown": "PVC", "category": "waterjet", "kind": "", "density": null}
+  ],
+  "source": "MA12"
+ },
+ {
+  "name": "catalogue values corrected from the original",
+  "group": "materials",
+  "value": [
+   {"catalogue": "0540", "field": "density", "original": 800.0, "rebuild": 0.8},
+   {"catalogue": "0200, 0210", "field": "kind", "original": "Alloy Alluminium", "rebuild": "Aluminium alloy"}
+  ],
+  "source": "MA12"
+ },
+ {
+  "name": "material catalogue naming standards",
+  "group": "materials",
+  "value": 13,
+  "source": "MA12"
+ },
+ {
+  "name": "material catalogue English names on screen",
+  "group": "materials",
+  "value": true,
+  "source": "MA12",
+  "estimated": true
+ },
+ {
   "name": "gas list",
   "group": "gas",
   "value": "per machine: its post settings' G lines in order (gas n = the n-th line), each with a name and on/off; without them 1 Nitrogen, 2 Compressed air, 3 Oxygen, all on",
@@ -7734,6 +7956,188 @@
   "group": "ByStar Fiber writer",
   "value": "B019, B023, B034, B035, B046, B047, B048 with R000-R007; B037 (no common cuts)",
   "source": "MECHANICS BV66"
+ },
+ {
+  "name": "material list file",
+  "group": "materials",
+  "value": "Library\\Sheets\\materials.json, under the Library's write lock; settings folder without a Library",
+  "source": "MA14",
+  "estimated": true
+ },
+ {
+  "name": "material list change while the Library is out of reach",
+  "group": "materials",
+  "value": "refused",
+  "source": "MA14",
+  "estimated": true
+ },
+ {
+  "name": "material list seed",
+  "group": "materials",
+  "value": "this PC's three materials from Settings → Materials, ids 0 to 2",
+  "source": "MA15",
+  "estimated": true
+ },
+ {
+  "name": "material id",
+  "group": "materials",
+  "value": "next number, never given twice",
+  "source": "MA16",
+  "estimated": true
+ },
+ {
+  "name": "material names unique",
+  "group": "materials",
+  "value": "names and other names, ignoring case and spaces",
+  "source": "MA16",
+  "estimated": true
+ },
+ {
+  "name": "material value left unset",
+  "group": "materials",
+  "value": "its standard's",
+  "source": "MA16",
+  "estimated": true
+ },
+ {
+  "name": "saved material",
+  "group": "materials",
+  "value": "id and name; id first, else the name finds it",
+  "source": "MA17",
+  "estimated": true
+ },
+ {
+  "name": "standards",
+  "group": "materials",
+  "value": "0010 mild steel 7.85, 0100 stainless steel 8.0, 0200 aluminium 2.70",
+  "source": "MA18",
+  "estimated": true
+ },
+ {
+  "name": "rename material",
+  "group": "materials",
+  "value": "no file rewritten; files point at the number and show the new name, saved with it next save",
+  "source": "MA19",
+  "estimated": true
+ },
+ {
+  "name": "delete material",
+  "group": "materials",
+  "value": "never 0-2; refused while a saved job, library part, stock item or the open job uses it, naming the first 3 of each",
+  "source": "MA20",
+  "estimated": true
+ },
+ {
+  "name": "Settings → Materials",
+  "group": "materials",
+  "value": "every material with its kind (the Material ▾'s group, MA23), standard and other names; add from any of the catalogue's 34 standards (named as it, values blank = the standard's) or blank; edit every value, a blank one shows its standard's greyed, an empty one of its own what it means (kept as stored), Use standard goes back; delete refused at once as MA20, else marked; Save materials stores all changes together under the write lock, all or none, only the values changed; Undo changes throws them away; no Library reachable: says why, can't change, looked at again on reopening and when the Library is looked at again, unsaved edits kept",
+  "source": "MA21",
+  "estimated": true
+ },
+ {
+  "name": "catalogue standards beyond the first three",
+  "group": "materials",
+  "value": "kind from the catalogue (steels and none as mild steel), its density (7.85 when none), its number as machine table key, programs with its name and number (MA25); the first three keep MA18's values (0010 weighs 7.85); a blank material is on 0010",
+  "source": "MA22",
+  "estimated": true
+ },
+ {
+  "name": "material picker groups",
+  "group": "materials",
+  "value": "Carbon steel, Stainless steel, Aluminium, Galvanized, Copper and brass, Other",
+  "source": "MA23",
+  "estimated": true
+ },
+ {
+  "name": "material picker find",
+  "group": "materials",
+  "value": "every word typed in the name or one other name; any order, case, spaces or accents",
+  "source": "MA23",
+  "estimated": true
+ },
+ {
+  "name": "machine-file key of a material",
+  "group": "materials",
+  "value": "its own key, else its standard's catalogue number; its own key the file has no section for: the machine's own values (MTL6), not the standard's sections; empty: the name in programs; a number not in the list: none (only * fits)",
+  "source": "MA24",
+  "estimated": true
+ },
+ {
+  "name": "name and code in programs of a material",
+  "group": "materials",
+  "value": "its own (empty written empty), else its standard's: STEEL 0010, STAINLESS 0100, ALUMINIUM 0200 for the first three; other catalogue standards their name as shown and their four-digit number (Galvanized 0300); never the name shown; a number not in the list STEEL 0010",
+  "source": "MA25",
+  "estimated": true
+ },
+ {
+  "name": "material weight per volume in weights",
+  "group": "materials",
+  "value": "sheets, remnants (real area) and parts: area x thickness x its own density, else its standard's (0010 7.85, 0100 8.0, 0200 2.70, others the catalogue's, 7.85 where none); a number not in the list as aluminium",
+  "source": "MA26",
+  "estimated": true
+ },
+ {
+  "name": "standard not in the catalogue",
+  "group": "materials",
+  "value": "as mild steel: 0010 sections, 7.85, STEEL 0010, mild steel's kind; shown under Other",
+  "source": "MA27",
+  "estimated": true
+ },
+ {
+  "name": "joining a Library",
+  "group": "materials",
+  "value": "the Library's list wins; 0 to 2 the same by number; another PC material is the Library material one of its names (name or other name) belongs to, else added with its values and the Library's next number; the PC's name (always, even when the Library's material shows it) and former names go with it as joined names, kept apart from renames on the list; a Library with no list takes the PC's (a PC with settings from before: its three as seeded), stored; once per Library (materials-joined.json); under the write lock, retried while out of reach; started offline after joining: 0 to 2 only, no name finds another number",
+  "source": "MA28",
+  "estimated": true
+ },
+ {
+  "name": "starting list",
+  "group": "materials",
+  "value": "a new install: Mild steel, Stainless steel, Aluminium (as before, with RST 37-2, X5CrNi, Al99 as other names), X5CrNi + Film (on 0100, programs X5CrNi + Film 3060, key 3060), AlMg3, Galvanized, Copper, Brass; settings from before keep their three",
+  "source": "MA29",
+  "estimated": true
+ },
+ {
+  "name": "job whose material is unknown",
+  "group": "materials",
+  "value": "opens as it is, never switched; the window's notice names it and offers to add it (on 0010, blank values); info: material_known false, material_unknown",
+  "source": "MA30",
+  "estimated": true
+ },
+ {
+  "name": "file's number another material has",
+  "group": "materials",
+  "value": "jobs, library parts, stock items: 0 to 2 always themselves; else (1) the number's material has the name now; (2) the number's material had it before a rename on this list (when a joining PC brought it for another material: unknown, kept); (3) the material with that name now; (4) the one material that had it before (a rename here, or a joining PC's name), whatever the number; (5) several and none now: unknown, number and name kept through every read and save; (6) else the number",
+  "source": "MA31",
+  "estimated": true
+ },
+ {
+  "name": "material from a name outside",
+  "group": "materials",
+  "value": "name or other name; then name or code in programs (first in the list); then the longest grade other name; then the longest name held (3 characters or more); else unchanged",
+  "source": "MA32",
+  "estimated": true
+ },
+ {
+  "name": "plain number in an imported material",
+  "group": "materials",
+  "value": "a name, never a material number",
+  "source": "MA32",
+  "estimated": true
+ },
+ {
+  "name": "unknown material after the list changes",
+  "group": "materials",
+  "value": "an open job whose material the list didn't have is looked for again by its name (MA31) whenever a new list comes into use (read again, joined, or a change stored from this window or session), never by its number alone; whether it was known is taken from the list before; no name found: stays unknown, keeping its number and name",
+  "source": "MA34",
+  "estimated": true
+ },
+ {
+  "name": "what uses a material, read against",
+  "group": "materials",
+  "value": "the material list as read under the write lock; files first read without the lock are read again when the list changed in between; an open job that was unknown is found again in that list by its name (MA34)",
+  "source": "MA35",
+  "estimated": true
  }
 ]
 }

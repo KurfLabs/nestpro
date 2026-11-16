@@ -1628,7 +1628,7 @@ impl App {
                 "Drawing - {} ({} / {} / {:.4}) - [{}]",
                 self.parts[i].name,
                 self.machine_name(),
-                cnc::MATERIALS[self.spec.material].to_uppercase(),
+                crate::engine::material::name_or(self.spec.material, "?").to_uppercase(),
                 self.spec.thickness / self.unit().factor(),
                 self.db_label()
             )
@@ -1934,18 +1934,18 @@ impl App {
             // What Nest all will nest in, in view before nesting.
             ui.vertical(|ui| {
                 ui.add_space(8.0);
-                let mat = format!("{} · {} · {}  ▾", cnc::MATERIALS[self.spec.material.min(cnc::MATERIALS.len() - 1)], self.unit().thickness(self.spec.thickness), gas_short(&engine::job_gas(&self.spec, &self.blm)));
+                // A material the list doesn't have (deleted, or from another
+                // Library) shows `?`, as every Material ▾ does (JOB-86, MA23).
+                let mat = format!("{} · {} · {}  ▾", crate::engine::material::name_or(self.spec.material, "?"), self.unit().thickness(self.spec.thickness), gas_short(&engine::job_gas(&self.spec, &self.blm)));
                 let resp = ui.add(egui::Button::new(RichText::new(mat).strong()).min_size(Vec2::new(120.0, 26.0))).on_hover_text("The job's material, thickness and gas — click to change them");
                 // Change them in place; the rest of the sheet set-up is on the Sheet tab.
                 egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                     let before = self.spec.clone();
                     ui.set_min_width(300.0);
                     ui.label(RichText::new("Material").strong());
-                    ui.horizontal_wrapped(|ui| {
-                        for (k, m) in cnc::MATERIALS.iter().enumerate() {
-                            ui.selectable_value(&mut self.spec.material, k, *m);
-                        }
-                    });
+                    // MA23: the same grouped, searchable list as every Material ▾.
+                    let in_stock = self.materials_in_stock(ui.ctx());
+                    crate::matpick::list(ui, "home", &mut self.spec.material, &in_stock, 300.0, 220.0);
                     ui.add_space(4.0);
                     ui.label(RichText::new("Thickness").strong());
                     crate::units::thickness_inline(ui, &mut self.spec.thickness, self.cfg.nesting.units);
@@ -2161,11 +2161,9 @@ impl App {
             form(ui, |ui| {
                 form_row(ui, |ui| {
                     form_field(ui, "Material", |ui| {
-                        egui::ComboBox::from_id_salt("mat").width(118.0).selected_text(cnc::MATERIALS[self.spec.material]).show_ui(ui, |ui| {
-                            for (k, m) in cnc::MATERIALS.iter().enumerate() {
-                                cost_changed |= ui.selectable_value(&mut self.spec.material, k, *m).changed();
-                            }
-                        });
+                        // MA23: grouped by kind, filtered as you type.
+                        let in_stock = self.materials_in_stock(ui.ctx());
+                        cost_changed |= crate::matpick::combo(ui, "sheet_tab", &mut self.spec.material, 118.0, &in_stock);
                     });
                     // Typed (decimal, fraction, gauge, either unit) or picked
                     // from the common ones (TH1, TH2).
@@ -2393,6 +2391,25 @@ impl App {
         let on = crate::engine::stockflow::nest_on(&self.spec, &self.stock_use(), grouped);
         ctx.data_mut(|d| d.insert_temp(id, Memo(key, now, on.clone())));
         on
+    }
+
+    /// MA23: how many sheets and remnants of each material Nest all could
+    /// take at the job's thickness, for the Material ▾ (read again at most
+    /// every 3 s, as `nest_on`).
+    pub(crate) fn materials_in_stock(&self, ctx: &egui::Context) -> Vec<(usize, i32)> {
+        type Key = (u64, bool, bool, usize, usize, String);
+        #[derive(Clone)]
+        struct Memo(Key, f64, Vec<(usize, i32)>);
+        let grouped = self.group_nest && crate::nest::part_groups(&self.parts).len() > 1;
+        let key: Key = (self.spec.thickness.to_bits(), grouped, self.cfg.stock.use_stock, self.held.len(), crate::engine::material::count(), self.library_dir().display().to_string());
+        let now = ctx.input(|i| i.time);
+        let id = egui::Id::unique("materials_in_stock_memo");
+        if let Some(m) = ctx.data(|d| d.get_temp::<Memo>(id)).filter(|m| m.0 == key && now - m.1 < 3.0) {
+            return m.2;
+        }
+        let n = crate::engine::stockflow::in_stock_by_material(&self.spec, &self.stock_use(), grouped);
+        ctx.data_mut(|d| d.insert_temp(id, Memo(key, now, n.clone())));
+        n
     }
 
     /// The ▾ list beside the sheet size: *Any size in stock* when the stock
