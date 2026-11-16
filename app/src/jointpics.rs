@@ -174,7 +174,7 @@ pub fn joint(p: &Painter, r: Rect, jt: JointType) -> Marks {
         dim(p, q.p(190.0, 120.0), q.p(234.0, 120.0));
         label(p, q.p(186.0, 68.0), Align2::RIGHT_TOP, "corner", LABEL);
         angle_arc(p, q.p(168.0, 64.0), q.p(146.0, 24.0), 18.0 * q.s);
-        return Marks { gap: q.p(150.0, 92.0), lead_out: Some(q.p(84.0, 44.0)), lead_in: Some(q.p(284.0, 84.0)), angle: Some(q.p(192.0, 50.0)) };
+        return Marks { gap: q.p(150.0, 92.0), lead_out: Some(q.p(84.0, 44.0)), lead_in: Some(q.p(284.0, 84.0)), angle: Some(q.p(104.0, 12.0)) };
     }
     let y = if jt == JointType::Gap { 52.0 } else { 82.0 };
     p.rect_filled(Rect::from_min_max(q.p(0.0, y), q.p(336.0, y + 44.0)), CornerRadius::ZERO, mat);
