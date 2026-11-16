@@ -749,7 +749,11 @@ impl AppSettings {
         }
         // Write next to it, then rename, so a crash or a full disk never
         // leaves half a settings file (machines, posts and materials lost).
-        let tmp = f.with_extension("tmp");
+        // Each save has its own temporary file, so two saves at once (two
+        // windows, or tests running side by side) never rename each other's.
+        static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = f.with_extension(format!("tmp{}-{n}", std::process::id()));
         std::fs::write(&tmp, self.to_text())?;
         std::fs::rename(&tmp, f)
     }

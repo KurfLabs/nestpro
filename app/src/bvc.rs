@@ -607,7 +607,10 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<(Vec<Cut>, Option<boo
             }
             "ExecHighPositioning" => {
                 p.lifts += 1;
-                if let Some(cut) = cuts.last_mut().filter(|_| cur.is_none()) {
+                // Kept with the cut it follows only when no rapid or pierce
+                // came between: a lift after the head has moved on lifts it
+                // somewhere else (BV15).
+                if let Some(cut) = cuts.last_mut().filter(|_| cur.is_none() && after_cut) {
                     cut.lift = true;
                 }
             }

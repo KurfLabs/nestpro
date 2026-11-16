@@ -444,12 +444,26 @@ pub fn refusal(sheet_no: usize, issues: &[String]) -> String {
 
 /// What one planned cut of a ByStar Fiber program should read back as: its
 /// path from the pierce (lead-in, contour, overlap and lead-out), and the
-/// commands around it the rules give (BV29–BV33).
+/// commands around it the rules give (BV29–BV33), its joint markers at the
+/// middles of its gaps, and every gap of its contour, which only a marked
+/// pass may run through (BV63).
 struct Want {
     cut: Cut,
     mode: i64,
     side: crate::bvc::Side,
     pierce: Option<String>,
+    /// B038 off: a joint marker at each gap's middle, in order.
+    markers: Vec<P>,
+    /// Each gap's middle and how near a cut may pass it without cutting it.
+    gaps: Vec<(P, f64)>,
+}
+
+/// Points around a circle of radius `r` about `c` from angle 0, ccw.
+fn circle(c: P, r: f64) -> Vec<P> {
+    (0..=72).map(|k| {
+        let a = std::f64::consts::TAU * k as f64 / 72.0;
+        [c[0] + r * a.cos(), c[1] + r * a.sin()]
+    }).collect()
 }
 
 /// A part's planned cuts on the sheet, in its cut order (CO9), as the
@@ -457,19 +471,42 @@ struct Want {
 fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -> Vec<Want> {
     use crate::bvc::Side;
     let same = |a: &P, b: &P| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6;
+    let b036 = post.whole("B036");
     let mut out = vec![];
     for made in plan.part_order(part_no) {
         match made {
             Made::Mark(j) => {
                 let mut p = plan.marks[j].1.clone();
                 p.dedup_by(|a, b| same(a, b));
+                // BV40, BV55: a point mark, a circle or a tiny cut.
+                if let [c] = p[..] {
+                    let dia = post.num("B013") * post.unit;
+                    if post.num("B013") > post.tol {
+                        let r = dia / 2.0;
+                        let mut pts = vec![c];
+                        pts.extend(circle(c, r));
+                        let comp = (!post.on("B031")).then_some("Right");
+                        out.push(Want { cut: Cut { pts, comp }, mode: if post.on("B033") { 2 } else { 3 }, side: Side::Unknown, pierce: post.pierce(0, true), markers: vec![], gaps: vec![] });
+                    } else {
+                        let pts = vec![c, [c[0] - 0.05 * post.unit, c[1]]];
+                        out.push(Want { cut: Cut { pts, comp: None }, mode: 0, side: Side::Interior, pierce: Some("Fine".into()), markers: vec![], gaps: vec![] });
+                    }
+                    continue;
+                }
                 if p.len() < 2 {
+                    continue;
+                }
+                // BV31, BV33, BV65: B036 engraving is uncompensated, Interior
+                // and pierced Fine (2: Normal).
+                if b036 != 0 {
+                    let pierce = Some(if b036 == 2 { "Normal" } else { "Fine" }.to_string());
+                    out.push(Want { cut: Cut { pts: p, comp: None }, mode: 2, side: Side::Interior, pierce, markers: vec![], gaps: vec![] });
                     continue;
                 }
                 let bracket = post.on("B024");
                 let pierce = if bracket || post.on("B044") { post.pierce(0, true) } else { None };
                 let comp = (!post.on("B031")).then_some("Right");
-                out.push(Want { cut: Cut { pts: p, comp }, mode: 2, side: Side::Unknown, pierce });
+                out.push(Want { cut: Cut { pts: p, comp }, mode: 2, side: Side::Unknown, pierce, markers: vec![], gaps: vec![] });
             }
             Made::Contour(k) if plan.contours[k].punch.is_none() => {
                 let c = &plan.contours[k];
@@ -482,6 +519,34 @@ fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -
                     continue;
                 }
                 let lead = c.lead_path.len() >= 2;
+                let marking = post.is_marking(c.quality);
+                let left = c.comp.word().is_some_and(|w| w.0 == crate::kerf::Side::Left);
+                let new_marking = marking && b036 != 0;
+                let comp = if new_marking || (marking && post.on("B031")) { None } else { Some(if left { "Left" } else { "Right" }) };
+                let side = if new_marking { Side::Interior } else if marking { Side::Unknown } else if c.inner { Side::Interior } else { Side::Exterior };
+                let pierce_of = |starts_with_lead: bool| {
+                    if !(starts_with_lead || post.on("B024") || post.on("B044") || new_marking) {
+                        None
+                    } else if new_marking {
+                        Some(if b036 == 2 { "Normal" } else { "Fine" }.to_string())
+                    } else {
+                        post.pierce(c.quality, marking)
+                    }
+                };
+                // BV63: each gap's middle; a cut may come no nearer than a
+                // quarter of the gap without cutting it.
+                let gaps: Vec<(P, f64)> = c.joints.iter().map(|j| (crate::cnc::point_at(&c.points, (j.0 + j.1) / 2.0), ((j.1 - j.0) / 4.0).min(tolerance()))).collect();
+                let mode = post.mode(c.quality);
+                if !c.joints.is_empty() && post.on("B038") {
+                    // B038: a cut-out per beam run, each later one started
+                    // like a contour without a lead-in (BV48).
+                    for (n, run) in crate::cnc::beam_runs(c).into_iter().enumerate() {
+                        let mut run = run;
+                        run.dedup_by(|a, b| same(a, b));
+                        out.push(Want { cut: Cut { pts: run, comp }, mode, side, pierce: pierce_of(n == 0 && lead), markers: vec![], gaps: gaps.clone() });
+                    }
+                    continue;
+                }
                 let mut p = if lead { c.lead_path.clone() } else { vec![] };
                 p.extend(body);
                 if c.overlap > 0.0 {
@@ -489,17 +554,161 @@ fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -
                 }
                 p.extend(c.lead_out_path.iter().skip(1).copied());
                 p.dedup_by(|a, b| same(a, b));
-                let marking = post.is_marking(c.quality);
-                let left = c.comp.word().is_some_and(|w| w.0 == crate::kerf::Side::Left);
-                let comp = if marking && post.on("B031") { None } else { Some(if left { "Left" } else { "Right" }) };
-                let side = if marking { Side::Unknown } else if c.inner { Side::Interior } else { Side::Exterior };
-                let pierce = if lead || post.on("B024") || post.on("B044") { post.pierce(c.quality, marking) } else { None };
-                out.push(Want { cut: Cut { pts: p, comp }, mode: post.mode(c.quality), side, pierce });
+                let mut order: Vec<&(f64, f64)> = c.joints.iter().collect();
+                order.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let markers = order.iter().map(|j| crate::cnc::point_at(&c.points, (j.0 + j.1) / 2.0)).collect();
+                out.push(Want { cut: Cut { pts: p, comp }, mode, side, pierce: pierce_of(lead), markers, gaps });
             }
             Made::Contour(_) => {}
         }
     }
     out
+}
+
+/// The points of path `p` from `s0` to `s1` mm along it.
+fn stretch(p: &[P], s0: f64, s1: f64) -> Vec<P> {
+    let at = |s: f64| along(p, { let l: f64 = p.windows(2).map(|w| dist(w[0], w[1])).sum(); if l > 0.0 { (s / l).clamp(0.0, 1.0) } else { 0.0 } });
+    let mut out = vec![at(s0)];
+    let mut gone = 0.0;
+    for w in p.windows(2) {
+        gone += dist(w[0], w[1]);
+        if gone > s0 + 1e-9 && gone < s1 - 1e-9 {
+            out.push(w[1]);
+        }
+    }
+    out.push(at(s1));
+    out.dedup_by(|a, b| dist(*a, *b) < 1e-9);
+    out
+}
+
+/// The first point where written path `w` goes back over planned path `e`
+/// or skips part of it (#127 review, rounds 3 and 4). `w` is walked half a
+/// millimetre at a time. For each point the walk keeps every place along `e`
+/// (as intervals of distance along it) the point may be at: within `tol` of
+/// `e`, not before the furthest place every earlier point had to have
+/// reached, and at most its step plus twice `tol` past where the point before
+/// it could be. A walk with no place left, or one that ends short of the
+/// plan's end by more than twice `tol`, is out of order. So a stretch is cut
+/// again (back more than twice `tol`), or a part of the plan skipped, and
+/// near segments of a tiny feature never strand it: every candidate is kept.
+fn out_of_order(w: &[P], e: &[P], tol: f64) -> Option<P> {
+    if w.len() < 2 || e.len() < 2 {
+        return None;
+    }
+    let mut cum = vec![0.0];
+    for s in e.windows(2) {
+        cum.push(cum[cum.len() - 1] + dist(s[0], s[1]));
+    }
+    let total = cum[cum.len() - 1];
+    let near = Near::new(e, tol);
+    // The places along `e` within `tol` of `q`, as sorted, merged intervals.
+    let places = |q: P| -> Vec<(f64, f64)> {
+        let key = ((q[0] / near.cell).floor() as i64, (q[1] / near.cell).floor() as i64);
+        let mut v: Vec<(f64, f64)> = vec![];
+        for &j in near.cells.get(&key).map_or(&[][..], |x| x.as_slice()) {
+            let j = j as usize;
+            let (a, b) = (e[j], e[j + 1]);
+            let dd = [b[0] - a[0], b[1] - a[1]];
+            let l2 = dd[0] * dd[0] + dd[1] * dd[1];
+            let f = [a[0] - q[0], a[1] - q[1]];
+            let c = f[0] * f[0] + f[1] * f[1] - (tol + 1e-9) * (tol + 1e-9);
+            if l2 == 0.0 {
+                if c <= 0.0 {
+                    v.push((cum[j], cum[j]));
+                }
+                continue;
+            }
+            // |a + t·d − q|² ≤ tol²: a quadratic in t.
+            let bq = f[0] * dd[0] + f[1] * dd[1];
+            let disc = bq * bq - l2 * c;
+            if disc < 0.0 {
+                continue;
+            }
+            let r = disc.sqrt();
+            let (t0, t1) = (((-bq - r) / l2).max(0.0), ((-bq + r) / l2).min(1.0));
+            if t0 <= t1 {
+                let l = l2.sqrt();
+                v.push((cum[j] + t0 * l, cum[j] + t1 * l));
+            }
+        }
+        merge(v)
+    };
+    let mut pts = vec![w[0]];
+    for s in w.windows(2) {
+        let n = (dist(s[0], s[1]) / 0.5).ceil().max(1.0) as usize;
+        pts.extend((1..=n).map(|k| {
+            let f = k as f64 / n as f64;
+            [s[0][0] + (s[1][0] - s[0][0]) * f, s[0][1] + (s[1][1] - s[0][1]) * f]
+        }));
+    }
+    // The written path starts where the plan does.
+    let mut set: Vec<(f64, f64)> = places(pts[0]).into_iter().filter_map(|(a, b)| (a <= 2.0 * tol).then_some((a, b.min(2.0 * tol)))).collect();
+    if set.is_empty() {
+        return Some(pts[0]);
+    }
+    // Every place a point may be is at least here: the furthest any earlier
+    // point had to have reached (no creeping back step by step).
+    let mut floor = set[0].0;
+    for k in 1..pts.len() {
+        let step = dist(pts[k], pts[k - 1]);
+        let reach: Vec<(f64, f64)> = merge(set.iter().map(|&(a, b)| (a.max(floor), b + step + 2.0 * tol)).collect());
+        let here = places(pts[k]);
+        let mut next = vec![];
+        for &(a, b) in &here {
+            for &(c, d) in &reach {
+                let (lo, hi) = (a.max(c), b.min(d));
+                if lo <= hi {
+                    next.push((lo, hi));
+                }
+            }
+        }
+        set = merge(next);
+        let Some(&(lo, _)) = set.first() else { return Some(pts[k]) };
+        floor = floor.max(lo);
+    }
+    // And it ends where the plan does.
+    if set.last().is_none_or(|x| x.1 < total - 2.0 * tol) {
+        return pts.last().copied();
+    }
+    None
+}
+
+/// Intervals sorted and joined where they touch.
+fn merge(mut v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = vec![];
+    for (a, b) in v {
+        match out.last_mut() {
+            Some(l) if a <= l.1 + 1e-9 => l.1 = l.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// How many times a path passes within `r` of `g`. Two moves that both
+/// come near are one pass only when the point they share is near too: a cut
+/// that leaves the gap and comes back through it passes it again (S1).
+fn passes(path: &[P], g: P, r: f64) -> usize {
+    let near = |a: P, b: P| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = dx * dx + dy * dy;
+        let t = if l == 0.0 { 0.0 } else { (((g[0] - a[0]) * dx + (g[1] - a[1]) * dy) / l).clamp(0.0, 1.0) };
+        dist(g, [a[0] + t * dx, a[1] + t * dy]) <= r
+    };
+    let mut n = 0;
+    let mut was = false;
+    for w in path.windows(2) {
+        let now = near(w[0], w[1]);
+        if now && !(was && dist(w[0], g) <= r) {
+            n += 1;
+        }
+        was = now;
+    }
+    if path.len() == 1 && dist(path[0], g) <= r {
+        n = 1;
+    }
+    n
 }
 
 /// A cut as read from the `.bvc`, on the sheet: its whole path from where it
@@ -530,6 +739,210 @@ pub struct BystarSheet<'a> {
     pub sheet: &'a [Placed],
     pub spec: &'a crate::nest::SheetSpec,
     pub plan: &'a SheetPlan,
+    /// Its remnant and free cut lines (BV64).
+    pub cuts: &'a [CutLine],
+}
+
+/// The first point of a cut (placed with `place`) the head runs off the
+/// sheet with the height sensor on (BV37, BV64): `entry` is the sensor as
+/// the subprogram had it before the cut.
+fn sensor_off_sheet(c: &crate::bvc::Cut, place: &dyn Fn(P) -> P, entry: bool, w: f64, h: f64, tol: f64) -> Option<P> {
+    let off = |q: P| q[0] < -tol || q[1] < -tol || q[0] > w + tol || q[1] > h + tol;
+    let mut on = c.sensor.unwrap_or(entry);
+    if let Some(l) = &c.lead_in {
+        if let Some(q) = l.points().into_iter().map(place).find(|q| on && off(*q)) {
+            return Some(q);
+        }
+    }
+    let mut e = 0;
+    let mut pts = c.path.points();
+    if let Some(l) = &c.lead_out {
+        pts.extend(l.points().into_iter().skip(1));
+    }
+    for q in pts {
+        if on && off(place(q)) {
+            return Some(place(q));
+        }
+        while e < c.sensing.len() && dist(c.sensing[e].0, q) < 1e-6 {
+            on = c.sensing[e].1;
+            e += 1;
+        }
+    }
+    None
+}
+
+/// BV64: what's wrong with the written cut-off subprogram (its cuts on the
+/// sheet) against the sheet's planned cut lines: every written cut lies on a
+/// planned line or runs on straight past its end by at most B003; every line
+/// is cut end to end, and past each end on the sheet's edge by B003; its
+/// first cut is pierced (unless it starts inside the sheet without B025),
+/// every further one pierced no-time where the first was; every cut runs
+/// Exterior, compensated Right, in the cut-off mode, and ends with a head lift.
+fn cutoff_issues(label: &str, written: &[(Cut, &crate::bvc::Cut)], place: &dyn Fn(P) -> P, lines: &[&CutLine], spec: &crate::nest::SheetSpec, post: &crate::bystar::Post) -> Vec<String> {
+    use crate::bvc::{Correction, Piercing, Side};
+    let tol = tolerance();
+    let mut issues = vec![];
+    let b003 = post.whole("B003").max(0) as f64 * post.unit;
+    let near_edge = |q: P, by: f64| q[0] <= by || q[1] <= by || q[0] >= spec.w - by || q[1] >= spec.h - by;
+    let q = if post.num("B045") > 0.5 { post.num("B045").trunc() as usize } else { 1 };
+    let mode = post.mode(q);
+    // Each line with its straight run-ons past both ends.
+    let ext = |a: P, b: P| {
+        let l = dist(a, b);
+        [b[0] + (b[0] - a[0]) / l * b003, b[1] + (b[1] - a[1]) / l * b003]
+    };
+    let mut allowed: Vec<(Vec<P>, Vec<P>)> = vec![];
+    for l in lines {
+        let mut p = l.pts.clone();
+        p.dedup_by(|a, b| dist(*a, *b) < 1e-9);
+        let n = p.len();
+        let (s, e) = (ext(p[1], p[0]), ext(p[n - 2], p[n - 1]));
+        // What must be cut: the line, and past each end on an edge.
+        let mut must = p.clone();
+        if near_edge(p[0], tol) {
+            must.insert(0, s);
+        }
+        if near_edge(p[n - 1], tol) {
+            must.push(e);
+        }
+        let mut may = p;
+        may.insert(0, s);
+        may.push(e);
+        allowed.push((may, must));
+    }
+    let mut mine: Vec<Vec<usize>> = vec![vec![]; lines.len()];
+    for (k, (w, _)) in written.iter().enumerate() {
+        match allowed.iter().position(|(may, _)| first_stray(&w.pts, may, tol).is_none()) {
+            Some(i) => mine[i].push(k),
+            None => issues.push(format!("{label}: a cut-off cut from X{:.1} Y{:.1} runs off every planned cut-off line", w.pts[0][0], w.pts[0][1])),
+        }
+    }
+    for (i, l) in lines.iter().enumerate() {
+        let at = format!("{label}: the cut-off line from X{:.1} Y{:.1}", l.pts[0][0], l.pts[0][1]);
+        let cuts: Vec<&(Cut, &crate::bvc::Cut)> = mine[i].iter().map(|&k| &written[k]).collect();
+        if cuts.is_empty() {
+            issues.push(format!("{at} isn't in the cut program"));
+            continue;
+        }
+        // Cut end to end, and past each end on an edge.
+        let must = &allowed[i].1;
+        let total: f64 = must.windows(2).map(|w| dist(w[0], w[1])).sum();
+        let n = (total / 0.5).ceil().max(1.0) as usize;
+        let nears: Vec<Near> = cuts.iter().filter(|c| c.0.pts.len() >= 2).map(|c| Near::new(&c.0.pts, tol)).collect();
+        if let Some(gap) = (0..=n).map(|k| along(must, k as f64 / n as f64)).find(|q| !nears.iter().any(|nr| nr.within(*q, tol))) {
+            issues.push(format!("{at} isn't cut near X{:.1} Y{:.1}: it would miss the sheet's edge or leave part of the line uncut", gap[0], gap[1]));
+        }
+        let d = (post.whole("B004") + post.whole("B005")).max(0) as f64 * post.unit;
+        let starts_inside = !near_edge(l.pts[0], d + post.tol);
+        // S2, BV38, BV49: where every pierce of this line must be, worked out
+        // here on its own: its start when it starts inside; else where it
+        // first comes B004 + B005 inside the sheet, or a quarter of the way
+        // along when that isn't in its first half.
+        let mut line = l.pts.clone();
+        line.dedup_by(|a, b| dist(*a, *b) < 1e-9);
+        let len: f64 = line.windows(2).map(|w| dist(w[0], w[1])).sum();
+        let s_p = if starts_inside {
+            0.0
+        } else {
+            let (lo, hi) = ([d, d], [spec.w - d, spec.h - d]);
+            let mut gone = 0.0;
+            let mut s_in: Option<f64> = None;
+            for w in line.windows(2) {
+                let (mut t0, mut t1) = (0.0f64, 1.0f64);
+                for k in 0..2 {
+                    let dk = w[1][k] - w[0][k];
+                    if dk.abs() < 1e-12 {
+                        if w[0][k] < lo[k] - 1e-9 || w[0][k] > hi[k] + 1e-9 {
+                            t0 = 2.0;
+                        }
+                    } else {
+                        let (u, v) = ((lo[k] - w[0][k]) / dk, (hi[k] - w[0][k]) / dk);
+                        t0 = t0.max(u.min(v));
+                        t1 = t1.min(u.max(v));
+                    }
+                }
+                if t0 <= t1 + 1e-12 {
+                    s_in = Some(gone + t0 * dist(w[0], w[1]));
+                    break;
+                }
+                gone += dist(w[0], w[1]);
+            }
+            match s_in {
+                Some(s) if s <= len / 2.0 => s,
+                _ => len / 4.0,
+            }
+        };
+        let pierce_at = along(&line, if len > 0.0 { s_p / len } else { 0.0 });
+        // The pieces BV38 cuts, in order: back from the pierce to the start
+        // and B003 past it (when it starts on an edge and there is anything
+        // to cut back), then on from the pierce to the end and B003 past a
+        // far end on an edge. Each written piece is compared with its own,
+        // so a piece cut twice is one too many (#127 review).
+        let nl = line.len();
+        let mut pieces: Vec<Vec<P>> = vec![];
+        if !starts_inside && (s_p > 1e-9 || b003 > 0.0) {
+            let mut back: Vec<P> = stretch(&line, 0.0, s_p).into_iter().rev().collect();
+            if b003 > 0.0 {
+                back.push(ext(line[1], line[0]));
+            }
+            pieces.push(back);
+        }
+        let mut far = stretch(&line, s_p, len);
+        if b003 > 0.0 && near_edge(line[nl - 1], post.tol) {
+            far.push(ext(line[nl - 2], line[nl - 1]));
+        }
+        pieces.push(far);
+        if cuts.len() != pieces.len() {
+            issues.push(format!("{at} is cut in {} piece(s) where BV38 cuts it in {}, so part of it would be cut again", cuts.len(), pieces.len()));
+        } else {
+            for (k, ((w, _), want)) in cuts.iter().zip(&pieces).enumerate() {
+                let (a, b) = (w.pts[0], w.pts[w.pts.len() - 1]);
+                let off = first_stray(&w.pts, want, tol).or_else(|| first_stray(want, &w.pts, tol)).map(|x| x.0).or_else(|| out_of_order(&w.pts, want, tol));
+                if let Some(q) = off.or((dist(a, want[0]) > tol).then_some(a)).or((dist(b, want[want.len() - 1]) > tol).then_some(b)) {
+                    issues.push(format!("{at}: its piece {} isn't the one BV38 plans near X{:.1} Y{:.1}", k + 1, q[0], q[1]));
+                }
+            }
+        }
+        let first_pierce = post.pierce(q, false);
+        for (k, (_, raw)) in cuts.iter().enumerate() {
+            // BV33: no first pierce for a line starting inside without B025,
+            // nor when the table's pierce is empty (S5); a re-pierce always.
+            let want = if k > 0 { 1 } else if (starts_inside && !post.on("B025")) || first_pierce.is_none() { 0 } else { 1 };
+            if raw.pierces.len() != want {
+                issues.push(format!("{at} is pierced {} time(s) in its cut {} where {want} is planned", raw.pierces.len(), k + 1));
+                continue;
+            }
+            for (p0, _) in &raw.pierces {
+                let p0 = place(*p0);
+                if dist(p0, pierce_at) > tol {
+                    issues.push(format!("{at} is pierced at X{:.1} Y{:.1} where BV38 pierces it at X{:.1} Y{:.1}", p0[0], p0[1], pierce_at[0], pierce_at[1]));
+                }
+            }
+            if want == 1 {
+                let how = raw.pierce.map(|p| p.1);
+                let ok = if k == 0 { how.map(|h| format!("{h:?}")) == first_pierce } else { how == Some(Piercing::NoTime) };
+                if !ok {
+                    issues.push(format!("{at}: its cut {} is pierced {:?} where {} is planned", k + 1, how, if k == 0 { "the cut-off's pierce (BV33)" } else { "a no-time pierce (BV38)" }));
+                }
+            }
+            if raw.mode != Some(mode) || raw.modes.iter().any(|m| *m != Some(mode)) {
+                issues.push(format!("{at} is cut in operation mode {:?} where {mode} is planned", raw.mode));
+            }
+            if raw.correction != Correction::Right || raw.corrections.iter().any(|c| *c != Correction::Right) {
+                issues.push(format!("{at} is cut with compensation {:?} where Right is planned (BV31)", raw.correction));
+            }
+            if raw.side != Side::Exterior {
+                issues.push(format!("{at} is written {:?} where Exterior is planned", raw.side));
+            }
+            if !raw.lift {
+                issues.push(format!("{at}: its cut {} isn't followed by a head lift", k + 1));
+            }
+            if !raw.joints.is_empty() {
+                issues.push(format!("{at} has micro-joint(s) the plan doesn't have"));
+            }
+        }
+    }
+    issues
 }
 
 /// BV59, BV60: read every `.bvc` of a write back with the reader (`bvc.rs`,
@@ -597,8 +1010,11 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
             if p.stray_pierces > 0 {
                 issues.push(format!("nest {name}: {} pierce(s) no cut follows", p.stray_pierces));
             }
-            if p.lifts > 0 {
-                issues.push(format!("nest {name}: {} head lift(s) (ExecHighPositioning) the plan doesn't have", p.lifts));
+            // BV64: a head lift only right after a cut-off cut (each checked
+            // with its cut); any other is one the plan doesn't have.
+            let kept: usize = p.subs.iter().map(|s| s.cuts.iter().filter(|c| c.lift).count()).sum();
+            if p.lifts != kept {
+                issues.push(format!("nest {name}: {} head lift(s) (ExecHighPositioning) the plan doesn't have", p.lifts.abs_diff(kept)));
             }
             // BV59: each sheet the nest stands for is compared with it.
             for &k in ks {
@@ -614,6 +1030,8 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                 let mut planned: Vec<Option<Vec<Want>>> = (0..s.sheet.len()).map(|i| Some(bystar_wanted(s.plan, i + 1, post)).filter(|w| !w.is_empty())).collect();
                 // BV37: the height sensor as the calls leave it, from off.
                 let mut sensor = false;
+                let lines = crate::bystar::cut_lines_in_order(s.cuts);
+                let mut lines_done = lines.is_empty();
                 for call in &p.calls {
                     let sub = &p.subs[call.sub];
                     let (sn, cs) = call.rotation.to_radians().sin_cos();
@@ -630,10 +1048,23 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                             let at = place(q);
                             let inside = at[0] > post.tol && at[1] > post.tol && at[0] < s.spec.w - post.tol && at[1] < s.spec.h - post.tol;
                             let exempt = mode == 1 && c.mode == Some(2);
-                            if inside != on && !(exempt && inside) {
+                            // BV38: a cut-off's no-time re-pierce comes after the
+                            // sequence's own `SetSensingSensor On`, on the start
+                            // edge when B004 + B005 is 0 (S4); the cut-off check
+                            // keeps the sensor off past the sheet.
+                            let re_pierce = c.lift && c.pierce.is_some_and(|p| p.1 == Piercing::NoTime) && on && !inside;
+                            if inside != on && !(exempt && inside) && !re_pierce {
                                 issues.push(format!("{label}: the height sensor is {} at the pierce at X{:.1} Y{:.1}, {} the sheet (BV37)", if on { "on" } else { "off" }, at[0], at[1], if inside { "inside" } else { "on the edge of" }));
                             }
                         }
+                    }
+                    // BV64: never on while the head is off the sheet.
+                    let mut on_in = entry;
+                    for c in &sub.cuts {
+                        if let Some(q) = sensor_off_sheet(c, &place, on_in, s.spec.w, s.spec.h, post.tol) {
+                            issues.push(format!("{label}: the height sensor is on off the sheet at X{:.1} Y{:.1}", q[0], q[1]));
+                        }
+                        on_in = c.sensing.last().map_or(c.sensor.unwrap_or(on_in), |e| e.1);
                     }
                     let written: Vec<(Cut, &crate::bvc::Cut)> = sub.cuts.iter().map(|c| (bystar_read(c, &place).0, c)).collect();
                     let Some(first) = written.first().and_then(|w| w.0.pts.first()).copied() else {
@@ -645,7 +1076,7 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                             return Some(format!("it is written with {} cuts, but {} are planned", written.len(), want.len()));
                         }
                         written.iter().zip(want).enumerate().find_map(|(k, ((w, raw), e))| {
-                            let m = compare(w, &e.cut, tol).or_else(|| {
+                            let m = compare(w, &e.cut, tol).or_else(|| out_of_order(&w.pts, &e.cut.pts, tol).map(|q| format!("it is written cutting part of its path again or out of order near X{:.1} Y{:.1}", q[0], q[1]))).or_else(|| {
                                 if raw.mode != Some(e.mode) {
                                     return Some(format!("it is written in operation mode {} where {} is planned", raw.mode.map_or("none".into(), |m| m.to_string()), e.mode));
                                 }
@@ -661,8 +1092,20 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                                 if let Some(m) = raw.modes.iter().find(|m| **m != Some(e.mode)) {
                                     return Some(format!("its cut-out runs in operation mode {} where {} is planned", m.map_or("none".into(), |m| m.to_string()), e.mode));
                                 }
-                                if !raw.joints.is_empty() {
-                                    return Some(format!("it has {} micro-joint(s) the plan doesn't have", raw.joints.len()));
+                                // BV63: a joint marker at each gap's middle, in order.
+                                let marks: Vec<P> = raw.joints.iter().map(|q| place(*q)).collect();
+                                if marks.len() != e.markers.len() {
+                                    return Some(format!("it has {} micro-joint marker(s) where {} are planned, so a joint gap would be cut through or one made that isn't planned", marks.len(), e.markers.len()));
+                                }
+                                if let Some((m, _)) = marks.iter().zip(&e.markers).find(|(m, x)| dist(**m, **x) > tol) {
+                                    return Some(format!("its micro-joint marker at X{:.1} Y{:.1} isn't at a planned gap's middle", m[0], m[1]));
+                                }
+                                // Each gap is passed once, at its marker (where the
+                                // written path is), or never with B038.
+                                let through = if e.markers.is_empty() { 0 } else { 1 };
+                                let at = |g: P| marks.iter().copied().find(|m| dist(*m, g) <= tol).unwrap_or(g);
+                                if let Some((g, _)) = e.gaps.iter().find(|(g, r)| passes(&w.pts, at(*g), *r) > through) {
+                                    return Some(format!("it cuts through the micro-joint gap at X{:.1} Y{:.1}", g[0], g[1]));
                                 }
                                 if raw.lift {
                                     return Some("it lifts the head where the plan doesn't".into());
@@ -694,6 +1137,12 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                     };
                     let starts: Vec<usize> = (0..planned.len()).filter(|&i| planned[i].as_ref().is_some_and(|e| dist(e[0].cut.pts[0], first) <= START_TOL)).collect();
                     let Some(&i) = starts.iter().find(|&&i| fails(planned[i].as_deref().unwrap_or(&[])).is_none()).or(starts.first()) else {
+                        // BV64: the sheet's cut-off subprogram, once.
+                        if !lines_done {
+                            lines_done = true;
+                            issues.extend(cutoff_issues(&label, &written, &place, &lines, s.spec, post));
+                            continue;
+                        }
                         issues.push(format!("{label}: subprogram {} is placed at X{:.1} Y{:.1}, where no part is planned", sub.name, call.x, call.y));
                         continue;
                     };
@@ -712,6 +1161,9 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
                     if left.is_some() {
                         issues.push(format!("{label}, part {} (sheet position {}) isn't in the cut program", name_of(i), i + 1));
                     }
+                }
+                if !lines_done {
+                    issues.push(format!("{label}: its remnant or cut-off lines aren't in the cut program"));
                 }
             }
         }
@@ -885,6 +1337,60 @@ mod tests {
         plan.contours[0].joints.push((10.0, 0.5));
         let out = check_set(&set, &parts, &placed, &plan, &[]);
         assert!(out.iter().any(|m| m.contains("DEMO-001") && m.contains("micro-joints")), "{out:?}");
+    }
+
+    #[test]
+    fn a_cut_that_leaves_a_gap_and_comes_back_through_it_passes_it_twice() {
+        // #127 review round 1 S1: through the marker at (10, 0), on to 20,
+        // back to the marker and on again.
+        let g = [10.0, 0.0];
+        assert_eq!(passes(&[[0.0, 0.0], g, [20.0, 0.0]], g, 0.1), 1);
+        assert_eq!(passes(&[[0.0, 0.0], g, [20.0, 0.0], g, [20.0, 0.0]], g, 0.1), 2);
+        assert_eq!(passes(&[[0.0, 0.0], [5.0, 0.0]], g, 0.1), 0);
+    }
+
+    #[test]
+    fn a_stretch_cut_twice_or_out_of_order_is_found() {
+        // #127 review round 3: the same ground both ways, another sequence.
+        let e = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
+        assert_eq!(out_of_order(&e, &e, tolerance()), None);
+        assert!(out_of_order(&[[0.0, 0.0], [10.0, 0.0], [4.0, 0.0], [10.0, 0.0], [10.0, 10.0]], &e, tolerance()).is_some(), "back and again");
+        assert!(out_of_order(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [10.0, 0.0], [10.0, 10.0]], &e, tolerance()).is_some(), "a side twice");
+        // A closed contour's overlap past its start is in the plan, so it is in order.
+        let sq = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0], [1.0, 0.0]];
+        assert_eq!(out_of_order(&sq, &sq, tolerance()), None);
+    }
+
+    #[test]
+    fn a_path_written_as_planned_is_in_order_with_tiny_features() {
+        // #127 review round 4 S1: identical paths, each with a feature
+        // smaller than the walk's step near earlier segments.
+        let tol = tolerance();
+        let detour = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 0.1], [10.1, 0.1], [10.1, 0.0], [10.0, 0.0], [10.0, -10.0]];
+        assert_eq!(out_of_order(&detour, &detour, tol), None, "a 0.1 mm square detour");
+        // A 0.2 mm notch in a straight edge.
+        let notch = vec![[0.0, 0.0], [49.9, 0.0], [49.9, 0.2], [50.1, 0.2], [50.1, 0.0], [100.0, 0.0], [100.0, 50.0]];
+        assert_eq!(out_of_order(&notch, &notch, tol), None, "a 0.2 mm notch");
+        // A closed square whose first element is 0.1 mm long, with its overlap
+        // past the start (over that short element and on).
+        let sq = vec![[0.0, 0.0], [0.1, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0], [0.1, 0.0], [1.0, 0.0]];
+        assert_eq!(out_of_order(&sq, &sq, tol), None, "a short first element and the overlap");
+        // A small arc (R0.5, as points) right after a straight.
+        let mut arc = vec![[0.0, 0.0], [20.0, 0.0]];
+        arc.extend((1..=16).map(|k| {
+            let a = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * k as f64 / 16.0;
+            [20.0 + 0.5 * a.cos(), 0.5 + 0.5 * a.sin()]
+        }));
+        arc.push([0.0, 1.0]);
+        assert_eq!(out_of_order(&arc, &arc, tol), None, "a small arc next to a straight");
+        // Each still refused with its longest element cut back and again.
+        for e in [&detour, &notch, &sq, &arc] {
+            let k = (0..e.len() - 1).max_by(|&a, &b| dist(e[a], e[a + 1]).total_cmp(&dist(e[b], e[b + 1]))).unwrap();
+            let mut w = e.clone();
+            w.insert(k + 2, e[k]);
+            w.insert(k + 3, e[k + 1]);
+            assert!(out_of_order(&w, e, tol).is_some(), "the longest element cut again: {e:?}");
+        }
     }
 
     #[test]
