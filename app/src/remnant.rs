@@ -28,7 +28,9 @@ pub fn sheet_outline(f: &SheetFormat) -> Outline {
 /// A thin strip along a polyline (the material the cut removes), stretched past
 /// both ends so it crosses the sheet edge cleanly (RE7: lines run 2 × tolerance
 /// past the edges).
-fn cut_strip(pts: &[P], kerf: f64) -> Vec<Outline> {
+/// `meet`: whether the line's first / last end stops on another remnant line;
+/// such an end isn't run past (it would notch the remnant on the far side).
+fn cut_strip(pts: &[P], kerf: f64, meet: [bool; 2]) -> Vec<Outline> {
     let mut out = vec![];
     let half = (kerf / 2.0).max(0.05);
     let n = pts.len();
@@ -41,7 +43,8 @@ fn cut_strip(pts: &[P], kerf: f64) -> Vec<Outline> {
         }
         let (ux, uy) = (dx / len, dy / len);
         // Overlap joints a little, and run the ends past the sheet.
-        let (ea, eb) = (if i == 0 { 5.0 } else { half }, if i + 2 == n { 5.0 } else { half });
+        let run = |m: bool| if m { 0.0 } else { 5.0 };
+        let (ea, eb) = (if i == 0 { run(meet[0]) } else { half }, if i + 2 == n { run(meet[1]) } else { half });
         a = [a[0] - ux * ea, a[1] - uy * ea];
         b = [b[0] + ux * eb, b[1] + uy * eb];
         let (nx, ny) = (-uy * half, ux * half);
@@ -64,7 +67,15 @@ pub fn sheet_remnants(parts: &[Part], sheet: &[Placed], f: &SheetFormat, lines: 
     if keep_completed {
         return crate::region::difference(&s, &used).into_iter().filter(|o| o.area_mm2() >= min_mm2).collect();
     }
-    let strips: Vec<Outline> = lines.iter().filter(|l| l.kind == CutKind::Remnant).flat_map(|l| cut_strip(&l.pts, kerf)).collect();
+    let strips: Vec<Outline> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.kind == CutKind::Remnant && !l.pts.is_empty())
+        .flat_map(|(k, l)| {
+            let meet = [crate::cutoff::meets(l.pts[0], k, lines).is_some(), crate::cutoff::meets(*l.pts.last().unwrap(), k, lines).is_some()];
+            cut_strip(&l.pts, kerf, meet)
+        })
+        .collect();
     if strips.is_empty() {
         return vec![];
     }

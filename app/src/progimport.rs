@@ -171,6 +171,11 @@ pub fn parse_sub(text: &str) -> (Vec<Vec<P>>, Vec<Vec<P>>, Vec<Vec<P>>) {
             mark = v.get(4).copied() == Some(9.0) && v.len() < 6;
             profile = false;
             started = true;
+            // A cut-off's NEXT_L (BL12) ends with where the head comes in
+            // from, outside the sheet: the cut runs from the sheet edge.
+            if v.len() >= 10 {
+                path.push([v[8], v[9]]);
+            }
         } else if l == "PROFILE" {
             profile = true;
             path.push(cur);

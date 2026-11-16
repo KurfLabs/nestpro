@@ -190,6 +190,87 @@ fn sq(a: f64, b: f64) -> f64 {
     if a <= 0.0 || b <= 0.0 { 0.0 } else { a.min(b) / a.max(b) }
 }
 
+/// "L, the squarest remnants": the vertical cut first when that leaves the
+/// squarer pair of remnants.
+fn l_auto_vertical(x: f64, y: f64, w: f64, h: f64, from_left: bool, from_bottom: bool) -> bool {
+    // Remnant strip and parts-side sizes along each axis.
+    let (rem_w, parts_w) = if from_left { (w - x, x) } else { (x, w - x) };
+    let (rem_h, parts_h) = if from_bottom { (h - y, y) } else { (y, h - y) };
+    // A: vertical first — (rem_w × h) and (parts_w × rem_h).
+    // B: horizontal first — (rem_w × parts_h) and (w × rem_h).
+    let a = sq(rem_w, h) * sq(parts_w, rem_h);
+    let b = sq(rem_w, parts_h) * sq(w, rem_h);
+    b <= a
+}
+
+/// Where the automatic strip or L remnant lies, seen in a frame turned so the
+/// parts sit at the low X and low Y side: the strip is `x..w` across the whole
+/// height `h`, and an L's leg is `0..x` from `leg_y` up to `h`. Lengths are the
+/// frame's (`w`, `h` are the sheet's sides, swapped when `transpose`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripRegion {
+    /// The frame's X is the sheet's Y.
+    pub transpose: bool,
+    /// Mirrored along the frame's X / Y before transposing.
+    pub mirror_x: bool,
+    pub mirror_y: bool,
+    pub w: f64,
+    pub h: f64,
+    /// Where the strip starts (the automatic line's place).
+    pub x: f64,
+    /// An L's leg starts here (the automatic leg's place); None for a strip.
+    pub leg_y: Option<f64>,
+}
+
+impl StripRegion {
+    /// A point of the frame on the sheet.
+    pub fn to_sheet(&self, p: P) -> P {
+        let x = if self.mirror_x { self.w - p[0] } else { p[0] };
+        let y = if self.mirror_y { self.h - p[1] } else { p[1] };
+        if self.transpose { [y, x] } else { [x, y] }
+    }
+}
+
+/// The free strip (or L) the automatic line in a strip or L shape would cut
+/// off, or None for the other shapes or when no remnant fits.
+pub fn strip_region(sheet: &[Placed], spec: &SheetSpec, s: &LineSettings, cutter_radius: f64) -> Option<StripRegion> {
+    if sheet.is_empty() {
+        return None;
+    }
+    let (w, h) = (spec.w, spec.h);
+    let off = if s.cutter_radius { cutter_radius } else { s.offset.max(0.0) };
+    let (mx, my) = if s.shape.uses_min_xy() { (s.min_x, s.min_y) } else { (0.0, 0.0) };
+    let (boxes, from_left, from_bottom) = obstacle_boxes(sheet, off, w, h, true);
+    let pb = union_box(&boxes);
+    let vx = cut_at(pb.x0, pb.x1, w, from_left, s.min_width, mx);
+    let hy = cut_at(pb.y0, pb.y1, h, from_bottom, s.min_width, my);
+    let cx = |x: f64| if from_left { x } else { w - x };
+    let cy = |y: f64| if from_bottom { y } else { h - y };
+    let vert = |x: f64, leg: Option<f64>| StripRegion { transpose: false, mirror_x: !from_left, mirror_y: !from_bottom, w, h, x: cx(x), leg_y: leg.map(cy) };
+    let horiz = |y: f64, leg: Option<f64>| StripRegion { transpose: true, mirror_x: !from_bottom, mirror_y: !from_left, w: h, h: w, x: cy(y), leg_y: leg.map(cx) };
+    let l_vert = || match (vx, hy) {
+        (Some(x), y) => Some(vert(x, y)),
+        (None, Some(y)) => Some(horiz(y, None)),
+        _ => None,
+    };
+    let l_horiz = || match (vx, hy) {
+        (x, Some(y)) => Some(horiz(y, x)),
+        (Some(x), None) => Some(vert(x, None)),
+        _ => None,
+    };
+    match s.shape {
+        LineShape::VerticalStrip => vx.map(|x| vert(x, None)),
+        LineShape::HorizontalStrip => hy.map(|y| horiz(y, None)),
+        LineShape::LVerticalFirst => l_vert(),
+        LineShape::LHorizontalFirst => l_horiz(),
+        LineShape::LAuto => match (vx, hy) {
+            (Some(x), Some(y)) if !l_auto_vertical(x, y, w, h, from_left, from_bottom) => l_horiz(),
+            _ => l_vert(),
+        },
+        _ => None,
+    }
+}
+
 /// The automatic remnant line(s) for a sheet. Several lines make an L or the
 /// irregular shapes' separate cuts. Empty when no remnant fits.
 pub fn auto_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, s: &LineSettings, cutter_radius: f64) -> Vec<CutLine> {
@@ -238,14 +319,7 @@ pub fn auto_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, s: &LineSe
                 LineShape::LHorizontalFirst => l_horizontal(),
                 LineShape::LAuto => match (vx, hy) {
                     (Some(x), Some(y)) => {
-                        // Remnant strip and parts-side sizes along each axis.
-                        let (rem_w, parts_w) = if from_left { (w - x, x) } else { (x, w - x) };
-                        let (rem_h, parts_h) = if from_bottom { (h - y, y) } else { (y, h - y) };
-                        // A: vertical first — (rem_w × h) and (parts_w × rem_h).
-                        // B: horizontal first — (rem_w × parts_h) and (w × rem_h).
-                        let a = sq(rem_w, h) * sq(parts_w, rem_h);
-                        let b = sq(rem_w, parts_h) * sq(w, rem_h);
-                        if b <= a { l_vertical() } else { l_horizontal() }
+                        if l_auto_vertical(x, y, w, h, from_left, from_bottom) { l_vertical() } else { l_horizontal() }
                     }
                     _ => l_vertical(),
                 },

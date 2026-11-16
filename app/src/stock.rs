@@ -489,6 +489,8 @@ pub struct StockSettings {
     pub turn_over: bool,
     /// The automatic remnant line's shape and options.
     pub line: crate::remline::LineSettings,
+    /// The shop's standard drop sizes (SD1; off and empty by default).
+    pub drops: crate::engine::drops::DropSettings,
     /// Automatic sheet / remnant references and their formats (RF1; off and
     /// empty by default).
     pub auto_sheet_ref: bool,
@@ -592,6 +594,7 @@ impl Default for StockSettings {
             remnant_rotation: RemnantRotation::Allowed,
             turn_over: true,
             line: Default::default(),
+            drops: Default::default(),
             lines_after_nesting: false,
             auto_sheet_ref: false,
             sheet_ref_format: String::new(),

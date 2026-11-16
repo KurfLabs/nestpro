@@ -44,7 +44,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | **Advanced Copy** (arrays of a part), **Place Near**, **Expand**, **Fit** to borders | Part — Compact to left, snap while dropping or dragging, slide to the next part | ★★ |
 | **Nesting for common cut** (shared edges) | Missing | ★★ |
 | Margins toggle | Have (sheet margin) | |
-| Remnants: create (auto / semi-auto), draw edge, exact edge, rotate, reference | Have — nine automatic line shapes, semi-automatic (3 types), saved into stock on save, rotate/flip; reference points and marks missing | ★ |
+| Remnants: create (auto / semi-auto), draw edge, exact edge, rotate, reference | Have — nine automatic line shapes, semi-automatic (3 types), saved into stock on save, rotate/flip; reference points and marks missing. Beyond the original: **standard drops** — the leftover cut into the shop's standard sizes, biggest first, with *Drop layouts* to pick another split (MECHANICS SD1–SD8) | ★ |
 | Time and cost, Export data | Have | |
 | Snap points (end, mid, centre, intersection, tangent…), Distance & Angle, Orthogonal | Missing (the part-gap snap while dragging is in) | ★★ |
 | Macros (record) | Missing | ★ |

@@ -112,6 +112,18 @@ _Avoid_: marquee, rubber band, box select
 A box dragged to the left from open space; it takes everything it touches, even what sticks out of it.
 _Avoid_: capture, lasso, touch select
 
+**Remnant**:
+A piece of a cut sheet that goes back into the sheet stock to be nested on later. A cut-off line frees it from the rest of the sheet.
+_Avoid_: offcut, leftover (for the stored piece)
+
+**Standard drop**:
+A remnant of one of the sizes the shop keeps on its rack. With standard drops on, the leftover past the parts is cut into these sizes and nothing else goes back into stock.
+_Avoid_: template, standard remnant
+
+**Skeleton**:
+What is left of a sheet once its parts and remnants are out: scrap.
+_Avoid_: web, frame, scrap sheet
+
 ## Sharing the Library
 
 **Library**:

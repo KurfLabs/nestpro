@@ -313,9 +313,11 @@ pub static OPS: &[Op] = &[
         a("box", Ty::Points, "parts: two opposite corners \"x,y;x,y\" in sheet mm: the parts wholly inside, in the sheet's automatic order"),
         a("touching", Ty::Bool, "parts with box: take every part the box touches, not only those wholly inside (as a box dragged to the left on the sheet)"),
     ] },
-    Op { name: "remnant", group: "Machining", kind: Kind::Write, help: "Cut off the remnant: auto (the automatic remnant line in the shape set in the Sheet Remnants options), exact (stepped around the parts), or a line at x= or y=. A new remnant line replaces the sheet's old one.", args: &[
-        Arg { name: "mode", ty: Ty::Str, required: true, help: "auto, exact or line", choices: &["auto", "exact", "line"] }, SHEET,
+    Op { name: "remnant", group: "Machining", kind: Kind::Write, help: "Cut off the remnant: auto (the automatic remnant line in the shape set in the Sheet Remnants options; with standard drops on there, the leftover is cut into the shop's standard drop sizes, biggest first, and what no drop takes goes with the skeleton), drops (list the ways the leftover can be cut into standard drops, each with its drops and how much of the leftover they use; layout=N cuts it that way), exact (stepped around the parts), or a line at x= or y=. New remnant lines replace the sheet's old ones.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "auto, drops, exact or line", choices: &["auto", "drops", "exact", "line"] }, SHEET,
         a("round", Ty::Bool, "exact: round the corners (default true)"), a("x", Ty::Num, "line: vertical line at X"), a("y", Ty::Num, "line: horizontal line at Y"),
+        a("layout", Ty::Int, "drops: cut the leftover the Nth way listed (1 is what auto does with standard drops on); without it, only list them"),
+        a("sizes", Ty::Str, "drops: sizes to use instead of the shop's standard drops, mm, either way round: \"1524x1219,610x610\""),
     ] },
     Op { name: "cut-line", group: "Machining", kind: Kind::Write, help: "Draw a cut path through the gaps (edge to opposite edge = remnant line); or delete one.", args: &[
         SHEET, a("points", Ty::Points, "Path \"x,y;x,y;…\" in sheet mm"), a("delete", Ty::Int, "Delete cut line number N instead"),
@@ -1671,6 +1673,62 @@ fn sheet_source(job: &JobFile, ctx: &Ctx, a: &Args, replacing: Option<usize>) ->
     }
 }
 
+/// Sizes typed as "1524x1219, 610x610" (mm).
+fn parse_sizes(t: &str) -> Result<Vec<[f64; 2]>, String> {
+    t.split([',', ';'])
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(|x| {
+            let v: Vec<f64> = x.split(['x', 'X', '×', '*']).map(|n| n.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("size '{x}': give length x width in mm, e.g. 1524x1219"))?;
+            match v[..] {
+                [a, b] if a > 0.0 && b > 0.0 => Ok([a, b]),
+                _ => Err(format!("size '{x}': give length x width in mm, both above 0, e.g. 1524x1219")),
+            }
+        })
+        .collect()
+}
+
+/// remnant mode=drops (SD3, SD8): the ways the standard drops can cut the
+/// sheet's leftover; layout=N cuts it that way.
+fn drops_op(parts: &[Part], sheet: &[Placed], sp: &SheetSpec, ctx: &Ctx, a: &Args, job: &mut JobFile, s: usize) -> Result<Outcome, String> {
+    use super::drops::Outcome as Why;
+    let st = &ctx.cfg.stock;
+    let sizes = match a.str("sizes") {
+        Some(t) => parse_sizes(&t)?,
+        None => st.drops.sizes.clone(),
+    };
+    if sizes.is_empty() {
+        return Err("No standard drop sizes: give sizes=\"1524x1219,610x610\" (mm), or add them in the window's Sheet Remnants options.".into());
+    }
+    let v = super::drops::layouts(parts, sheet, &job.format(s), sp, &st.line, &sizes, st.min_remnant_m2).map_err(|w| match w {
+        Why::NotStrip => format!("Standard drops work with the strip and L shapes of the remnant line, and the Sheet Remnants options have {} (set in the window).", st.line.shape.label()),
+        Why::NoRoom => format!("No remnant: less than the minimum width ({:.0} mm) is left past the parts.", st.line.min_width),
+        Why::NoneFits(l, w) => format!("No standard drop fits the {l:.0} × {w:.0} mm left past the parts — it goes with the skeleton."),
+    })?;
+    let mm = crate::units::LenUnit::Mm;
+    let data: Vec<Value> = v
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            json!({
+                "layout": i + 1, "auto": l.auto, "summary": l.summary(mm),
+                "drops": l.counts().iter().map(|(z, n)| json!({"w": r1(z[0]), "h": r1(z[1]), "count": n})).collect::<Vec<_>>(),
+                "drop_area_m2": (l.drop_mm2() / 1e3).round() / 1e3, "leftover_used_pct": r1(l.used() * 100.0), "cuts": l.lines.len(),
+            })
+        })
+        .collect();
+    match a.int("layout")? {
+        None => Ok(Outcome::read(format!("{} way(s) to cut the leftover on sheet {} into standard drops; layout=N cuts it that way (1 is what auto does).", v.len(), s + 1), json!(data))),
+        Some(n) => {
+            let l = usize::try_from(n).ok().and_then(|n| n.checked_sub(1)).and_then(|i| v.get(i)).ok_or_else(|| format!("layout {n}: give 1 to {}", v.len()))?;
+            set_remnant_lines(parts, sheet, job.cuts_mut(s), l.lines.clone())?;
+            let mut o = Outcome::msg(format!("Standard drops on sheet {}: {} — {:.0}% of the leftover, cut last.", s + 1, l.summary(mm), l.used() * 100.0));
+            o.data = data[n as usize - 1].clone();
+            Ok(o)
+        }
+    }
+}
+
 /// Put these remnant lines on a sheet in place of its old ones (refused when
 /// one cuts through a part).
 fn set_remnant_lines(parts: &[Part], sheet: &[Placed], list: &mut Vec<CutLine>, lines: Vec<CutLine>) -> Result<(), String> {
@@ -1686,9 +1744,9 @@ fn set_remnant_lines(parts: &[Part], sheet: &[Placed], list: &mut Vec<CutLine>, 
 
 /// The automatic remnant line for a sheet that has none yet (None when it
 /// has one, there's no remnant, or the line would cut a part).
-pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, ls: &crate::remline::LineSettings) -> Option<Vec<CutLine>> {
-    let lines = crate::remline::auto_lines(parts, sheet, spec, ls, crate::kerf::kerf_mm(spec) / 2.0);
-    (!lines.is_empty() && lines.iter().all(|l| cutoff::path_hits_part(parts, sheet, &l.pts).is_none())).then_some(lines)
+pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], f: &SheetFormat, spec: &SheetSpec, st: &crate::stock::StockSettings) -> Option<Vec<CutLine>> {
+    let (lines, _) = super::drops::auto_cut(parts, sheet, f, spec, st, crate::units::LenUnit::Mm).ok()?;
+    lines.iter().all(|l| cutoff::path_hits_part(parts, sheet, &l.pts).is_none()).then_some(lines)
 }
 
 fn stock_json(s: &crate::stock::Item, clock: &crate::shared::Clock) -> Value {
@@ -1710,6 +1768,8 @@ fn rules_json(st: &crate::stock::StockSettings) -> Value {
         "min_efficiency": st.min_efficiency, "efficiency_by": st.eff_mode.label(), "with_references": st.with_references,
         "remnants_on_save": st.remnants_on_save, "keep_completed_sheets": st.keep_completed, "min_remnant_m2": st.min_remnant_m2,
         "remnant_line": st.line.shape.label(), "lines_after_nesting": st.lines_after_nesting,
+        // SD1: the shop's standard drop sizes (mm), set in the window.
+        "standard_drops": {"on": st.drops.on, "sizes": st.drops.sizes.iter().map(|z| json!([r1(z[0]), r1(z[1])])).collect::<Vec<_>>(), "keep_odd_when_none_fits": st.drops.keep_odd},
         "best_sheet_format": st.best_format, "best_sheet_combination": st.best_combination, "combination_min_efficiency": st.combination_min,
         "max_search_seconds": st.max_seconds, "prompt_remnant_refs": st.prompt_remnant_ref,
         "criteria": { "min_w": st.criteria.min_length, "max_w": st.criteria.max_length, "min_h": st.criteria.min_width, "max_h": st.criteria.max_width },
@@ -2451,7 +2511,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             if ctx.cfg.stock.lines_after_nesting {
                 // "Generate remnants after nesting": the automatic remnant line on every sheet.
                 for k in 0..job.sheets.len() {
-                    if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[k], &job.spec_at(k), &ctx.cfg.stock.line) {
+                    if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[k], &job.format(k), &job.spec_at(k), &ctx.cfg.stock) {
                         job.cuts_mut(k).extend(lines);
                     }
                 }
@@ -2630,8 +2690,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             job.cuts_mut(s).clear();
             job.sheet_changed(s);
             if ctx.cfg.stock.lines_after_nesting {
-                // MS4: the sheet's machine's kerf.
-                if let Some(lines) = sheetmachine::on_sheet(&job.format(s), || auto_remnant_lines(&job.parts, &job.sheets[s], &job.spec_at(s), &ctx.cfg.stock.line)) {
+                if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[s], &job.format(s), &job.spec_at(s), &ctx.cfg.stock) {
                     job.cuts_mut(s).extend(lines);
                 }
             }
@@ -3166,14 +3225,14 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let round = a.bool("round")?.unwrap_or(true);
             match a.need_str("mode")?.as_str() {
                 "auto" => {
-                    let ls = &ctx.cfg.stock.line;
-                    // MS4: the sheet's machine's kerf.
-                    let lines = crate::remline::auto_lines(&parts, &sheet, &sp, ls, sheetmachine::kerf(&job.format(s), &sp) / 2.0);
-                    if lines.is_empty() {
-                        return Err(format!("No remnant: less than the minimum width ({:.0} mm) is left past the parts.", ls.min_width));
-                    }
+                    // SD2, SD6, SD7: standard drops when they're on.
+                    let (lines, what) = super::drops::auto_cut(&parts, &sheet, &job.format(s), &sp, &ctx.cfg.stock, crate::units::LenUnit::Mm)?;
                     set_remnant_lines(&parts, &sheet, job.cuts_mut(s), lines)?;
+                    if what.starts_with("Standard drops") {
+                        return Ok(Outcome::msg(format!("{what} on sheet {}, cut last (mode=drops lists other ways to cut it).", s + 1)));
+                    }
                 }
+                "drops" => return drops_op(&parts, &sheet, &sp, ctx, &a, job, s),
                 mode => {
                     let line = match mode {
                         "exact" => sheetmachine::on_sheet(&job.format(s), || cutoff::exact_edge(&sheet, &sp, round)).ok_or("No remnant worth keeping between the parts and the sheet edge.")?,
@@ -3392,6 +3451,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Manual cutting/Undo\npick", "cut-order"),
     ("Manual cutting/Clear", "cut-order"),
     ("Remnants & cut lines/Cut off\nleftover", "remnant"),
+    ("Remnants & cut lines/Drop\nlayouts", "remnant"),
     ("Remnants & cut lines/Exact\nedge", "remnant"),
     ("Remnants & cut lines/Straight\nline", "remnant"),
     ("Remnants & cut lines/Semi-\nautomatic", "todo: [AGT-6] click a free area to make it a remnant (remline::semi_auto_lines) — needs a pick point; use remnant mode=line or cut-line meanwhile"),
