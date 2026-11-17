@@ -40,6 +40,8 @@ pub enum Icon {
     Rotate,
     /// Rotate drawn counter-clockwise.
     RotateLeft,
+    /// Wavy lines running across: the sheet's grain (GR6).
+    Grain,
     Remove,
     Clear,
     Collision,
@@ -424,6 +426,16 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
             let end = *pts.last().unwrap();
             poly(pts, s);
             poly(vec![end + Vec2::new(-4.0 * fx, -1.0), end, end + Vec2::new(0.5 * fx, -4.5)], a);
+        }
+        Icon::Grain => {
+            // Three wavy lines running across, the middle one in the accent.
+            for (k, y) in [-6.0f32, 0.0, 6.0].into_iter().enumerate() {
+                let pts: Vec<Pos2> = (0..=20).map(|i| {
+                    let t = i as f32 / 20.0;
+                    v(-10.0 + 20.0 * t, y + 1.6 * (t * std::f32::consts::TAU * 1.5).sin())
+                }).collect();
+                poly(pts, if k == 1 { a } else { s });
+            }
         }
         Icon::Remove => {
             p.line_segment([v(-8.0, -6.0), v(8.0, -6.0)], s);
@@ -2763,8 +2775,21 @@ impl App {
             ui.label("Quantity");
             changed |= ui.add(egui::DragValue::new(&mut p.qty).range(0..=99999).clamp_existing_to_range(false)).changed();
             ui.end_row();
+            // GR2: a part kept to the grain is never turned 90°, whatever
+            // its own rotations say; they come back with Free.
+            ui.label("Grain");
+            let lock = engine::grain::lock_of(p);
+            egui::ComboBox::from_id_salt("part_grain").selected_text(lock.label()).show_ui(ui, |ui| {
+                for l in engine::grain::Lock::ALL {
+                    if ui.selectable_label(lock == l, l.label()).on_hover_text(l.help()).clicked() && l != lock {
+                        engine::grain::set_lock(p, l);
+                        changed = true;
+                    }
+                }
+            }).response.on_hover_text("The sheet's grain runs along its length (X). Turn the part's drawing on the Part screen (Home → Grain) so its X is the way the grain must run.");
+            ui.end_row();
             ui.label("Rotation");
-            changed |= ui.checkbox(&mut p.rotate, "may turn 90°").changed();
+            changed |= ui.add_enabled(!p.rots.grain, egui::Checkbox::new(&mut p.rotate, "may turn 90°")).on_disabled_hover_text("Kept to the grain: never turned 90°").changed();
             ui.end_row();
             // The original's eight rotation permissions: 0/90/180/270°, plain and mirrored.
             ui.label("Angles");
@@ -2773,12 +2798,13 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 3.0;
                 ui.spacing_mut().button_padding = Vec2::new(6.0, 3.0);
                 for (k, a) in ["0", "90", "180", "270"].iter().enumerate() {
-                    let enabled = k % 2 == 0 || p.rotate;
+                    let enabled = if k % 2 == 0 { k == 0 || lock != engine::grain::Lock::Fixed } else { p.may_turn_90() };
                     let r = ui.add_enabled(enabled, egui::Button::selectable(p.rots.plain[k], format!("{a}°")));
                     if r.on_hover_text("Allowed rotation when nesting").clicked() {
                         p.rots.plain[k] = !p.rots.plain[k];
-                        if !p.rots.plain.iter().any(|&b| b) {
-                            p.rots.plain[0] = true; // at least one way to place it
+                        // At least one way to place it, counting the grain (GR1).
+                        if !(0..4u8).any(|t| crate::nest::turn_allowed(p, t, false)) {
+                            p.rots.plain[0] = true;
                         }
                         changed = true;
                     }
@@ -3037,6 +3063,13 @@ impl App {
                         let b = Rect::from_min_size(Pos2::new(r.right() - 22.0, head.bottom() + 4.0), Vec2::new(18.0, 16.0));
                         p.rect_filled(b, CornerRadius::same(4), th().accent);
                         p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
+                    }
+                    if part.rots.grain {
+                        // "G" badge: the part is kept to the sheet's grain (GR6).
+                        let x = if part.tech.is_some() { r.right() - 44.0 } else { r.right() - 22.0 };
+                        let b = Rect::from_min_size(Pos2::new(x, head.bottom() + 4.0), Vec2::new(18.0, 16.0));
+                        p.rect_filled(b, CornerRadius::same(4), th().warn_fg);
+                        p.text(b.center(), Align2::CENTER_CENTER, "G", FontId::proportional(11.0), Color32::WHITE);
                     }
                     // The part's reference at the foot of the tile, shortened to fit.
                     let font = FontId::proportional(10.5);

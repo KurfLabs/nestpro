@@ -72,6 +72,14 @@ pub struct Part {
     pub erp: Vec<crate::integrations::Demand>,
 }
 
+impl Part {
+    /// May the nester or a hand turn put the part at 90° or 270°? Only when
+    /// it may turn 90° and isn't kept to the grain (GR1).
+    pub fn may_turn_90(&self) -> bool {
+        self.rotate && !self.rots.grain
+    }
+}
+
 /// Allowed rotations: 0/90/180/270°, plain and mirrored — the eight flags the
 /// original keeps per part (rule R1).
 /// 90°/270° also need `Part::rotate`.
@@ -79,11 +87,17 @@ pub struct Part {
 pub struct Rotations {
     pub plain: [bool; 4],
     pub mirrored: [bool; 4],
+    /// GR1: the part is drawn the way the sheet's grain must run through it
+    /// (along its X), so it is never turned 90° or 270°, nor to any angle
+    /// other than a half turn, whatever `plain`, `mirrored` and "may turn 90°"
+    /// say. `engine::grain` sets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub grain: bool,
 }
 
 impl Default for Rotations {
     fn default() -> Self {
-        Rotations { plain: [true; 4], mirrored: [false; 4] }
+        Rotations { plain: [true; 4], mirrored: [false; 4], grain: false }
     }
 }
 
@@ -1083,9 +1097,9 @@ pub fn angle_allowed(p: &Part, angle: f64, mirror: bool) -> bool {
 }
 
 /// May the part (plain or mirrored) take angles other than quarter turns?
-/// Only when it may turn 90° (HM14).
+/// Only when it may turn 90° and isn't kept to the grain (HM14, GR1).
 pub fn free_angles_allowed(p: &Part, mirror: bool) -> bool {
-    p.rotate && (!mirror || p.rots.mirrored.iter().any(|&m| m))
+    p.may_turn_90() && (!mirror || p.rots.mirrored.iter().any(|&m| m))
 }
 
 /// Part `part` (= `p`) at `angle`° counter-clockwise, after the mirror, with
@@ -1646,11 +1660,12 @@ pub const LEVELS: [NestLevel; 5] = [
 ];
 
 /// Is turn `k` (x 90°) allowed for the part, plain or mirrored? 90°/270° also
-/// need the part's "may turn 90°" switch.
+/// need the part's "may turn 90°" switch, and a part kept to the grain never
+/// takes them (GR1).
 pub fn turn_allowed(p: &Part, k: u8, mirror: bool) -> bool {
     let k = (k % 4) as usize;
     let set = if mirror { p.rots.mirrored } else { p.rots.plain };
-    set[k] && (k % 2 == 0 || p.rotate)
+    set[k] && (k % 2 == 0 || p.may_turn_90())
 }
 
 /// The original's angle normalisation (rule R2): into [0, 360).

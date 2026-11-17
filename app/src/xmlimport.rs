@@ -143,7 +143,7 @@ pub fn parse(text: &str) -> Result<Vec<XmlProduct>, String> {
                 [flag(s, "Rotation0"), flag(s, "Rotation90"), flag(s, "Rotation180"), flag(s, "Rotation270")]
             };
             let (n, m) = (read("Normal"), read("Symmetrics"));
-            Rotations { plain: n.map(|f| f.unwrap_or(true)), mirrored: m.map(|f| f.unwrap_or(false)) }
+            Rotations { plain: n.map(|f| f.unwrap_or(true)), mirrored: m.map(|f| f.unwrap_or(false)), grain: false }
         });
         let mut data = vec![];
         if let Some(aux) = section(body, "AuxiliarData") {
