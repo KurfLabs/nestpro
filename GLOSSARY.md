@@ -146,6 +146,46 @@ _Avoid_: lock (the Library's write lock is a different thing: a moment's turn to
 Moving a job's hold to this PC from whoever has it, after a warning; the PC that had it is told and keeps its changes only as a copy.
 _Avoid_: steal, force open
 
+## The shop and its PCs
+
+**Shop**:
+The programming PCs that share one Library and one set of shop settings, under one name.
+_Avoid_: company, site, installation
+
+**Shop folder**:
+The shop's shared Library folder, which also keeps the shop settings, the shop version and the backups. A PC joins a shop by pointing at it.
+_Avoid_: database, server
+
+**Admin PC**:
+The one PC in a shop that rolls out updates and restores backups, and, when the shop says so, the only one that changes shop settings.
+_Avoid_: server, master
+
+**Shop setting**:
+A value the shop sets for all its PCs. A shop-only setting is used as it is on every PC; a shop default may be replaced on one PC by its own value.
+_Avoid_: global setting
+
+**Own value**:
+A PC's own value for a shop default, used on that PC instead of the shop's until it is reset to the shop's.
+_Avoid_: override, local setting
+
+**PC setting**:
+A setting only one PC keeps and never shares, such as its mouse and keys, which shop folder it uses, or a programmer's ERP token.
+_Avoid_: user setting
+
+**Shop version**:
+The release of this program the shop has chosen for all its PCs.
+
+**Roll out**:
+Making a release the shop version, so that every PC in the shop installs it.
+_Avoid_: deploy, push
+
+**Roll back**:
+Making the previous release the shop version again.
+
+**Backup**:
+A dated copy of a Library, with its shop settings, kept to recover from a mistake or a lost folder.
+_Avoid_: snapshot, export
+
 ## Work from the ERP
 
 **ERP**:
