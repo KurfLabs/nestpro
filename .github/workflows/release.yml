@@ -101,7 +101,10 @@ jobs:
         run: |
           mkdir publish
           cp app/target/release/nestpro.exe publish/
-          icon=$(ls app/target/release/build/nestpro-*/out/nestpro.ico | head -n 1)
+          # The icon the build made for the program file (build.rs), wherever
+          # this cargo keeps build-script output.
+          icon=$(find app/target -name nestpro.ico -path '*release*' | head -n 1)
+          [ -n "$icon" ] || { echo "the build made no nestpro.ico"; exit 1; }
           vpk pack --packId "$PACK_ID" --packVersion "$VERSION" --packDir publish \
             --mainExe nestpro.exe --packTitle "Sheet Nesting" --packAuthors "Kurf Labs" \
             --icon "$icon" --releaseNotes release-notes.md --outputDir releases
