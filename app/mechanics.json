@@ -3624,6 +3624,18 @@
   "source": "MECHANICS AL11"
  },
  {
+  "name": "leads by quality off",
+  "group": "lead shapes",
+  "value": "B184 OFF -> every quality uses quality 1 (B block) leads; ON or non-zero keeps each quality's own",
+  "source": "MECHANICS AL12"
+ },
+ {
+  "name": "type 13 on a circle",
+  "group": "lead shapes",
+  "value": "straight on the tangent from the centre to the lead arc (turned by A); sweep 180 - acos(R/(r-R)) - A in a hole, acos(R/(r+R)) - A on a round part",
+  "source": "MECHANICS AL13"
+ },
+ {
   "name": "micro-joint count",
   "group": "automatic micro-joints",
   "value": "n = ceil(P / F150) (default 100), clamped to size-class (min,max), odd unclamped n -> n+1; F120 not read (corrects MT11)",
