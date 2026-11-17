@@ -604,29 +604,30 @@ fn joint_count_ui(ui: &mut egui::Ui, edit: &mut PartTech, aj: &mut crate::nest::
         "Each contour is sorted by its box: small if it fits inside the small size, large if it reaches the large size both ways, otherwise medium. Holes and parts each have their own counts.",
     );
     ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(Vec2::new(104.0, 92.0), Sense::hover());
+        let (r, _) = ui.allocate_exact_size(Vec2::new(92.0, 92.0), Sense::hover());
         jp::size_map(ui.painter(), r, aj);
         ui.vertical(|ui| {
             let none = |v: f64| v <= 0.0;
             let pair = |ui: &mut egui::Ui, name: &str, c: Color32, v: &mut [f64; 2], large: bool| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    ui.add_sized([70.0, 18.0], egui::Label::new(RichText::new(name).color(c)));
-                    for (k, axis) in ["Width", "Height"].into_iter().enumerate() {
-                        if k == 1 {
-                            ui.label("×");
-                        }
-                        let f = if large {
-                            crate::units::len_drag_word(&mut v[k], unit, 0.0, jp::NO_LIMIT_MM, "No limit", jp::is_no_limit, jp::NO_LIMIT_MM)
-                        } else {
-                            crate::units::len_drag_word(&mut v[k], unit, 0.0, jp::NO_LIMIT_MM, "None", none, 0.0)
-                        };
-                        ui.add_sized([70.0, 18.0], f).on_hover_text(axis);
+                ui.label(RichText::new(name).color(c));
+                for (k, axis) in ["Width", "Height"].into_iter().enumerate() {
+                    if k == 1 {
+                        ui.label("×");
                     }
-                });
+                    let f = if large {
+                        crate::units::len_drag_word(&mut v[k], unit, 0.0, jp::NO_LIMIT_MM, "No limit", jp::is_no_limit, jp::NO_LIMIT_MM)
+                    } else {
+                        crate::units::len_drag_word(&mut v[k], unit, 0.0, jp::NO_LIMIT_MM, "None", none, 0.0)
+                    };
+                    ui.add_sized([76.0, 18.0], f).on_hover_text(axis);
+                }
+                ui.end_row();
             };
-            pair(ui, "Small up to", jp::SMALL, &mut aj.small, false);
-            pair(ui, "Large from", jp::LARGE, &mut aj.large, true);
+            // A grid, so the boxes and × line up whatever each box shows.
+            egui::Grid::new("aj_sizes").num_columns(4).min_col_width(0.0).spacing([3.0, 6.0]).show(ui, |ui| {
+                pair(ui, "Small up to", jp::SMALL, &mut aj.small, false);
+                pair(ui, "Large from", jp::LARGE, &mut aj.large, true);
+            });
             ui.label(RichText::new("Medium = everything else").size(11.0).color(jp::MEDIUM));
         });
     });
@@ -670,7 +671,12 @@ fn count_cell(ui: &mut egui::Ui, pair: &mut [i32; 2], general: &crate::nest::Aut
     let (text, follows) = jp::range_text(*pair, general);
     let resp = ui.add_sized([82.0, 20.0], egui::Button::new(RichText::new(text).color(if follows { th().text_dim } else { th().text_strong })));
     let resp = resp.on_hover_text(format!("{what}, {size}: click to set the fewest and most joints"));
-    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+    // A plain popup (not a menu, whose buttons have no frame), above the cell
+    // so it stays over the window.
+    egui::Popup::from_toggle_button_response(&resp)
+        .align(egui::RectAlign::TOP_START)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
         ui.set_min_width(190.0);
         ui.label(RichText::new(format!("{what}, {size}")).strong());
         let same = |v: f64, _: std::ops::RangeInclusive<usize>| if v < 0.0 { "as Every contour".into() } else if v >= jp::NO_LIMIT_COUNT as f64 { "No limit".into() } else { format!("{v:.0}") };
