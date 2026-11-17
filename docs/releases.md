@@ -113,9 +113,14 @@ Versions read: crate [`velopack` 1.2.161](https://docs.rs/velopack/1.2.161/velop
   [vpk options](https://docs.velopack.io/reference/cli/content/vpk-windows))
 - `vpk upload github --repoUrl <repo> --token <token> --publish --releaseName <name> --tag <tag>`
   creates the GitHub release and uploads the files; the workflow needs
-  `permissions: contents: write`.
+  `permissions: contents: write`. The release's text is the release notes `vpk pack` put in the
+  package (`--releaseNotes`), and it refuses a tag that already has a release.
   ([GitHub Actions](https://docs.velopack.io/distributing/github-actions),
-  [vpk options](https://docs.velopack.io/reference/cli/content/vpk-windows))
+  [vpk options](https://docs.velopack.io/reference/cli/content/vpk-windows),
+  [vpk source, _GitRelease.cs](https://github.com/velopack/velopack/blob/1.2.161/src/vpk/Velopack.Deployment/_GitRelease.cs))
+- `vpk pack` refuses an output folder that already holds a package of the same or a newer
+  version than the one it packs, so only an older release may be downloaded into it first.
+  ([vpk source, PackageBuilder.cs](https://github.com/velopack/velopack/blob/1.2.161/src/vpk/Velopack.Packaging/PackageBuilder.cs))
 - Signing isn't required. An unsigned `Setup.exe` gets Windows' warning about an unknown
   publisher.
   ([Packaging overview](https://docs.velopack.io/packaging/overview),
@@ -131,6 +136,10 @@ Releases are made only when the user asks; no agent pushes a release tag.
    package version, `MAJOR.MINOR.PATCH`).
 3. Tag that commit on main `v0.2.0` and push the tag. `.github/workflows/release.yml` checks the
    tag again, builds on Windows, packs `Setup.exe` with the release notes, and publishes it.
+
+The release build links the C runtime into the program (`-C target-feature=+crt-static`), so it
+starts on a PC without the Visual C++ runtime; the workflow fails if `nestpro.exe` still imports
+`VCRUNTIME*.dll`.
 
 **Run workflow** on the Release workflow (or `gh workflow run release.yml --ref <branch>`) is a
 dry run: it builds the same installer as a workflow download and publishes nothing.

@@ -81,6 +81,12 @@ cargo 0.2.0
 expect 1 "isn't on main" "a tag on a side branch" check --main main v0.2.0
 git_ switch -q main
 expect 0 "0.2.0" "a tag on main" check --main main v0.2.0
+# Merged, the side commit is reachable from main but was never main itself:
+# its files were never main's, so a tag on it is refused too.
+git_ merge -q --no-ff side -m "Merge PR #2: side"
+expect 0 "0.2.0" "a tag on main's merge" check --main main v0.2.0
+git_ switch -q --detach side
+expect 1 "isn't on main" "a tag on a merged side-branch commit" check --main main v0.2.0
 
 # ---- release-notes.sh: the commits and the machine-program section ----------
 
@@ -103,9 +109,13 @@ echo 2 > docs/a.md && git_ commit -qam "Explain the stock list"
 docs_only=$(git rev-parse HEAD)
 git_ switch -qc rapids
 echo 2 > app/src/cnc.rs && git_ commit -qam "Shorter rapids, part one"
+# A release tag on a branch commit isn't a release of main: never a start.
+git_ tag v0.1.5
 echo 2 > app/src/post.rs && echo 2 > app/src/ui.rs && git_ commit -qam "Shorter rapids, part two"
 git_ switch -q main && git_ merge -q --no-ff rapids -m "Merge PR #5: Shorter rapids between parts"
 echo 3 > app/src/ui.rs && git_ commit -qam "Bigger buttons"
+# A pre-release tag isn't a release: the notes still start at v0.1.0.
+git_ tag v0.1.1-rc1
 # A merge made on GitHub's site: the subject names the branch, the body the title.
 git_ switch -qc acme/joints && echo 2 > app/src/kerf.rs && git_ commit -qam "wip"
 git_ switch -q main && git_ merge -q --no-ff acme/joints -m "Merge pull request #7 from acme/joints" -m "Joints on small holes"
@@ -117,6 +127,7 @@ expect 0 "## Changes machine programs" "the section is there" notes
 expect 0 "- Shorter rapids between parts (#5): app/src/cnc.rs, app/src/post.rs" "a merge touching two risky files, named once with both" notes
 expect 0 "- Kerf on small holes (" "a direct commit touching a risky file" notes
 expect 0 "Since v0.1.0: 6 changes." "the range starts at the last release tag" notes
+expect 0 "Since v0.1.0: 6 changes." "not at a pre-release tag (v0.1.1-rc1) or a tag on a merged branch (v0.1.5)" notes
 expect 0 "- Joints on small holes (#7): app/src/kerf.rs" "a merge made on GitHub's site, by its title" notes
 lacks "from acme/joints" "not by its branch" notes
 expect 0 "- Explain the stock list (" "every change is listed" notes
@@ -133,6 +144,10 @@ expect 0 "- Explain the stock list (" "an explicit range" notes v0.1.0 "$docs_on
 # Tagging the new release: its notes run from the previous tag, not from itself.
 git_ tag v0.2.0
 expect 0 "Since v0.1.0: 6 changes." "notes ending at the tag" notes "" v0.2.0
+
+# A machine-program file moved: its old path counts, not only the new one.
+git_ mv app/src/kerf.rs app/src/kerf_moved.rs && git_ commit -qm "Move the kerf code"
+expect 0 "- Move the kerf code (" "a moved machine-program file" sh -c "\"$here/tools/release-notes.sh\" --agents \"$work/r/AGENTS.md\" v0.2.0 | sed '/^## Changes\$/,\$d' | grep -F 'app/src/kerf.rs'"
 
 # No release before: everything from the first commit.
 git_ tag -d v0.1.0 >/dev/null

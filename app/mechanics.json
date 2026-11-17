@@ -7448,7 +7448,7 @@
  {
   "name": "version shown",
   "group": "releases",
-  "value": "Settings → About: the package version, and whether Setup.exe installed this copy",
+  "value": "Settings → About: the package version; elsewhere than Windows, that installers and updates are for Windows",
   "source": "UP3; own design"
  },
  {

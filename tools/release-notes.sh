@@ -4,12 +4,13 @@
 # the code that writes machine programs, so the shop test-cuts before rolling
 # the release out. That code is the list of risky paths in AGENTS.md ("anything
 # that changes a machine program (...)"), read from there each time.
-#   tools/release-notes.sh                  from the last v*.*.* tag to HEAD
+#   tools/release-notes.sh                  from the last release tag on main to HEAD
 #   tools/release-notes.sh FROM [TO]        between two commits
 #   tools/release-notes.sh "" v0.2.0        from the tag before v0.2.0 to v0.2.0
 #   --agents FILE   the AGENTS.md to read (default the repo's own)
 # A change is a commit on main's own line (the first parent), so a merged pull
-# request counts once, with everything it changed.
+# request counts once, with everything it changed. A moved file counts under
+# its old path and its new one.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 agents="$root/AGENTS.md"
@@ -34,7 +35,9 @@ risky=$(awk '
 
 git rev-parse -q --verify "$to^{commit}" >/dev/null || refuse "$to is not a commit."
 if [ -z "$from" ]; then
-  from=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "$to^" 2>/dev/null) || from=""
+  # The last release: a plain vX.Y.Z tag on main's own line, never a
+  # pre-release (v0.2.0-rc1) or a tag on a merged branch's commit.
+  from=$(git describe --tags --abbrev=0 --first-parent --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$to^" 2>/dev/null) || from=""
 fi
 if [ -n "$from" ]; then
   git rev-parse -q --verify "$from^{commit}" >/dev/null || refuse "$from is not a commit."
@@ -73,7 +76,7 @@ while IFS= read -r -d $'\x01' rec; do
   if [ ${#hits[@]} -gt 0 ]; then
     joined=$(printf '%s, ' "${hits[@]}"); machine+=("- $line: ${joined%, }")
   fi
-done < <(git log --first-parent --diff-merges=first-parent --name-only \
+done < <(git log --first-parent --diff-merges=first-parent --name-only --no-renames \
            --format=$'\x01%h\t%s' "$range" && printf '\x01')
 
 n=${#changes[@]}

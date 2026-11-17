@@ -84,7 +84,21 @@ jobs:
           key: release
       - name: Build
         working-directory: app
-        run: cargo build --release --locked
+        # The C runtime linked in (crt-static), so the program starts on a PC
+        # without the Visual C++ runtime installed. With --target the flag
+        # reaches the program only, not the build scripts and macros.
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: The program needs no Visual C++ runtime DLL
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object FullName -match 'Hostx64\\x64' | Select-Object -First 1
+          $deps = & $dumpbin.FullName /nologo /dependents app\target\x86_64-pc-windows-msvc\release\nestpro.exe
+          $deps
+          if ($deps -match '(?i)(vcruntime|msvcp)[0-9_]*\.dll') { throw "nestpro.exe still needs the Visual C++ runtime DLL" }
+          "nestpro.exe imports no VCRUNTIME/MSVCP DLL"
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -93,14 +107,28 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-notes
+      # A release only: the latest published release goes in the pack folder,
+      # so vpk makes an update package from it. vpk refuses a folder holding the
+      # same or a newer version, so that is refused here first, saying why. A
+      # dry run packs without it (it may be at a version already published).
       - name: Earlier releases, for update packages from them
+        if: needs.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: vpk download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$GH_TOKEN" --outputDir releases
+        run: |
+          vpk download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$GH_TOKEN" --outputDir releases
+          for f in releases/"$PACK_ID"-*-full.nupkg; do
+            [ -e "$f" ] || continue
+            v=${f#releases/"$PACK_ID"-}; v=${v%-full.nupkg}
+            if [ "$(printf '%s\n%s\n' "$v" "$VERSION" | sort -V | tail -n 1)" = "$v" ]; then
+              echo "$v is already published, and it isn't older than $VERSION: bump the package version."
+              exit 1
+            fi
+          done
       - name: Pack
         run: |
           mkdir publish
-          cp app/target/release/nestpro.exe publish/
+          cp app/target/x86_64-pc-windows-msvc/release/nestpro.exe publish/
           # The icon the build made for the program file (build.rs), wherever
           # this cargo keeps build-script output.
           icon=$(find app/target -name nestpro.ico -path '*release*' | head -n 1)
@@ -139,9 +167,8 @@ jobs:
         with:
           name: nestpro-${{ env.VERSION }}-windows
           path: releases
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-notes
+      # The notes come with the package: vpk pack put them in (--releaseNotes)
+      # and vpk upload writes them as the release's text.
       - name: Publish on GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -149,4 +176,3 @@ jobs:
           vpk upload github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$GH_TOKEN" \
             --outputDir releases --publish --releaseName "nestpro $VERSION" \
             --tag "$GITHUB_REF_NAME" --targetCommitish "$GITHUB_SHA"
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md

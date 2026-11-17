@@ -642,9 +642,11 @@ impl App {
             row(ui, "Version", |ui| {
                 ui.label(RichText::new(crate::updates::VERSION).strong());
             });
-            row(ui, "Installer", |ui| {
-                ui.label(RichText::new(crate::updates::install_note()).color(th().text_dim));
-            });
+            if let Some(note) = crate::updates::install_note() {
+                row(ui, "Installer", |ui| {
+                    ui.label(RichText::new(note).color(th().text_dim));
+                });
+            }
             row(ui, "Settings file", |ui| {
                 ui.label(RichText::new(AppSettings::file().display().to_string()).monospace().size(11.5));
             });

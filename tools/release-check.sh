@@ -5,7 +5,7 @@
 #   tools/release-check.sh v0.2.0              a release from tag v0.2.0
 #   tools/release-check.sh --dry-run           a dry run: just the package version
 #   --cargo FILE   the Cargo.toml to read (default app/Cargo.toml)
-#   --main REF     also refuse a commit that isn't on REF (e.g. origin/main)
+#   --main REF     also refuse a commit that isn't on REF's own line (e.g. origin/main)
 # Prints the version and exits 0, or says why not and exits 1.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -45,8 +45,11 @@ if ! $dry; then
     refuse "tag $tag doesn't match the program's version $version ($shown). Bump the package version to ${tag#v} in the commit you tag, or tag v$version."
 fi
 
+# On main's own line (first parents): a commit of a merged branch is reachable
+# from main, but its files were never main's.
 if [ -n "$main_ref" ]; then
-  git merge-base --is-ancestor HEAD "$main_ref" 2>/dev/null ||
+  sha=$(git rev-parse HEAD 2>/dev/null)
+  git rev-list --first-parent "$main_ref" 2>/dev/null | grep -qx "$sha" ||
     refuse "commit $(git rev-parse --short HEAD 2>/dev/null) isn't on main ($main_ref): releases are tagged on main."
 fi
 echo "$version"

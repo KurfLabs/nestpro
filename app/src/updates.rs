@@ -24,26 +24,11 @@ pub fn startup_hook() {
     velopack::VelopackApp::build().set_auto_apply_on_startup(false).run();
 }
 
-/// What Settings → About says about installing and updating on this PC.
-pub fn install_note() -> &'static str {
-    #[cfg(all(windows, target_env = "msvc"))]
-    {
-        use velopack::{sources::NoneSource, UpdateManager};
-        // The installer's own records exist only for a copy Setup.exe installed.
-        if UpdateManager::new(NoneSource {}, None, None).is_ok() {
-            "Installed with Setup.exe, for this Windows user."
-        } else {
-            "Not installed with Setup.exe: this copy doesn't update itself."
-        }
-    }
-    #[cfg(all(windows, not(target_env = "msvc")))]
-    {
-        "Built without the installer (it needs the MSVC toolchain): this copy doesn't update itself."
-    }
-    #[cfg(not(windows))]
-    {
-        "Installers and updates are for Windows."
-    }
+/// What Settings → About says about installing (UP3): only that installers
+/// and updates are for Windows, on other systems. On Windows it says nothing:
+/// a copy unpacked from the portable zip looks just like an installed one.
+pub fn install_note() -> Option<&'static str> {
+    if cfg!(windows) { None } else { Some("Installers and updates are for Windows.") }
 }
 
 #[cfg(test)]
