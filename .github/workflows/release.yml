@@ -4,12 +4,18 @@ name: Release
 # builds the program on Windows, packs the per-user Setup.exe with Velopack and
 # publishes it on GitHub Releases with notes from tools/release-notes.sh.
 # A manual run (Run workflow) is a dry run: the same installer as a workflow
-# download, and nothing is published. Releases are made only when the user
-# asks: bump the package version, then tag that commit on main with it.
+# download, and nothing is published. A pull request that changes how releases
+# are made gets the same dry run. Releases are made only when the user asks:
+# bump the package version, then tag that commit on main with it.
 on:
   push:
     tags: ['v*.*.*']
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'tools/release-*.sh'
+      - 'app/src/updates.rs'
 
 permissions:
   contents: read
@@ -110,7 +116,7 @@ jobs:
   # Publishing, for a release tag only; the dry run stops above.
   publish:
     needs: [version, windows]
-    if: needs.version.outputs.publish == 'true' && github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && needs.version.outputs.publish == 'true'
     # On Windows, so vpk reads the Windows release files it packed.
     runs-on: windows-latest
     permissions:
