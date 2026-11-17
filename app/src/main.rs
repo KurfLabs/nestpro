@@ -77,6 +77,7 @@ mod theme;
 mod turnbar;
 mod ui_parts;
 mod units;
+mod updates;
 mod v44;
 
 use eframe::egui;
@@ -3047,6 +3048,8 @@ pub fn export_tip(app: &App) -> String {
 }
 
 fn main() -> eframe::Result {
+    // UP2: the installer's hook runs before anything else (Windows only).
+    updates::startup_hook();
     std::panic::set_hook(Box::new(|info| eprintln!("panic: {info}")));
     // `nestpro <operation> …` and `nestpro mcp`: the command line and the MCP
     // server for agents and scripts, without opening the window.

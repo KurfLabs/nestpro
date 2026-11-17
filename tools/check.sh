@@ -36,6 +36,7 @@ echo "== Public check";  tools/public-check.sh | tail -40
 [ "${PIPESTATUS[0]}" = 0 ] || failed+=("public check")
 echo "== Rule IDs";      tools/unique-ids.sh || failed+=("rule IDs")
 echo "== Line endings";  { tools/line-endings-test.sh && tools/line-endings.sh; } || failed+=("line endings")
+echo "== Release scripts"; tools/release-test.sh || failed+=("release scripts")
 if $boat; then
   # Nothing leaves this computer unless the public check passed.
   if [[ " ${failed[*]} " == *" public check "* ]]; then

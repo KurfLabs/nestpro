@@ -638,6 +638,13 @@ impl App {
         ui.label(RichText::new("About").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
         card(ui, "Sheet nesting", "A rebuild of a sheet-metal CAD/CAM nesting system.", |ui| {
+            // UP3: the version is the package version a release is tagged with.
+            row(ui, "Version", |ui| {
+                ui.label(RichText::new(crate::updates::VERSION).strong());
+            });
+            row(ui, "Installer", |ui| {
+                ui.label(RichText::new(crate::updates::install_note()).color(th().text_dim));
+            });
             row(ui, "Settings file", |ui| {
                 ui.label(RichText::new(AppSettings::file().display().to_string()).monospace().size(11.5));
             });
