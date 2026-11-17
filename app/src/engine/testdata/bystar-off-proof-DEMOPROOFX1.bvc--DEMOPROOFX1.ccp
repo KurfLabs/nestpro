@@ -86,76 +86,76 @@
         <SetToolCorrection Id="77" Value="None" />
         <SetOperationMode Id="78" Value="3" />
         <SetToolCorrection Id="79" Value="Left" />
-        <MoveLineTo Id="80" X="29.103424528" Y="30.51763809" />
+        <MoveLineTo Id="80" X="30" Y="30" />
         <BeginLeadIn Id="81" />
         <SetPiercingMode Id="82" Value="Fine" />
         <ExecPiercing Id="83" />
-        <LineTo Id="84" X="27.878679656" Y="29.292893219" />
-        <ArcTo Id="85" X="27.878679656" Y="27.878679656" SweepAngle="90" />
+        <LineTo Id="84" X="28.326967393" Y="29.551712264" />
+        <ArcTo Id="85" X="27.878679656" Y="27.878679656" SweepAngle="120" />
         <EndLeadIn Id="86" />
         <BeginCutOut Id="87" Contour="Interior" />
         <ArcTo Id="88" X="27.228361402" Y="28.851949703" SweepAngle="337.5" />
         <LineTo Id="89" X="27.878679656" Y="27.878679656" />
         <BeginLeadOut Id="90" />
         <LineTo Id="91" X="28.294414463" Y="27.60089454" />
-        <ArcTo Id="92" X="29.688864557" Y="27.836497883" SweepAngle="90" />
-        <LineTo Id="93" X="30.692455282" Y="29.248165569" />
+        <ArcTo Id="92" X="29.869383369" Y="28.321639255" SweepAngle="120" />
+        <LineTo Id="93" X="30.032684589" Y="30.045974696" />
         <EndLeadOut Id="94" />
         <EndCutOut Id="95" />
         <SetToolCorrection Id="96" Value="None" />
         <SetOperationMode Id="97" Value="4" />
         <SetToolCorrection Id="98" Value="Left" />
-        <MoveLineTo Id="99" X="28.505707546" Y="130.86273015" />
+        <MoveLineTo Id="99" X="30" Y="130" />
         <BeginLeadIn Id="100" />
         <SetPiercingMode Id="101" Value="Fine" />
         <ExecPiercing Id="102" />
-        <LineTo Id="103" X="26.464466094" Y="128.821488698" />
-        <ArcTo Id="104" X="26.464466094" Y="126.464466094" SweepAngle="90" />
+        <LineTo Id="103" X="27.211612321" Y="129.252853773" />
+        <ArcTo Id="104" X="26.464466094" Y="126.464466094" SweepAngle="120" />
         <EndLeadIn Id="105" />
         <BeginCutOut Id="106" Contour="Interior" />
         <ArcTo Id="107" X="25.380602337" Y="128.086582838" SweepAngle="337.5" />
         <LineTo Id="108" X="26.464466094" Y="126.464466094" />
         <BeginLeadOut Id="109" />
         <LineTo Id="110" X="26.8802009" Y="126.186680978" />
-        <ArcTo Id="111" X="29.225519078" Y="126.421283194" SweepAngle="90" />
-        <LineTo Id="112" X="31.05345272" Y="128.655559796" />
+        <ArcTo Id="111" X="29.580376172" Y="127.207654452" SweepAngle="120" />
+        <LineTo Id="112" X="30.046274842" Y="130.05656157" />
         <EndLeadOut Id="113" />
         <EndCutOut Id="114" />
         <SetToolCorrection Id="115" Value="None" />
         <SetToolCorrection Id="116" Value="Left" />
-        <MoveLineTo Id="117" X="208.505707546" Y="130.86273015" />
+        <MoveLineTo Id="117" X="210" Y="130" />
         <BeginLeadIn Id="118" />
         <SetPiercingMode Id="119" Value="Fine" />
         <ExecPiercing Id="120" />
-        <LineTo Id="121" X="206.464466094" Y="128.821488698" />
-        <ArcTo Id="122" X="206.464466094" Y="126.464466094" SweepAngle="90" />
+        <LineTo Id="121" X="207.211612321" Y="129.252853773" />
+        <ArcTo Id="122" X="206.464466094" Y="126.464466094" SweepAngle="120" />
         <EndLeadIn Id="123" />
         <BeginCutOut Id="124" Contour="Interior" />
         <ArcTo Id="125" X="205.380602337" Y="128.086582838" SweepAngle="337.5" />
         <LineTo Id="126" X="206.464466094" Y="126.464466094" />
         <BeginLeadOut Id="127" />
         <LineTo Id="128" X="206.8802009" Y="126.186680978" />
-        <ArcTo Id="129" X="209.225519078" Y="126.421283194" SweepAngle="90" />
-        <LineTo Id="130" X="211.05345272" Y="128.655559796" />
+        <ArcTo Id="129" X="209.580376172" Y="127.207654452" SweepAngle="120" />
+        <LineTo Id="130" X="210.046274842" Y="130.05656157" />
         <EndLeadOut Id="131" />
         <EndCutOut Id="132" />
         <SetToolCorrection Id="133" Value="None" />
         <SetOperationMode Id="134" Value="3" />
         <SetToolCorrection Id="135" Value="Left" />
-        <MoveLineTo Id="136" X="209.103424528" Y="30.51763809" />
+        <MoveLineTo Id="136" X="210" Y="30" />
         <BeginLeadIn Id="137" />
         <SetPiercingMode Id="138" Value="Fine" />
         <ExecPiercing Id="139" />
-        <LineTo Id="140" X="207.878679656" Y="29.292893219" />
-        <ArcTo Id="141" X="207.878679656" Y="27.878679656" SweepAngle="90.000000001" />
+        <LineTo Id="140" X="208.326967393" Y="29.551712264" />
+        <ArcTo Id="141" X="207.878679656" Y="27.878679656" SweepAngle="120" />
         <EndLeadIn Id="142" />
         <BeginCutOut Id="143" Contour="Interior" />
         <ArcTo Id="144" X="207.228361402" Y="28.851949703" SweepAngle="337.5" />
         <LineTo Id="145" X="207.878679656" Y="27.878679656" />
         <BeginLeadOut Id="146" />
         <LineTo Id="147" X="208.294414463" Y="27.60089454" />
-        <ArcTo Id="148" X="209.688864557" Y="27.836497883" SweepAngle="90.000000001" />
-        <LineTo Id="149" X="210.692455282" Y="29.248165569" />
+        <ArcTo Id="148" X="209.869383369" Y="28.321639255" SweepAngle="120" />
+        <LineTo Id="149" X="210.032684589" Y="30.045974696" />
         <EndLeadOut Id="150" />
         <EndCutOut Id="151" />
         <SetToolCorrection Id="152" Value="None" />
@@ -194,12 +194,12 @@
       <ControlCommands>
         <SetOperationMode Id="183" Value="3" />
         <SetToolCorrection Id="184" Value="Left" />
-        <MoveLineTo Id="185" X="64.090638242" Y="74.698901524" />
+        <MoveLineTo Id="185" X="69.264352139" Y="73.501263426" />
         <BeginLeadIn Id="186" />
         <SetPiercingMode Id="187" Value="Fine" />
         <ExecPiercing Id="188" />
-        <LineTo Id="189" X="59.14015725" Y="69.749887689" />
-        <ArcTo Id="190" X="59.138585297" Y="59.143286087" SweepAngle="90" />
+        <LineTo Id="189" X="62.502602921" Y="71.690532216" />
+        <ArcTo Id="190" X="59.138585297" Y="59.143286087" SweepAngle="120" />
         <EndLeadIn Id="191" />
         <BeginCutOut Id="192" Contour="Interior" />
         <LineTo Id="193" X="61.440720681" Y="57.044612386" />
@@ -207,8 +207,8 @@
         <LineTo Id="195" X="59.138585297" Y="59.143286087" />
         <BeginLeadOut Id="196" />
         <LineTo Id="197" X="59.508089756" Y="58.806438265" />
-        <ArcTo Id="198" X="67.284357964" Y="58.97863801" SweepAngle="90" />
-        <LineTo Id="199" X="70.74075272" Y="62.591577988" />
+        <ArcTo Id="198" X="68.300686065" Y="60.468900161" SweepAngle="108.876503631" />
+        <LineTo Id="199" X="70.402297047" Y="65.005774777" />
         <EndLeadOut Id="200" />
         <EndCutOut Id="201" />
         <SetToolCorrection Id="202" Value="None" />
