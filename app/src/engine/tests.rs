@@ -3250,6 +3250,53 @@ fn an_agent_deletes_library_records_but_not_a_job_in_use() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// LB10, LB13: a save-job whose record can't be written fails, but the job
+/// file keeps what it booked; undo can't step back past it, and saving again
+/// takes nothing twice.
+#[cfg(unix)]
+#[test]
+fn an_agents_save_job_that_cannot_write_its_record_fails_and_keeps_its_booking() {
+    use crate::library::{Kind, Library};
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("agent_save_job_write_fails");
+    let clock = Clock::at(1_794_216_000);
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-2").as_agent();
+    ctx.clock = clock.clone();
+    let lib = ctx.library_dir.clone();
+    let window = Library::open(&lib, &Who::new("kim", "PROG-1"), &clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-10.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 10}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 4, "name": "DEMO-P1"}));
+    call(&mut s, "nest", None, json!({}));
+    let id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    let in_stock = || crate::stock::Stock::load(&lib).unwrap().get("S1").unwrap().qty;
+    assert_eq!(in_stock(), 9);
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 1900, "h": 900, "qty": 2, "name": "DEMO-P2"}));
+    call(&mut s, "nest", None, json!({}));
+    assert_eq!(jobfile::load(&jp).unwrap().sheets.len(), 3);
+
+    // The jobs folder can't be written: the sheets are booked, the record isn't.
+    let jobs = window.path(Kind::Job, id).parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&jobs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    std::fs::set_permissions(&jobs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(e.contains("Not saved into the library") && e.contains("Undo can't go back past it"), "{e}");
+    assert_eq!(in_stock(), 7, "{e}");
+    assert_eq!(window.load_job(id).unwrap().held.get("S1"), Some(&1), "the record is as it was");
+    assert_eq!(jobfile::load(&jp).unwrap().held.get("S1"), Some(&3), "the job file keeps what was booked");
+    let e = err(&mut s, "undo", json!({}));
+    assert!(e.contains("Nothing to undo"), "{e}");
+
+    // Saved again: the record is written and nothing more is taken.
+    let r = call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(in_stock(), 7, "{r}");
+    assert_eq!(window.load_job(id).unwrap().held.get("S1"), Some(&3), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// LB7, LB10: an agent's save-part goes through the same check: a library
 /// part the window saved since the agent added it is refused with who and
 /// when, and nothing is saved.

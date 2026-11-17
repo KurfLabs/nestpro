@@ -2316,8 +2316,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             if was_booked {
                                 m.push_str(" The record now holds the stock this job file booked; this job file no longer changes the stock by itself: library mode=save-job books its changes.");
                             }
-                            let files = if note.as_deref().is_some_and(|n| !n.is_empty()) { vec![Stock::file(&ctx.library_dir)] } else { vec![] };
-                            Ok(Outcome { message: m, data: json!({ "id": rec.id }), changed: true, files })
+                            Ok(Outcome { message: m, data: json!({ "id": rec.id }), changed: true, files: vec![] })
                         }
                         // Stopped after the booking (the record couldn't be
                         // written): the job file keeps what was booked, so
@@ -2326,7 +2325,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             message: format!("Not saved into the library: {e}.{stock} This job file keeps that booking: library mode=save-job again saves it and books only what changed since."),
                             data: json!({ "saved": false }),
                             changed: true,
-                            files: vec![Stock::file(&ctx.library_dir)],
+                            files: vec![],
                         }),
                         Err(Refused::Changed(c)) => Err(format!(
                             "Library job '{}' ({}) was saved by {} since this job file read it. Nothing was saved and nothing taken from stock. To work on theirs, read it again with library mode=open id={} (this file's changes are dropped); to keep yours, save it as a new job with library mode=save-job copy=true.",
