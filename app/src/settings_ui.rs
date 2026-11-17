@@ -10,6 +10,7 @@ pub fn output_name(o: Output) -> &'static str {
         Output::Iso => "ISO G-code",
         Output::BlmSiemens => "BLM / Siemens",
         Output::ByStar => "ByStar Fiber laser",
+        Output::Omax => "OMAX waterjet",
     }
 }
 use crate::theme::th;
@@ -290,6 +291,8 @@ impl App {
             if reload_post {
                 self.post = crate::engine::load_post(&m);
             }
+            // The machine's program format may have changed without its library.
+            self.post.omax = m.output == Output::Omax;
             // BLM post values and the machine's technology file: cutting zones
             // and their order (B110–B123), leads, joints, grouping.
             crate::engine::install_machine(&m, &self.cfg.lantek_dir);
@@ -847,7 +850,7 @@ impl App {
                 ui.label(RichText::new(m.kind.describe()).size(11.5).color(th().text_dim));
             });
             row(ui, "Program format", |ui| {
-                for (o, title) in [(Output::Iso, "ISO G-code (.CNC) — most controls"), (Output::BlmSiemens, "BLM / Siemens 840D (.SPF set + XML, zipped)"), (Output::ByStar, "ByStar Fiber laser (.bvc: job file + cut programs, zipped)")] {
+                for (o, title) in [(Output::Iso, "ISO G-code (.CNC) — most controls"), (Output::BlmSiemens, "BLM / Siemens 840D (.SPF set + XML, zipped)"), (Output::ByStar, "ByStar Fiber laser (.bvc: job file + cut programs, zipped)"), (Output::Omax, "OMAX waterjet (.omx path file)")] {
                     ui.radio_value(&mut m.output, o, title);
                 }
             });

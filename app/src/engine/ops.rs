@@ -326,8 +326,8 @@ pub static OPS: &[Op] = &[
     Op { name: "verify", group: "Machining", kind: Kind::Read, help: "Verify Machining: pierces in the scrap, holes before outsides, missing leads, parts outside the sheet, parts closer than the safe distance.", args: &[
         a("sheet", Ty::Str, "Sheet number or \"all\" (default all)"), a("safe", Ty::Num, "Safe distance, mm (default: the part gap; 0 = don't check)"),
     ] },
-    Op { name: "program", group: "Machining", kind: Kind::Read, help: "The CNC program of a sheet (its machine's post: the job's machine unless sheet-machine moved it), returned and optionally written to a file.", args: &[SHEET, a("out", Ty::Path, "Also write it here")] },
-    Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, or BLM LC5 sets) with its own machine (sheet-machine) and a CSV parts report into <folder>\\<job>: each machine's programs into its program folder from Settings → Machines (none set: the export folder), the parts report into every folder written to. The reply lists the files per machine (data.machines). Never sends anything to the machine.", args: &[a("dir", Ty::Path, "One folder for every machine's programs (default: each machine's program folder, else Settings → export folder, else Documents\\Sheet Nesting)")] },
+    Op { name: "program", group: "Machining", kind: Kind::Read, help: "The CNC program of a sheet (its machine's post: the job's machine unless sheet-machine moved it; G-code, an LC5 set, a ByStar Fiber .bvc cut program or an OMAX .omx path file), returned and optionally written to a file.", args: &[SHEET, a("out", Ty::Path, "Also write it here")] },
+    Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, BLM LC5 sets, ByStar Fiber .bvc files or OMAX .omx path files) with its own machine (sheet-machine) and a CSV parts report into <folder>\\<job>: each machine's programs into its program folder from Settings → Machines (none set: the export folder), the parts report into every folder written to. The reply lists the files per machine (data.machines). Never sends anything to the machine.", args: &[a("dir", Ty::Path, "One folder for every machine's programs (default: each machine's program folder, else Settings → export folder, else Documents\\Sheet Nesting)")] },
     // --- stock ---
     Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants (each with who changed it last and when: changed_by, changed_at in this PC's local time), create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window). Every change is recorded as this PC's user, marked (agent).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "create", "add", "remove", "block", "unblock", "edit", "delete", "rules"] },
@@ -886,7 +886,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
     }
     json!({
         "job": job.name, "week": job.week, "changed_since_nest": job.stale, "sheet": sheet,
-        "machine": { "name": ctx.cfg.machine().name, "output": if ctx.blm.on { "BLM LC5 (Siemens 840D set)" } else { "ISO G-code" } },
+        "machine": { "name": ctx.cfg.machine().name, "output": if ctx.blm.on { "BLM LC5 (Siemens 840D set)" } else if ctx.post.omax { "OMAX waterjet (.omx)" } else { "ISO G-code" } },
         "parts": parts, "sheets": sheets,
         "totals": { "ordered": need, "nested": placed, "sheets": job.sheets.len(), "cut_len_mm": r1(tot.0), "rapid_len_mm": r1(tot.1), "pierces": tot.2, "time_s": r1(tot.3), "method": job.method },
         "warnings": warnings,
@@ -3359,6 +3359,13 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 t
             } else {
                 let marks = stockflow::remnant_marks(&crate::stock::Stock::load_cached(&ctx.library_dir), &job.stock_sheets(), &job.formats, s, &ctx.cfg.stock);
+                // OM1, OM3: the same refusal as export, when the sheet's own
+                // machine writes OMAX files (MS7).
+                if out.post.omax {
+                    if let Some(why) = sheetmachine::on_sheet(&f, || omax_refusal(s + 1, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, ctx.cfg.stock.line.edge_offset)) {
+                        return Err(why);
+                    }
+                }
                 sheetmachine::on_sheet(&f, || program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, &out.post, ctx.cfg.stock.line.edge_offset))
             };
             // QR6: say so when parts on the sheet overlap.
