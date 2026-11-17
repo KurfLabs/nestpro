@@ -8736,3 +8736,56 @@ fn a_grain_lock_holds_for_a_copy_at_another_angle_and_through_a_mirror_change() 
     assert_eq!(info["data"]["rotations"]["mirrored"][2], false, "{info}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The operations the other tests don't reach, run the way an agent would.
+#[test]
+fn an_agent_reads_the_choices_sets_loops_draws_a_cut_line_and_saves_a_part_as_dxf() {
+    let d = dir("cutline_loops");
+    let job = d.join("loops.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    let cat = call(&mut s, "catalog", None, json!({}));
+    assert!(cat["data"]["shapes"].as_array().is_some_and(|a| !a.is_empty()), "{cat}");
+    assert!(cat["data"]["materials"].as_array().is_some_and(|a| !a.is_empty()), "{cat}");
+
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 2}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+
+    // Loops on with their size, then off again.
+    call(&mut s, "loops", None, json!({"on": true, "size": 3}));
+    let t = jobfile::load(&job).unwrap().parts[0].tech.unwrap();
+    assert!(t.loops && t.loop_size == 3.0, "loops {} size {}", t.loops, t.loop_size);
+    call(&mut s, "loops", None, json!({"on": false}));
+    assert!(!jobfile::load(&job).unwrap().parts[0].tech.unwrap().loops);
+
+    // A path from the bottom edge to the top edge past the parts is a remnant line.
+    let r = call(&mut s, "cut-line", None, json!({"sheet": 1, "points": "1400,0;1400,1000"}));
+    assert!(r["message"].as_str().unwrap().contains("Remnant line"), "{r}");
+    assert_eq!(call(&mut s, "info", None, json!({}))["data"]["sheets"][0]["cut_lines"], 1);
+    assert!(err(&mut s, "cut-line", json!({"sheet": 1, "delete": 2})).contains("1 cut line"));
+    call(&mut s, "cut-line", None, json!({"sheet": 1, "delete": 1}));
+    assert_eq!(call(&mut s, "info", None, json!({}))["data"]["sheets"][0]["cut_lines"], 0);
+
+    // A part saved as a drawing comes back in as the same size.
+    let dxf = d.join("out").join("rect.dxf");
+    let r = call(&mut s, "export-part-dxf", None, json!({"part": 1, "out": dxf.to_str().unwrap()}));
+    assert_eq!(r["files"][0].as_str().map(Path::new), Some(dxf.as_path()), "{r}");
+    let layers = call(&mut s, "drawing-layers", None, json!({"path": dxf.to_str().unwrap()}));
+    let size = &layers["data"]["sizes"][0];
+    assert!((size["w"].as_f64().unwrap() - 300.0).abs() < 0.01 && (size["h"].as_f64().unwrap() - 120.0).abs() < 0.01, "{layers}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Every operation is run at least once above, through `Session::call` like
+/// an agent: a new operation needs a test here before it counts as done.
+#[test]
+fn every_operation_is_tested_like_an_agent_calls_it() {
+    let src = include_str!("tests.rs");
+    let untested: Vec<&str> = ops::OPS
+        .iter()
+        .map(|o| o.name)
+        .filter(|n| !src.contains(&format!("call(&mut s, \"{n}\"")) && !src.contains(&format!("err(&mut s, \"{n}\"")) && !src.contains(&format!("s.call(\"{n}\"")))
+        .collect();
+    assert!(untested.is_empty(), "Operations with no test in engine/tests.rs — add one that runs each through call(&mut s, \"<op>\", …): {untested:?}");
+}

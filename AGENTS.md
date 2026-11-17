@@ -93,17 +93,28 @@ cd app && cargo run       # run it (needs a display)
 ## Agent interface (CLI + MCP) — keep it level with the GUI
 
 The app is also driven headless by agents and scripts (`nestpro <operation> job.snjob`,
-`nestpro mcp`; see README). When you add or change a feature:
+`nestpro mcp`; see README). Both are built from one list, `OPS` in `engine/ops.rs`: an
+operation added there is a CLI command and an MCP tool at once. **Every feature you add or
+change must answer: can an agent do this too?** When you add or change a feature:
 
 - Put the rule in `app/src/engine/` (a plain function over parts/sheets/spec), and have
   the GUI's `App` method call it — never keep the logic only in a UI method.
 - Add or extend an operation in `engine/ops.rs` (`OPS` + its arm in `run`), with
-  arguments in shop terms and refusals that say what to do instead.
-- Every new ribbon button needs a line in `engine::ops::GUI_MAP`: the operation that does
-  the same, or `view:` / `gui:` / `todo:` with a reason. The test
-  `every_ribbon_command_is_mapped` fails until it has one.
+  arguments in shop terms and refusals that say what to do instead. A new option on an
+  existing feature is usually a new argument on its operation.
+- Every new ribbon button, panel button, right-click menu entry, pick or tick box needs a
+  line in `engine::ops::GUI_MAP`: the operation that does the same, or `view:` / `gui:` /
+  `todo: [ID]` with a reason. Ribbon commands are keyed `"Group/Label"`, the rest
+  `"file.rs/Label"`. The tests `every_ribbon_command_is_mapped` and
+  `every_panel_control_is_mapped` fail until it has one.
+- `engine/gui_unreviewed.txt` lists the controls that were there before the check (AGT-8).
+  Never add to it; map a control and remove its line. `tools/agent-parity.sh` (in
+  `tools/check.sh` and CI) fails when a branch adds lines to it.
 - Test the operation in `engine/tests.rs` through `Session::call`, like an agent would.
+  `every_operation_is_tested_like_an_agent_calls_it` fails for an operation no test calls.
 - A new field in a job must go into `JobFile` (with `#[serde(default)]`) so agents see it.
+- Say what changed for agents in the pull request (the template asks): the operation and
+  arguments added, or why the change needs none.
 
 ## Rules
 

@@ -2,10 +2,13 @@
 //! command line and the MCP tools are built from. Numbers an agent sees are
 //! 1-based like on screen: part 1, sheet 1, item #1 on a sheet, element 1.
 //!
-//! Keeping up with the GUI: `GUI_MAP` names, for every ribbon command, the
-//! operation that does the same here (or why it has none). The test
-//! `every_ribbon_command_is_mapped` fails when a ribbon button is added
-//! without an entry, so a new GUI feature can't silently skip the agents.
+//! Keeping up with the GUI: `GUI_MAP` names, for every ribbon command and
+//! every button, menu entry, pick or tick box with a written label, the
+//! operation that does the same here (or why it has none). The tests
+//! `every_ribbon_command_is_mapped` and `every_panel_control_is_mapped` fail
+//! when one is added without an entry, so a new GUI feature can't silently
+//! skip the agents; `every_operation_is_tested_like_an_agent_calls_it` (in
+//! tests.rs) fails when an operation has no test.
 
 use super::selection::{Take, Window};
 use super::*;
@@ -3243,7 +3246,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
 }
 
 /// Every ribbon command of the GUI, as "Ribbon group/Button label" (a
-/// command in a button's menu as "Ribbon group/Item label"), and what
+/// command in a button's menu as "Ribbon group/Item label"), and every
+/// other button, menu entry, pick or tick box as "file.rs/Label", and what
 /// does the same for an agent: an operation name, or `view:` (only changes
 /// what the screen shows), `gui:` (a window or picker an agent doesn't need,
 /// with what to use instead), or `todo: [ID]` (not yet reachable by an agent;
@@ -3437,6 +3441,90 @@ mod parity {
         out
     }
 
+    /// Buttons, menu entries, picks and tick boxes outside the ribbon whose
+    /// label is written out, as "file.rs/Label" (labels built at run time
+    /// can't be found this way). The OK/Cancel kind of a dialog is left out.
+    pub fn panel_controls() -> Vec<(String, String)> {
+        const CALLS: &[(&str, bool)] = &[(".button(", false), (".small_button(", false), (".menu_button(", false), (".selectable_label(", true), (".checkbox(", true)];
+        const DIALOG: &[&str] = &["OK", "Cancel", "Close", "Yes", "No", "✖", "×"];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out: Vec<(String, String)> = vec![];
+        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "rs")).collect();
+        files.sort();
+        for f in files {
+            let file = f.file_name().unwrap().to_string_lossy().to_string();
+            if ["cli.rs", "mcp.rs"].contains(&file.as_str()) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap();
+            for (call, skip_first) in CALLS {
+                for (at, _) in text.match_indices(call) {
+                    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+                    if text[line_start..at].trim_start().starts_with("//") {
+                        continue;
+                    }
+                    let mut rest = &text[at + call.len()..];
+                    if *skip_first {
+                        let Some(r) = after_first_arg(rest) else { continue };
+                        rest = r;
+                    }
+                    let rest = rest.trim_start();
+                    let rest = rest.strip_prefix("RichText::new(").map_or(rest, str::trim_start);
+                    let Some(label) = string_literal(rest) else { continue };
+                    if label.trim().is_empty() || DIALOG.contains(&label.as_str()) {
+                        continue;
+                    }
+                    let key = format!("{file}/{label}");
+                    if !out.iter().any(|(k, _)| *k == key) {
+                        out.push((key, file.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// What follows the first argument of a call ("a, b)" → " b)").
+    fn after_first_arg(s: &str) -> Option<&str> {
+        let (mut depth, mut quoted, mut esc) = (0i32, false, false);
+        for (i, ch) in s.char_indices() {
+            match (quoted, ch) {
+                (true, _) if esc => esc = false,
+                (true, '\\') => esc = true,
+                (true, '"') => quoted = false,
+                (true, _) => {}
+                (false, '"') => quoted = true,
+                (false, '(' | '[' | '{') => depth += 1,
+                (false, ')' | ']' | '}') if depth == 0 => return None,
+                (false, ')' | ']' | '}') => depth -= 1,
+                (false, ',') if depth == 0 => return Some(&s[i + 1..]),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The text of a string literal at the start of `s`, `\n` as a new line.
+    fn string_literal(s: &str) -> Option<String> {
+        let body = s.strip_prefix('"')?;
+        let mut esc = false;
+        for (i, ch) in body.char_indices() {
+            match ch {
+                _ if esc => esc = false,
+                '\\' => esc = true,
+                '"' => return Some(body[..i].replace("\\n", "\n").replace("\\\"", "\"")),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The panel controls that were there before they were checked, not yet
+    /// given a GUI_MAP line (AGT-8). The list only gets shorter.
+    fn unreviewed() -> Vec<String> {
+        include_str!("gui_unreviewed.txt").lines().map(str::trim_end).filter(|l| !l.is_empty() && !l.starts_with('#')).map(|l| l.replace("\\n", "\n")).collect()
+    }
+
     fn quoted_after(line: &str, pat: &str) -> Option<String> {
         let rest = line.split_once(pat)?.1;
         let rest = rest.strip_prefix('"')?;
@@ -3465,11 +3553,33 @@ mod parity {
         let found = ribbon_commands();
         let missing: Vec<String> = found.iter().filter(|(k, _)| !GUI_MAP.iter().any(|(m, _)| m == k)).map(|(k, f)| format!("  (\"{}\", \"…\"),   // {f}", k.replace('\n', "\\n"))).collect();
         assert!(missing.is_empty(), "Ribbon commands with no agent operation — add them to engine::ops::GUI_MAP (an op name, or view:/gui:/todo: with a reason):\n{}", missing.join("\n"));
-        let gone: Vec<&str> = GUI_MAP.iter().filter(|(m, _)| !found.iter().any(|(k, _)| k == m)).map(|x| x.0).collect();
-        assert!(gone.is_empty(), "GUI_MAP names ribbon commands that no longer exist: {gone:?}");
+        let panel = panel_controls();
+        let gone: Vec<&str> = GUI_MAP.iter().filter(|(m, _)| !found.iter().chain(&panel).any(|(k, _)| k == m)).map(|x| x.0).collect();
+        assert!(gone.is_empty(), "GUI_MAP names commands that no longer exist: {gone:?}");
         for (k, v) in GUI_MAP {
             let ok = ["view:", "gui:", "todo:"].iter().any(|p| v.starts_with(p)) || find(v).is_some();
             assert!(ok, "GUI_MAP {k:?} → {v:?} is not an operation (or view:/gui:/todo:)");
         }
+    }
+
+    /// A button, menu entry, pick or tick box added outside the ribbon needs a
+    /// GUI_MAP line too, keyed "file.rs/Label": the operation that does the
+    /// same for an agent, or view:/gui:/todo: with a reason.
+    #[test]
+    fn every_panel_control_is_mapped() {
+        let found = panel_controls();
+        let old = unreviewed();
+        let missing: Vec<String> = found
+            .iter()
+            .filter(|(k, _)| !GUI_MAP.iter().any(|(m, _)| m == k) && !old.contains(k))
+            .map(|(k, _)| format!("  (\"{}\", \"…\"),", k.replace('\n', "\\n")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "New buttons, menu entries or tick boxes with no agent operation. Add or extend an operation in OPS (the command line and MCP are built from it), then map each in engine::ops::GUI_MAP (an op name, or view:/gui:/todo: [ID] with a reason). Don't add them to gui_unreviewed.txt:\n{}",
+            missing.join("\n")
+        );
+        let stale: Vec<&String> = old.iter().filter(|k| !found.iter().any(|(f, _)| f == *k) || GUI_MAP.iter().any(|(m, _)| m == k)).collect();
+        assert!(stale.is_empty(), "Remove these from engine/gui_unreviewed.txt (gone, renamed or mapped now; a renamed one needs its GUI_MAP line): {stale:?}");
     }
 }
