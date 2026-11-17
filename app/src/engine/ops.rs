@@ -3524,7 +3524,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Combo/Material", "set-sheet"),
     ("Combo/Gas", "set-sheet"),
     ("Combo/Nesting level", "set-sheet"),
-    ("Combo/Part shape", "todo: [AGT-12] change a made-up part's shape"),
+    ("Combo/Part shape", "todo: [AGT-13] change a made-up part's shape"),
     ("Combo/Part grain", "edit-part"),
     ("Combo/Part cut quality", "tech-set"),
     ("Combo/Part text kind", "text"),

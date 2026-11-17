@@ -3088,7 +3088,7 @@ fn a_job_file_booked_before_its_save_into_the_library_leaves_the_stock_to_the_re
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// LB8, LB10, AGT-8: an agent's save-job books the stock as the window's
+/// LB8, LB10, AGT-9: an agent's save-job books the stock as the window's
 /// save does. The first save takes the nested sheet and stores the remnant
 /// under its automatic name; saving again unchanged takes nothing; re-nested
 /// on 3 sheets, the next save takes only the 2 more. A save refused because
@@ -3180,7 +3180,7 @@ fn an_agents_save_job_books_the_stock_as_the_windows_save_does() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// LB17, AGT-9: an agent deletes a library part and a library job, as the
+/// LB17, AGT-10: an agent deletes a library part and a library job, as the
 /// window's 🗑 does. The stock is left as it is, as in the window; the job
 /// file that was the job is one no longer. A job in use is refused, naming
 /// who and since when, and stays.
