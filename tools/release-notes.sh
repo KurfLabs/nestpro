@@ -53,6 +53,12 @@ while IFS= read -r -d $'\x01' rec; do
   # "Merge PR #5: Shorter rapids" reads "Shorter rapids (#5)".
   if [[ $subject =~ ^Merge\ PR\ \#([0-9]+):\ (.*)$ ]]; then
     line="${BASH_REMATCH[2]} (#${BASH_REMATCH[1]})"
+  elif [[ $subject =~ ^Merge\ pull\ request\ \#([0-9]+)\ from\  ]]; then
+    # Merged on GitHub's site: the subject names the branch, the body's first
+    # line is the pull request's title.
+    num=${BASH_REMATCH[1]}
+    title=$(git log -1 --format=%b "$hash" | sed -n '/[^[:space:]]/{p;q;}')
+    line="${title:-$subject} (#$num)"
   else
     line="$subject ($hash)"
   fi

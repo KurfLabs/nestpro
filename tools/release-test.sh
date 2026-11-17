@@ -106,6 +106,9 @@ echo 2 > app/src/cnc.rs && git_ commit -qam "Shorter rapids, part one"
 echo 2 > app/src/post.rs && echo 2 > app/src/ui.rs && git_ commit -qam "Shorter rapids, part two"
 git_ switch -q main && git_ merge -q --no-ff rapids -m "Merge PR #5: Shorter rapids between parts"
 echo 3 > app/src/ui.rs && git_ commit -qam "Bigger buttons"
+# A merge made on GitHub's site: the subject names the branch, the body the title.
+git_ switch -qc acme/joints && echo 2 > app/src/kerf.rs && git_ commit -qam "wip"
+git_ switch -q main && git_ merge -q --no-ff acme/joints -m "Merge pull request #7 from acme/joints" -m "Joints on small holes"
 echo 2 > tools/public-check.sh && git_ commit -qam "Stricter public check"
 echo 3 > app/src/kerf.rs && git_ commit -qam "Kerf on small holes"
 notes() { "$here/tools/release-notes.sh" --agents "$work/r/AGENTS.md" "$@"; }
@@ -113,7 +116,9 @@ notes() { "$here/tools/release-notes.sh" --agents "$work/r/AGENTS.md" "$@"; }
 expect 0 "## Changes machine programs" "the section is there" notes
 expect 0 "- Shorter rapids between parts (#5): app/src/cnc.rs, app/src/post.rs" "a merge touching two risky files, named once with both" notes
 expect 0 "- Kerf on small holes (" "a direct commit touching a risky file" notes
-expect 0 "Since v0.1.0: 5 changes." "the range starts at the last release tag" notes
+expect 0 "Since v0.1.0: 6 changes." "the range starts at the last release tag" notes
+expect 0 "- Joints on small holes (#7): app/src/kerf.rs" "a merge made on GitHub's site, by its title" notes
+lacks "from acme/joints" "not by its branch" notes
 expect 0 "- Explain the stock list (" "every change is listed" notes
 expect 0 "- Stricter public check (" "the public check is listed as a change" notes
 lacks "Shorter rapids, part one" "a merged branch's own commits are folded into its merge" notes
@@ -127,12 +132,12 @@ expect 0 "- Explain the stock list (" "an explicit range" notes v0.1.0 "$docs_on
 
 # Tagging the new release: its notes run from the previous tag, not from itself.
 git_ tag v0.2.0
-expect 0 "Since v0.1.0: 5 changes." "notes ending at the tag" notes "" v0.2.0
+expect 0 "Since v0.1.0: 6 changes." "notes ending at the tag" notes "" v0.2.0
 
 # No release before: everything from the first commit.
 git_ tag -d v0.1.0 >/dev/null
 expect 0 "First release" "no earlier tag: the whole history" notes "" v0.2.0
-expect 0 "Since the first commit: 6 changes." "no earlier tag: counted from the start" notes "" v0.2.0
+expect 0 "Since the first commit: 7 changes." "no earlier tag: counted from the start" notes "" v0.2.0
 
 # AGENTS.md without the list: refuse, never say "None".
 printf '# Agent guide\n' > "$work/no-list.md"

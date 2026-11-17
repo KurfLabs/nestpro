@@ -22,6 +22,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 refuse() { echo "release-check: $*" >&2; exit 1; }
+shown=${cargo#"$root"/}   # app/Cargo.toml, as the repo names it
 { $dry || [ -n "$tag" ]; } || refuse "$usage"
 
 # The version line of the [package] table only: dependencies have versions too.
@@ -30,18 +31,18 @@ version=$(awk '
   in_pkg && /^[[:space:]]*version[[:space:]]*=/ {
     sub(/^[^=]*=[[:space:]]*"/, ""); sub(/".*$/, ""); print; exit
   }' "$cargo" 2>/dev/null)
-[ -n "$version" ] || refuse "$cargo has no package version."
+[ -n "$version" ] || refuse "$shown has no package version."
 
 plain='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 [[ $version =~ $plain ]] ||
-  refuse "the package version $version in $cargo isn't a release version: releases are MAJOR.MINOR.PATCH, e.g. 0.2.0."
+  refuse "the package version $version in $shown isn't a release version: releases are MAJOR.MINOR.PATCH, e.g. 0.2.0."
 
 if ! $dry; then
   [[ $tag == v* ]] || refuse "tag $tag isn't a release tag: release tags start with v, e.g. v$version."
   [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
     refuse "tag $tag isn't a release tag: release tags are vMAJOR.MINOR.PATCH, e.g. v$version."
   [ "$tag" = "v$version" ] ||
-    refuse "tag $tag doesn't match the program's version $version ($cargo). Bump the package version to ${tag#v} in the commit you tag, or tag v$version."
+    refuse "tag $tag doesn't match the program's version $version ($shown). Bump the package version to ${tag#v} in the commit you tag, or tag v$version."
 fi
 
 if [ -n "$main_ref" ]; then
