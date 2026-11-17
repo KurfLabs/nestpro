@@ -316,6 +316,7 @@ original (or a real job).
 | AGT-5 | Command-line answers in a Windows console from the windowed `nestpro.exe`: type-checked, never run on a Windows PC | Estimate | ★★ | `cli.rs` |
 | AGT-6 | Agent operations for the semi-automatic remnant (click an area) and rotating / mirroring an empty remnant sheet | Missing | ★ | built in the window (MECHANICS ST9, ST10) |
 | AGT-7 | Agent operations for the ERP/MES link: bring work in as a job, send the nest back | Missing | ★★ | built in the window (`erpui.rs`, `integrations/`, MECHANICS "ERP / MES integrations") |
+| AGT-8 | Panel buttons, right-click menu entries, picks and tick boxes from before the agent-parity check, not yet mapped in `GUI_MAP` (an operation, or view:/gui:/todo: with a reason) | Partial | ★★ | `engine/gui_unreviewed.txt` lists them; it only gets shorter (`tools/agent-parity.sh`) |
 
 ## App (APP)
 

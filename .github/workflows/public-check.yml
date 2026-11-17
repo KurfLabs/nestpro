@@ -2,8 +2,8 @@ name: Public check
 
 # Runs on every push, docs included: docs are where customer names and e-mail
 # addresses are most likely to slip in. It takes seconds. The rule and
-# feature IDs and the line endings are checked here too (tools/check.sh runs
-# the same scripts locally).
+# feature IDs, the line endings and the agent-parity list are checked here
+# too (tools/check.sh runs the same scripts locally).
 on:
   push:
     branches-ignore: [cla-signatures]
@@ -22,6 +22,12 @@ jobs:
         run: tools/public-check.sh
       - name: Rule and feature IDs used once each
         run: tools/unique-ids.sh
+      - name: The list of unreviewed panel controls only gets shorter
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -n "$BASE_REF" ]; then tools/agent-parity.sh "$(git merge-base HEAD "origin/$BASE_REF")"
+          else tools/agent-parity.sh; fi
       - name: Line endings kept as committed
         env:
           BASE_REF: ${{ github.base_ref }}

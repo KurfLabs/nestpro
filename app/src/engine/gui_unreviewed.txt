@@ -1,0 +1,161 @@
+# Panel buttons, menu entries, picks and tick boxes that were in the app
+# before every_panel_control_is_mapped checked them (FEATURES.md AGT-8), as
+# "file.rs/Label" (a new line in a label written \n).
+#
+# This list only gets shorter. Never add a line: give a new control its line
+# in engine::ops::GUI_MAP (the operation that does the same for an agent, or
+# view:/gui:/todo: [ID] with a reason). When you map one of these, or rename
+# or remove it, delete its line here. tools/agent-parity.sh fails when a
+# branch adds lines.
+cutoff.rs/Remnant options…
+cutoff.rs/Round corners
+dbbrowse.rs/⚙ Connection…
+dock.rs/Reset panel layout
+drawing.rs/Add or change machines…
+drawing.rs/Show them greyed out in the ribbon (the original leaves out commands that aren't available)
+drawing.rs/CN compensation
+drawing.rs/System compensation
+dropsui.rs/Drop sizes…
+dropsui.rs/Cut off leftover uses standard drops
+erpui.rs/Settings…
+erpui.rs/Map work stations…
+erpui.rs/Select all
+erpui.rs/Clear
+erpui.rs/Forget work order
+erpui.rs/Forget
+erpui.rs/Sheet & plate
+erpui.rs/Finished too
+erpui.rs/Show in the Jobs ribbon
+filewatch.rs/Keep mine
+importui.rs/⟳
+importui.rs/Configure…
+importui.rs/All settings…
+importui.rs/Cut technology
+importui.rs/Show
+jobs.rs/Open
+jobs.rs/➕ Add nesting (new sheet)
+jobs.rs/💾 Save to library
+jobs.rs/Copy
+jobs.rs/Change name
+jobs.rs/Delete…
+jobs.rs/📁 Folder
+jobs.rs/Job
+jobs.rs/Delete
+jobs.rs/+ Add product
+jobs.rs/Connect
+jobs.rs/Settings…
+jobs.rs/New
+jobs.rs/▣ Sheet View
+jobs.rs/≡ Sheet list
+jobtree.rs/Close without saving
+libtree.rs/Open
+libtree.rs/Cut
+libtree.rs/📁 Folder
+libtree.rs/Delete
+libtree.rs/Change name
+libtree.rs/Refresh
+libtree.rs/New
+libui.rs/Try again
+libui.rs/Library folder…
+libui.rs/Save open job
+libui.rs/Add open job's products
+libui.rs/Add to job
+libui.rs/Cut
+libui.rs/Delete from the library
+libui.rs/Open
+libui.rs/Folder…
+libui.rs/Rescan
+libui.rs/🗑
+main.rs/Export anyway
+main.rs/Change folder…
+main.rs/Edit this part (remove technology)
+main.rs/Keep nested sheets
+main.rs/📂 Open folder
+main.rs/≡ Parts List
+main.rs/▣ Parts View
+main.rs/Use this answer for the rest of this session
+partview.rs/Back to automatic
+partview.rs/All the same contours
+settings_ui.rs/Browse…
+settings_ui.rs/Ask again
+settings_ui.rs/Example
+settings_ui.rs/Drawing commands coming soon…
+settings_ui.rs/Copy list
+settings_ui.rs/+ New connection
+settings_ui.rs/Import from Lantek…
+settings_ui.rs/Open database…
+settings_ui.rs/Delete
+settings_ui.rs/+ New machine
+settings_ui.rs/Import…
+settings_ui.rs/Connections…
+settings_ui.rs/Forget
+settings_ui.rs/Try again
+settings_ui.rs/Make a new Library here…
+settings_ui.rs/Ask before changing a part that has technology
+settings_ui.rs/Warn when opening a job someone else has in use
+settings_ui.rs/Allow opening it anyway
+settings_ui.rs/Start with the example jobs (takes effect next start)
+settings_ui.rs/Load them at start-up when the connection can sign in by itself (Windows account or remembered password)
+settings_ui.rs/Show them greyed out in the ribbons
+settings_ui.rs/Snap dragged parts to one part gap from a neighbour or to the margin (hold Alt while dragging to place freely)
+settings_ui.rs/Show the part gap as a dashed outline around parts being dragged
+settings_ui.rs/Ctrl + 1/5/0/3/4/9 turn clockwise (off: counter-clockwise)
+settings_ui.rs/Show the turn bar under selected parts (turn by the step, type an angle, choose the step)
+settings_ui.rs/keep leading zeros (N00010)
+settings_ui.rs/flip X
+settings_ui.rs/flip Y
+settings_ui.rs/full circle as one G2/G3
+settings_ui.rs/every other column or row runs back
+settings_ui.rs/cut the small holes next to a big hole before it
+settings_ui.rs/Update the lists and open jobs by themselves
+stockui.rs/Show everything
+stockui.rs/Use anyway — parts stay over the edge
+stockui.rs/✕
+stockui.rs/+ Add a size
+stockui.rs/Nest on sheets from stock
+stockui.rs/Remnants before sheets
+stockui.rs/Use remnants from nesting
+stockui.rs/Use remnants by user
+stockui.rs/Use sheets with no stock left
+stockui.rs/When stock runs out, use the job's sheet size
+stockui.rs/Look for the best sheet format
+stockui.rs/Search for the best sheet combination
+stockui.rs/Work with sheet references
+stockui.rs/Generate remnants when you save
+stockui.rs/Generate remnants with the completed sheets
+stockui.rs/Prompt for references when generating remnants
+stockui.rs/Automatic sheet references
+stockui.rs/Automatic remnant references
+stockui.rs/Automatic mark
+stockui.rs/Create the remnant line automatically after nesting
+stockui.rs/Allow turning over the remnant
+stockui.rs/Cutter radius
+stockui.rs/Round the remnant line
+stockui.rs/Cut the leftover into standard drops
+stockui.rs/When no standard drop fits, keep the leftover as one remnant
+stockui.rs/Sheets
+stockui.rs/Remnants from nesting
+stockui.rs/Remnants by user
+stockui.rs/Empty (qty 0)
+stockui.rs/Locked
+techui.rs/Machine values
+techui.rs/No size rules
+techui.rs/None
+techui.rs/Any
+techui.rs/As Every contour
+textedit.rs/Delete text
+ui_parts.rs/Nest this sheet again
+ui_parts.rs/🗑 Delete part
+ui_parts.rs/Export DXF
+ui_parts.rs/Open part
+ui_parts.rs/Copy
+ui_parts.rs/Stock…
+ui_parts.rs/📚 Save part to library
+ui_parts.rs/Any size in stock
+ui_parts.rs/Group by attribute
+ui_parts.rs/may be flipped
+ui_parts.rs/part's own
+v44.rs/Verify machining in current sheet
+v44.rs/Verify machining in all sheets
+v44.rs/Verify
+v44.rs/Check safe distance
