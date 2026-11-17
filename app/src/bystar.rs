@@ -2050,13 +2050,16 @@ fn box_of(pts: &[P]) -> [f64; 4] {
 /// still be a rectangle.
 pub const RECT_TOL: f64 = 0.01;
 
-/// BV71: a remnant is a rectangle: no holes, every point of its outline on
-/// its box's edges (within `RECT_TOL`), and its area its box's (within
-/// `RECT_TOL` times the box's outline), so a step of any size is not one.
+/// BV71: a remnant is a rectangle: no holes, every segment of its outline
+/// (the closing one too) lying along one of its box's edges (both ends on the
+/// same edge, within `RECT_TOL`), and its area its box's (within `RECT_TOL`
+/// times the box's outline); so a step or a bevel of any size is not one.
 pub fn is_rectangle(o: &crate::stock::Outline) -> bool {
     let b = box_of(&o.outer);
-    let on_edge = |p: &P| (p[0] - b[0]).abs().min((p[0] - b[0] - b[2]).abs()) <= RECT_TOL || (p[1] - b[1]).abs().min((p[1] - b[1] - b[3]).abs()) <= RECT_TOL;
-    o.holes.is_empty() && o.outer.iter().all(on_edge) && (b[2] * b[3] - o.area_mm2()).abs() <= RECT_TOL * 2.0 * (b[2] + b[3])
+    let (x0, y0, x1, y1) = (b[0], b[1], b[0] + b[2], b[1] + b[3]);
+    let n = o.outer.len();
+    let along = |p: P, q: P| [(0, x0), (0, x1), (1, y0), (1, y1)].iter().any(|&(k, v)| (p[k] - v).abs() <= RECT_TOL && (q[k] - v).abs() <= RECT_TOL);
+    o.holes.is_empty() && n >= 4 && (0..n).all(|i| along(o.outer[i], o.outer[(i + 1) % n])) && (b[2] * b[3] - o.area_mm2()).abs() <= RECT_TOL * 2.0 * (b[2] + b[3])
 }
 
 /// BV72: a nest's preview picture (X009): 500 × 250 pixels, white, the sheet

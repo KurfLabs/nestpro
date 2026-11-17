@@ -630,3 +630,27 @@ fn b001_follows_the_picked_unit_whatever_the_files_and_other_settings_say() {
     assert!(bystar_program_text(&mut s, 1).contains("MeasurementSystem=\"Imperial\""));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn x008_refuses_a_bevelled_remnant_rather_than_list_its_rectangle() {
+    // S6: on a 1000 × 1000 sheet the line 600,0 → 600,999 → 601,1000 leaves
+    // a remnant with one corner cut off by a short diagonal; every corner of
+    // it lies on its box's edges, but it isn't a rectangle.
+    let d = dir("bysoft_x008_bevel");
+    std::fs::create_dir_all(&d).unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = bystar_settings(&d, true);
+    call(&mut s, "new", Some(d.join("DEMO-BEVEL.snjob").to_str().unwrap()), json!({"w": 1000, "h": 1000, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-RECT"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "cut-line", None, json!({"sheet": 1, "points": "600,0;600,999;601,1000"}));
+    set(&mut s, "X008=1");
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("isn't one") && e.contains("turn X008 off"), "{e}");
+    // A straight line leaves a true rectangle, which is listed.
+    call(&mut s, "cut-line", None, json!({"sheet": 1, "points": "600,0;600,1000"}));
+    call(&mut s, "export", None, json!({}));
+    let bvc = std::fs::read(bystar_dir(&d, "DEMO-BEVEL").join("DEMOBEVELX1.bvc")).unwrap();
+    assert_eq!(crate::bvc::read(&bvc).unwrap().job.plans[0].remnants.len(), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}

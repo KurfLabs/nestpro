@@ -1077,8 +1077,11 @@ fn full_job_file(file: &str, job: &crate::bvc::JobInfo, in_it: &[usize], nests: 
             // The listed rectangle is the stored remnant's box, and the
             // remnant fills it: every point of its outline on the box's edges
             // and as much area (BV71, 0.01 mm).
-            let on_edge = |p: &P| (p[0] - lo[0]).abs().min((p[0] - hi[0]).abs()) <= 0.01 || (p[1] - lo[1]).abs().min((p[1] - hi[1]).abs()) <= 0.01;
-            let filled = o.holes.is_empty() && o.outer.iter().all(on_edge) && ((hi[0] - lo[0]) * (hi[1] - lo[1]) - o.area_mm2()).abs() <= 0.02 * ((hi[0] - lo[0]) + (hi[1] - lo[1]));
+            // Every segment of the outline (the closing one too) along one
+            // of the box's edges: both its ends on that edge.
+            let n = o.outer.len();
+            let along = |p: P, q: P| [(0, lo[0]), (0, hi[0]), (1, lo[1]), (1, hi[1])].iter().any(|&(k, v)| (p[k] - v).abs() <= 0.01 && (q[k] - v).abs() <= 0.01);
+            let filled = o.holes.is_empty() && n >= 4 && (0..n).all(|i| along(o.outer[i], o.outer[(i + 1) % n])) && ((hi[0] - lo[0]) * (hi[1] - lo[1]) - o.area_mm2()).abs() <= 0.02 * ((hi[0] - lo[0]) + (hi[1] - lo[1]));
             let fits = |r: &[f64; 4]| filled && (r[0] - lo[0]).abs() <= 0.001 && (r[1] - lo[1]).abs() <= 0.001 && (r[0] + r[2] - hi[0]).abs() <= 0.001 && (r[1] + r[3] - hi[1]).abs() <= 0.001;
             match left.iter().position(fits) {
                 Some(i) => {
@@ -1365,6 +1368,28 @@ mod tests {
     fn edit(set: &mut BlmSet, sub: bool, f: impl Fn(&str) -> String) {
         let file = set.spf.iter_mut().find(|x| x.0.contains("70") == sub && !x.0.contains("LIS")).unwrap();
         file.1 = f(&file.1);
+    }
+
+    #[test]
+    fn x008_a_bevelled_remnant_listed_as_its_rectangle_is_refused() {
+        // S6 (BV71): a remnant whose corner is cut off by a short diagonal has
+        // every corner on its box's edges and almost its area; listed as its
+        // full rectangle, the read-back refuses it. A true rectangle passes.
+        let sp = spec();
+        let plan = crate::cnc::plan(&[], &[], &sp);
+        let rect = crate::stock::Outline { outer: vec![[600.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [600.0, 500.0]], holes: vec![] };
+        let bevel = crate::stock::Outline { outer: vec![[600.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [601.0, 500.0], [600.0, 499.0]], holes: vec![] };
+        let job = crate::bvc::JobInfo {
+            materials: vec![crate::bvc::MaterialInfo { id: 1, size: [1000.0, 500.0], margins: Some([5.0; 4]) }],
+            plans: vec![crate::bvc::PlanInfo { name: "DEMO".into(), multiplicity: 1, material_id: 1, parts: vec![], remnants: vec![[600.0, 0.0, 400.0, 500.0]] }],
+            ..Default::default()
+        };
+        for (o, ok) in [(rect, true), (bevel, false)] {
+            let rem = [o];
+            let sheets = [BystarSheet { sheet_no: 1, parts: &[], sheet: &[], spec: &sp, plan: &plan, cuts: &[], remnants: &rem }];
+            let issues = full_job_file("DEMO.bvc", &job, &[0], &[("DEMO".into(), vec![0])], &sheets);
+            assert_eq!(issues.is_empty(), ok, "{issues:?}");
+        }
     }
 
     #[test]
