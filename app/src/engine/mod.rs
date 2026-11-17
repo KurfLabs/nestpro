@@ -66,7 +66,9 @@ pub struct Ctx {
 
 /// The post library of a machine (built-in values when it has none or it can't be read).
 pub fn load_post(m: &settings::Machine) -> crate::post::PostConfig {
-    if m.post_lib.is_empty() { Default::default() } else { crate::post::PostConfig::load(Path::new(&m.post_lib)).unwrap_or_default() }
+    let mut p: crate::post::PostConfig = if m.post_lib.is_empty() { Default::default() } else { crate::post::PostConfig::load(Path::new(&m.post_lib)).unwrap_or_default() };
+    p.omax = m.output == settings::Output::Omax;
+    p
 }
 
 /// Make `m` the machine the rules use: its BLM post values and CT1 technology
@@ -1325,7 +1327,24 @@ pub fn plans(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], sp
 /// sheet's size), cut lines last; `bridge` is the remnant line's edge offset.
 #[allow(clippy::too_many_arguments)]
 pub fn program(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[CutLine], marks: &[Vec<crate::nest::P>], post: &crate::post::PostConfig, bridge: f64) -> String {
-    cnc::program_lines(sheet_no, parts, sheet, spec, plan, &program_blocks(cuts, marks, spec, bridge), post)
+    let blocks = program_blocks(cuts, marks, spec, bridge);
+    if post.omax {
+        return crate::omax::program(sheet_no, sheet.len(), spec, plan, &blocks, crate::omax::date_now());
+    }
+    cnc::program_lines(sheet_no, parts, sheet, spec, plan, &blocks, post)
+}
+
+/// OM1, OM3: why sheet `sheet_no`'s OMAX file can't be written — what it
+/// can't say, or, read back, it doesn't cut what the plan cuts. None when it
+/// can. Export and the agents' `program` stop on it.
+#[allow(clippy::too_many_arguments)]
+pub fn omax_refusal(sheet_no: usize, sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[CutLine], marks: &[Vec<crate::nest::P>], bridge: f64) -> Option<String> {
+    let mut issues = crate::omax::unsupported(plan);
+    if issues.is_empty() {
+        let blocks = program_blocks(cuts, marks, spec, bridge);
+        issues = crate::omax::check(&crate::omax::program(sheet_no, sheet.len(), spec, plan, &blocks, 0.0), plan, &blocks);
+    }
+    (!issues.is_empty()).then(|| format!("Sheet {sheet_no}'s OMAX file wasn't written: {}.", issues.join("; ")))
 }
 
 /// A sheet's extra program blocks: free cut paths, then the remnant marks
@@ -1530,9 +1549,11 @@ fn remove_stale_programs(dir: &Path, job_name: &str, post: &crate::post::PostCon
     }
     for k in 1..=999 {
         let nest = crate::blm::nest_name(blm_job, k);
-        // BV21: a ByStar Fiber program's .bvc and its loose cut program.
+        // BV21: a ByStar Fiber program's .bvc and its loose cut program;
+        // the G-code program and the OMAX file whichever the machine writes now.
         let bv = crate::bystar::program_name(job_name, k);
-        for f in [dir.join(post.file_name(job_name, k)), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML")), dir.join(format!("{bv}.bvc")), dir.join(format!("{bv}.ccp"))] {
+        let omx = crate::post::PostConfig::name_with(job_name, k, crate::omax::EXTENSION);
+        for f in [dir.join(post.iso_file_name(job_name, k)), dir.join(omx), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML")), dir.join(format!("{bv}.bvc")), dir.join(format!("{bv}.ccp"))] {
             if f.is_file() && !kept.contains(&same_file(&f)) {
                 if let Err(e) = std::fs::remove_file(&f) {
                     first_error.get_or_insert(e);
@@ -1572,7 +1593,7 @@ fn program_dirs(job_name: &str, t: &sheetmachine::Targets) -> Vec<PathBuf> {
 /// really is, links followed) and is named
 /// as this job's program for a sheet (1–999) on one of the machines, with
 /// that machine's program extension (the LC5 set's `.zip` / `.XML`, else the
-/// post's). Anything else the record names (a file the job file was edited
+/// post's, or OMAX's `.omx`). Anything else the record names (a file the job file was edited
 /// to list, a program of another job) is never removed, only forgotten.
 fn is_job_program(f: &Path, job_name: &str, t: &sheetmachine::Targets) -> bool {
     // The folder the file really is in, not as spelled: a link named after
@@ -1587,7 +1608,8 @@ fn is_job_program(f: &Path, job_name: &str, t: &sheetmachine::Targets) -> bool {
     let same = |want: &str| want.eq_ignore_ascii_case(&name);
     t.sheets.iter().chain(&t.all).any(|o| {
         (1..=999).any(|k| {
-            if same(&o.post.file_name(job_name, k)) {
+            // The G-code program or the OMAX file, whichever the machine wrote.
+            if same(&o.post.iso_file_name(job_name, k)) || same(&crate::post::PostConfig::name_with(job_name, k, crate::omax::EXTENSION)) {
                 return true;
             }
             let nest = crate::blm::nest_name(o.blm.as_ref().map_or(job_name, |b| b.job.as_str()), k);
@@ -1704,6 +1726,19 @@ pub fn export_to(job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats
     // read back before anything is written; a sheet the writer can't write
     // yet, or a file that doesn't read back as planned, stops the export.
     let bystar = bystar_files(job_name, parts, sheets, formats, plans, job_spec, cuts, t, &dir_of).map_err(|e| format!("{e}{}", remove_programs_note(job_name, t)))?;
+    // OM1, OM3: a sheet whose machine writes OMAX files (MS7) is checked the
+    // same way before anything is written.
+    for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
+        if !t.sheets.get(k).is_some_and(|o| o.post.omax) {
+            continue;
+        }
+        let f = format_at(formats, job_spec, k);
+        let spec = &job_spec.for_format(&f);
+        let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
+        if let Some(why) = sheetmachine::on_sheet(&f, || omax_refusal(k + 1, s, spec, pl, c, marks.get(k).map_or(&[][..], |v| v.as_slice()), bridge)) {
+            return Err(format!("{why}{}", remove_programs_note(job_name, t)));
+        }
+    }
     let mut files = vec![];
     let mut machines: Vec<MachineFiles> = vec![];
     let mut warning = None;

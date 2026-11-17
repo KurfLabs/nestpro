@@ -17,6 +17,9 @@ pub enum Output {
     /// ByStar Fiber laser: one `.bvc` (job file + XML cut program) per nest,
     /// written as the original's ByStar Fiber post writes it (see bystar.rs).
     ByStar,
+    /// OMAX waterjet: one `.omx` path file per sheet, the points with their
+    /// cut quality and kerf side, no G-code (see omax.rs).
+    Omax,
 }
 
 impl Output {
@@ -25,6 +28,7 @@ impl Output {
             Output::Iso => "iso",
             Output::BlmSiemens => "blm",
             Output::ByStar => "bystar",
+            Output::Omax => "omax",
         }
     }
     pub fn from_key(s: &str) -> Self {
@@ -32,6 +36,8 @@ impl Output {
             Output::BlmSiemens
         } else if s.eq_ignore_ascii_case("bystar") {
             Output::ByStar
+        } else if s.eq_ignore_ascii_case("omax") {
+            Output::Omax
         } else {
             Output::Iso
         }

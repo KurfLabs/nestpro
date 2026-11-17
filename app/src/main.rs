@@ -68,6 +68,7 @@ mod stockui;
 mod stockpics;
 mod machine;
 mod nest;
+mod omax;
 mod post;
 mod progimport;
 mod qualities;

@@ -4592,7 +4592,7 @@
  {
   "name": "head up / down",
   "group": "machining time and speeds",
-  "value": "TM1 H006 / H007, once per contour and marking",
+  "value": "TM1 H005 (up) / H006 (down), once per contour and marking",
   "source": "MECHANICS CTM12",
   "estimated": true
  },
@@ -8216,6 +8216,87 @@
   "group": "BLM LC5",
   "value": "from its sheet-edge end: trim start, straight to the meeting point, no HD_DWN_OFF, no run-on; cut before the cut-off it stops on; read-back allows 0.125 mm past the meeting point",
   "source": "BL40"
+ },
+ {
+  "name": "OMAX file layout",
+  "group": "OMAX output",
+  "value": "banner, 2, version, date, 6 [Reserved], [COMMENT]…[END], [VARIABLES][END], records; CR LF; <JOB>X<sheet>.omx",
+  "source": "OX1"
+ },
+ {
+  "name": "OMAX record",
+  "group": "OMAX output",
+  "value": "[0], X, Y, 0, 0, 0, bow, quality, side, R, R, R, 0, 0, 0,[END] at the move's start; first (0,0), last at quality 0",
+  "source": "OX6"
+ },
+ {
+  "name": "OMAX numbers",
+  "group": "OMAX output",
+  "value": "inches, 9 decimals, no -0",
+  "source": "OX7"
+ },
+ {
+  "name": "OMAX arcs",
+  "group": "OMAX output",
+  "value": "bow tan(sweep/4), CCW +, split above a half circle",
+  "source": "OX8"
+ },
+ {
+  "name": "OMAX qualities",
+  "group": "OMAX output",
+  "value": "1-5 same, 6 -> 11, 7 -> 8, leads 9, marking 6",
+  "source": "OX12",
+  "estimated": true
+ },
+ {
+  "name": "OMAX traverse",
+  "group": "OMAX output",
+  "value": "10 (head up)",
+  "source": "OX13"
+ },
+ {
+  "name": "OMAX contour",
+  "group": "OMAX output",
+  "value": "traverse, lead-in 9, contour, lead-out 9; joints are traverses",
+  "source": "OX19"
+ },
+ {
+  "name": "OMAX kerf side",
+  "group": "OMAX output",
+  "value": "1 left / 2 right from the scrap side; 0 offset path, marking, free lines",
+  "source": "OX21"
+ },
+ {
+  "name": "OMAX stops",
+  "group": "OMAX output",
+  "value": "quality 8-12 or punched contours",
+  "source": "OM1"
+ },
+ {
+  "name": "OMAX free cut lines",
+  "group": "OMAX output",
+  "value": "quality 1, side 0",
+  "source": "OM2",
+  "estimated": true
+ },
+ {
+  "name": "OMAX read-back",
+  "group": "OMAX output",
+  "value": "same pierces, length within 2 % + 0.5 mm",
+  "source": "OM3"
+ },
+ {
+  "name": "OMAX header values",
+  "group": "OMAX output",
+  "value": "version 2, OLE date (UTC), two comment lines",
+  "source": "OM4",
+  "estimated": true
+ },
+ {
+  "name": "OMAX arcs fitted",
+  "group": "OMAX output",
+  "value": "runs on one circle become arcs (BL38 fit)",
+  "source": "OM5"
  }
 ]
 }

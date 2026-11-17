@@ -1217,7 +1217,7 @@ fn an_agent_sees_the_table_speeds_and_the_time_split() {
     let t = &sh["times_s"];
     let sum: f64 = ["cut", "mark", "rapid", "pierce", "head"].iter().map(|k| t[k].as_f64().unwrap()).sum();
     assert!((sum - sh["time_s"].as_f64().unwrap()).abs() < 0.3, "{sh}");
-    // Two 600 mm outsides at 9500 mm/min ≈ 7.6 s of cutting; two head-ups of 0.7 s.
+    // Two 600 mm outsides at 9500 mm/min ≈ 7.6 s of cutting; two head-downs of 0.7 s (H006).
     assert!((t["cut"].as_f64().unwrap() - 7.6).abs() < 0.5, "{t}");
     assert!((t["head"].as_f64().unwrap() - 1.4).abs() < 0.05, "{t}");
     crate::ct1::set_thread_active(None);
@@ -11034,5 +11034,86 @@ fn an_agent_cuts_the_leftover_into_standard_drops() {
     assert!(e["files"].as_array().unwrap().iter().any(|f| f.as_str().unwrap().ends_with(".zip")), "{e}");
     assert!(err(&mut s, "remnant", json!({"mode": "drops", "layout": 99})).contains("give 1 to"));
     assert!(err(&mut s, "remnant", json!({"mode": "drops", "sizes": "4000x2000"})).contains("No standard drop fits"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_omax_waterjet_gets_omax_path_files() {
+    // OM1–OM3: a machine set to OMAX output writes one .omx per sheet, which
+    // read back cuts what the plan cuts; a later G-code export removes it (EXP1).
+    let d = dir("omax_files");
+    let m = crate::settings::Machine { name: "Demo OMAX waterjet".into(), output: crate::settings::Output::Omax, kind: crate::machine::MachineKind::Waterjet, ..Default::default() };
+    let cfg = shop_settings(&d.join("Lantek"), "# Demo waterjet\n", vec![m]);
+    let mut s = squares_job(&d, cfg);
+    let _m = apply_machine(&mut s);
+    s.ctx.post = crate::engine::load_post(&s.ctx.cfg.machine());
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert!(text.starts_with("This is an OMAX (.OMX) file."), "{text}");
+    let recs = crate::omax::read(&text);
+    let (len, pierces) = crate::omax::cut_and_pierces(&recs);
+    // Four squares: four pierces, 1600 mm of sides plus their leads, each
+    // side with its kerf on the scrap side, and the file ends at quality 0.
+    assert_eq!(pierces, 4, "{text}");
+    assert!(len > 1600.0 && len < 1700.0, "{len}");
+    assert!(recs.iter().filter(|r| (1..=5).contains(&r.q)).all(|r| r.side == 1 || r.side == 2), "{text}");
+    assert_eq!(recs.last().map(|r| r.q), Some(0));
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!(info["data"]["machine"]["output"], "OMAX waterjet (.omx)");
+    let out = d.join("out");
+    call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    let omx = out.join("squares").join("SQUARESX1.omx");
+    assert!(omx.is_file());
+    assert_eq!(crate::omax::read(&std::fs::read_to_string(&omx).unwrap()).len(), recs.len());
+    s.ctx.cfg.machines[0].output = crate::settings::Output::Iso;
+    s.ctx.post = crate::engine::load_post(&s.ctx.cfg.machine());
+    call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    assert!(!omx.exists() && out.join("squares").join("SQUARESX1.CNC").is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_on_a_laser_and_an_omax_writes_each_sheet_in_its_own_machines_format() {
+    // MS7, OM1: each sheet is written with its own machine's output, so one
+    // job gives the laser G-code and the OMAX an .omx path file; the OMAX
+    // refusal follows the sheet's machine, not the job's.
+    let d = dir("sheet_machine_omax");
+    let mut cfg = two_machine_settings(&d, false);
+    cfg.machines[1] = crate::settings::Machine { name: "Demo OMAX waterjet".into(), output: crate::settings::Output::Omax, kind: crate::machine::MachineKind::Waterjet, program_dir: d.join("omax-programs").to_string_lossy().into_owned(), ..Default::default() };
+    let (mut s, _job) = two_machine_job_on(&d, cfg);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo OMAX waterjet"}));
+    assert!(!s.ctx.post.omax, "the job's machine is the laser");
+
+    // The program each sheet shows is its machine's.
+    let p1 = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let p2 = call(&mut s, "program", None, json!({"sheet": 2}))["data"].as_str().unwrap().to_string();
+    assert!(!p1.starts_with("This is an OMAX") && p1.contains("G0"), "{p1}");
+    assert!(p2.starts_with("This is an OMAX (.OMX) file."), "{p2}");
+    let recs = crate::omax::read(&p2);
+    assert!(crate::omax::cut_and_pierces(&recs).1 >= 3, "two holes and the outline, {p2}");
+
+    // Export: G-code into the laser's folder, the .omx into the OMAX's.
+    let names = |p: &Path| {
+        let mut v: Vec<String> = std::fs::read_dir(p).map(|r| r.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect()).unwrap_or_default();
+        v.sort();
+        v
+    };
+    let e = call(&mut s, "export", None, json!({}));
+    let (iso_dir, omax_dir) = (d.join("iso-programs").join("DEMO-TWO"), d.join("omax-programs").join("DEMO-TWO"));
+    assert_eq!(names(&iso_dir), vec!["DEMOTWOX1.CNC", "parts.csv"], "{e}");
+    assert_eq!(names(&omax_dir), vec!["DEMOTWOX2.omx", "parts.csv"], "{e}");
+    assert_eq!(crate::omax::read(&std::fs::read_to_string(omax_dir.join("DEMOTWOX2.omx")).unwrap()).len(), recs.len());
+
+    // A cut quality the OMAX has no meaning for (OM1) stops a sheet on the
+    // OMAX, and nothing is written; the same sheet back on the laser is.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "quality": 8}));
+    let why = err(&mut s, "export", json!({}));
+    assert!(why.contains("Sheet 2's OMAX file wasn't written") && why.contains("cut quality 8"), "{why}");
+    let why = err(&mut s, "program", json!({"sheet": 2}));
+    assert!(why.contains("Sheet 2's OMAX file wasn't written"), "{why}");
+    // The refused export takes the job's earlier programs with it (BL39, MS7).
+    assert!(!iso_dir.join("DEMOTWOX1.CNC").exists() && !omax_dir.join("DEMOTWOX2.omx").exists());
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo ISO laser"}));
+    call(&mut s, "export", None, json!({}));
+    assert_eq!(names(&iso_dir), vec!["DEMOTWOX1.CNC", "DEMOTWOX2.CNC", "parts.csv"]);
     let _ = std::fs::remove_dir_all(&d);
 }
