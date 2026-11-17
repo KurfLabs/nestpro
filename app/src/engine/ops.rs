@@ -2,8 +2,10 @@
 //! command line and the MCP tools are built from. Numbers an agent sees are
 //! 1-based like on screen: part 1, sheet 1, item #1 on a sheet, element 1.
 //!
-//! Keeping up with the GUI: `GUI_MAP` names, for every ribbon command and
-//! every button, menu entry, pick or tick box with a written label, the
+//! Keeping up with the GUI: `GUI_MAP` names, for every ribbon command
+//! (its label written out or built at run time), every combo box that
+//! changes the job, and every button, menu entry, pick or tick box with a
+//! written label, the
 //! operation that does the same here (or why it has none). The tests
 //! `every_ribbon_command_is_mapped` and `every_panel_control_is_mapped` fail
 //! when one is added without an entry, so a new GUI feature can't silently
@@ -128,6 +130,8 @@ impl Op {
 const PARTS: Arg = a("parts", Ty::Parts, "Which parts: \"all\" (default), a part number from 1, a name, or a list (\"1,3\" or [1,\"Plate\"])");
 const PART: Arg = r("part", Ty::Parts, "The part: its number (from 1) or its name");
 const SHEET: Arg = a("sheet", Ty::Int, "Sheet number, from 1 (default 1)");
+/// AG4: the machine one call writes for; settings are never changed.
+const MACHINE: Arg = a("machine", Ty::Str, "Which machine in Settings to write for, this call only: its number as `machines` lists it (from 1) or its name, any case (default the active machine). It must do what the job is set for (set-sheet machine=…)");
 const ITEM: Arg = r("item", Ty::Int, "The placed part's number on the sheet (#1, #2… as in info/render)");
 const ITEM_ONE: Arg = a("item", Ty::Int, "One placed part's number on the sheet (#1, #2… as in info/render); or use items");
 const ITEMS: Arg = a("items", Ty::Str, "Several placed parts that go together, e.g. \"1,3,5\" or \"2-4\" (or use item)");
@@ -331,8 +335,8 @@ pub static OPS: &[Op] = &[
     Op { name: "verify", group: "Machining", kind: Kind::Read, help: "Verify Machining: pierces in the scrap, holes before outsides, missing leads, parts outside the sheet, parts closer than the safe distance.", args: &[
         a("sheet", Ty::Str, "Sheet number or \"all\" (default all)"), a("safe", Ty::Num, "Safe distance, mm (default: the part gap; 0 = don't check)"),
     ] },
-    Op { name: "program", group: "Machining", kind: Kind::Read, help: "The CNC program of a sheet (the active machine's post: G-code, an LC5 set, or an OMAX .omx path file), returned and optionally written to a file.", args: &[SHEET, a("out", Ty::Path, "Also write it here")] },
-    Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, BLM LC5 sets, or OMAX .omx path files) and a CSV parts report into <folder>\\<job>. Never sends anything to the machine.", args: &[a("dir", Ty::Path, "Folder (default Settings → export folder, else Documents\\Sheet Nesting)")] },
+    Op { name: "program", group: "Machining", kind: Kind::Read, help: "The CNC program of a sheet (the active machine's post: G-code, an LC5 set, or an OMAX .omx path file), returned and optionally written to a file. machine= writes it for another of the machines in Settings for this call only (AG4).", args: &[SHEET, a("out", Ty::Path, "Also write it here"), MACHINE] },
+    Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, BLM LC5 sets, or OMAX .omx path files) and a CSV parts report into <folder>\\<job>. Never sends anything to the machine. machine= writes them for another of the machines in Settings for this call only (AG4).", args: &[a("dir", Ty::Path, "Folder (default Settings → export folder, else Documents\\Sheet Nesting)"), MACHINE] },
     // --- stock ---
     Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants (each with who changed it last and when: changed_by, changed_at in this PC's local time), create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window). Every change is recorded as this PC's user, marked (agent).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "create", "add", "remove", "block", "unblock", "edit", "delete", "rules"] },
@@ -3269,14 +3273,16 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         }
         "program" => {
             let s = sheet_idx(job, &a)?;
+            // AG4: the machine named for this call (before the plans: its technology file).
+            let on = super::CallMachine::of(ctx, a.str("machine").as_deref(), job.spec.machine)?;
             let plans = job.plans();
             // JOB-41, MAC-46: the same stop as export.
             let stops = stop_issues(&job.parts, &job.sheets[s], &job.spec_at(s), &plans[s]);
             if !stops.is_empty() {
                 return Err(stop_refusal(s + 1, &stops));
             }
-            let text = if ctx.blm.on {
-                let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &ctx.blm, &job.name));
+            let text = if on.blm.on {
+                let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &on.blm, &job.name));
                 // BL39: the same refusal as export.
                 let issues = readback::check_set(&set, &job.parts, &job.sheets[s], &plans[s], job.cuts(s));
                 if !issues.is_empty() {
@@ -3290,16 +3296,16 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             } else {
                 let marks = stockflow::remnant_marks(&crate::stock::Stock::load_cached(&ctx.library_dir), &job.stock_sheets(), &job.formats, s, &ctx.cfg.stock);
                 // OM1, OM3: the same refusal as export.
-                if ctx.post.omax {
+                if on.post.omax {
                     if let Some(why) = omax_refusal(s + 1, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, ctx.cfg.stock.line.edge_offset) {
                         return Err(why);
                     }
                 }
-                program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, &ctx.post, ctx.cfg.stock.line.edge_offset)
+                program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, &on.post, ctx.cfg.stock.line.edge_offset)
             };
             // QR6: say so when parts on the sheet overlap.
             let warn = sheet_overlap_note(&job.parts, s, &job.sheets[s], &job.spec_at(s)).map_or(String::new(), |w| format!(" Warning: {w} and would be cut through each other."));
-            let mut o = Outcome::read(format!("Program for sheet {} ({} lines).{warn}", s + 1, text.lines().count()), json!(text));
+            let mut o = Outcome::read(format!("Program for sheet {} ({} lines).{}{warn}", s + 1, text.lines().count(), on.note), json!(text));
             if let Some(out) = a.str("out") {
                 let out = PathBuf::from(out);
                 std::fs::write(&out, &text).map_err(|e| format!("Couldn't write {}: {e}", out.display()))?;
@@ -3309,12 +3315,14 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         }
         "export" => {
             let base = a.str("dir").map(PathBuf::from).unwrap_or_else(|| ctx.export_dir());
+            // AG4: the machine named for this call (before the plans: its technology file).
+            let on = super::CallMachine::of(ctx, a.str("machine").as_deref(), job.spec.machine)?;
             let plans = job.plans();
-            let blm = blm_for(&job.spec, &ctx.blm, &job.name);
+            let blm = blm_for(&job.spec, &on.blm, &job.name);
             let marks = stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock);
-            let ex = export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &ctx.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
+            let ex = export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &on.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
             // GS16: the material, thickness and gas they're for.
-            let mut o = Outcome::read(export_note(&ex, job.sheets.len(), &job.spec, &ctx.blm, crate::units::LenUnit::Mm), Value::Null);
+            let mut o = Outcome::read(format!("{}{}", export_note(&ex, job.sheets.len(), &job.spec, &on.blm, crate::units::LenUnit::Mm), on.note), Value::Null);
             o.files = ex.files;
             Ok(o)
         }
@@ -3329,7 +3337,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
 /// does the same for an agent: an operation name, or `view:` (only changes
 /// what the screen shows), `gui:` (a window or picker an agent doesn't need,
 /// with what to use instead), or `todo: [ID]` (not yet reachable by an agent;
-/// ID = its row in FEATURES.md).
+/// ID = its row in FEATURES.md). Also a ribbon label built at run time, as
+/// "Group/{expression}", and each combo box that changes the job
+/// (`parity::JOB_COMBOS`) as "Combo/<name>".
 pub const GUI_MAP: &[(&str, &str)] = &[
     // --- Jobs screen ---
     ("Jobs/New\njob", "new"),
@@ -3478,6 +3488,43 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Settings → Materials/Reset to defaults", "material"),
     ("Settings → Materials/Try again", "material"),
     ("Settings → Materials/Use standard", "material"),
+    // --- labels built at run time ("{expression}") ---
+    ("ERP / MES/{&format!(\"{}\\njobs\", p.name())}", "todo: [AGT-7] bring ERP work in as a job"),
+    ("Text/{label}", "text"),
+    // --- right-click menus and panel buttons ("file.rs/Label"; one entry covers each control with that label in the file) ---
+    ("ui_parts.rs/Nest this sheet again", "renest-sheet"),
+    ("dock.rs/Reset panel layout", "view:"),
+    // Open jobs (the window's list): an agent's job is its file.
+    ("jobs.rs/Open", "gui: name the job file in each call"),
+    ("jobs.rs/➕ Add nesting (new sheet)", "sheet-add"),
+    ("jobs.rs/💾 Save to library", "library"),
+    ("jobs.rs/Copy", "gui: copy the .snjob file, then rename"),
+    // A job's name, or (a week folder's) the week its jobs are in.
+    ("jobs.rs/Change name", "rename"),
+    ("jobs.rs/Delete…", "gui: only the window keeps a list of open jobs; delete the .snjob file"),
+    ("jobs.rs/Delete", "gui: an empty week folder of the window's open jobs"),
+    ("jobs.rs/Job", "new"),
+    ("jobs.rs/📁 Folder", "gui: a job's week is set with rename week="),
+    // The Library's job and part trees (part-folders does the same for parts).
+    ("libtree.rs/Open", "library"),
+    ("libtree.rs/Cut", "job-folders"),
+    ("libtree.rs/Delete", "job-folders"),
+    ("libtree.rs/Change name", "job-folders"),
+    ("libtree.rs/📁 Folder", "job-folders"),
+    ("libtree.rs/Refresh", "view: every call reads the Library again"),
+    ("libui.rs/Add to job", "library"),
+    ("libui.rs/Cut", "part-folders"),
+    ("libui.rs/Delete from the library", "library"),
+    ("libui.rs/🗑", "library"),
+    // --- combo boxes that change the job (parity::JOB_COMBOS) ---
+    ("Combo/Machine", "export"),
+    ("Combo/Material", "set-sheet"),
+    ("Combo/Gas", "set-sheet"),
+    ("Combo/Nesting level", "set-sheet"),
+    ("Combo/Part shape", "todo: [AGT-12] change a made-up part's shape"),
+    ("Combo/Part grain", "edit-part"),
+    ("Combo/Part cut quality", "tech-set"),
+    ("Combo/Part text kind", "text"),
 ];
 
 #[cfg(test)]
@@ -3509,14 +3556,110 @@ mod parity {
                 }
                 for call in ["ribbon_button(ui, Icon::", "ribbon_button_ex(ui, Icon::", "dropdown(ui, Icon::", "ribbon_small(ui, Icon::", "menu_item(ui, Icon::"] {
                     if let Some(rest) = line.split_once(call).map(|x| x.1) {
-                        if let Some(label) = rest.split_once(", \"").and_then(|(_, l)| l.split_once('"')).map(|x| x.0.replace("\\n", "\n")) {
-                            out.push((format!("{group}/{label}"), file.clone()));
+                        // The label after the icon: a literal, or what builds it
+                        // at run time as "{expression}".
+                        if let Some(at) = rest.find(", ") {
+                            if let Some(label) = arg_label(rest, at + 2) {
+                                out.push((format!("{group}/{label}"), file.clone()));
+                            }
                         }
                     }
                 }
             }
+            // Combos that change the job: each one in JOB_COMBOS, found by its marker.
+            for (f, marker, name) in JOB_COMBOS {
+                if *f == file && text.contains(marker) {
+                    out.push((format!("Combo/{name}"), file.clone()));
+                }
+            }
         }
+        out.sort();
+        out.dedup_by(|a, b| a.0 == b.0);
         out
+    }
+
+    /// The combo boxes that change the job (its machine, material, a part's
+    /// grain…): (file, text that finds the combo in it, name). A new combo
+    /// that changes the job goes here; GUI_MAP then needs "Combo/<name>".
+    const JOB_COMBOS: &[(&str, &str, &str)] = &[
+        ("drawing.rs", "from_id_salt((\"machine\"", "Machine"),
+        ("matpick.rs", "from_id_salt((\"material_combo\"", "Material"),
+        ("ui_parts.rs", "fn gas_combo(", "Gas"),
+        ("ui_parts.rs", "from_id_salt(\"nest_level\")", "Nesting level"),
+        ("ui_parts.rs", "from_id_salt(\"shape_combo\")", "Part shape"),
+        ("ui_parts.rs", "from_id_salt(\"part_grain\")", "Part grain"),
+        ("ui_parts.rs", "from_id_salt(\"quality\")", "Part cut quality"),
+        ("techui.rs", "from_id_salt(\"text_kind\")", "Part text kind"),
+    ];
+
+    /// The label argument starting at byte `at` of `s`: a string literal as
+    /// shown, anything else (built at run time) as "{expression}".
+    fn arg_label(s: &str, at: usize) -> Option<String> {
+        let rest = s.get(at..)?;
+        if let Some(lit) = rest.strip_prefix('"') {
+            return Some(lit.split_once('"')?.0.replace("\\n", "\n"));
+        }
+        // Up to the argument's end: the next comma or the call's ')' outside brackets and strings.
+        let end = arg_end(rest);
+        let expr = rest[..end].trim();
+        (!expr.is_empty()).then(|| format!("{{{expr}}}"))
+    }
+
+    /// Where the argument at the start of `s` ends.
+    fn arg_end(s: &str) -> usize {
+        let b = s.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            match b[i] {
+                b',' | b')' => return i,
+                b'(' | b'{' | b'[' => i = matching(s, i),
+                b'"' => i = string_end(s, i),
+                _ => {}
+            }
+            i += 1;
+        }
+        b.len()
+    }
+
+    /// The index of the closing bracket that matches the one at `open`
+    /// (strings and char literals skipped); the end of `s` if none.
+    fn matching(s: &str, open: usize) -> usize {
+        let b = s.as_bytes();
+        let mut depth = 0usize;
+        let mut i = open;
+        while i < b.len() {
+            match b[i] {
+                b'(' | b'{' | b'[' => depth += 1,
+                b')' | b'}' | b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i;
+                    }
+                }
+                b'"' => i = string_end(s, i),
+                // A char literal ('"', '\'', '{'); a lifetime has no closing quote.
+                b'\'' if b.get(i + 1) == Some(&b'\\') => i += s[i + 2..].find('\'').map_or(0, |k| k + 2),
+                b'\'' if b.get(i + 2) == Some(&b'\'') => i += 2,
+                _ => {}
+            }
+            i += 1;
+        }
+        b.len()
+    }
+
+    /// The index of the '"' that closes the string opening at `open`.
+    fn string_end(s: &str, open: usize) -> usize {
+        let b = s.as_bytes();
+        let mut i = open + 1;
+        while i < b.len() {
+            match b[i] {
+                b'\\' => i += 1,
+                b'"' => return i,
+                _ => {}
+            }
+            i += 1;
+        }
+        b.len()
     }
 
     /// Buttons, menu entries, picks and tick boxes outside the ribbon whose
@@ -3630,10 +3773,14 @@ mod parity {
     fn every_ribbon_command_is_mapped() {
         let found = ribbon_commands();
         let missing: Vec<String> = found.iter().filter(|(k, _)| !GUI_MAP.iter().any(|(m, _)| m == k)).map(|(k, f)| format!("  (\"{}\", \"…\"),   // {f}", k.replace('\n', "\\n"))).collect();
-        assert!(missing.is_empty(), "Ribbon commands with no agent operation — add them to engine::ops::GUI_MAP (an op name, or view:/gui:/todo: with a reason):\n{}", missing.join("\n"));
+        assert!(
+            missing.is_empty(),
+            "Commands with no agent operation (ribbon buttons; labels built at run time as \"{{expression}}\"; job-changing combos as \"Combo/<name>\") — add them to engine::ops::GUI_MAP (an op name, or view:/gui:/todo: with a reason):\n{}",
+            missing.join("\n")
+        );
         let panel = panel_controls();
         let gone: Vec<&str> = GUI_MAP.iter().filter(|(m, _)| !found.iter().chain(&panel).any(|(k, _)| k == m)).map(|x| x.0).collect();
-        assert!(gone.is_empty(), "GUI_MAP names commands that no longer exist: {gone:?}");
+        assert!(gone.is_empty(), "GUI_MAP names commands that no longer exist (renamed? update its key; a combo moved? update JOB_COMBOS): {gone:?}");
         for (k, v) in GUI_MAP {
             let ok = ["view:", "gui:", "todo:"].iter().any(|p| v.starts_with(p)) || find(v).is_some();
             assert!(ok, "GUI_MAP {k:?} → {v:?} is not an operation (or view:/gui:/todo:)");

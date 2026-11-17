@@ -5468,6 +5468,12 @@
   "source": "MECHANICS AG3"
  },
  {
+  "name": "export and program write for the machine named (number or name) for that call only; settings and job unchanged; unknown or other-process machine refused",
+  "group": "agents",
+  "value": true,
+  "source": "MECHANICS AG4"
+ },
+ {
   "name": "use stock item and re-nest",
   "group": "nesting one sheet again",
   "value": "all or nothing: the sheet takes the item and its parts are re-nested, or nothing changes and the message says why; the main choice when parts would no longer fit",

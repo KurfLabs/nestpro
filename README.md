@@ -54,6 +54,7 @@ nestpro remnant jobs/frames.snjob --mode=auto --sheet=1
 nestpro verify jobs/frames.snjob
 nestpro render jobs/frames.snjob --sheet=1          # PNG next to the job
 nestpro export jobs/frames.snjob                    # programs + parts.csv
+nestpro export jobs/frames.snjob --machine=2        # for machine 2 in Settings (number or name), this call only
 nestpro stock-book jobs/frames.snjob --mode=book    # sheets out of stock, remnants in
 nestpro ops            # every operation;  nestpro help <operation>  for its options
 nestpro ops --gui      # which GUI ribbon command each operation stands for

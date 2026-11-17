@@ -8825,6 +8825,55 @@ fn an_omax_waterjet_gets_omax_path_files() {
 }
 
 #[test]
+fn an_agent_names_the_machine_for_one_export_and_the_settings_stay() {
+    // AG4: export and program write for the machine named (number or name,
+    // any case) for this call only; the settings and the job don't change.
+    use crate::machine::MachineKind;
+    let d = dir("call_machine");
+    let mach = |name: &str, output, kind| crate::settings::Machine { name: name.into(), output, kind, ..Default::default() };
+    let machines = vec![
+        mach("Demo laser", crate::settings::Output::Iso, MachineKind::Laser),
+        mach("Demo LC5", crate::settings::Output::BlmSiemens, MachineKind::Laser),
+        mach("Demo waterjet", crate::settings::Output::Omax, MachineKind::Waterjet),
+    ];
+    let cfg = shop_settings(&d.join("Lantek"), "# Demo laser\n", machines);
+    let mut s = squares_job(&d, cfg);
+    let _m = apply_machine(&mut s);
+    s.ctx.post = crate::engine::load_post(&s.ctx.cfg.machine());
+    call(&mut s, "leads", None, json!({"mode": "machine"}));
+    let (cfg, post, blm, tech) = (s.ctx.cfg.clone(), s.ctx.post.clone(), s.ctx.blm.clone(), crate::ct1::active());
+    let out = d.join("out");
+    let files = |e: &Value| e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect::<Vec<_>>();
+    // Machine 2 is the LC5: its program sets, not G-code.
+    let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap(), "machine": 2}));
+    assert!(files(&e).iter().any(|f| f.ends_with(".zip")), "{e}");
+    assert!(!out.join("squares").join("SQUARESX1.CNC").exists(), "{e}");
+    assert!(e["message"].as_str().unwrap().contains("machine 2 (Demo LC5"), "{e}");
+    let text = call(&mut s, "program", None, json!({"sheet": 1, "machine": "demo lc5"}))["data"].as_str().unwrap().to_string();
+    assert!(text.starts_with("; BLM LC5 set"), "{text}");
+    // The settings, the session's machine and its technology are as before.
+    assert_eq!(s.ctx.cfg, cfg);
+    assert_eq!((&s.ctx.post, &s.ctx.blm), (&post, &blm));
+    assert_eq!(crate::ct1::active(), tech);
+    assert_eq!(call(&mut s, "machines", None, json!({}))["data"]["active"], json!(1));
+    // Without machine: the active one's G-code again.
+    let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    assert!(out.join("squares").join("SQUARESX1.CNC").is_file(), "{e}");
+    assert!(!files(&e).iter().any(|f| f.ends_with(".zip")), "{e}");
+    // An unknown machine is refused with the machines there are.
+    for bad in [json!(9), json!("Nope"), json!(0)] {
+        let e = err(&mut s, "export", json!({"dir": out.to_str().unwrap(), "machine": bad}));
+        assert!(e.contains("no machine") && e.contains("1 Demo laser") && e.contains("3 Demo waterjet"), "{e}");
+    }
+    // A machine for another process: refused, saying how to set the job to it.
+    let e = err(&mut s, "program", json!({"machine": "Demo waterjet"}));
+    assert!(e.contains("set-sheet machine=waterjet") && e.contains("1 Demo laser (laser, iso), 2 Demo LC5 (laser, blm)."), "{e}");
+    assert_eq!(call(&mut s, "info", None, json!({}))["data"]["sheet"]["machine"], json!(MachineKind::Laser.label()));
+    assert_eq!(s.ctx.cfg, cfg);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn an_agent_turns_a_part_to_the_grain_and_the_nest_never_turns_it_across() {
     // GR1–GR5 through the operations: the sheet's grain runs along X.
     let d = dir("grain");

@@ -317,6 +317,7 @@ original (or a real job).
 | AGT-6 | Agent operations for the semi-automatic remnant (click an area) and rotating / mirroring an empty remnant sheet | Missing | ★ | built in the window (MECHANICS ST9, ST10) |
 | AGT-7 | Agent operations for the ERP/MES link: bring work in as a job, send the nest back | Missing | ★★ | built in the window (`erpui.rs`, `integrations/`, MECHANICS "ERP / MES integrations") |
 | AGT-8 | Panel buttons, right-click menu entries, picks and tick boxes from before the agent-parity check, not yet mapped in `GUI_MAP` (an operation, or view:/gui:/todo: with a reason) | Partial | ★★ | `engine/gui_unreviewed.txt` lists them; it only gets shorter (`tools/agent-parity.sh`) |
+| AGT-12 | Agent operation to change a made-up part's shape (rectangle, disc…) after it is added: `edit-part` changes its sizes only | Missing | ★ | the Part screen's Shape list (`ui_parts.rs`) |
 
 ## App (APP)
 
@@ -396,6 +397,8 @@ original (or a real job).
 | AGT-3 | Agent operation for opening a BLM LC5 program set (`import-program`) | 2026-11-04 (`engine/imports.rs`) |
 | AGT-8 | Agents' `library mode=save-job` books the stock as the window's save does: under the write lock after the save checks (a refused save takes nothing), remnants under their automatic names, a job file booked before its first save handing its booking over without taking it twice; the reply says what was booked | 2026-11-17 (`engine::ops` `library`, `JobFile::stock_on_save`, MECHANICS LB10) |
 | AGT-9 | Agents' `library mode=delete` deletes a library job or part as the window's 🗑 does; a job in use is refused naming who and since when; the stock is left as it is, as in the window | 2026-11-17 (`engine::ops` `library`, MECHANICS LB17) |
+| AGT-10 | `export` and `program` pick the machine from Settings → Machines & output (`machine`: number or name) for one call, without changing the settings or the job | 2026-11-17 (`engine::CallMachine`, MECHANICS AG4) |
+| AGT-11 | The ribbon ↔ agent check also covers right-click menu items, ribbon labels built at run time and the combo boxes that change the job | 2026-11-17 (`engine/ops.rs` `mod parity`) |
 | — | Agent operations on the window's stock: `stock`, `stock-book`, `sheet-add`, `sheet-change`, `sheet-delete`, `nest stock=` | 2026-11-04 (`engine/stockflow.rs`, MECHANICS SA1–SA6) |
 | — | Command line and MCP server on a shared engine; every ribbon command mapped | 2026-11-04 |
 | — | **Nest sheet**: re-nest only the current sheet's parts onto that sheet, other sheets untouched (ribbon, Nesting Explorer right-click, agents' `renest-sheet`) | 2026-11-04 (`engine::renest_sheet`, MECHANICS RN1–RN6: group zones, stock remnants rebuilt, undo keeps cut lines and follows the stock) |

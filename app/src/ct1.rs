@@ -237,6 +237,41 @@ pub fn set_thread_active(t: Option<MachineTech>) {
     LOCAL.with(|l| *l.borrow_mut() = t);
 }
 
+/// Another machine's technology in use for one agent call (AG4); the
+/// machine before comes back when this is dropped. Tests: on the calling
+/// thread only, as `set_thread_active`.
+pub struct ForNow {
+    prev: Option<MachineTech>,
+}
+
+pub fn use_for_now(t: MachineTech) -> ForNow {
+    #[cfg(test)]
+    {
+        ForNow { prev: LOCAL.with(|l| l.borrow_mut().replace(t)) }
+    }
+    #[cfg(not(test))]
+    {
+        let prev = ACTIVE.write().ok().and_then(|mut g| g.replace(t));
+        GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ForNow { prev }
+    }
+}
+
+impl Drop for ForNow {
+    fn drop(&mut self) {
+        let prev = self.prev.take();
+        #[cfg(test)]
+        LOCAL.with(|l| *l.borrow_mut() = prev);
+        #[cfg(not(test))]
+        {
+            if let Ok(mut g) = ACTIVE.write() {
+                *g = prev;
+            }
+            GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 /// The machine-file key of app material `i` (its id; MTL2), from the
 /// material list.
 pub fn key_of_material(i: usize) -> String {

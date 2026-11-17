@@ -146,6 +146,82 @@ pub fn use_machine_spacing(spec: &mut SheetSpec, gap: bool, margin: bool) -> Res
     Ok(format!("Machine spacing: {}.", said.join(", ")))
 }
 
+/// AG4: which of Settings → Machines an agent names: its number as
+/// `machines` lists it (from 1) or its name, any case. An unknown one is
+/// refused with the machines there are.
+pub fn find_machine(cfg: &AppSettings, which: &str) -> Result<usize, String> {
+    let w = which.trim();
+    let k = match w.parse::<usize>() {
+        Ok(n) => n.checked_sub(1).filter(|&k| k < cfg.machines.len()),
+        Err(_) => cfg.machines.iter().position(|m| m.name.trim().eq_ignore_ascii_case(w)),
+    };
+    k.ok_or_else(|| {
+        if cfg.machines.is_empty() {
+            format!("There's no machine '{w}': Settings → Machines & output has no machines. Leave machine out to write for the built-in one.")
+        } else {
+            format!("There's no machine '{w}' in Settings → Machines & output. Name one by its number or name: {}.", machine_list(cfg, |_| true))
+        }
+    })
+}
+
+/// "1 Laser 01 (laser, iso), 2 …" for the machines `keep` keeps.
+fn machine_list(cfg: &AppSettings, keep: impl Fn(&settings::Machine) -> bool) -> String {
+    cfg.machines.iter().enumerate().filter(|(_, m)| keep(m)).map(|(i, m)| format!("{} {} ({}, {})", i + 1, m.name, m.kind.key(), m.output.key())).collect::<Vec<_>>().join(", ")
+}
+
+/// AG4: the machine one agent call writes its programs for — its post,
+/// BLM switches and technology file — without changing the settings or
+/// the job. The machine in use comes back when this is dropped.
+pub struct CallMachine {
+    pub post: crate::post::PostConfig,
+    pub blm: crate::blm::BlmSettings,
+    /// " Written for machine 2 (…), this call only." when one was named.
+    pub note: String,
+    _tech: Option<(crate::ct1::ForNow, AdiBack)>,
+}
+
+/// The BLM post values in use before a call's machine (AG4).
+struct AdiBack(crate::blm::AdiParams);
+
+impl Drop for AdiBack {
+    fn drop(&mut self) {
+        crate::blm::set_adi(self.0);
+    }
+}
+
+impl CallMachine {
+    /// `which` None: the active machine, as it is. Named: that machine (see
+    /// `find_machine`), only for a job set for what it does — picking it in
+    /// the window also sets the job to it, which a program or an export
+    /// never does, so a job set for something else is refused with how to
+    /// fix it.
+    pub fn of(ctx: &Ctx, which: Option<&str>, job: crate::machine::MachineKind) -> Result<CallMachine, String> {
+        let Some(which) = which else { return Ok(CallMachine { post: ctx.post.clone(), blm: ctx.blm.clone(), note: String::new(), _tech: None }) };
+        let k = find_machine(&ctx.cfg, which)?;
+        let m = &ctx.cfg.machines[k];
+        if m.kind != job {
+            let same = machine_list(&ctx.cfg, |x| x.kind == job);
+            let other = if same.is_empty() { String::new() } else { format!(", or name a {} machine: {same}", job.key()) };
+            return Err(format!(
+                "Machine {} ({}) is a {} machine, but this job is set for {}. Set the job to it first with set-sheet machine={} (what picking it in the window does){other}.",
+                k + 1,
+                m.name,
+                m.kind.key(),
+                job.key(),
+                m.kind.key()
+            ));
+        }
+        let note = format!(" Written for machine {} ({}, {}), this call only.", k + 1, m.name, m.output.key());
+        if k == ctx.cfg.active_machine {
+            return Ok(CallMachine { post: ctx.post.clone(), blm: ctx.blm.clone(), note, _tech: None });
+        }
+        let back = AdiBack(crate::blm::adi());
+        crate::blm::set_adi(crate::blm::AdiParams::from_files(&m.blm_ps1, &m.blm_cf1));
+        let tech = crate::ct1::use_for_now(crate::ct1::MachineTech::for_machine(m, &ctx.cfg.lantek_dir));
+        Ok(CallMachine { post: load_post(m), blm: blm_base(m), note, _tech: Some((tech, back)) })
+    }
+}
+
 /// BLM output switches of a machine.
 pub fn blm_base(m: &settings::Machine) -> crate::blm::BlmSettings {
     let mut b = crate::blm::BlmSettings::for_machine(&m.name);

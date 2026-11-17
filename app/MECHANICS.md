@@ -2118,6 +2118,7 @@ adds its own: the auto-refresh is LB14–LB16; the holds, Take over and refusals
 | AG1 | An agent operation that **refuses** leaves the job exactly as it was, in the session too (nothing it set before refusing is saved by a later change). | Rebuild |
 | AG2 | `edit-part` changes only the sizes it's given (at least 0.5 mm, as in the window); a **disc's** diameter sets both. | Rebuild |
 | AG3 | MCP: a `job` that isn't the job file's path (text) is refused, never dropped (the call would otherwise land on the job already open). | Rebuild |
+| AG4 | `export` and `program` take **`machine`**: one of the machines in Settings → Machines & output, by its number as `machines` lists it (from 1) or its name (any case). The programs are written for that machine (its output format, post, BLM switches and technology file) for that call only; the settings, the active machine and the job don't change. An unknown machine is refused, listing the machines there are. A machine for another process than the job is set for is refused: picking it in the window also sets the job to that process, so the refusal says to do that first (`set-sheet machine=…`) or names the machines that fit. | Rebuild (our choice) |
 - Open jobs vs Saved jobs: Expert keeps every job in its database and has one active job. The rebuild keeps several jobs open in the window (Open jobs) and saves them to its own library (Saved jobs); the active job is the one shown.
 
 
