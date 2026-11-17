@@ -106,7 +106,7 @@ jobs:
           icon=$(find app/target -name nestpro.ico -path '*release*' | head -n 1)
           [ -n "$icon" ] || { echo "the build made no nestpro.ico"; exit 1; }
           vpk pack --packId "$PACK_ID" --packVersion "$VERSION" --packDir publish \
-            --mainExe nestpro.exe --packTitle "Sheet Nesting" --packAuthors "Kurf Labs" \
+            --runtime win-x64 --mainExe nestpro.exe --packTitle "Sheet Nesting" --packAuthors "Kurf Labs" \
             --icon "$icon" --releaseNotes release-notes.md --outputDir releases
           ls -la releases
           test -f "releases/$PACK_ID-win-Setup.exe" || test -f "releases/$PACK_ID-Setup.exe"
