@@ -10,7 +10,6 @@
 cutoff.rs/Remnant options…
 cutoff.rs/Round corners
 dbbrowse.rs/⚙ Connection…
-dock.rs/Reset panel layout
 drawing.rs/Add or change machines…
 drawing.rs/Show them greyed out in the ribbon (the original leaves out commands that aren't available)
 drawing.rs/CN compensation
@@ -32,15 +31,6 @@ importui.rs/Configure…
 importui.rs/All settings…
 importui.rs/Cut technology
 importui.rs/Show
-jobs.rs/Open
-jobs.rs/➕ Add nesting (new sheet)
-jobs.rs/💾 Save to library
-jobs.rs/Copy
-jobs.rs/Change name
-jobs.rs/Delete…
-jobs.rs/📁 Folder
-jobs.rs/Job
-jobs.rs/Delete
 jobs.rs/+ Add product
 jobs.rs/Connect
 jobs.rs/Settings…
@@ -48,24 +38,14 @@ jobs.rs/New
 jobs.rs/▣ Sheet View
 jobs.rs/≡ Sheet list
 jobtree.rs/Close without saving
-libtree.rs/Open
-libtree.rs/Cut
-libtree.rs/📁 Folder
-libtree.rs/Delete
-libtree.rs/Change name
-libtree.rs/Refresh
 libtree.rs/New
 libui.rs/Try again
 libui.rs/Library folder…
 libui.rs/Save open job
 libui.rs/Add open job's products
-libui.rs/Add to job
-libui.rs/Cut
-libui.rs/Delete from the library
 libui.rs/Open
 libui.rs/Folder…
 libui.rs/Rescan
-libui.rs/🗑
 main.rs/Export anyway
 main.rs/Change folder…
 main.rs/Edit this part (remove technology)
@@ -144,7 +124,6 @@ techui.rs/None
 techui.rs/Any
 techui.rs/As Every contour
 textedit.rs/Delete text
-ui_parts.rs/Nest this sheet again
 ui_parts.rs/🗑 Delete part
 ui_parts.rs/Export DXF
 ui_parts.rs/Open part

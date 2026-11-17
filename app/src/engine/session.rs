@@ -179,8 +179,25 @@ impl Session {
                 out.message = format!("{} Stock: {note}.", out.message);
             }
         }
+        // A job saved into the Library (LB10) has booked the stock, and its
+        // record holds the sheets (or, when the record couldn't be written,
+        // this file does): undo can't step back past it to a file that holds
+        // none of them (a save or stock-book would take them again).
+        let into_library = name == "library" && out.changed && ops::Args(&args).str("mode").as_deref() == Some("save-job");
         if out.changed && op.kind == Kind::Write {
             self.save(Some(before))?;
+        }
+        if into_library {
+            self.undo.clear();
+            if let Some(p) = &self.path {
+                let _ = std::fs::remove_file(backup_path(p));
+            }
+            // The record couldn't be written: the booking is kept in the job
+            // file (LB13), but the call failed and says so.
+            if out.data.get("saved") == Some(&json!(false)) {
+                return Err(format!("{} Undo can't go back past it: this job file holds what was booked.", out.message));
+            }
+            out.message.push_str(" Undo can't go back past this save: the record keeps it.");
         }
         let mut reply = done(out);
         if let Some(p) = &self.path {

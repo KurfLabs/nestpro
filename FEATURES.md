@@ -315,8 +315,16 @@ original (or a real job).
 | AGT-4 | Agent operation for the Lantek database browser (Windows only) | Missing | ★ | `dbbrowse.rs` |
 | AGT-5 | Command-line answers in a Windows console from the windowed `nestpro.exe`: type-checked, never run on a Windows PC | Estimate | ★★ | `cli.rs` |
 | AGT-6 | Agent operations for the semi-automatic remnant (click an area) and rotating / mirroring an empty remnant sheet | Missing | ★ | built in the window (MECHANICS ST9, ST10) |
-| AGT-7 | Agent operations for the ERP/MES link: bring work in as a job, send the nest back | Missing | ★★ | built in the window (`erpui.rs`, `integrations/`, MECHANICS "ERP / MES integrations") |
+| AGT-7 | Agent operations for the ERP/MES link: bring work orders in as a job, send the nest back, forget a work order | Missing | ★★ | built in the window (`erpui.rs`, `integrations/`, MECHANICS "ERP / MES integrations") |
 | AGT-8 | Panel buttons, right-click menu entries, picks and tick boxes from before the agent-parity check, not yet mapped in `GUI_MAP` (an operation, or view:/gui:/todo: with a reason) | Partial | ★★ | `engine/gui_unreviewed.txt` lists them; it only gets shorter (`tools/agent-parity.sh`) |
+| AGT-13 | Agent operation to change a made-up part's shape (rectangle, disc…) after it is added: `edit-part` changes its sizes only | Missing | ★ | the Part screen's Shape list (`ui_parts.rs`) |
+| AGT-14 | Agents put a stock sheet on a sheet and re-nest it in one step, as the stock window's "Use it and re-nest sheet N" does: `sheet-change` refuses when parts would end up over the new sheet's edge | Missing | ★★ | `stockui.rs`; `sheet-change` + `renest-sheet` |
+| AGT-15 | Agents allow a part's turns one angle at a time (0°, 90°, 180°, 270°) as the Part Properties boxes do: `edit-part rotate` is one switch for all 90° turns | Missing | ★ | `ui_parts.rs` |
+| AGT-16 | Agents' `text`: place a text at a point, along an element or round an arc, and delete one text instead of all of the part's | Missing | ★ | `techui.rs`, `textedit.rs` (DRW-3 covers moving and editing one) |
+| AGT-17 | Agents move a straight cut line (`cut-line` can only delete it and draw it again) | Missing | ★ | `cutoff.rs` |
+| AGT-18 | Agents book a job without storing its remnants that once, as the window's "Cancel" in the remnant naming window does | Missing | ★ | `stockui.rs`, `stock-book` |
+| AGT-19 | The MCP tool list is about 76 KB (60 tools) that every agent loads before it starts: shorten the tool descriptions and keep the long explanations behind `help` | Missing | ★★ | `mcp.rs`, `engine/ops.rs` |
+| AGT-20 | An option an operation doesn't take exits with 1 (refused), but the README says a bad command exits with 2 | Missing | ★ | `cli.rs`, `engine/session.rs` |
 
 ## App (APP)
 
@@ -394,6 +402,10 @@ original (or a real job).
 | AGT-1 | The window notices when an agent changed the open job file and reloads it (asks when both changed) | 2026-11-04 (`filewatch.rs`) |
 | AGT-2 | Agent operation for the Lantek import XML (`import-xml`) | 2026-11-04 (`engine/imports.rs`) |
 | AGT-3 | Agent operation for opening a BLM LC5 program set (`import-program`) | 2026-11-04 (`engine/imports.rs`) |
+| AGT-9 | Agents' `library mode=save-job` books the stock as the window's save does: under the write lock after the save checks (a refused save takes nothing), remnants under their automatic names, a job file booked before its first save handing its booking over without taking it twice; the reply says what was booked | 2026-11-17 (`engine::ops` `library`, `JobFile::stock_on_save`, MECHANICS LB10) |
+| AGT-10 | Agents' `library mode=delete` deletes a library job or part as the window's 🗑 does; a job in use is refused naming who and since when; the stock is left as it is, as in the window | 2026-11-17 (`engine::ops` `library`, MECHANICS LB17) |
+| AGT-11 | `export` and `program` pick the machine from Settings → Machines & output (`machine`: number or name) for one call, without changing the settings or the job | 2026-11-17 (`engine::CallMachine`, MECHANICS AG4) |
+| AGT-12 | The ribbon ↔ agent check also covers ribbon labels built at run time and the combo boxes that change the job; 21 right-click menu entries and panel buttons from before the panel check are mapped (AGT-8) | 2026-11-17 (`engine/ops.rs` `mod parity`) |
 | — | Agent operations on the window's stock: `stock`, `stock-book`, `sheet-add`, `sheet-change`, `sheet-delete`, `nest stock=` | 2026-11-04 (`engine/stockflow.rs`, MECHANICS SA1–SA6) |
 | — | Command line and MCP server on a shared engine; every ribbon command mapped | 2026-11-04 |
 | — | **Nest sheet**: re-nest only the current sheet's parts onto that sheet, other sheets untouched (ribbon, Nesting Explorer right-click, agents' `renest-sheet`) | 2026-11-04 (`engine::renest_sheet`, MECHANICS RN1–RN6: group zones, stock remnants rebuilt, undo keeps cut lines and follows the stock) |
