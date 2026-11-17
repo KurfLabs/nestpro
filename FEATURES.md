@@ -23,6 +23,10 @@ original (or a real job).
 
 **Reserved:** spec #142 (the shop's own materials) holds JOB-85–JOB-94 here, and MA8–MA35 in `app/MECHANICS.md`.
 
+**Reserved:** spec #178 (install, shop set-up and updates) holds APP-9–APP-18 here, and SH1–SH30, UP1–UP30 and BK1–BK15 in `app/MECHANICS.md`.
+
+**Reserved:** spec #179 (the same settings on every PC) holds APP-19–APP-25 here, and SG1–SG40 in `app/MECHANICS.md`.
+
 ## Sheets and stock (STK)
 
 | ID | What | Status | Pri | Notes / source |
@@ -57,7 +61,7 @@ original (or a real job).
 | REM-10 | Remnant lines between group zones (A789/A790) | Missing | ★ | MECHANICS "Nesting parts grouped by attributes" |
 | REM-13 | Remnant marks preview their references by simulating the next store for every sheet up to the one shown, on each redraw while marks are on; cache it (per job state) if it shows on jobs with many sheets | Missing | ★ | MECHANICS RN6, `stockflow::remnant_refs` |
 | REM-14 | Automatic line's distance past the parts: the app uses the offset, or the cutter radius when that option is on or for the irregular "at the cut" shape; RM1 observed half a cut width added to the distance. About 0.15 mm on a 0.3 mm kerf. Check which the original does in each mode | Estimate | ★ | MECHANICS RM1, ST8 |
-| REM-16 | Standard drops: the list of sizes is kept per PC (Settings), not in the shared Library, so each programming PC keeps its own list | Missing | ★★ | MECHANICS SD1 |
+| REM-16 | Standard drops: the list of sizes is kept per PC (Settings), not in the shared Library, so each programming PC keeps its own list | Missing | ★★ | MECHANICS SD1; spec #179 makes it a shop default |
 | REM-17 | Drop layouts: at most two rows along the strip (one per long sheet edge) and one row in an L's leg, against the sheet edge; layouts with rows across the strip's length, a second row in the leg, drops mixed in width within a row, or drops in the one-step, staircase and irregular shapes aren't offered. Auto is biggest first, which can leave more skeleton than the most-area layout | Partial | ★ | MECHANICS SD2, SD3, SD7 |
 | REM-18 | Standard drops are cut to their exact size, and where two rows fill the strip the second row is a cut short (SD4); the 1 mm limit for sharing a cut is a guess. A shop may rather have the leftover strip split evenly, or count on its sheets being oversize | Estimate | ★ | MECHANICS SD4 |
 
@@ -321,8 +325,8 @@ original (or a real job).
 | APP-2 | Quick ring set up per screen in Settings: choose the tool in each of the 8 slots of the Part view, on-a-part and empty-sheet rings (any ribbon command), keeping the shared tools anchored | Missing | ★★ | MECHANICS QR1, QR2; the built-in rings come first, so operators find out what they miss |
 | APP-3 | Active / inactive machines: an inactive machine shows grey and in italics and can't take new jobs or nestings | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (2.1.3) |
 | APP-4 | Hover cards on every ribbon button: a bold title, the button's icon and one plain sentence of what it does; the ribbon shows plain text tooltips | Missing | ★★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
-| APP-5 | The same machine, material and technology settings on every programming PC. Each PC keeps its own today, so a job opened on another PC can give a different program. The original can keep its machine settings files on the network | Missing | ★★★ | shared Library plan 2026-11-09 |
-| APP-6 | Shop set-up: a first-run choice of a local or shared Library, a shop name, joining a shop from another PC, backups and version upgrades, the installer | Missing | ★★ | shared Library plan 2026-11-09; ADR 0003 |
+| APP-5 | The same machine, material and technology settings on every programming PC. Each PC keeps its own today, so a job opened on another PC can give a different program. The original can keep its machine settings files on the network | Missing | ★★★ | shared Library plan 2026-11-09; spec #179, ADR 0007 |
+| APP-6 | Shop set-up: a first-run choice of a local or shared Library, a shop name, joining a shop from another PC, backups and version upgrades, the installer | Missing | ★★ | shared Library plan 2026-11-09; ADR 0003; spec #178, ADR 0006 |
 | APP-7 | Users and logins: a users list (reference, employee, user name, password) and settings only an administrator may change. The rebuild names people by their Windows user and PC name, with no login | Missing | ★ | shared Library plan 2026-11-09 |
 | APP-8 | **Undo steps for the sheet's settings**: changing the Sheet tab's size (Length X, Width Y, the size list), material, thickness, edge margin or part gap adds no undo step of its own, so Undo after one also takes back the step before it, for example a gas picked just before (Gas pick, then a size, then Undo: the job is back on the old gas). Each change, or one run of typing in a field, should be its own step | Missing | ★★ | final review of spec #100 (PR #119); which sheet changes the original keeps as undo steps isn't studied |
 
