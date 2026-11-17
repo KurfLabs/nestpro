@@ -351,7 +351,9 @@ pub fn turn_by(parts: &[Part], sheet: &[Placed], sel: &[usize], deg: f64, spec: 
         return Ok(sel.iter().map(|&i| sheet[i]).collect());
     }
     if let Some(p) = refuses_turn(parts, sheet, &sel, deg) {
-        let why = if nest::split_angle(deg).1 == 0.0 { "its rotations, Part Properties" } else { "only parts that may turn 90° take other angles — Part Properties" };
+        let why = if p.rots.grain {
+            "it is kept to the sheet's grain: 0° and 180° only — Grain → Lock on the Part screen"
+        } else if nest::split_angle(deg).1 == 0.0 { "its rotations, Part Properties" } else { "only parts that may turn 90° take other angles — Part Properties" };
         return Err(format!("'{}' isn't allowed to turn {} ({why}).", p.name, nest::angle_text(signed(deg))));
     }
     let turned = turned_about(parts, sheet, &sel, deg);

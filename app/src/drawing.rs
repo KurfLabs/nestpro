@@ -566,6 +566,7 @@ impl App {
                 self.open_part_step(1);
             }
         });
+        self.grain_group(ui);
         ribbon_group(ui, "Draw", |ui| {
             let r = dropdown(ui, Icon::Points, "Points", true).on_hover_text(format!("Access to points — snap: {}", self.dv.snap.label()));
             egui::Popup::menu(&r).show(|ui| {

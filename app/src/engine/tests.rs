@@ -8671,3 +8671,68 @@ fn an_omax_waterjet_gets_omax_path_files() {
     assert!(!omx.exists() && out.join("squares").join("SQUARESX1.CNC").is_file());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn an_agent_turns_a_part_to_the_grain_and_the_nest_never_turns_it_across() {
+    // GR1–GR5 through the operations: the sheet's grain runs along X.
+    let d = dir("grain");
+    let job = d.join("grain.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "margin": 10, "gap": 5}));
+    // A bracket drawn standing up: its bend must run across the grain, so its
+    // length goes along the sheet's X once it is turned.
+    call(&mut s, "add-shape", None, json!({"shape": "l-bracket", "w": 120, "h": 400, "qty": 6, "name": "DEMO-001"}));
+    let info = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert_eq!(info["data"]["rotations"]["grain"], "free", "{info}");
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let r = call(&mut s, "turn-part", None, json!({"part": 1, "by": -90}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("400 × 120") && m.contains("kept to the grain") && m.contains("nest again"), "{m}");
+    let info = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert_eq!((info["data"]["w"].as_f64(), info["data"]["h"].as_f64(), info["data"]["rotations"]["grain"].as_str()), (Some(400.0), Some(120.0), Some("grain")), "{info}");
+    let warn = call(&mut s, "info", None, json!({}));
+    assert!(warn.to_string().contains("nest again"), "the old nest is out of date: {warn}");
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    let placed: Vec<_> = j.sheets.iter().flatten().collect();
+    assert_eq!(placed.len(), 6);
+    assert!(placed.iter().all(|p| p.spin.is_none() && p.turns % 2 == 0 && (p.w - 400.0).abs() < 1e-6), "only 0° or 180°: {placed:?}");
+    // A hand turn on the sheet keeps to the grain too: the next allowed turn is 180°.
+    call(&mut s, "rotate", None, json!({"sheet": 1, "item": 1}));
+    let p = jobfile::load(Path::new(jp)).unwrap().sheets[0][0];
+    assert_eq!(p.turns % 2, 0, "{p:?}");
+    assert!(err(&mut s, "turn", json!({"item": 1, "angle": 30})).contains("grain"));
+    // Fixed: 0° only; Free gives it every turn back.
+    call(&mut s, "edit-part", None, json!({"part": 1, "grain": "fixed"}));
+    let info = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert_eq!(info["data"]["rotations"]["grain"], "fixed");
+    assert_eq!(info["data"]["rotations"]["plain"], json!([true, true, false, true]), "90° and 270° kept for Free: {info}");
+    call(&mut s, "edit-part", None, json!({"part": 1, "grain": "free"}));
+    let info = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert_eq!((info["data"]["rotations"]["grain"].as_str(), &info["data"]["rotations"]["plain"]), (Some("free"), &json!([true, true, true, true])));
+    assert!(err(&mut s, "turn-part", json!({"part": 1, "by": 45})).contains("quarter turns"));
+    assert!(err(&mut s, "edit-part", json!({"part": 1, "grain": "sideways"})).contains("free, grain or fixed"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_grain_lock_holds_for_a_copy_at_another_angle_and_through_a_mirror_change() {
+    // GR1, GR2: a copy turned to 30° before the part was locked can't be
+    // stepped on to 120°, and letting a Fixed part be mirrored keeps it fixed.
+    let d = dir("grain_lock_holds");
+    let job = d.join("g.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1500, "h": 1000, "margin": 10, "gap": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 40, "qty": 1, "name": "DEMO-001"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 400, "y": 400}));
+    call(&mut s, "turn", None, json!({"item": 1, "angle": 30}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "grain": "grain"}));
+    assert!(err(&mut s, "rotate", json!({"sheet": 1, "item": 1})).contains("kept to the grain"));
+    call(&mut s, "edit-part", None, json!({"part": 1, "grain": "fixed"}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "mirror": true}));
+    let info = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert_eq!(info["data"]["rotations"]["grain"], "fixed", "{info}");
+    assert_eq!(info["data"]["rotations"]["mirrored"][2], false, "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
