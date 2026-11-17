@@ -1554,11 +1554,12 @@ fn remove_stale_programs(dir: &Path, job_name: &str, post: &crate::post::PostCon
     }
     for k in 1..=999 {
         let nest = crate::blm::nest_name(blm_job, k);
-        // BV21: a ByStar Fiber program's .bvc and its loose cut program;
-        // the G-code program and the OMAX file whichever the machine writes now.
+        // BV21, BV72: a ByStar Fiber program's .bvc, its loose cut program and
+        // its preview picture (X009); the G-code program and the OMAX file
+        // whichever the machine writes now.
         let bv = crate::bystar::program_name(job_name, k);
         let omx = crate::post::PostConfig::name_with(job_name, k, crate::omax::EXTENSION);
-        for f in [dir.join(post.iso_file_name(job_name, k)), dir.join(omx), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML")), dir.join(format!("{bv}.bvc")), dir.join(format!("{bv}.ccp"))] {
+        for f in [dir.join(post.iso_file_name(job_name, k)), dir.join(omx), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML")), dir.join(format!("{bv}.bvc")), dir.join(format!("{bv}.ccp")), dir.join(format!("{bv}.png"))] {
             if f.is_file() && !kept.contains(&same_file(&f)) {
                 if let Err(e) = std::fs::remove_file(&f) {
                     first_error.get_or_insert(e);
@@ -1619,7 +1620,7 @@ fn is_job_program(f: &Path, job_name: &str, t: &sheetmachine::Targets) -> bool {
             }
             let nest = crate::blm::nest_name(o.blm.as_ref().map_or(job_name, |b| b.job.as_str()), k);
             let bv = crate::bystar::program_name(job_name, k);
-            same(&format!("{nest}.zip")) || same(&format!("{nest}.XML")) || same(&format!("{bv}.bvc")) || same(&format!("{bv}.ccp")) || same("JobInfo.xml")
+            same(&format!("{nest}.zip")) || same(&format!("{nest}.XML")) || same(&format!("{bv}.bvc")) || same(&format!("{bv}.ccp")) || same(&format!("{bv}.png")) || same("JobInfo.xml")
         })
     })
 }
@@ -1672,7 +1673,7 @@ fn remove_all_stale(job_name: &str, t: &sheetmachine::Targets, kept: &[PathBuf])
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, bridge: f64) -> Result<Exported, String> {
-    let out = sheetmachine::Output { machine: blm.map_or(String::new(), |b| b.machine.clone()), base: base.to_path_buf(), post: post.clone(), blm: blm.cloned(), bystar: None };
+    let out = sheetmachine::Output { machine: blm.map_or(String::new(), |b| b.machine.clone()), base: base.to_path_buf(), post: post.clone(), blm: blm.cloned(), bystar: None, stock: Default::default() };
     let t = sheetmachine::Targets { sheets: vec![out.clone(); sheets.len()], all: vec![out], unknown: vec![], refusal: None, remember: false, earlier: vec![] };
     export_to(job_name, parts, sheets, formats, plans, job_spec, cuts, marks, &t, bridge)
 }
@@ -1819,7 +1820,7 @@ pub fn export_to(job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats
 pub struct BystarGroup {
     pub sheets: Vec<usize>,
     pub bvcs: Vec<(String, Vec<u8>)>,
-    pub loose: Vec<(String, String)>,
+    pub loose: Vec<(String, Vec<u8>)>,
     /// Each nest's program name and cut program text.
     pub programs: Vec<(String, String)>,
 }
@@ -1841,13 +1842,28 @@ pub fn bystar_files(job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], form
     for (dir, machine, ks) in groups {
         let o = &t.sheets[ks[0]];
         let specs: Vec<SheetSpec> = ks.iter().map(|&k| job_spec.for_format(&format_at(formats, job_spec, k))).collect();
-        let ins: Vec<crate::bystar::SheetIn> = ks.iter().zip(&specs).map(|(&k, spec)| crate::bystar::SheetIn { parts, sheet: &sheets[k], spec, plan: &plans[k], cuts: cuts.get(k).map_or(&[][..], |v| v.as_slice()) }).collect();
+        let cut = |k: usize| cuts.get(k).map_or(&[][..], |v| v.as_slice());
+        let kept: Vec<Vec<crate::stock::Outline>> = ks.iter().map(|&k| stored_remnants(parts, &sheets[k], &format_at(formats, job_spec, k), cut(k), job_spec, o)).collect();
+        let ins: Vec<crate::bystar::SheetIn> = ks.iter().zip(&specs).zip(&kept).map(|((&k, spec), r)| crate::bystar::SheetIn { parts, sheet: &sheets[k], spec, plan: &plans[k], cuts: cut(k), remnants: r }).collect();
         let _ = dir;
         if let Some(g) = bystar_group(job_name, job_spec, &format_at(formats, job_spec, ks[0]), &machine, ks, &ins, o)? {
             out.push(g);
         }
     }
     Ok(out)
+}
+
+/// BV71: the remnants a sheet would store (as `stock-book status` lists them,
+/// RE1, ST12), for a full job file (X008); none when X008 is off.
+fn stored_remnants(parts: &[Part], sheet: &[Placed], f: &SheetFormat, cuts: &[CutLine], job_spec: &SheetSpec, o: &sheetmachine::Output) -> Vec<crate::stock::Outline> {
+    if !o.bystar.as_ref().is_some_and(|p| p.on("X008")) {
+        return vec![];
+    }
+    let has_line = cuts.iter().any(|l| l.kind == CutKind::Remnant);
+    if !has_line && !o.stock.keep_completed {
+        return vec![];
+    }
+    crate::remnant::sheet_remnants(parts, sheet, f, cuts, sheetmachine::kerf(f, job_spec), o.stock.min_remnant_m2, o.stock.keep_completed && !has_line)
 }
 
 /// BV59, BV60: one ByStar Fiber machine's files for sheets `ks` (`ins`),
@@ -1878,7 +1894,7 @@ fn bystar_group(job_name: &str, job_spec: &SheetSpec, f0: &SheetFormat, machine:
         let w = sheetmachine::on_sheet(f0, || crate::bystar::write(&job, ins, &nos, post));
         let bvcs: Vec<(String, Vec<u8>, Vec<usize>)> = w.bvcs.iter().map(|f| (f.file.clone(), crate::blm::zip(&f.entries), f.nests.clone())).collect();
         let nests: Vec<(String, Vec<usize>)> = w.nests.iter().map(|n| (n.name.clone(), n.sheets.clone())).collect();
-        let back: Vec<readback::BystarSheet> = ks.iter().zip(ins).map(|(&k, s)| readback::BystarSheet { sheet_no: k + 1, parts, sheet: s.sheet, spec: s.spec, plan: s.plan, cuts: s.cuts }).collect();
+        let back: Vec<readback::BystarSheet> = ks.iter().zip(ins).map(|(&k, s)| readback::BystarSheet { sheet_no: k + 1, parts, sheet: s.sheet, spec: s.spec, plan: s.plan, cuts: s.cuts, remnants: s.remnants }).collect();
         let issues = readback::check_bvc(&bvcs, &nests, &back, job_spec.thickness, post);
         if !issues.is_empty() {
             return Err(readback::bystar_refusal(&issues));
@@ -1893,7 +1909,8 @@ fn bystar_group(job_name: &str, job_spec: &SheetSpec, f0: &SheetFormat, machine:
 /// back first, as an export does. Err = why it wouldn't be written.
 #[allow(clippy::too_many_arguments)]
 pub fn bystar_program(job_name: &str, k: usize, parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[CutLine], f: &SheetFormat, o: &sheetmachine::Output) -> Result<String, String> {
-    let ins = [crate::bystar::SheetIn { parts, sheet, spec, plan, cuts }];
+    let kept = stored_remnants(parts, sheet, f, cuts, spec, o);
+    let ins = [crate::bystar::SheetIn { parts, sheet, spec, plan, cuts, remnants: &kept }];
     let g = bystar_group(job_name, spec, f, &o.machine, vec![k], &ins, o)?;
     let text = g.and_then(|g| g.programs.first().map(|p| p.1.clone())).unwrap_or_default();
     Ok(format!("<!-- {}.ccp, sheet {} -->\r\n{text}", crate::bystar::program_name(job_name, k + 1), k + 1))

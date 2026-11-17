@@ -703,6 +703,12 @@ pub struct PartInfo {
     pub name: String,
     /// How many are ordered.
     pub quantity: i64,
+    /// Its size, mm, when the job file gives it (the CAM's full job file,
+    /// BV3, BV71).
+    pub size: Option<[f64; 2]>,
+    /// Its contours as the job file draws them (mm, the part's own
+    /// coordinates; arcs as points), when given (BV3, BV71).
+    pub shapes: Vec<Vec<P>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -710,6 +716,8 @@ pub struct MaterialInfo {
     pub id: i64,
     /// Sheet size, mm.
     pub size: [f64; 2],
+    /// Free margins (left, right, top, bottom; mm), when given (BV4, BV71).
+    pub margins: Option<[f64; 4]>,
 }
 
 /// One part's subprogram in a nest, and how many times the nest places it.
@@ -729,6 +737,8 @@ pub struct PlanInfo {
     pub multiplicity: i64,
     pub material_id: i64,
     pub parts: Vec<PlanPart>,
+    /// The remnant sheets it leaves (left, bottom, width, height; mm) (BV5, BV71).
+    pub remnants: Vec<[f64; 4]>,
 }
 
 /// The job file read, lengths in mm.
@@ -768,14 +778,38 @@ pub fn parse_job_info(text: &str) -> Result<JobInfo, String> {
         if j.parts.iter().any(|q| q.id == id) {
             return Err(format!("it has two parts with id {id}"));
         }
-        j.parts.push(PartInfo { id, name: p.attr("Name").unwrap_or("").to_string(), quantity: int_or(p, "Quantity", 0)? });
+        let size = match (number(p, "SizeX")?, number(p, "SizeY")?) {
+            (Some(x), Some(y)) => Some([x * k, y * k]),
+            _ => None,
+        };
+        // A contour is its vertices; a vertex's bulge (tan of a quarter of
+        // the sweep) makes the stretch to the next vertex an arc.
+        let mut shapes = vec![];
+        for c in p.kid("Geometries").into_iter().flat_map(|g| g.kids_named("Contour")) {
+            let vs: Vec<(P, f64)> = c.kid("Vertices").into_iter().flat_map(|v| v.kids_named("Vertex")).map(|v| Ok(([coord(v, "PositionX")? * k, coord(v, "PositionY")? * k], num_or(v, "Bulge", 0.0)?))).collect::<Result<_, String>>()?;
+            let mut pts: Vec<P> = vs.first().map(|v| vec![v.0]).unwrap_or_default();
+            for w in vs.windows(2) {
+                let sweep = 4.0 * w[0].1.atan().to_degrees();
+                if w[0].1 != 0.0 { pts.extend(arc_points(w[0].0, w[1].0, sweep)) } else { pts.push(w[1].0) }
+            }
+            shapes.push(pts);
+        }
+        j.parts.push(PartInfo { id, name: p.attr("Name").unwrap_or("").to_string(), quantity: int_or(p, "Quantity", 0)?, size, shapes });
     }
     for m in root.kid("MaterialInfos").into_iter().flat_map(|e| e.kids_named("MaterialInfo")) {
         let id = int_or(m, "Id", 0)?;
         if j.materials.iter().any(|q| q.id == id) {
             return Err(format!("it has two sheets with id {id}"));
         }
-        j.materials.push(MaterialInfo { id, size: [num_or(m, "SizeX", 0.0)? * k, num_or(m, "SizeY", 0.0)? * k] });
+        let mut margins = [0.0; 4];
+        let mut any = false;
+        for (i, key) in ["MarginLeft", "MarginRight", "MarginTop", "MarginBottom"].into_iter().enumerate() {
+            if let Some(v) = number(m, key)? {
+                margins[i] = v * k;
+                any = true;
+            }
+        }
+        j.materials.push(MaterialInfo { id, size: [num_or(m, "SizeX", 0.0)? * k, num_or(m, "SizeY", 0.0)? * k], margins: any.then_some(margins) });
     }
     for pl in root.kid("PlanInfos").into_iter().flat_map(|e| e.kids_named("PlanInfo")) {
         let name = pl.attr("Name").unwrap_or("").to_string();
@@ -783,7 +817,11 @@ pub fn parse_job_info(text: &str) -> Result<JobInfo, String> {
         if !j.materials.iter().any(|m| m.id == material_id) {
             return Err(format!("nest '{name}' is on sheet id {material_id}, which the job file doesn't list"));
         }
-        let mut plan = PlanInfo { name: name.clone(), multiplicity: int_or(pl, "Multiplicity", 1)?, material_id, parts: vec![] };
+        let mut remnants = vec![];
+        for r in pl.kid("ResidualSheetInfos").into_iter().flat_map(|e| e.kids_named("ResidualSheetInfo")) {
+            remnants.push([num_or(r, "Left", 0.0)? * k, num_or(r, "Bottom", 0.0)? * k, num_or(r, "SizeX", 0.0)? * k, num_or(r, "SizeY", 0.0)? * k]);
+        }
+        let mut plan = PlanInfo { name: name.clone(), multiplicity: int_or(pl, "Multiplicity", 1)?, material_id, parts: vec![], remnants };
         for pp in pl.kid("PlanPartInfos").into_iter().flat_map(|e| e.kids_named("PlanPartInfo")) {
             let part_id = int_or(pp, "PartId", 0)?;
             if !j.parts.iter().any(|p| p.id == part_id) {

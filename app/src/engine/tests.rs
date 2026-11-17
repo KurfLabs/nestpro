@@ -11182,3 +11182,6 @@ fn a_grain_lock_holds_for_a_copy_at_another_angle_and_through_a_mirror_change() 
     assert_eq!(info["data"]["rotations"]["mirrored"][2], false, "{info}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// ByStar Fiber laser: this app's own switches for the machine maker's CAM form (#128).
+mod bysoft;

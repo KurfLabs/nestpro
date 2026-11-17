@@ -1,0 +1,2 @@
+reference,shape,width_mm,height_mm,quantity,nested
+DEMO-PLATE,Rectangle,400.0,400.0,4,4

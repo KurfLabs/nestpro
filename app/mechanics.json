@@ -7982,6 +7982,76 @@
   "source": "MECHANICS BV66"
  },
  {
+  "name": "lead-out after the cut-out (X002)",
+  "group": "ByStar Fiber writer",
+  "value": "after EndCutOut in BeginLeadOut ... EndLeadOut, then SetToolCorrection None; off (default): before EndCutOut",
+  "source": "MECHANICS BV67",
+  "estimated": true
+ },
+ {
+  "name": "this app's own CAM-form switches",
+  "group": "ByStar Fiber writer",
+  "value": "X002-X009, all off by default (the original post's form); all off writes byte for byte the files without them",
+  "source": "MECHANICS BV67",
+  "estimated": true
+ },
+ {
+  "name": "pierce without a lead-in (X003)",
+  "group": "ByStar Fiber writer",
+  "value": "inside the cut-out, right after BeginCutOut, the BV33 pierce; off (default): none (B044: before BeginCutOut)",
+  "source": "MECHANICS BV68",
+  "estimated": true
+ },
+ {
+  "name": "compensation place (X004)",
+  "group": "ByStar Fiber writer",
+  "value": "None at a subprogram's first contour; with a lead-in on before its last move (one move: after BeginCutOut); off (default): BV29",
+  "source": "MECHANICS BV68",
+  "estimated": true
+ },
+ {
+  "name": "operation mode on every contour (X005)",
+  "group": "ByStar Fiber writer",
+  "value": "at every contour start, not again after a joint gap; off (default): only on a change (BV51)",
+  "source": "MECHANICS BV69",
+  "estimated": true
+ },
+ {
+  "name": "exact part positions (X006)",
+  "group": "ByStar Fiber writer",
+  "value": "call X, Y and turn to 9 decimals; off (default): whole units (B021: 3 decimals), whole degrees",
+  "source": "MECHANICS BV70",
+  "estimated": true
+ },
+ {
+  "name": "inch unit name (X007)",
+  "group": "ByStar Fiber writer",
+  "value": "English with B001; off (default): Imperial",
+  "source": "MECHANICS BV70",
+  "estimated": true
+ },
+ {
+  "name": "program unit picked on the machine",
+  "group": "ByStar Fiber writer",
+  "value": "mm or inch in Settings (machine-switches unit=), wins over CF1 A006; B001 follows it",
+  "source": "MECHANICS BV70",
+  "estimated": true
+ },
+ {
+  "name": "full job file (X008)",
+  "group": "ByStar Fiber writer",
+  "value": "program unit; PartInfo SizeX, SizeY, Geometries (outline then holes, Bulge on arcs); MaterialInfo margins; ResidualSheetInfo per remnant line",
+  "source": "MECHANICS BV71",
+  "estimated": true
+ },
+ {
+  "name": "preview picture (X009)",
+  "group": "ByStar Fiber writer",
+  "value": "<program>.png, 500 x 250, after the cut program and job file; beside the .bvc unless B010",
+  "source": "MECHANICS BV72",
+  "estimated": true
+ },
+ {
   "name": "material list file",
   "group": "materials",
   "value": "Library\\Sheets\\materials.json, under the Library's write lock; settings folder without a Library",

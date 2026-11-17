@@ -844,12 +844,12 @@ fn dos_time() -> (u16, u16) {
 }
 
 /// A zip of the files, deflated, no folders (what the post's zip tool makes).
-pub fn zip(files: &[(String, String)]) -> Vec<u8> {
+pub fn zip<T: AsRef<[u8]>>(files: &[(String, T)]) -> Vec<u8> {
     let (time, date) = dos_time();
     let mut out = vec![];
     let mut central = vec![];
     for (name, text) in files {
-        let data = text.as_bytes();
+        let data = text.as_ref();
         let packed = miniz_oxide::deflate::compress_to_vec(data, 6);
         let crc = crc32fast::hash(data);
         let off = out.len() as u32;

@@ -1,0 +1,4 @@
+reference,shape,width_mm,height_mm,quantity,nested
+DEMO-RECT,Rectangle,200.0,100.0,1,1
+DEMO-DISC,Disc,150.0,150.0,1,1
+DEMO-PLATE,Imported drawing,240.0,160.0,1,1

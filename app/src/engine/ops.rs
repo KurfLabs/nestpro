@@ -391,6 +391,7 @@ pub static OPS: &[Op] = &[
     Op { name: "machine-switches", group: "Reference", kind: Kind::Global, help: "A ByStar Fiber laser's post (BV61): every switch of the original's ByStar Fiber post with its value, its default, where the value comes from (set in Settings, the post file, or the default) and whether programs follow it yet (written / not yet / no effect), the post files, the machine tolerance and program unit, and the technology table's ByStar Fiber columns (each quality's operation mode and pierce, used with B015 / B014). With set, mode or pierce it changes them and saves the settings: set=\"B015=1, C004=P\" (a value equal to the file's or the default takes the change out; key=file gives the file's value back), mode=\"3=4, 7=6\" (quality=operation mode), pierce=\"0=Normal, 3=\" (0 = marking; empty = no pierce; Normal, Fine, Drilled or NoTime), ps1 / cf1 = the post files (empty = built-in defaults).", args: &[
         r("machine", Ty::Str, "The machine's name in Settings → Machines (a ByStar Fiber laser)"), a("set", Ty::Str, "Switches to change: \"B015=1, C004=P\""), a("mode", Ty::Str, "Operation modes to change: \"quality=mode, …\""),
         a("pierce", Ty::Str, "Pierce modes to change: \"quality=Normal|Fine|Drilled|NoTime|(empty), …\" (0 = marking)"), a("ps1", Ty::Str, "The post's parameter file (.ps1); empty = none"), a("cf1", Ty::Str, "The post library (.CF1); empty = none"),
+        a("unit", Ty::Str, "Program unit: mm, inch, or file (the post library's, else mm); B001 follows it"),
     ] },
 ];
 
@@ -1281,10 +1282,19 @@ pub fn machine_switches_on(cfg: &mut AppSettings, a: &Args) -> Result<(Outcome, 
     if let Some(v) = a.str("cf1") {
         m.cf1 = v.trim().to_string();
     }
+    // BV70: the program unit picked for the machine (B001 follows it).
+    if let Some(v) = a.str("unit") {
+        match v.trim().to_lowercase().as_str() {
+            "mm" => m.set_unit(Some(false)),
+            "inch" | "in" => m.set_unit(Some(true)),
+            "file" | "" => m.set_unit(None),
+            o => return Err(format!("unit \"{o}\": mm, inch, or file (the post library's, else mm)")),
+        }
+    }
     if let Some(t) = a.str("set") {
         for (k, v) in pairs(&t)? {
             if v.eq_ignore_ascii_case("file") {
-                let key = crate::bystar::switch(&k).ok_or_else(|| format!("{k} isn't one of the post's switches (B000–B050, C001–C013, R000–R007, and this app's X001)"))?.key;
+                let key = crate::bystar::switch(&k).ok_or_else(|| format!("{k} isn't one of the post's switches (B000–B050, C001–C013, R000–R007, and this app's X001–X009)"))?.key;
                 m.set.remove(key);
             } else {
                 m.set_switch(&k, &v)?;
@@ -1323,12 +1333,15 @@ pub fn machine_switches_on(cfg: &mut AppSettings, a: &Args) -> Result<(Outcome, 
                 "from": post.from.get(d.key).copied().unwrap_or("default"),
                 "programs": match d.status { Status::Built => "written", Status::Later => "not yet", Status::NoEffect => "no effect" },
                 "rule": d.rule,
+                "group": crate::bystar::shown_as(d.key).map(|g| g.0), "label": crate::bystar::shown_as(d.key).map(|g| g.1),
+                "cam_form": crate::bystar::cam_form(d.key),
             })
         })
         .collect();
     let table: Vec<Value> = (0..=12usize).map(|q| json!({"quality": if q == 0 { json!("marking") } else { json!(q) }, "mode": if q == 0 { 2 } else { post.modes[q] }, "pierce": post.pierces[q]})).collect();
     let data = json!({
         "machine": mname, "ps1": m.ps1, "cf1": m.cf1, "tolerance": post.tol, "unit_mm": post.unit,
+        "unit": if (post.unit - 25.4).abs() < 1e-9 { "inch" } else if (post.unit - 1.0).abs() < 1e-9 { "mm" } else { "other" }, "unit_from": post.unit_from,
         "file_error": post.file_error, "switches": list, "technology": table,
     });
     let msg = if changed {

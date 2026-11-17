@@ -145,7 +145,131 @@ pub const SWITCHES: &[SwitchDef] = &[
     sw("R007", "Cut-off distance outside the sheet, right edge", Size, "0", "BV39", Later),
     // This app's own switches (the post has none for these), off by default.
     sw("X001", "This app's own: name the job's gas (ProcessGas) in the job file without a parameter-file name", OnOff, "0", "BV62", Built),
+    sw("X002", "This app's own: lead-out written after the cut-out ends", OnOff, "0", "BV67", Built),
+    sw("X003", "This app's own: a contour without a lead-in pierced inside its cut-out", OnOff, "0", "BV68", Built),
+    sw("X004", "This app's own: compensation on inside the lead-in, off at each subprogram's start", OnOff, "0", "BV68", Built),
+    sw("X005", "This app's own: operation mode written on every contour, not only when it changes", OnOff, "0", "BV69", Built),
+    sw("X006", "This app's own: part positions and turns written exactly, not rounded", OnOff, "0", "BV70", Built),
+    sw("X007", "This app's own: an inch program named English (the machine's word) instead of Imperial", OnOff, "0", "BV70", Built),
+    sw("X008", "This app's own: the full job file: part sizes and shapes, margins, remnant sheets", OnOff, "0", "BV71", Built),
+    sw("X009", "This app's own: a preview picture per nest", OnOff, "0", "BV72", Built),
 ];
+
+/// The switches as Settings → Machines shows them (BV61): grouped by what
+/// they change on the cut, each with its name in shop words. A switch of
+/// this app's own that writes the machine maker's CAM form is marked so.
+/// Switches in no group (no effect in this app's programs, not followed yet,
+/// the post's unused texts) are listed only under "All post codes".
+pub const GROUPS: &[(&str, &str, &[(&str, &str)])] = &[
+    ("Units", "The unit the program is written in. The machine reads both.", &[("X007", "Name an inch program \"English\", the machine's own word, not \"Imperial\"")]),
+    (
+        "Piercing",
+        "How each contour is pierced. Off: cuts pierce Fine, engraving Normal, and a contour without a lead-in isn't pierced.",
+        &[
+            ("B014", "Take each cut quality's pierce from the technology table below"),
+            ("X003", "Pierce contours that have no lead-in, at their start, inside the cut"),
+            ("B044", "Pierce contours that have no lead-in, just before the cut starts"),
+            ("B007", "This cut quality pierces Normal"),
+            ("B008", "This cut quality pierces Fine"),
+            ("B009", "This cut quality pierces with no pierce time"),
+        ],
+    ),
+    (
+        "Leads",
+        "The leads come from the part's technology; these change how they are written.",
+        &[
+            ("X002", "Write the lead-out after the cut ends"),
+            ("B024", "Open a lead-in at every contour, even one without a lead-in, and pierce there"),
+            ("B006", "Split the first move of a contour without a lead-in at this distance"),
+        ],
+    ),
+    (
+        "Kerf compensation",
+        "The machine compensates every cut itself; these say where it is switched on and off.",
+        &[
+            ("X004", "Switch it on inside the lead-in, and off at each part's start"),
+            ("B011", "Switch it on after the rapid move instead of before"),
+            ("B040", "Switch it on after the lead-in"),
+            ("B031", "No compensation on engraving and point marks"),
+            ("B012", "Switch it off after engraving"),
+        ],
+    ),
+    (
+        "Technology column",
+        "The machine's parameter column each contour is cut with (its operation mode).",
+        &[
+            ("X005", "Write the column on every contour, not only when it changes"),
+            ("B015", "Take each cut quality's column from the technology table below"),
+            ("B026", "This cut quality is engraving"),
+            ("B042", "Cut quality 7 is cut as this quality"),
+            ("B043", "Cut quality 3 is cut as this quality"),
+        ],
+    ),
+    (
+        "Engraving and point marks",
+        "",
+        &[
+            ("B036", "Engrave uncompensated as an inside contour: 1 pierces Fine, 2 Normal"),
+            ("B013", "Point marks as a circle of this diameter"),
+            ("B033", "Point-mark circles in the engraving column"),
+            ("B050", "A point mark too small for a circle as a tiny cut"),
+        ],
+    ),
+    (
+        "Micro-joints",
+        "",
+        &[("B038", "Stop the cut at each joint and start again after it"), ("B049", "Joints on arcs cut straight across")],
+    ),
+    ("Height sensor", "", &[("B039", "When it is switched: 0 at every contour, 1 not for engraving, 2 only in remnant cut-offs")]),
+    (
+        "Remnant cut-offs",
+        "Lengths are in the program's unit and whole numbers.",
+        &[
+            ("B003", "Run past each sheet edge by"),
+            ("B004", "Height sensor off for the last stretch before each edge"),
+            ("B005", "Run-up between the pierce and where the sensor goes off"),
+            ("B025", "A cut-off line that starts inside the sheet gets its own pierce"),
+            ("B045", "Cut quality of cut-off lines (0 = quality 1)"),
+        ],
+    ),
+    (
+        "Parts on the sheet",
+        "",
+        &[
+            ("X006", "Write part positions and turns exactly, not rounded"),
+            ("B021", "Write part positions with 3 decimals"),
+            ("B018", "Split full circles into two half circles"),
+            ("C004", "Part program name prefix"),
+            ("B016", "Use the part program's name as its part number; number the cut-off programs"),
+            ("B028", "Name cut-off programs like part programs"),
+        ],
+    ),
+    (
+        "Files sent to the machine",
+        "",
+        &[
+            ("B017", "All sheets of a job in one .bvc"),
+            ("B010", "Keep only the .bvc, not the loose files beside it"),
+            ("X008", "The full job file: part sizes and shapes, margins, remnant sheets"),
+            ("X009", "A preview picture of each nest"),
+            ("X001", "Name the job's gas in the job file"),
+            ("B041", "Mark the cutting head as vertical in the program"),
+            ("B029", "An empty remnant list in the job file"),
+            ("B030", "An empty big-part list in the job file"),
+            ("B022", "Part ids and quantities under 1 are fixed"),
+        ],
+    ),
+];
+
+/// A switch's group and its name in shop words (`GROUPS`), if it has one.
+pub fn shown_as(key: &str) -> Option<(&'static str, &'static str)> {
+    GROUPS.iter().find_map(|g| g.2.iter().find(|s| s.0 == key).map(|s| (g.0, s.1)))
+}
+
+/// This app's own switches that write the machine maker's CAM form (BV67–BV72).
+pub fn cam_form(key: &str) -> bool {
+    matches!(key, "X002" | "X003" | "X004" | "X005" | "X006" | "X007" | "X008" | "X009")
+}
 
 pub fn switch(key: &str) -> Option<&'static SwitchDef> {
     SWITCHES.iter().find(|s| s.key.eq_ignore_ascii_case(key))
@@ -177,6 +301,10 @@ pub struct MachinePost {
     /// table; empty text = no pierce commands.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pierces: BTreeMap<u8, String>,
+    /// The program unit picked here, mm per unit (1 = mm, 25.4 = inch); none
+    /// = the post library's (CF1 A006), else mm (BV70).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<f64>,
 }
 
 impl MachinePost {
@@ -184,11 +312,25 @@ impl MachinePost {
         *self == MachinePost::default()
     }
 
+    /// BV70: pick the program unit (`Some(true)` inch, `Some(false)` mm, None =
+    /// the post library's). B001 (the unit's name in the program) follows it,
+    /// on for inch, so the program never says Metric with inch numbers.
+    pub fn set_unit(&mut self, inch: Option<bool>) {
+        self.unit = inch.map(|i| if i { 25.4 } else { 1.0 });
+        // B001 is worked out from the unit whenever the post is loaded
+        // (`Post::parse`), so no value of its own is kept.
+        self.set.remove("B001");
+    }
+
     /// Set switch `key` (any case) to `value`, checked against its kind.
     /// Setting the value the files give takes the change out again.
     pub fn set_switch(&mut self, key: &str, value: &str) -> Result<(), String> {
-        let def = switch(key).ok_or_else(|| format!("{key} isn't one of the post's switches (B000–B050, C001–C013, R000–R007, and this app's X001)"))?;
+        let def = switch(key).ok_or_else(|| format!("{key} isn't one of the post's switches (B000–B050, C001–C013, R000–R007, and this app's X001–X009)"))?;
         let v = value.trim();
+        // BV70: with a program unit picked here, B001 follows it.
+        if def.key == "B001" && self.unit.is_some() {
+            return Err("B001 (inch named in the program) follows the program unit picked for this machine; pick the unit instead (machine-switches unit=mm|inch, or unit=file for the post files' values)".into());
+        }
         if def.kind != Text && v.parse::<f64>().map_or(true, |x| !x.is_finite()) {
             return Err(format!("{}: \"{v}\" isn't a number", def.key));
         }
@@ -230,8 +372,11 @@ pub struct Post {
     pub from: BTreeMap<&'static str, &'static str>,
     /// CF1 A005: the machine tolerance, mm (0.005 without one).
     pub tol: f64,
-    /// CF1 A006: mm per program unit (1 = mm, 25.4 = inch).
+    /// mm per program unit (1 = mm, 25.4 = inch): picked in Settings, else
+    /// the post library's (CF1 A006), else mm (BV25, BV70).
     pub unit: f64,
+    /// Where the unit came from: "set", "file" or "default".
+    pub unit_from: &'static str,
     /// Operation mode by quality (index 1–12).
     pub modes: [i64; 13],
     /// Pierce text by quality (index 0 = marking, 1–12).
@@ -314,7 +459,19 @@ impl Post {
             pierces[q] = m.pierces.get(&(q as u8)).cloned().unwrap_or_else(|| seed_pierce(q).to_string());
         }
         let point_type = cf1.and_then(|t| line_value(t, "A004")).and_then(|v| v.parse::<f64>().ok()).map_or(2, |v| v.round() as i64);
-        Post { values, from, tol: num("A005").unwrap_or(0.005), unit: num("A006").unwrap_or(1.0), modes, pierces, point_type, file_error: None }
+        let (unit, unit_from) = match (m.unit.filter(|u| u.is_finite() && *u > 0.0), num("A006")) {
+            (Some(u), _) => (u, "set"),
+            (None, Some(u)) => (u, "file"),
+            (None, None) => (1.0, "default"),
+        };
+        // BV70: a program unit picked for the machine sets B001 (the unit's
+        // name in the program) whatever the files or other settings say, so
+        // a program never names one unit and is written in the other.
+        if unit_from == "set" {
+            values.insert("B001", if (unit - 25.4).abs() < 1e-9 { "1".to_string() } else { "0".to_string() });
+            from.insert("B001", "set");
+        }
+        Post { values, from, tol: num("A005").unwrap_or(0.005), unit, unit_from, modes, pierces, point_type, file_error: None }
     }
 
     pub fn raw(&self, key: &str) -> &str {
@@ -598,6 +755,8 @@ thread_local! {
     pub static EDIT: std::cell::Cell<Option<fn(String) -> String>> = const { std::cell::Cell::new(None) };
     /// A writer fault: every sheet folds into the first nest.
     pub static FOLD_ALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// A writer fault: the job file's text is changed by this.
+    pub static EDIT_INFO: std::cell::Cell<Option<fn(String) -> String>> = const { std::cell::Cell::new(None) };
 }
 
 fn fault() -> f64 {
@@ -622,11 +781,12 @@ impl Frame {
     /// BV56: the call is the part's own origin on the sheet and its turn,
     /// both rounded as BV52 writes them; the subprogram is written about
     /// the rounded call, so every cut lands exactly where it is planned.
-    fn of(pl: &Placed, unit: f64, b021: bool) -> Frame {
+    /// BV70: with X006 both are written exactly (9 decimals).
+    fn of(pl: &Placed, unit: f64, post: &Post) -> Frame {
         let o = pl.map([0.0, 0.0]);
-        let dec = if b021 { 3 } else { 0 };
+        let dec = call_decimals(post);
         let a = if pl.mirror { 0.0 } else { pl.angle() };
-        let rot = rounded(a, 0).rem_euclid(360.0);
+        let rot = rounded(a, if post.on("X006") { 9 } else { 0 }).rem_euclid(360.0);
         Frame { x: rounded(o[0] / unit, dec), y: rounded(o[1] / unit, dec), rot }
     }
 
@@ -641,6 +801,18 @@ impl Frame {
     fn place(&self, p: P) -> P {
         let (s, c) = exact_sin_cos(self.rot);
         [self.x + p[0] * c - p[1] * s, self.y + p[0] * s + p[1] * c]
+    }
+}
+
+/// BV52, BV70: the decimals of a call's position: whole units, 3 with B021,
+/// 9 (as every coordinate) with X006.
+fn call_decimals(post: &Post) -> u32 {
+    if post.on("X006") {
+        9
+    } else if post.on("B021") {
+        3
+    } else {
+        0
     }
 }
 
@@ -659,6 +831,9 @@ fn exact_sin_cos(deg: f64) -> (f64, f64) {
 struct State {
     mode: Option<i64>,
     sensor: bool,
+    /// No contour of the subprogram started yet (X004 switches compensation
+    /// off at the first, BV68).
+    sub_start: bool,
 }
 
 /// One step of a contour's cut-out as written: a move, a micro-joint marker
@@ -825,6 +1000,8 @@ struct Start<'a> {
     comp: Option<&'static str>,
     side: &'static str,
     pierce: Option<String>,
+    /// A start again after a micro-joint gap (B038): the same contour.
+    again: bool,
 }
 
 /// The height sensor at a pierce (or cut start) at `at` (subprogram units):
@@ -873,42 +1050,80 @@ fn write_moves(out: &mut Vec<Cmd>, mv: &[Mv], from: &mut P, post: &Post, fault_o
 /// the sensor, compensation, the rapid, the lead-in with its pierce or, without
 /// one, the pierce B044 or B036 asks for. Returns whether it opened a lead-in
 /// bracket (B006 splits only a start without one).
+///
+/// This app's own switches (BV68, BV69): X005 writes the mode at every
+/// contour (not at a start again after a joint gap); X003 pierces a contour
+/// without a lead-in inside its cut-out, right after `BeginCutOut`; X004
+/// switches compensation off at a subprogram's first contour and, with a
+/// lead-in, on before the lead-in's last move (a one-move lead-in: right
+/// after `BeginCutOut`).
 fn begin(out: &mut Vec<Cmd>, st: &mut State, s: &Start, start: P, lead: &[Mv]) -> bool {
     let post = s.post;
-    if st.mode != Some(s.mode) {
+    if st.mode != Some(s.mode) || (post.on("X005") && !s.again) {
         out.push(val("SetOperationMode", s.mode.to_string()));
         st.mode = Some(s.mode);
     }
+    let x004 = post.on("X004");
+    if x004 && st.sub_start {
+        out.push(val("SetToolCorrection", "None"));
+    }
+    st.sub_start = false;
     sensor_rule(out, st, s, start, s.marking);
     let bracket = !lead.is_empty() || post.on("B024");
-    let comp_at_cut = post.on("B040") && bracket;
-    if let (Some(c), false, false) = (s.comp, post.on("B011"), comp_at_cut) {
-        out.push(val("SetToolCorrection", c));
+    // Where compensation goes on.
+    #[derive(PartialEq)]
+    enum Comp {
+        BeforeRapid,
+        AfterRapid,
+        InLead,
+        /// B040: before `BeginCutOut`, after the lead-in.
+        BeforeCut,
+        /// X004 with a one-move lead-in: right after `BeginCutOut`.
+        AtCut,
     }
+    let place = if x004 && bracket {
+        if lead.len() >= 2 { Comp::InLead } else { Comp::AtCut }
+    } else if post.on("B040") && bracket {
+        Comp::BeforeCut
+    } else if post.on("B011") {
+        Comp::AfterRapid
+    } else {
+        Comp::BeforeRapid
+    };
+    let comp = |out: &mut Vec<Cmd>, here: Comp| {
+        if let (Some(c), true) = (s.comp, place == here) {
+            out.push(val("SetToolCorrection", c));
+        }
+    };
+    comp(out, Comp::BeforeRapid);
     out.push(at("MoveLineTo", start));
-    if let (Some(c), true, false) = (s.comp, post.on("B011"), comp_at_cut) {
-        out.push(val("SetToolCorrection", c));
-    }
+    comp(out, Comp::AfterRapid);
     let pierce = |out: &mut Vec<Cmd>| {
         if let Some(p) = &s.pierce {
             out.push(val("SetPiercingMode", p.clone()));
             out.push(cmd("ExecPiercing"));
         }
     };
+    let in_cut = !bracket && post.on("X003");
     if bracket {
         out.push(cmd("BeginLeadIn"));
         pierce(out);
         let mut from = start;
         let mut no_fault = false;
-        write_moves(out, lead, &mut from, post, &mut no_fault);
+        let (head, last) = lead.split_at(lead.len().saturating_sub(1));
+        write_moves(out, head, &mut from, post, &mut no_fault);
+        comp(out, Comp::InLead);
+        write_moves(out, last, &mut from, post, &mut no_fault);
         out.push(cmd("EndLeadIn"));
-    } else if post.on("B044") || (s.marking && post.whole("B036") != 0) {
+    } else if !in_cut && (post.on("B044") || (s.marking && post.whole("B036") != 0)) {
         pierce(out);
     }
-    if let (Some(c), true) = (s.comp, comp_at_cut) {
-        out.push(val("SetToolCorrection", c));
-    }
+    comp(out, Comp::BeforeCut);
     out.push(Cmd("BeginCutOut", vec![("Contour", s.side.into())]));
+    if in_cut {
+        pierce(out);
+    }
+    comp(out, Comp::AtCut);
     bracket
 }
 
@@ -976,6 +1191,7 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
     let mut out = vec![];
     // BV51: the mode is forgotten at each new subprogram (each new part).
     st.mode = None;
+    st.sub_start = true;
     let b036 = post.whole("B036");
     for made in plan.part_order(part_no) {
         let (q, mark, inner, lead, body, closed, out_path, comp_left, joints) = match made {
@@ -997,7 +1213,7 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
         let marking = mark || post.is_marking(q);
         // BV40, BV55: a mark that is one point is a point mark.
         if mark && body.len() == 1 {
-            let s = Start { post, f, w, h, marking: true, mode: 0, comp: None, side: "Unknown", pierce: None };
+            let s = Start { post, f, w, h, marking: true, mode: 0, comp: None, side: "Unknown", pierce: None, again: false };
             point_mark(&mut out, st, &s, loc(body[0]));
             continue;
         }
@@ -1021,7 +1237,7 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
         let side = if new_marking { "Interior" } else if marking { "Unknown" } else if inner { "Interior" } else { "Exterior" };
         // BV33: the pierce mode; B036 engraving Fine (2: Normal).
         let pierce = if new_marking { Some(if b036 == 2 { "Normal" } else { "Fine" }.to_string()) } else { post.pierce(q, marking) };
-        let s = Start { post, f, w, h, marking, mode: if mark { 2 } else { post.mode(q) }, comp, side, pierce };
+        let s = Start { post, f, w, h, marking, mode: if mark { 2 } else { post.mode(q) }, comp, side, pierce, again: false };
         let lead_mv = if has_lead { moves(&lead, u) } else { vec![] };
         let bracket = begin(&mut out, st, &s, start, &lead_mv);
         let mut from = body[0];
@@ -1050,7 +1266,7 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
                     if comp.is_some() {
                         out.push(val("SetToolCorrection", "None"));
                     }
-                    let again = Start { pierce: s.pierce.clone(), ..s };
+                    let again = Start { pierce: s.pierce.clone(), again: true, ..s };
                     let bracket = begin(&mut out, st, &again, p, &[]);
                     from = p;
                     if !bracket {
@@ -1060,7 +1276,12 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
             }
             i += 1;
         }
-        // BV34, BV57: the overlap and lead-out in their bracket, before EndCutOut.
+        // BV34, BV57: the overlap and lead-out in their bracket, before
+        // EndCutOut; with X002 after it (BV67).
+        let after = post.on("X002");
+        if after {
+            out.push(cmd("EndCutOut"));
+        }
         let tail: Vec<P> = out_path.into_iter().map(loc).collect();
         if !tail.is_empty() {
             out.push(cmd("BeginLeadOut"));
@@ -1070,7 +1291,9 @@ fn part_commands(plan: &SheetPlan, part_no: usize, f: &Frame, post: &Post, w: f6
             write_moves(&mut out, &moves(&t, u), &mut from, post, &mut no_fault);
             out.push(cmd("EndLeadOut"));
         }
-        out.push(cmd("EndCutOut"));
+        if !after {
+            out.push(cmd("EndCutOut"));
+        }
         if comp.is_some() {
             out.push(val("SetToolCorrection", "None"));
         }
@@ -1199,7 +1422,15 @@ pub fn cutoff_pieces(pts: &[P], w: f64, h: f64, b003: f64, b004: f64, b005: f64,
     // The far piece: from the pierce on to the end and past a far edge.
     let mut far: Vec<(Vec<P>, Option<bool>)> = vec![];
     if to_edge {
-        let off = if len - b004 >= sp { len - b004 } else { sp + (len - sp) / 2.0 };
+        // BV38: sensing goes off B004 before the line's end (half of what is
+        // left when shorter). A line that runs on past the edge (a standard
+        // drop's cut) keeps that point while it is still on the sheet; only
+        // when it would fall past the edge (the head leaving the sheet with
+        // the sensor on) is it B004 before where the line leaves the sheet.
+        let at_end = |end: f64| if end - b004 >= sp { end - b004 } else { sp + (end - sp) / 2.0 };
+        let back: Vec<P> = p.iter().rev().copied().collect();
+        let exit = entry(&back, w, h, 0.0).map_or(len, |s| (len - s).clamp(sp, len));
+        let off = if at_end(len) <= exit + tol { at_end(len) } else { at_end(exit) };
         let run_up = (sp + b005).min(off);
         far.push((sub_path(&p, sp, run_up), None));
         far.push((sub_path(&p, run_up, off), Some(false)));
@@ -1243,7 +1474,7 @@ fn cutoff_commands(lines: &[&CutLine], f: &Frame, post: &Post, w: f64, h: f64, s
     let mut out = vec![];
     st.mode = None;
     let q = cutoff_quality(post);
-    let s = Start { post, f, w, h, marking: false, mode: post.mode(q), comp: Some("Right"), side: "Exterior", pierce: None };
+    let s = Start { post, f, w, h, marking: false, mode: post.mode(q), comp: Some("Right"), side: "Exterior", pierce: None, again: false };
     for line in lines {
         let pieces = cutoff_pieces(&line.pts, w, h, mm("B003"), mm("B004"), mm("B005"), post);
         let n = pieces.len();
@@ -1304,7 +1535,7 @@ pub fn cut_lines_in_order(cuts: &[CutLine]) -> Vec<&CutLine> {
 /// edge the first line starts on (on the sheet origin when it starts inside).
 fn cutoff_frame(lines: &[&CutLine], post: &Post, w: f64, h: f64) -> Frame {
     let u = post.unit;
-    let dec = if post.on("B021") { 3 } else { 0 };
+    let dec = call_decimals(post);
     let b003 = post.whole("B003").max(0) as f64;
     let mut v = [0.0, 0.0];
     if let Some(l) = lines.first() {
@@ -1330,6 +1561,16 @@ pub struct SubOut {
 /// `SubOut::part` of the subprogram that cuts a sheet's cut-off lines (BV64).
 pub const CUTOFF: usize = usize::MAX;
 
+/// BV25, BV70: the cut program's unit as written: `Metric`, with B001
+/// `Imperial`, with X007 too the machine's own word `English`.
+pub fn unit_name(post: &Post) -> &'static str {
+    match (post.on("B001"), post.on("X007")) {
+        (false, _) => "Metric",
+        (true, false) => "Imperial",
+        (true, true) => "English",
+    }
+}
+
 /// One nest's cut program.
 #[derive(Clone, Debug)]
 pub struct Ccp {
@@ -1346,6 +1587,9 @@ pub struct SheetIn<'a> {
     pub spec: &'a SheetSpec,
     pub plan: &'a SheetPlan,
     pub cuts: &'a [CutLine],
+    /// The remnants the sheet would store (sheet mm; a full job file's
+    /// remnant sheets, X008, BV71).
+    pub remnants: &'a [crate::stock::Outline],
 }
 
 /// The largest |x| and |y| of a move's end and, on an arc, its extreme
@@ -1374,7 +1618,7 @@ fn reach(from: P, m: &Mv, ext: &mut [f64; 2]) {
 /// BV56: the subprograms and calls of a sheet, in writing order.
 fn subprograms(s: &SheetIn, post: &Post) -> (Vec<(Vec<Cmd>, usize, usize)>, Vec<(usize, Frame)>, [f64; 2]) {
     let u = post.unit;
-    let mut st = State { mode: None, sensor: false };
+    let mut st = State { mode: None, sensor: false, sub_start: true };
     let mut order: Vec<usize> = (0..s.sheet.len()).collect();
     // Parts in the order they are finished (the outside last, MM2), as the
     // BLM post calls them.
@@ -1384,7 +1628,7 @@ fn subprograms(s: &SheetIn, post: &Post) -> (Vec<(Vec<Cmd>, usize, usize)>, Vec<
     let mut ext = [0.0f64; 2];
     let mut first_fault = true;
     // The parts, then the sheet's cut-off lines in one subprogram (BV64).
-    let mut items: Vec<(usize, Frame)> = order.iter().map(|&i| (s.sheet[i].part, Frame::of(&s.sheet[i], u, post.on("B021")))).collect();
+    let mut items: Vec<(usize, Frame)> = order.iter().map(|&i| (s.sheet[i].part, Frame::of(&s.sheet[i], u, post))).collect();
     let lines = cut_lines_in_order(s.cuts);
     if !lines.is_empty() {
         items.push((CUTOFF, cutoff_frame(&lines, post, s.spec.w, s.spec.h)));
@@ -1392,7 +1636,7 @@ fn subprograms(s: &SheetIn, post: &Post) -> (Vec<(Vec<Cmd>, usize, usize)>, Vec<
     for (n, &(part, f)) in items.iter().enumerate() {
         // A copy whose commands come out the same shares the subprogram;
         // working it out mustn't change what the program has written so far.
-        let mut probe = State { mode: st.mode, sensor: st.sensor };
+        let mut probe = State { mode: st.mode, sensor: st.sensor, sub_start: true };
         let mut ff = first_fault;
         let cmds = if part == CUTOFF { cutoff_commands(&lines, &f, post, s.spec.w, s.spec.h, &mut probe) } else { part_commands(s.plan, order[n] + 1, &f, post, s.spec.w, s.spec.h, &mut probe, &mut ff) };
         // BV37: the sensor is as the call leaves it, whether its subprogram
@@ -1456,7 +1700,7 @@ pub fn cut_program(s: &SheetIn, post: &Post) -> Ccp {
         id
     };
     let mut t = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n");
-    let unit = if post.on("B001") { "Imperial" } else { "Metric" };
+    let unit = unit_name(post);
     let tool = if post.on("B041") { " ToolArrangement=\"Vertical\"" } else { "" };
     let _ = write!(t, "<CuttingControlProgram MeasurementSystem=\"{unit}\" Thickness=\"{}\"{tool}>\r\n", num(s.spec.thickness / u));
     t.push_str("  <Technology />\r\n");
@@ -1506,10 +1750,9 @@ pub fn cut_program(s: &SheetIn, post: &Post) -> Ccp {
     }
     t.push_str("  </SubPrograms>\r\n  <ControlCommands>\r\n");
     line(&mut t, 2, &val("SetClamps", "Off"), next());
-    let b021 = post.on("B021");
+    let dec = call_decimals(post);
     for (k, f) in &calls {
-        let pos = |v: f64| if b021 { digits(v, 3) } else { whole(v) };
-        let c = Cmd("CallSubProgram", vec![("SubProgramName", subs[*k].name.clone()), ("X", pos(f.x)), ("Y", pos(f.y)), ("Rotation", whole(f.rot))]);
+        let c = Cmd("CallSubProgram", vec![("SubProgramName", subs[*k].name.clone()), ("X", digits(f.x, dec)), ("Y", digits(f.y, dec)), ("Rotation", if post.on("X006") { num(f.rot) } else { whole(f.rot) })]);
         line(&mut t, 2, &c, next());
     }
     t.push_str("  </ControlCommands>\r\n</CuttingControlProgram>\r\n");
@@ -1560,7 +1803,14 @@ pub fn unsupported(s: &SheetIn, post: &Post) -> Vec<String> {
             }
         }
     }
-    // BV65: point marks the switches would write as nothing, or as a cross.
+    // BV71: the full job file lists each remnant as a rectangle.
+    if post.on("X008") {
+        for (n, o) in s.remnants.iter().enumerate().filter(|(_, o)| !is_rectangle(o)) {
+            let (w, h) = o.size();
+            add(format!("the full job file (switch X008) lists remnants as rectangles, but remnant {} of this sheet ({w:.0} × {h:.0} mm across) isn't one; turn X008 off for this machine, or draw the remnant lines so each remnant is a rectangle", n + 1));
+        }
+    }
+        // BV65: point marks the switches would write as nothing, or as a cross.
     for (no, m) in &s.plan.marks {
         if m.len() == 1 {
             let n = name(*no);
@@ -1604,13 +1854,20 @@ pub struct Nest {
     pub ccp: Ccp,
     pub seconds: f64,
     pub size: [f64; 2],
+    /// The sheet's free margin, mm (X008's job file, BV71).
+    pub margin: f64,
+    /// The remnant sheets its remnant lines leave, as rectangles (left,
+    /// bottom, width, height; mm) (X008's job file, BV71).
+    pub remnants: Vec<[f64; 4]>,
+    /// The preview picture (X009, BV72).
+    pub picture: Option<Vec<u8>>,
 }
 
 /// One `.bvc` to write: its file name and entries, and the nests in it.
 #[derive(Clone, Debug)]
 pub struct BvcFile {
     pub file: String,
-    pub entries: Vec<(String, String)>,
+    pub entries: Vec<(String, Vec<u8>)>,
     pub nests: Vec<usize>,
 }
 
@@ -1620,7 +1877,7 @@ pub struct Written {
     pub nests: Vec<Nest>,
     pub bvcs: Vec<BvcFile>,
     /// BV21, BV22: the loose files left beside the `.bvc` (none with B010).
-    pub loose: Vec<(String, String)>,
+    pub loose: Vec<(String, Vec<u8>)>,
 }
 
 /// A new Guid, no braces (BV43).
@@ -1645,13 +1902,46 @@ pub fn program_name(job: &str, sheet_no: usize) -> String {
     format!("{}X{sheet_no}", if j.is_empty() { "JOB".into() } else { j })
 }
 
-/// BV43, BV44: the job file for `nests` (of `all`).
+/// BV71: a ring of a part (mm, its own coordinates) as the job file's
+/// vertices, in program units: each vertex with the bulge of the arc that
+/// starts there (tan of a quarter of its sweep), the first again at the end.
+fn vertices(ring: &[P], unit: f64) -> Vec<(P, Option<f64>)> {
+    let mut pts: Vec<P> = ring.iter().map(|p| [p[0] / unit, p[1] / unit]).collect();
+    if let Some(&f) = pts.first() {
+        pts.push(f);
+    }
+    let mv = moves(&pts, unit);
+    let mut out = vec![];
+    let mut from = match pts.first() {
+        Some(&p) => p,
+        None => return out,
+    };
+    for m in &mv {
+        let bulge = match *m {
+            Mv::Arc { sweep, .. } => Some((sweep.to_radians() / 4.0).tan()),
+            Mv::Line(_) => None,
+        };
+        out.push((from, bulge));
+        from = m.end();
+    }
+    if !out.is_empty() {
+        out.push((from, None));
+    }
+    out
+}
+
+/// BV43, BV44: the job file for `nests` (of `all`). X008 (BV71) writes it in
+/// full: in the cut program's unit and with its unit's name, each part's size
+/// and shape, each sheet's margins and each nest's remnant sheets.
 pub fn job_info(job: &JobText, parts: &[Part], all: &[Nest], nests: &[usize], post: &Post) -> String {
+    let full = post.on("X008");
+    let uk = if full { post.unit } else { 1.0 };
+    let ms = if full { unit_name(post) } else { "Metric" };
     let mut t = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n");
     // BV43: the post names the gas only with the technology's parameter
     // file, which the app doesn't know yet; X001 (ours, BV62) names it anyway.
     let gas = if job.gas.is_empty() || !post.on("X001") { String::new() } else { format!(" ProcessGas=\"{}\"", esc(&job.gas)) };
-    let _ = write!(t, "<JobInfo Guid=\"{}\" Name=\"{}\" Material=\"{}\" Thickness=\"{}\" MeasurementSystem=\"Metric\" Parameter=\"\"{gas}>\r\n", esc(&job.guid), esc(&job.name), esc(&job.material), num(job.thickness));
+    let _ = write!(t, "<JobInfo Guid=\"{}\" Name=\"{}\" Material=\"{}\" Thickness=\"{}\" MeasurementSystem=\"{ms}\" Parameter=\"\"{gas}>\r\n", esc(&job.guid), esc(&job.name), esc(&job.material), num(job.thickness / uk));
     // The parts the nests place, in the part list's order (BV44: the id is
     // the place in the list).
     let mut used: Vec<usize> = nests.iter().flat_map(|&n| all[n].ccp.subs.iter().map(|s| s.part)).filter(|&p| p != CUTOFF).collect();
@@ -1663,34 +1953,52 @@ pub fn job_info(job: &JobText, parts: &[Part], all: &[Nest], nests: &[usize], po
     };
     t.push_str("  <PartInfos>\r\n");
     for &p in &used {
-        let _ = write!(t, "    <PartInfo Id=\"{}\" Name=\"{}\" Quantity=\"{}\" />\r\n", p + 1, esc(&parts[p].name), qty(p));
+        if !full {
+            let _ = write!(t, "    <PartInfo Id=\"{}\" Name=\"{}\" Quantity=\"{}\" />\r\n", p + 1, esc(&parts[p].name), qty(p));
+            continue;
+        }
+        let (pw, ph) = parts[p].bbox();
+        let _ = write!(t, "    <PartInfo Id=\"{}\" Name=\"{}\" Quantity=\"{}\" SizeX=\"{}\" SizeY=\"{}\">\r\n      <Geometries>\r\n", p + 1, esc(&parts[p].name), qty(p), num(pw / uk), num(ph / uk));
+        let g = parts[p].geometry();
+        for ring in std::iter::once(&g.outline).chain(g.holes.iter()) {
+            t.push_str("        <Contour>\r\n          <Vertices>\r\n");
+            for (v, bulge) in vertices(ring, uk) {
+                let b = bulge.map_or(String::new(), |b| format!(" Bulge=\"{}\"", num(b)));
+                let _ = write!(t, "            <Vertex PositionX=\"{}\" PositionY=\"{}\"{b} />\r\n", num(v[0]), num(v[1]));
+            }
+            t.push_str("          </Vertices>\r\n        </Contour>\r\n");
+        }
+        t.push_str("      </Geometries>\r\n    </PartInfo>\r\n");
     }
     t.push_str("  </PartInfos>\r\n  <MaterialInfos>\r\n");
-    // One sheet size per id (BV59).
-    let mut sizes: Vec<([f64; 2], usize)> = vec![];
+    // One sheet size per id (BV59); with X008 one per size and margin.
+    let mut sizes: Vec<([f64; 2], f64, usize)> = vec![];
+    let key = |n: &Nest| (n.size, if full { n.margin } else { 0.0 });
     for &n in nests {
-        let s = all[n].size;
+        let (s, m) = key(&all[n]);
         let count = all[n].sheets.len();
-        match sizes.iter_mut().find(|x| x.0 == s) {
-            Some(x) => x.1 += count,
-            None => sizes.push((s, count)),
+        match sizes.iter_mut().find(|x| x.0 == s && x.1 == m) {
+            Some(x) => x.2 += count,
+            None => sizes.push((s, m, count)),
         }
     }
-    for (k, (s, n)) in sizes.iter().enumerate() {
-        let _ = write!(t, "    <MaterialInfo Id=\"{}\" Quantity=\"{n}\" SizeX=\"{}\" SizeY=\"{}\" FormatType=\"Sheet\" ArticleInfo=\"\" />\r\n", k + 1, num(s[0]), num(s[1]));
+    for (id, (s, m, n)) in sizes.iter().enumerate() {
+        let margins = if full { format!(" MarginLeft=\"{0}\" MarginRight=\"{0}\" MarginTop=\"{0}\" MarginBottom=\"{0}\"", num(m / uk)) } else { String::new() };
+        let _ = write!(t, "    <MaterialInfo Id=\"{}\" Quantity=\"{n}\" SizeX=\"{}\" SizeY=\"{}\"{margins} FormatType=\"Sheet\" ArticleInfo=\"\" />\r\n", id + 1, num(s[0] / uk), num(s[1] / uk));
     }
     t.push_str("  </MaterialInfos>\r\n  <PlanInfos>\r\n");
     for &n in nests {
         let nest = &all[n];
-        let mat = sizes.iter().position(|x| x.0 == nest.size).unwrap_or(0) + 1;
+        let (s, m) = key(nest);
+        let mat = sizes.iter().position(|x| x.0 == s && x.1 == m).unwrap_or(0) + 1;
         let secs = whole(nest.seconds);
         let _ = write!(
             t,
             "    <PlanInfo Multiplicity=\"{}\" Name=\"{}\" MaterialId=\"{mat}\" EstimatedCuttingTime=\"{secs}\" SizeX=\"{}\" SizeY=\"{}\">\r\n",
             nest.sheets.len(),
             esc(&nest.name),
-            num(nest.ccp.extent[0]),
-            num(nest.ccp.extent[1])
+            num(nest.ccp.extent[0] / uk),
+            num(nest.ccp.extent[1] / uk)
         );
         t.push_str("      <PlanPartInfos>\r\n");
         // BV64: the cut-off subprogram cuts no part: no PlanPartInfo.
@@ -1700,7 +2008,13 @@ pub fn job_info(job: &JobText, parts: &[Part], all: &[Nest], nests: &[usize], po
             let _ = write!(t, "        <PlanPartInfo PartId=\"{id}\" Quantity=\"{}\" SubProgramName=\"{}\" />\r\n", qty(s.part), esc(&s.name));
         }
         t.push_str("      </PlanPartInfos>\r\n");
-        if post.on("B029") {
+        if full && !nest.remnants.is_empty() {
+            t.push_str("      <ResidualSheetInfos>\r\n");
+            for r in &nest.remnants {
+                let _ = write!(t, "        <ResidualSheetInfo SizeX=\"{}\" SizeY=\"{}\" Bottom=\"{}\" Left=\"{}\" Guid=\"00000000-0000-0000-0000-000000000000\" />\r\n", num(r[2] / uk), num(r[3] / uk), num(r[1] / uk), num(r[0] / uk));
+            }
+            t.push_str("      </ResidualSheetInfos>\r\n");
+        } else if full || post.on("B029") {
             t.push_str("      <ResidualSheetInfos />\r\n");
         }
         if post.on("B030") {
@@ -1709,7 +2023,96 @@ pub fn job_info(job: &JobText, parts: &[Part], all: &[Nest], nests: &[usize], po
         let _ = write!(t, "      <SortInfos />\r\n      <EstimatedCuttingTime>{secs}</EstimatedCuttingTime>\r\n    </PlanInfo>\r\n");
     }
     t.push_str("  </PlanInfos>\r\n</JobInfo>\r\n");
+    #[cfg(test)]
+    if let Some(f) = EDIT_INFO.with(|e| e.get()) {
+        t = f(t);
+    }
     t
+}
+
+/// BV71: the remnant sheets a sheet stores, each as its rectangle (left,
+/// bottom, width, height; mm). A remnant that isn't a rectangle can't be
+/// written (`unsupported` refuses it).
+pub fn remnant_rects(pieces: &[crate::stock::Outline]) -> Vec<[f64; 4]> {
+    pieces.iter().map(|o| box_of(&o.outer)).collect()
+}
+
+fn box_of(pts: &[P]) -> [f64; 4] {
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in pts {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    [lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]]
+}
+
+/// BV71: how far (mm) a remnant's outline may lie off its box's edges and
+/// still be a rectangle.
+pub const RECT_TOL: f64 = 0.01;
+
+/// BV71: a remnant is a rectangle: no holes, every segment of its outline
+/// (the closing one too) lying along one of its box's edges (both ends on the
+/// same edge, within `RECT_TOL`), and its area its box's (within `RECT_TOL`
+/// times the box's outline); so a step or a bevel of any size is not one.
+pub fn is_rectangle(o: &crate::stock::Outline) -> bool {
+    let b = box_of(&o.outer);
+    let (x0, y0, x1, y1) = (b[0], b[1], b[0] + b[2], b[1] + b[3]);
+    let n = o.outer.len();
+    let along = |p: P, q: P| [(0, x0), (0, x1), (1, y0), (1, y1)].iter().any(|&(k, v)| (p[k] - v).abs() <= RECT_TOL && (q[k] - v).abs() <= RECT_TOL);
+    o.holes.is_empty() && n >= 4 && (0..n).all(|i| along(o.outer[i], o.outer[(i + 1) % n])) && (b[2] * b[3] - o.area_mm2()).abs() <= RECT_TOL * 2.0 * (b[2] + b[3])
+}
+
+/// BV72: a nest's preview picture (X009): 500 × 250 pixels, white, the sheet
+/// in light grey fitted in the middle, every cut contour in dark grey,
+/// engraving in blue and the cut-off lines in purple, as PNG.
+pub fn preview(s: &SheetIn) -> Vec<u8> {
+    use tiny_skia::*;
+    let (wp, hp) = (500.0f64, 250.0f64);
+    let pad = 6.0;
+    let scale = ((wp - 2.0 * pad) / s.spec.w.max(1.0)).min((hp - 2.0 * pad) / s.spec.h.max(1.0));
+    let (ox, oy) = ((wp - s.spec.w * scale) / 2.0, (hp - s.spec.h * scale) / 2.0);
+    let px = |p: P| ((ox + p[0] * scale) as f32, (hp - oy - p[1] * scale) as f32);
+    let Some(mut pm) = Pixmap::new(wp as u32, hp as u32) else { return vec![] };
+    pm.fill(Color::WHITE);
+    let paint = |r: u8, g: u8, b: u8| {
+        let mut p = Paint::default();
+        p.set_color_rgba8(r, g, b, 255);
+        p.anti_alias = true;
+        p
+    };
+    let path = |pts: &[P], closed: bool| {
+        let mut pb = PathBuilder::new();
+        for (i, &q) in pts.iter().enumerate() {
+            let (x, y) = px(q);
+            if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
+        }
+        if closed {
+            pb.close();
+        }
+        pb.finish()
+    };
+    let sheet = [[0.0, 0.0], [s.spec.w, 0.0], [s.spec.w, s.spec.h], [0.0, s.spec.h]];
+    if let Some(p) = path(&sheet, true) {
+        pm.fill_path(&p, &paint(226, 232, 240), FillRule::Winding, Transform::identity(), None);
+        pm.stroke_path(&p, &paint(100, 116, 139), &Stroke { width: 1.0, ..Default::default() }, Transform::identity(), None);
+    }
+    let st = Stroke { width: 1.0, ..Default::default() };
+    for c in s.plan.contours.iter().filter(|c| c.points.len() >= 2) {
+        if let Some(p) = path(&c.points, true) {
+            pm.stroke_path(&p, &paint(30, 41, 59), &st, Transform::identity(), None);
+        }
+    }
+    for (_, m) in s.plan.marks.iter().filter(|m| m.1.len() >= 2) {
+        if let Some(p) = path(m, false) {
+            pm.stroke_path(&p, &paint(37, 99, 235), &st, Transform::identity(), None);
+        }
+    }
+    for l in cut_lines_in_order(s.cuts) {
+        if let Some(p) = path(&l.pts, false) {
+            pm.stroke_path(&p, &paint(147, 51, 234), &st, Transform::identity(), None);
+        }
+    }
+    pm.encode_png().unwrap_or_default()
 }
 
 /// BV21, BV22, BV59: a machine's `.bvc` files for a job's sheets. Identical
@@ -1727,28 +2130,42 @@ pub fn write(job: &JobText, sheets: &[SheetIn], sheet_nos: &[usize], post: &Post
         let all = false;
         match nests.iter_mut().find(|n| all || (n.ccp.text == ccp.text && n.size == size)) {
             Some(n) => n.sheets.push(i),
-            None => nests.push(Nest { name: program_name(&job.name, sheet_nos[i]), sheets: vec![i], ccp, seconds: s.plan.seconds, size }),
+            None => {
+                let picture = post.on("X009").then(|| preview(s));
+                nests.push(Nest { name: program_name(&job.name, sheet_nos[i]), sheets: vec![i], ccp, seconds: s.plan.seconds, size, margin: s.spec.margin, remnants: remnant_rects(s.remnants), picture })
+            }
         }
     }
     let parts = sheets.first().map_or(&[][..], |s| s.parts);
     let mut bvcs = vec![];
-    let mut loose = vec![];
+    let mut loose: Vec<(String, Vec<u8>)> = vec![];
     let all: Vec<usize> = (0..nests.len()).collect();
+    let ccp = |n: &Nest| (format!("{}.ccp", n.name), n.ccp.text.clone().into_bytes());
+    // BV72: the picture beside its cut program, as `<program>.png` (BV21).
+    let png = |n: &Nest| n.picture.as_ref().map(|p| (format!("{}.png", n.name), p.clone()));
     if post.on("B017") && !nests.is_empty() {
-        let info = job_info(job, parts, &nests, &all, post);
-        let mut entries = vec![(format!("{}.ccp", nests[0].name), nests[0].ccp.text.clone()), ("JobInfo.xml".to_string(), info.clone())];
+        let info = job_info(job, parts, &nests, &all, post).into_bytes();
+        let mut entries = vec![ccp(&nests[0]), ("JobInfo.xml".to_string(), info.clone())];
+        entries.extend(png(&nests[0]));
         for n in &nests[1..] {
-            entries.push((format!("{}.ccp", n.name), n.ccp.text.clone()));
+            entries.push(ccp(n));
+            entries.extend(png(n));
         }
-        loose.extend(nests.iter().map(|n| (format!("{}.ccp", n.name), n.ccp.text.clone())));
+        for n in &nests {
+            loose.push(ccp(n));
+            loose.extend(png(n));
+        }
         loose.push(("JobInfo.xml".to_string(), info));
         bvcs.push(BvcFile { file: format!("{}.bvc", nests[0].name), entries, nests: all });
     } else {
         for (k, n) in nests.iter().enumerate() {
-            let info = job_info(job, parts, &nests, &[k], post);
-            let ccp = (format!("{}.ccp", n.name), n.ccp.text.clone());
-            loose.push(ccp.clone());
-            bvcs.push(BvcFile { file: format!("{}.bvc", n.name), entries: vec![ccp, ("JobInfo.xml".to_string(), info.clone())], nests: vec![k] });
+            let info = job_info(job, parts, &nests, &[k], post).into_bytes();
+            let c = ccp(n);
+            loose.push(c.clone());
+            let mut entries = vec![c, ("JobInfo.xml".to_string(), info.clone())];
+            entries.extend(png(n));
+            loose.extend(png(n));
+            bvcs.push(BvcFile { file: format!("{}.bvc", n.name), entries, nests: vec![k] });
             // BV21: one JobInfo.xml in the folder, rewritten for each program.
             loose.retain(|f| f.0 != "JobInfo.xml");
             loose.push(("JobInfo.xml".to_string(), info));
@@ -1783,6 +2200,22 @@ mod bystar_tests {
         assert_eq!(whole(-12.5), "-12");
         assert_eq!(digits(1.0005, 3), "1");
         assert_eq!(digits(1.0006, 3), "1.001");
+    }
+
+    #[test]
+    fn every_switch_programs_follow_is_shown_in_a_group_in_shop_words() {
+        // B001 is the Units choice; B002, B020, B027, B032 change nothing here (BV66).
+        let elsewhere = ["B001", "B002", "B020", "B027", "B032"];
+        for d in SWITCHES.iter().filter(|d| d.status == Status::Built && !elsewhere.contains(&d.key)) {
+            assert!(shown_as(d.key).is_some(), "{} has no group on the settings page", d.key);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for g in GROUPS {
+            for s in g.2 {
+                assert!(switch(s.0).is_some_and(|d| d.status == Status::Built), "{} isn't a switch programs follow", s.0);
+                assert!(seen.insert(s.0), "{} is in two groups", s.0);
+            }
+        }
     }
 
     #[test]
@@ -1908,12 +2341,12 @@ mod bystar_tests {
             m.set.insert(k.to_string(), v.to_string());
         }
         let post = Post::parse(None, None, &m);
-        let ins = [SheetIn { parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts }];
+        let ins = [SheetIn { parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts, remnants: &[] }];
         let job = JobText { name: "DEMO".into(), thickness: 3.0, ..Default::default() };
         let w = write(&job, &ins, &[1], &post);
         let files: Vec<(String, Vec<u8>, Vec<usize>)> = w.bvcs.iter().map(|f| (f.file.clone(), crate::blm::zip(&f.entries), f.nests.clone())).collect();
         let nests: Vec<(String, Vec<usize>)> = w.nests.iter().map(|n| (n.name.clone(), n.sheets.clone())).collect();
-        let back = [crate::engine::readback::BystarSheet { sheet_no: 1, parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts }];
+        let back = [crate::engine::readback::BystarSheet { sheet_no: 1, parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts, remnants: &[] }];
         let mut issues = crate::engine::readback::check_bvc(&files, &nests, &back, 3.0, &post);
         issues.extend(unsupported(&ins[0], &post));
         (w.nests[0].ccp.text.clone(), issues)

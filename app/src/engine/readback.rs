@@ -546,7 +546,7 @@ fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -
                     continue;
                 }
                 let bracket = post.on("B024");
-                let pierce = if bracket || post.on("B044") { post.pierce(0, true) } else { None };
+                let pierce = if bracket || post.on("B044") || post.on("X003") { post.pierce(0, true) } else { None };
                 let comp = (!post.on("B031")).then_some("Right");
                 out.push(Want { cut: Cut { pts: p, comp }, mode: 2, side: Side::Unknown, pierce, markers: vec![], gaps: vec![] });
             }
@@ -567,7 +567,7 @@ fn bystar_wanted(plan: &SheetPlan, part_no: usize, post: &crate::bystar::Post) -
                 let comp = if new_marking || (marking && post.on("B031")) { None } else { Some(if left { "Left" } else { "Right" }) };
                 let side = if new_marking { Side::Interior } else if marking { Side::Unknown } else if c.inner { Side::Interior } else { Side::Exterior };
                 let pierce_of = |starts_with_lead: bool| {
-                    if !(starts_with_lead || post.on("B024") || post.on("B044") || new_marking) {
+                    if !(starts_with_lead || post.on("B024") || post.on("B044") || post.on("X003") || new_marking) {
                         None
                     } else if new_marking {
                         Some(if b036 == 2 { "Normal" } else { "Fine" }.to_string())
@@ -783,6 +783,8 @@ pub struct BystarSheet<'a> {
     pub plan: &'a SheetPlan,
     /// Its remnant and free cut lines (BV64).
     pub cuts: &'a [CutLine],
+    /// The remnants it would store (X008's remnant sheets, BV71).
+    pub remnants: &'a [crate::stock::Outline],
 }
 
 /// The first point of a cut (placed with `place`) the head runs off the
@@ -987,6 +989,115 @@ fn cutoff_issues(label: &str, written: &[(Cut, &crate::bvc::Cut)], place: &dyn F
     issues
 }
 
+/// A closed contour as the job file draws it (`shape`, points along it) is
+/// the part's ring: the same path in order, starting anywhere on it and
+/// running either way (BV71). Each point of each within `tol` of the other
+/// path (segments compared, `first_stray`) and the shape walked in order
+/// along the ring from where it starts (`out_of_order`).
+fn same_ring(shape: &[P], ring: &[P], tol: f64) -> bool {
+    if shape.len() < 2 || ring.len() < 2 {
+        return shape.len() == ring.len();
+    }
+    let mut closed = ring.to_vec();
+    closed.push(ring[0]);
+    if first_stray(shape, &closed, tol).is_some() || first_stray(&closed, shape, tol).is_some() {
+        return false;
+    }
+    // The ring from the point nearest the shape's start, round to it again.
+    let from = |c: &[P]| -> Vec<P> {
+        let s0 = shape[0];
+        let (mut best, mut at, mut q) = (f64::MAX, 0, c[0]);
+        for (i, w) in c.windows(2).enumerate() {
+            let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+            let l = dx * dx + dy * dy;
+            let t = if l == 0.0 { 0.0 } else { (((s0[0] - w[0][0]) * dx + (s0[1] - w[0][1]) * dy) / l).clamp(0.0, 1.0) };
+            let p = [w[0][0] + t * dx, w[0][1] + t * dy];
+            if dist(p, s0) < best {
+                (best, at, q) = (dist(p, s0), i, p);
+            }
+        }
+        let mut v = vec![q];
+        v.extend_from_slice(&c[at + 1..]);
+        v.extend_from_slice(&c[1..=at]);
+        v.push(q);
+        v
+    };
+    let back: Vec<P> = closed.iter().rev().copied().collect();
+    [from(&closed), from(&back)].iter().any(|e| out_of_order(shape, e, tol).is_none())
+}
+
+/// BV71: the full job file (X008) read back against the plan: every part
+/// the file lists with its size and its outline and holes (each within the
+/// read-back tolerance of the part's own, both ways, in order), each nest's
+/// sheet margins and remnant sheets (the rectangle around what each remnant
+/// line cuts off).
+fn full_job_file(file: &str, job: &crate::bvc::JobInfo, in_it: &[usize], nests: &[(String, Vec<usize>)], sheets: &[BystarSheet]) -> Vec<String> {
+    let mut issues = vec![];
+    let tol = tolerance();
+    let Some(parts) = sheets.first().map(|s| s.parts) else { return issues };
+    for pi in &job.parts {
+        let Some(part) = usize::try_from(pi.id - 1).ok().and_then(|i| parts.get(i)) else {
+            issues.push(format!("{file}: its job file lists part id {}, which isn't one of the job's parts", pi.id));
+            continue;
+        };
+        let (w, h) = part.bbox();
+        match pi.size {
+            Some(s) if (s[0] - w).abs() <= 0.001 && (s[1] - h).abs() <= 0.001 => {}
+            s => issues.push(format!("{file}: its job file gives part {} the size {s:?}, but it is {w} × {h} mm", part.name)),
+        }
+        let g = part.geometry();
+        let rings: Vec<&Vec<P>> = std::iter::once(&g.outline).chain(g.holes.iter()).collect();
+        if rings.len() != pi.shapes.len() {
+            issues.push(format!("{file}: its job file draws part {} with {} contour(s), but it has {}", part.name, pi.shapes.len(), rings.len()));
+            continue;
+        }
+        for (k, (ring, shape)) in rings.iter().zip(&pi.shapes).enumerate() {
+            if !same_ring(shape, ring, tol) {
+                issues.push(format!("{file}: its job file draws contour {} of part {} away from its shape", k + 1, part.name));
+            }
+        }
+    }
+    for &n in in_it {
+        let (name, ks) = &nests[n];
+        let Some(s) = ks.first().and_then(|&k| sheets.get(k)) else { continue };
+        let Some(plan) = job.plans.iter().find(|p| p.name == *name) else { continue };
+        let m = job.materials.iter().find(|m| m.id == plan.material_id).and_then(|m| m.margins);
+        if m.is_none_or(|m| m.iter().any(|v| (v - s.spec.margin).abs() > 0.001)) {
+            issues.push(format!("nest {name}: its job file gives the sheet margins {m:?}, but they are {} mm", s.spec.margin));
+        }
+        // The remnants the job stores, each a rectangle the file must list
+        // (in any order): its box, and as much area as the box.
+        let mut left: Vec<[f64; 4]> = plan.remnants.clone();
+        let mut same = left.len() == s.remnants.len();
+        for o in s.remnants.iter() {
+            let (lo, hi) = (
+                [o.outer.iter().map(|p| p[0]).fold(f64::MAX, f64::min), o.outer.iter().map(|p| p[1]).fold(f64::MAX, f64::min)],
+                [o.outer.iter().map(|p| p[0]).fold(f64::MIN, f64::max), o.outer.iter().map(|p| p[1]).fold(f64::MIN, f64::max)],
+            );
+            // The listed rectangle is the stored remnant's box, and the
+            // remnant fills it: every point of its outline on the box's edges
+            // and as much area (BV71, 0.01 mm).
+            // Every segment of the outline (the closing one too) along one
+            // of the box's edges: both its ends on that edge.
+            let n = o.outer.len();
+            let along = |p: P, q: P| [(0, lo[0]), (0, hi[0]), (1, lo[1]), (1, hi[1])].iter().any(|&(k, v)| (p[k] - v).abs() <= 0.01 && (q[k] - v).abs() <= 0.01);
+            let filled = o.holes.is_empty() && n >= 4 && (0..n).all(|i| along(o.outer[i], o.outer[(i + 1) % n])) && ((hi[0] - lo[0]) * (hi[1] - lo[1]) - o.area_mm2()).abs() <= 0.02 * ((hi[0] - lo[0]) + (hi[1] - lo[1]));
+            let fits = |r: &[f64; 4]| filled && (r[0] - lo[0]).abs() <= 0.001 && (r[1] - lo[1]).abs() <= 0.001 && (r[0] + r[2] - hi[0]).abs() <= 0.001 && (r[1] + r[3] - hi[1]).abs() <= 0.001;
+            match left.iter().position(fits) {
+                Some(i) => {
+                    left.remove(i);
+                }
+                None => same = false,
+            }
+        }
+        let want: Vec<String> = s.remnants.iter().map(|o| format!("{:.0} × {:.0}", o.size().0, o.size().1)).collect();
+        if !same {
+            issues.push(format!("nest {name}: its job file lists the remnant sheets {:?}, but the job stores {} remnant(s) ({})", plan.remnants, s.remnants.len(), want.join(", ")));
+        }
+    }
+    issues
+}
+
 /// BV59, BV60: read every `.bvc` of a write back with the reader (`bvc.rs`,
 /// which shares nothing with the writer) and compare it with the plan: each
 /// nest's sheet, run count and thickness, and every part's every cut with
@@ -1027,6 +1138,21 @@ pub fn check_bvc(files: &[(String, Vec<u8>, Vec<usize>)], nests: &[(String, Vec<
         };
         if (read.job.thickness - thickness).abs() > 0.001 {
             issues.push(format!("{file}: its job file says the sheets are {} mm thick, but they are {thickness} mm", read.job.thickness));
+        }
+        // BV72: X009's preview picture beside each nest's cut program.
+        if post.on("X009") {
+            let entries = crate::progimport::read_zip(bytes).unwrap_or_default();
+            for &n in in_it {
+                let want = format!("{}.png", nests[n].0).to_lowercase();
+                if !entries.iter().any(|e| e.0.to_lowercase() == want && e.1.starts_with(b"\x89PNG\r\n\x1a\n")) {
+                    issues.push(format!("{file}: nest {} has no preview picture", nests[n].0));
+                }
+            }
+        }
+        // BV71: X008's full job file: each part's size and shape, each
+        // sheet's margins and each nest's remnant sheets as planned.
+        if post.on("X008") {
+            issues.extend(full_job_file(file, &read.job, in_it, nests, sheets));
         }
         for &n in in_it {
             let (name, ks) = &nests[n];
@@ -1242,6 +1368,28 @@ mod tests {
     fn edit(set: &mut BlmSet, sub: bool, f: impl Fn(&str) -> String) {
         let file = set.spf.iter_mut().find(|x| x.0.contains("70") == sub && !x.0.contains("LIS")).unwrap();
         file.1 = f(&file.1);
+    }
+
+    #[test]
+    fn x008_a_bevelled_remnant_listed_as_its_rectangle_is_refused() {
+        // S6 (BV71): a remnant whose corner is cut off by a short diagonal has
+        // every corner on its box's edges and almost its area; listed as its
+        // full rectangle, the read-back refuses it. A true rectangle passes.
+        let sp = spec();
+        let plan = crate::cnc::plan(&[], &[], &sp);
+        let rect = crate::stock::Outline { outer: vec![[600.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [600.0, 500.0]], holes: vec![] };
+        let bevel = crate::stock::Outline { outer: vec![[600.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [601.0, 500.0], [600.0, 499.0]], holes: vec![] };
+        let job = crate::bvc::JobInfo {
+            materials: vec![crate::bvc::MaterialInfo { id: 1, size: [1000.0, 500.0], margins: Some([5.0; 4]) }],
+            plans: vec![crate::bvc::PlanInfo { name: "DEMO".into(), multiplicity: 1, material_id: 1, parts: vec![], remnants: vec![[600.0, 0.0, 400.0, 500.0]] }],
+            ..Default::default()
+        };
+        for (o, ok) in [(rect, true), (bevel, false)] {
+            let rem = [o];
+            let sheets = [BystarSheet { sheet_no: 1, parts: &[], sheet: &[], spec: &sp, plan: &plan, cuts: &[], remnants: &rem }];
+            let issues = full_job_file("DEMO.bvc", &job, &[0], &[("DEMO".into(), vec![0])], &sheets);
+            assert_eq!(issues.is_empty(), ok, "{issues:?}");
+        }
     }
 
     #[test]
