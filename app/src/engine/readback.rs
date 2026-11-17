@@ -783,6 +783,8 @@ pub struct BystarSheet<'a> {
     pub plan: &'a SheetPlan,
     /// Its remnant and free cut lines (BV64).
     pub cuts: &'a [CutLine],
+    /// The remnants it would store (X008's remnant sheets, BV71).
+    pub remnants: &'a [crate::stock::Outline],
 }
 
 /// The first point of a cut (placed with `place`) the head runs off the
@@ -987,18 +989,41 @@ fn cutoff_issues(label: &str, written: &[(Cut, &crate::bvc::Cut)], place: &dyn F
     issues
 }
 
-/// The shortest distance from `p` to the path through `pts`.
-fn to_path(p: P, pts: &[P]) -> f64 {
-    let seg = |u: P, v: P| {
-        let (dx, dy) = (v[0] - u[0], v[1] - u[1]);
-        let l = dx * dx + dy * dy;
-        let t = if l == 0.0 { 0.0 } else { (((p[0] - u[0]) * dx + (p[1] - u[1]) * dy) / l).clamp(0.0, 1.0) };
-        (p[0] - u[0] - t * dx).hypot(p[1] - u[1] - t * dy)
-    };
-    if pts.len() == 1 {
-        return dist(p, pts[0]);
+/// A closed contour as the job file draws it (`shape`, points along it) is
+/// the part's ring: the same path in order, starting anywhere on it and
+/// running either way (BV71). Each point of each within `tol` of the other
+/// path (segments compared, `first_stray`) and the shape walked in order
+/// along the ring from where it starts (`out_of_order`).
+fn same_ring(shape: &[P], ring: &[P], tol: f64) -> bool {
+    if shape.len() < 2 || ring.len() < 2 {
+        return shape.len() == ring.len();
     }
-    pts.windows(2).map(|w| seg(w[0], w[1])).fold(f64::MAX, f64::min)
+    let mut closed = ring.to_vec();
+    closed.push(ring[0]);
+    if first_stray(shape, &closed, tol).is_some() || first_stray(&closed, shape, tol).is_some() {
+        return false;
+    }
+    // The ring from the point nearest the shape's start, round to it again.
+    let from = |c: &[P]| -> Vec<P> {
+        let s0 = shape[0];
+        let (mut best, mut at, mut q) = (f64::MAX, 0, c[0]);
+        for (i, w) in c.windows(2).enumerate() {
+            let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+            let l = dx * dx + dy * dy;
+            let t = if l == 0.0 { 0.0 } else { (((s0[0] - w[0][0]) * dx + (s0[1] - w[0][1]) * dy) / l).clamp(0.0, 1.0) };
+            let p = [w[0][0] + t * dx, w[0][1] + t * dy];
+            if dist(p, s0) < best {
+                (best, at, q) = (dist(p, s0), i, p);
+            }
+        }
+        let mut v = vec![q];
+        v.extend_from_slice(&c[at + 1..]);
+        v.extend_from_slice(&c[1..=at]);
+        v.push(q);
+        v
+    };
+    let back: Vec<P> = closed.iter().rev().copied().collect();
+    [from(&closed), from(&back)].iter().any(|e| out_of_order(shape, e, tol).is_none())
 }
 
 /// BV71: the full job file (X008) read back against the plan: every part
@@ -1027,12 +1052,7 @@ fn full_job_file(file: &str, job: &crate::bvc::JobInfo, in_it: &[usize], nests: 
             continue;
         }
         for (k, (ring, shape)) in rings.iter().zip(&pi.shapes).enumerate() {
-            let mut closed = ring.to_vec();
-            if let Some(&f) = ring.first() {
-                closed.push(f);
-            }
-            let off = shape.iter().any(|p| to_path(*p, &closed) > tol) || closed.iter().any(|p| to_path(*p, shape) > tol);
-            if off {
+            if !same_ring(shape, ring, tol) {
                 issues.push(format!("{file}: its job file draws contour {} of part {} away from its shape", k + 1, part.name));
             }
         }
@@ -1045,20 +1065,26 @@ fn full_job_file(file: &str, job: &crate::bvc::JobInfo, in_it: &[usize], nests: 
         if m.is_none_or(|m| m.iter().any(|v| (v - s.spec.margin).abs() > 0.001)) {
             issues.push(format!("nest {name}: its job file gives the sheet margins {m:?}, but they are {} mm", s.spec.margin));
         }
-        let want: Vec<[f64; 4]> = s
-            .cuts
-            .iter()
-            .filter(|c| c.kind == crate::cutoff::CutKind::Remnant)
-            .filter_map(|c| crate::cutoff::remnant_region(&c.pts, s.spec))
-            .map(|r| {
-                let lo = [r.iter().map(|p| p[0]).fold(f64::MAX, f64::min).max(0.0), r.iter().map(|p| p[1]).fold(f64::MAX, f64::min).max(0.0)];
-                let hi = [r.iter().map(|p| p[0]).fold(f64::MIN, f64::max).min(s.spec.w), r.iter().map(|p| p[1]).fold(f64::MIN, f64::max).min(s.spec.h)];
-                [lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]]
-            })
-            .collect();
-        let same = want.len() == plan.remnants.len() && want.iter().zip(&plan.remnants).all(|(a, b)| a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 0.001));
+        // The remnants the job stores, each a rectangle the file must list
+        // (in any order): its box, and as much area as the box.
+        let mut left: Vec<[f64; 4]> = plan.remnants.clone();
+        let mut same = left.len() == s.remnants.len();
+        for o in s.remnants.iter() {
+            let (lo, hi) = (
+                [o.outer.iter().map(|p| p[0]).fold(f64::MAX, f64::min), o.outer.iter().map(|p| p[1]).fold(f64::MAX, f64::min)],
+                [o.outer.iter().map(|p| p[0]).fold(f64::MIN, f64::max), o.outer.iter().map(|p| p[1]).fold(f64::MIN, f64::max)],
+            );
+            let fits = |r: &[f64; 4]| (r[0] - lo[0]).abs() <= 0.001 && (r[1] - lo[1]).abs() <= 0.001 && (r[0] + r[2] - hi[0]).abs() <= 0.001 && (r[1] + r[3] - hi[1]).abs() <= 0.001 && (r[2] * r[3] - o.area_mm2()).abs() <= (0.001 * o.area_mm2()).max(1.0);
+            match left.iter().position(fits) {
+                Some(i) => {
+                    left.remove(i);
+                }
+                None => same = false,
+            }
+        }
+        let want: Vec<String> = s.remnants.iter().map(|o| format!("{:.0} × {:.0}", o.size().0, o.size().1)).collect();
         if !same {
-            issues.push(format!("nest {name}: its job file lists the remnant sheets {:?}, but the plan leaves {want:?}", plan.remnants));
+            issues.push(format!("nest {name}: its job file lists the remnant sheets {:?}, but the job stores {} remnant(s) ({})", plan.remnants, s.remnants.len(), want.join(", ")));
         }
     }
     issues

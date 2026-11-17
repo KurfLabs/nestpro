@@ -309,13 +309,15 @@ fn x008_writes_the_full_job_file_and_the_read_back_checks_it() {
     assert!(info.contains("<PartInfo Id=\"1\" Name=\"DEMO-001\" Quantity=\"3\" SizeX=\"200\" SizeY=\"100\">"), "{info}");
     assert!(info.contains("<Geometries>") && info.contains("<Vertex PositionX=\"0\" PositionY=\"0\" />") && info.contains("Bulge=\""), "{info}");
     assert!(info.contains("MarginLeft=\"") && info.contains("FormatType=\"Sheet\""), "{info}");
-    assert!(info.contains("<ResidualSheetInfo SizeX=\"400\" SizeY=\"500\" Bottom=\"0\" Left=\"600\""), "{info}");
+    assert!(info.contains("<ResidualSheetInfo SizeX=\"") && info.contains("SizeY=\"500\" Bottom=\"0\" Left=\"600."), "{info}");
     // The reader takes it back: sizes, shapes (holes as arcs), margins and remnants in mm.
     let bvc = std::fs::read(bystar_dir(&d, "DEMO-FORM").join("DEMOFORMX3.bvc")).unwrap();
     let back = crate::bvc::read(&bvc).unwrap();
     let p1 = back.job.parts.iter().find(|p| p.name == "DEMO-001").unwrap();
     assert_eq!((p1.size, p1.shapes.len()), (Some([200.0, 100.0]), 4), "outline, two holes and the slot");
-    assert_eq!(back.job.plans[0].remnants, vec![[600.0, 0.0, 400.0, 500.0]]);
+    // The remnant the job stores: past the remnant line's cut (half a kerf).
+    let r = &back.job.plans[0].remnants;
+    assert!(r.len() == 1 && (r[0][0] - 600.0).abs() < 0.5 && (r[0][0] + r[0][2] - 1000.0).abs() < 1e-6 && r[0][1] == 0.0 && r[0][3] == 500.0, "{r:?}");
     // Inch: the job file in the program's unit, named as the program is.
     inch(&mut s, &d);
     set(&mut s, "X007=1");
@@ -417,5 +419,140 @@ fn the_program_unit_is_picked_on_the_machine_and_its_name_follows() {
     let old: crate::bystar::MachinePost = serde_json::from_str(r#"{"set": {"B015": "1"}}"#).unwrap();
     assert_eq!(old.unit, None);
     assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"set":{"B015":"1"}}"#);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A 3000 × 1000 × 3 mm job on the made-up ByStar Fiber laser, four
+/// 400 × 400 plates nested, the leftover cut into eight 500 × 500 standard
+/// drops (cross cuts stopping on the strip cut).
+fn drops_job(d: &Path) -> Session {
+    let mut ctx = stock_ctx(d);
+    ctx.cfg = crate::settings::AppSettings { stock: ctx.cfg.stock.clone(), ..bystar_settings(d, true) };
+    ctx.cfg.stock.line.shape = crate::remline::LineShape::VerticalStrip;
+    ctx.cfg.stock.drops = crate::engine::drops::DropSettings { on: true, sizes: vec![[1000.0, 500.0], [500.0, 500.0]], keep_odd: false };
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(d.join("DEMO-DROPS.snjob").to_str().unwrap()), json!({"w": 3000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 400, "qty": 4, "name": "DEMO-PLATE"}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let list = call(&mut s, "remnant", None, json!({"mode": "drops"}));
+    let ways = list["data"].as_array().unwrap().clone();
+    let stacked = ways.iter().find(|w| w["summary"].as_str().unwrap().starts_with("8 × 500 × 500")).unwrap_or_else(|| panic!("{list}"));
+    call(&mut s, "remnant", None, json!({"mode": "drops", "layout": stacked["layout"].as_u64().unwrap()}));
+    s
+}
+
+#[test]
+fn x008_lists_each_remnant_the_job_stores_when_the_leftover_is_cut_into_drops() {
+    // S1: standard drops (cross cuts ending on the strip cut) leave eight
+    // remnants; the job file lists those eight, as the stock would store them.
+    let d = dir("bysoft_x008_drops");
+    let mut s = drops_job(&d);
+    let st = call(&mut s, "stock-book", None, json!({"mode": "status"}));
+    let rows = st["data"]["would_store_remnants"].as_array().unwrap().clone();
+    assert_eq!(rows.len(), 8, "{st}");
+    set(&mut s, "X008=1, B021=1");
+    call(&mut s, "export", None, json!({}));
+    let bvc = std::fs::read(bystar_dir(&d, "DEMO-DROPS").join("DEMODROPSX1.bvc")).unwrap();
+    let back = crate::bvc::read(&bvc).unwrap();
+    let mut got: Vec<[f64; 2]> = back.job.plans[0].remnants.iter().map(|r| [(r[2] * 10.0).round() / 10.0, (r[3] * 10.0).round() / 10.0]).collect();
+    let mut want: Vec<[f64; 2]> = rows.iter().map(|r| [r["w"].as_f64().unwrap(), r["h"].as_f64().unwrap()]).collect();
+    got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(got, want, "one remnant sheet per remnant the job stores");
+    // No two overlap.
+    let r = &back.job.plans[0].remnants;
+    for i in 0..r.len() {
+        for j in i + 1..r.len() {
+            let over = (r[i][0] + r[i][2]).min(r[j][0] + r[j][2]) - r[i][0].max(r[j][0]) > 0.01 && (r[i][1] + r[i][3]).min(r[j][1] + r[j][3]) - r[i][1].max(r[j][1]) > 0.01;
+            assert!(!over, "{:?} overlaps {:?}", r[i], r[j]);
+        }
+    }
+    // A job file that leaves one out is refused by the read-back.
+    crate::bystar::EDIT_INFO.with(|e| e.set(Some(|t: String| {
+        let a = t.find("<ResidualSheetInfo ").unwrap();
+        let b = a + t[a..].find("/>").unwrap() + 2;
+        format!("{}{}", &t[..a], &t[b..])
+    })));
+    let r = s.call("export", None, &json!({}));
+    crate::bystar::EDIT_INFO.with(|e| e.set(None));
+    let e = r.err().expect("a remnant left out of the job file wasn't refused");
+    assert!(e.contains("wouldn't cut what's planned") && e.contains("remnant"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn x008_refuses_a_remnant_that_isnt_a_rectangle_and_says_what_to_do() {
+    // A remnant line with a step leaves an L-shaped remnant, which a
+    // ResidualSheetInfo (a rectangle) can't describe.
+    let d = dir("bysoft_x008_step");
+    let mut s = form_job(&d);
+    call(&mut s, "cut-line", None, json!({"sheet": 3, "points": "600,0;600,250;800,250;800,500"}));
+    set(&mut s, "X008=1");
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("isn't one") && e.contains("turn X008 off"), "{e}");
+    set(&mut s, "X008=0");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn x008_refuses_a_contour_drawn_through_its_corners_in_another_order() {
+    // S2: the rectangle's four corners, but joined across its diagonals.
+    let d = dir("bysoft_x008_order");
+    let mut s = form_job(&d);
+    set(&mut s, "X008=1");
+    call(&mut s, "export", None, json!({}));
+    crate::bystar::EDIT_INFO.with(|e| e.set(Some(|t: String| {
+        t.replacen(
+            "<Vertex PositionX=\"0\" PositionY=\"0\" />\r\n            <Vertex PositionX=\"200\" PositionY=\"0\" />\r\n            <Vertex PositionX=\"200\" PositionY=\"100\" />\r\n            <Vertex PositionX=\"0\" PositionY=\"100\" />",
+            "<Vertex PositionX=\"0\" PositionY=\"0\" />\r\n            <Vertex PositionX=\"200\" PositionY=\"100\" />\r\n            <Vertex PositionX=\"200\" PositionY=\"0\" />\r\n            <Vertex PositionX=\"0\" PositionY=\"100\" />",
+            1,
+        )
+    })));
+    let r = s.call("export", None, &json!({}));
+    crate::bystar::EDIT_INFO.with(|e| e.set(None));
+    let e = r.err().expect("a contour joined across its diagonals wasn't refused");
+    assert!(e.contains("away from its shape"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn x009_pictures_go_with_the_rest_of_the_jobs_old_programs() {
+    // S3: a picture written with X009 is removed when the next write doesn't
+    // make it (B010 on, or X009 off).
+    let d = dir("bysoft_x009_stale");
+    let mut s = form_job(&d);
+    let folder = bystar_dir(&d, "DEMO-FORM");
+    set(&mut s, "X009=1");
+    call(&mut s, "export", None, json!({}));
+    assert!(folder.join("DEMOFORMX1.png").is_file() && folder.join("DEMOFORMX3.png").is_file());
+    set(&mut s, "B010=1");
+    call(&mut s, "export", None, json!({}));
+    assert!(!folder.join("DEMOFORMX1.png").exists(), "B010 keeps only the .bvc");
+    set(&mut s, "B010=0, X009=0");
+    call(&mut s, "export", None, json!({}));
+    assert!(!folder.join("DEMOFORMX1.png").exists() && folder.join("DEMOFORMX1.ccp").is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_cut_off_line_running_past_the_edge_senses_off_before_the_edge_not_at_its_end() {
+    // BV38: standard drops' cuts run a little past the sheet; sensing goes
+    // off where the line leaves the sheet, so the head never crosses the
+    // edge with the sensor on, and the job is written.
+    let d = dir("bysoft_drops_sensor");
+    let mut s = drops_job(&d);
+    call(&mut s, "export", None, json!({}));
+    let ccp = std::fs::read_to_string(bystar_dir(&d, "DEMO-DROPS").join("DEMODROPSX1.ccp")).unwrap();
+    let (_, c) = sub_commands(&ccp, "ResidualSheetCuts");
+    let y = |x: &(String, Vec<(String, String)>)| attr(x, "Y").and_then(|v| v.parse::<f64>().ok());
+    let mut checked = 0;
+    for (i, _) in c.iter().enumerate().filter(|(_, x)| x.0 == "LineTo" && y(x).is_some_and(|v| v > 1000.0)) {
+        // The move past the top edge comes after the sensor goes off on the edge.
+        assert_eq!((c[i - 1].0.as_str(), attr(&c[i - 1], "Value")), ("SetSensingSensor", Some("Off")), "{:?}", &c[i - 3..=i]);
+        assert_eq!(y(&c[i - 2]), Some(1000.0), "{:?}", &c[i - 3..=i]);
+        checked += 1;
+    }
+    assert!(checked >= 3, "{ccp}");
     let _ = std::fs::remove_dir_all(&d);
 }

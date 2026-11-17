@@ -1414,7 +1414,12 @@ pub fn cutoff_pieces(pts: &[P], w: f64, h: f64, b003: f64, b004: f64, b005: f64,
     // The far piece: from the pierce on to the end and past a far edge.
     let mut far: Vec<(Vec<P>, Option<bool>)> = vec![];
     if to_edge {
-        let off = if len - b004 >= sp { len - b004 } else { sp + (len - sp) / 2.0 };
+        // BV38: sensing goes off B004 before the far edge, measured on the
+        // sheet: where the line leaves the sheet, not where it ends (a line
+        // may run on past the edge, as a standard drop's cut does).
+        let back: Vec<P> = p.iter().rev().copied().collect();
+        let exit = entry(&back, w, h, 0.0).map_or(len, |s| (len - s).clamp(sp, len));
+        let off = if exit - b004 >= sp { exit - b004 } else { sp + (exit - sp) / 2.0 };
         let run_up = (sp + b005).min(off);
         far.push((sub_path(&p, sp, run_up), None));
         far.push((sub_path(&p, run_up, off), Some(false)));
@@ -1571,6 +1576,9 @@ pub struct SheetIn<'a> {
     pub spec: &'a SheetSpec,
     pub plan: &'a SheetPlan,
     pub cuts: &'a [CutLine],
+    /// The remnants the sheet would store (sheet mm; a full job file's
+    /// remnant sheets, X008, BV71).
+    pub remnants: &'a [crate::stock::Outline],
 }
 
 /// The largest |x| and |y| of a move's end and, on an arc, its extreme
@@ -1784,7 +1792,14 @@ pub fn unsupported(s: &SheetIn, post: &Post) -> Vec<String> {
             }
         }
     }
-    // BV65: point marks the switches would write as nothing, or as a cross.
+    // BV71: the full job file lists each remnant as a rectangle.
+    if post.on("X008") {
+        for (n, o) in s.remnants.iter().enumerate().filter(|(_, o)| !is_rectangle(o)) {
+            let (w, h) = o.size();
+            add(format!("the full job file (switch X008) lists remnants as rectangles, but remnant {} of this sheet ({w:.0} × {h:.0} mm across) isn't one; turn X008 off for this machine, or draw the remnant lines so each remnant is a rectangle", n + 1));
+        }
+    }
+        // BV65: point marks the switches would write as nothing, or as a cross.
     for (no, m) in &s.plan.marks {
         if m.len() == 1 {
             let n = name(*no);
@@ -2004,22 +2019,27 @@ pub fn job_info(job: &JobText, parts: &[Part], all: &[Nest], nests: &[usize], po
     t
 }
 
-/// BV71: the remnant sheets a sheet's remnant lines leave, each as the
-/// rectangle around the area the line cuts off (left, bottom, width,
-/// height; mm).
-pub fn remnant_rects(cuts: &[CutLine], spec: &SheetSpec) -> Vec<[f64; 4]> {
-    cuts.iter()
-        .filter(|c| c.kind == crate::cutoff::CutKind::Remnant)
-        .filter_map(|c| crate::cutoff::remnant_region(&c.pts, spec))
-        .map(|r| {
-            let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
-            for p in &r {
-                lo = [lo[0].min(p[0]).max(0.0), lo[1].min(p[1]).max(0.0)];
-                hi = [hi[0].max(p[0]).min(spec.w), hi[1].max(p[1]).min(spec.h)];
-            }
-            [lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]]
-        })
-        .collect()
+/// BV71: the remnant sheets a sheet stores, each as its rectangle (left,
+/// bottom, width, height; mm). A remnant that isn't a rectangle can't be
+/// written (`unsupported` refuses it).
+pub fn remnant_rects(pieces: &[crate::stock::Outline]) -> Vec<[f64; 4]> {
+    pieces.iter().map(|o| box_of(&o.outer)).collect()
+}
+
+fn box_of(pts: &[P]) -> [f64; 4] {
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in pts {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    [lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]]
+}
+
+/// BV71: a remnant is a rectangle: no holes, its area its box's (within
+/// 1 mm² or 0.1 %).
+pub fn is_rectangle(o: &crate::stock::Outline) -> bool {
+    let b = box_of(&o.outer);
+    o.holes.is_empty() && (b[2] * b[3] - o.area_mm2()).abs() <= (0.001 * o.area_mm2()).max(1.0)
 }
 
 /// BV72: a nest's preview picture (X009): 500 × 250 pixels, white, the sheet
@@ -2092,7 +2112,7 @@ pub fn write(job: &JobText, sheets: &[SheetIn], sheet_nos: &[usize], post: &Post
             Some(n) => n.sheets.push(i),
             None => {
                 let picture = post.on("X009").then(|| preview(s));
-                nests.push(Nest { name: program_name(&job.name, sheet_nos[i]), sheets: vec![i], ccp, seconds: s.plan.seconds, size, margin: s.spec.margin, remnants: remnant_rects(s.cuts, s.spec), picture })
+                nests.push(Nest { name: program_name(&job.name, sheet_nos[i]), sheets: vec![i], ccp, seconds: s.plan.seconds, size, margin: s.spec.margin, remnants: remnant_rects(s.remnants), picture })
             }
         }
     }
@@ -2301,12 +2321,12 @@ mod bystar_tests {
             m.set.insert(k.to_string(), v.to_string());
         }
         let post = Post::parse(None, None, &m);
-        let ins = [SheetIn { parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts }];
+        let ins = [SheetIn { parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts, remnants: &[] }];
         let job = JobText { name: "DEMO".into(), thickness: 3.0, ..Default::default() };
         let w = write(&job, &ins, &[1], &post);
         let files: Vec<(String, Vec<u8>, Vec<usize>)> = w.bvcs.iter().map(|f| (f.file.clone(), crate::blm::zip(&f.entries), f.nests.clone())).collect();
         let nests: Vec<(String, Vec<usize>)> = w.nests.iter().map(|n| (n.name.clone(), n.sheets.clone())).collect();
-        let back = [crate::engine::readback::BystarSheet { sheet_no: 1, parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts }];
+        let back = [crate::engine::readback::BystarSheet { sheet_no: 1, parts: &parts, sheet: &placed, spec: &sp, plan: &plan, cuts, remnants: &[] }];
         let mut issues = crate::engine::readback::check_bvc(&files, &nests, &back, 3.0, &post);
         issues.extend(unsupported(&ins[0], &post));
         (w.nests[0].ccp.text.clone(), issues)
