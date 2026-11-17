@@ -43,6 +43,29 @@ pub const KERF_PATH: Color32 = Color32::from_rgb(56, 220, 230);
 
 /// The Part view's technology card (top left), screen px.
 const INFO_CARD: Vec2 = Vec2::new(400.0, 101.0);
+/// A click this close to a lead (screen px) picks the lead (LE9).
+const LEAD_PICK_PX: f32 = 6.0;
+/// Width of the card of the lead clicked on.
+const LEAD_CARD_W: f32 = 290.0;
+/// The halo round the lead clicked on, and round one under the pointer.
+const LEAD_PICKED: Color32 = Color32::from_rgba_premultiplied(31, 123, 129, 140);
+const LEAD_HOVER: Color32 = Color32::from_rgba_premultiplied(60, 60, 60, 60);
+
+/// Distance in screen px from `p` to the path `pts` (part mm) as drawn;
+/// none for a path of fewer than two points.
+fn path_dist_px(p: Pos2, pts: &[P], to_s: &dyn Fn(P) -> Pos2) -> f32 {
+    if pts.len() < 2 {
+        return f32::MAX;
+    }
+    pts.windows(2)
+        .map(|w| {
+            let (a, b) = (to_s(w[0]), to_s(w[1]));
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+            (a + ab * t - p).length()
+        })
+        .fold(f32::MAX, f32::min)
+}
 
 pub fn wheel_factor(scroll: f32) -> f32 {
     (scroll * WHEEL_ZOOM).exp()
@@ -467,6 +490,26 @@ impl App {
         let elems = crate::nest::elements_of(&part.geometry());
         let ap = (APERTURE_PX / s) as f64; // capture square half-size in mm
         let hover = resp.hover_pos().filter(|_| !painting).and_then(|hp| capture(&elems, to_w(hp), ap));
+        // A lead under the pointer, nearer than the element there (LE9):
+        // clicking it picks the lead, whose card changes its shape.
+        let lead_under = resp.hover_pos().filter(|_| !painting && !space && !self.dv.measure_on && !self.placing_text).and_then(|hp| {
+            let d = |pts: &[P]| path_dist_px(hp, pts, &to_s);
+            let elem_d = hover.and_then(|i| elems.get(i)).map_or(f32::MAX, |e| d(&e.pts));
+            plan.contours
+                .iter()
+                .filter(|c| c.punch.is_none() && !c.closing)
+                .map(|c| (c.contour, d(&c.lead_path).min(d(&c.lead_out_path))))
+                .filter(|&(_, dd)| dd <= LEAD_PICK_PX && dd < elem_d)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|x| x.0)
+        });
+        let hover = hover.filter(|_| lead_under.is_none());
+        if self.sel_lead.is_some_and(|s| s.0 != idx) {
+            self.sel_lead = None;
+        }
+        if lead_under.is_some() && !resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         // Right-click (or S): the radial tool menu. An element under the pointer is
         // selected first, so the element tools act on it.
         if let Some(hp) = resp.hover_pos() {
@@ -515,7 +558,11 @@ impl App {
                     self.status = format!("Distance {:.pr$} {}  ·  dX {:.pr$}  dY {:.pr$}  ·  angle {ang:.pr$}°", d / k, u.suffix(), dx / k, dy / k);
                 }
             }
+        } else if let (true, false, Some(ci)) = (resp.clicked(), painting, lead_under) {
+            self.sel_lead = Some((idx, ci));
+            self.sel_elems.clear();
         } else if resp.clicked() && !painting {
+            self.sel_lead = None;
             match hover {
                 Some(e) if shift => {
                     if let Some(k) = self.sel_elems.iter().position(|&x| x == e) {
@@ -616,6 +663,13 @@ impl App {
                 }
             }
         }
+        let lead_label = lead_under.filter(|&ci| self.sel_lead != Some((idx, ci))).map(|ci| format!("Lead on contour {} · click to change its shape", crate::engine::contour_number(part, ci)));
+        if let (Some(txt), Some(hp)) = (lead_label, resp.hover_pos()) {
+            let g = painter.layout_no_wrap(txt, FontId::proportional(12.0), Color32::WHITE);
+            let r = Rect::from_min_size(hp + Vec2::new(14.0, 12.0), g.size() + Vec2::new(12.0, 6.0));
+            painter.rect_filled(r, CornerRadius::same(6), th().overlay);
+            painter.galley(r.min + Vec2::new(6.0, 3.0), g, Color32::WHITE);
+        }
         if let Some(e) = hover.and_then(|i| elems.get(i)) {
             if let Some(hp) = resp.hover_pos() {
                 let txt = format!("{} {}", e.kind.label(), self.cfg.nesting.units.len(e.length, 1));
@@ -635,6 +689,9 @@ impl App {
         let mut lead_reset: Option<usize> = None;
         // A lead end let go (contour), and the leads shared by the holes of a shape (LE8).
         let mut lead_drop: Option<usize> = None;
+        // A lead end clicked (contour): that lead is picked (LE9).
+        let mut lead_click: Option<usize> = None;
+        let sel_ci = self.sel_lead.filter(|s| s.0 == idx).map(|s| s.1);
         let shared_leads = crate::engine::hand_leads(&self.parts[idx]);
         let lead_out_col = Color32::from_rgb(129, 140, 248);
         let pierce_col = Color32::from_rgb(248, 80, 90);
@@ -726,6 +783,13 @@ impl App {
                     }
                 }
             }
+            // The lead clicked on, or under the pointer, has a halo (LE9).
+            let halo = if sel_ci == Some(c.contour) { Some(Stroke::new(8.0, LEAD_PICKED)) } else if lead_under == Some(c.contour) { Some(Stroke::new(7.0, LEAD_HOVER)) } else { None };
+            if let Some(st) = halo {
+                for path in [&c.lead_path, &c.lead_out_path].into_iter().filter(|p| p.len() > 1) {
+                    painter.add(EShape::line(path.iter().map(|&q| to_s(q)).collect(), st));
+                }
+            }
             let lp: Vec<Pos2> = c.lead_path.iter().map(|&q| to_s(q)).collect();
             painter.add(EShape::line(lp, Stroke::new(2.0, Color32::WHITE)));
             if c.lead_out_path.len() > 1 {
@@ -749,17 +813,16 @@ impl App {
                     // LE8: a lead shared by every hole of this shape.
                     let shared = shared_leads.get(c.contour).copied().flatten().is_some_and(|e| e.same);
                     let tip = format!(
-                        "{} {} at {ang:.0}° from the contour{}.\nDrag to swing or stretch this {}{}.{}",
+                        "{}: {}, at {ang:.0}° to the edge{}.\nDrag to stretch or swing it. Click to change its shape{}.{}",
                         if end == LeadEnd::In { "Lead-in" } else { "Lead-out" },
                         u.len(len, 1),
                         if shared {
-                            " (moved by hand, on every hole of this shape)"
+                            " (changed by hand, on every hole like this one)"
                         } else if ends.hand {
-                            " (moved by hand)"
+                            " (changed by hand)"
                         } else {
                             ""
                         },
-                        end.label(),
                         if shared {
                             "; double-click to put it back on all of them"
                         } else if ends.hand {
@@ -795,6 +858,8 @@ impl App {
                     }
                     if hr.double_clicked() {
                         lead_reset = Some(c.contour);
+                    } else if hr.clicked() {
+                        lead_click = Some(c.contour);
                     }
                 }
             }
@@ -956,7 +1021,12 @@ impl App {
                 self.status = format!("Contour {no}'s lead wasn't moved by hand — drag its end to move it.");
             }
         }
+        if let Some(ci) = lead_click {
+            self.sel_lead = Some((idx, ci));
+            self.sel_elems.clear();
+        }
         self.lead_same_overlay(ui, rect, idx, painting);
+        self.lead_card(ui, rect, idx, painting, &plan, &to_s);
         // A joint lead was dragged: all joints of the part take the new lead.
         if let Some((len, ang)) = joint_edit {
             // The lead's distance off the contour is what the joint record keeps (D, AM6).
@@ -1111,6 +1181,101 @@ impl App {
         }
         if apply || close {
             self.lead_offer = None;
+        }
+    }
+
+    /// The card of the lead clicked on (LE9), beside it: its shape, picked
+    /// from the same pictures as the ribbon's Type, its lengths, and the
+    /// way back to the automatic lead. Esc or a click elsewhere closes it.
+    fn lead_card(&mut self, ui: &mut egui::Ui, rect: Rect, idx: usize, painting: bool, plan: &cnc::SheetPlan, to_s: &dyn Fn(P) -> Pos2) {
+        use crate::nest::LeadType;
+        let Some((pi, ci)) = self.sel_lead else { return };
+        let Some(c) = plan.contours.iter().find(|c| c.contour == ci).filter(|c| pi == idx && !painting && c.punch.is_none() && !c.closing && (c.lead_path.len() > 1 || c.lead_out_path.len() > 1)) else {
+            self.sel_lead = None;
+            return;
+        };
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.ctx().egui_wants_keyboard_input() {
+            self.sel_lead = None;
+            return;
+        }
+        let part = &self.parts[idx];
+        let no = crate::engine::contour_number(part, ci);
+        let (kind, own) = crate::engine::lead_shape(part, ci);
+        let part_kind = part.tech.map_or(LeadType::Machine, |t| t.lead_type);
+        let ends = crate::engine::lead_ends(c);
+        let hand = crate::engine::hand_lead(part, ci).is_some();
+        let same_n = if self.lead_same { crate::engine::same_holes(part, ci).len() } else { 0 };
+        let u = self.unit();
+        let table = crate::leadmenu::table_lines(&crate::ct1::for_spec(&self.spec).leads.quality(1).recs, u);
+        let demo = self.lead_card_demo.then_some(if kind == LeadType::Arc { LeadType::Line } else { LeadType::Arc });
+        // Beside the lead: right of it, or left when there is no room.
+        let at = self.lead_card_at.filter(|a| a.0 == (idx, ci)).map(|a| a.1).unwrap_or(rect.left_top() + Vec2::new(12.0, 12.0));
+        let mut pick = kind;
+        let (mut reset, mut close) = (false, false);
+        let shown = egui::Area::new(egui::Id::unique(("lead_card", idx, ci))).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
+            egui::Frame::new().fill(th().card).stroke(Stroke::new(1.0, th().border)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                ui.set_width(LEAD_CARD_W);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Lead on contour {no}")).strong().color(th().text_strong));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        close = ui.add(egui::Button::new(RichText::new("✖").color(th().text_dim)).frame(false)).on_hover_text("Close (Esc)").clicked();
+                    });
+                });
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Shape").color(th().text_dim));
+                    crate::leadmenu::picker(ui, &mut pick, demo, "The shape of this one lead. It keeps where it starts and about how far it reaches.", &table);
+                });
+                let small = |t: String, col: Color32| RichText::new(t).size(12.0).color(col);
+                let what = if own { format!("Its own shape. The part's other leads: {}.", part_kind.label()) } else { "The same shape as the part's other leads.".to_string() };
+                ui.label(small(what, th().text_dim));
+                let len = |x: Option<(f64, f64)>| x.map_or("none".to_string(), |(l, a)| format!("{} at {a:.0}°", u.len(l, 1)));
+                ui.label(small(format!("Lead-in {}  ·  lead-out {}", len(ends.lead_in), len(ends.lead_out)), th().text));
+                if same_n > 0 {
+                    let holes = if same_n == 1 { "the other hole like it".to_string() } else { format!("the {same_n} holes like it") };
+                    ui.label(small(format!("All the same contours is on: {holes} change too."), th().accent_fg));
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if hand {
+                        reset = ui.button("Back to automatic").on_hover_text("Give this lead back the shape and place the part's technology gives it (double-clicking its end does the same).").clicked();
+                    }
+                    ui.label(small("Drag its end dots to stretch or swing it.".into(), th().text_dim));
+                });
+            });
+        });
+        // Placed beside the lead once its size is known: right of the
+        // lead's far end, else left of it, inside the canvas.
+        let size = shown.response.rect.size();
+        let pts: Vec<Pos2> = c.lead_path.iter().chain(c.lead_out_path.iter()).map(|&q| to_s(q)).collect();
+        let (lo, hi) = pts.iter().fold((Pos2::new(f32::MAX, f32::MAX), Pos2::new(f32::MIN, f32::MIN)), |(a, b), q| (a.min(*q), b.max(*q)));
+        let mut x = hi.x + 24.0;
+        if x + size.x > rect.right() - 60.0 {
+            x = lo.x - 24.0 - size.x;
+        }
+        let x = x.clamp(rect.left() + 8.0, (rect.right() - size.x - 8.0).max(rect.left() + 8.0));
+        let y = (lo.y - 12.0).clamp(rect.top() + 8.0, (rect.bottom() - size.y - 8.0).max(rect.top() + 8.0));
+        let want = Pos2::new(x, y);
+        if self.lead_card_at.is_none_or(|a| a.0 != (idx, ci) || (a.1 - want).length() > 0.5) {
+            self.lead_card_at = Some(((idx, ci), want));
+            ui.ctx().request_repaint();
+        }
+        if pick != kind {
+            self.checkpoint();
+            self.status = match crate::engine::set_lead_type(&mut self.parts, idx, &self.spec, ci, pick, self.lead_same) {
+                Ok(m) => format!("{m} Double-click its end, or Back to automatic, to put it back."),
+                Err(e) => e,
+            };
+            self.refresh();
+        }
+        if reset {
+            self.checkpoint();
+            let n = crate::engine::reset_lead_edits(&mut self.parts[idx], Some(ci), self.lead_same);
+            self.status = if n > 1 { format!("Contour {no}'s lead and {} more like it are back to automatic.", n - 1) } else { format!("Contour {no}'s lead is back to automatic.") };
+            self.refresh();
+        }
+        if close {
+            self.sel_lead = None;
         }
     }
 

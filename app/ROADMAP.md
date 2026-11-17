@@ -44,7 +44,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | **Advanced Copy** (arrays of a part), **Place Near**, **Expand**, **Fit** to borders | Part — Compact to left, snap while dropping or dragging, slide to the next part | ★★ |
 | **Nesting for common cut** (shared edges) | Missing | ★★ |
 | Margins toggle | Have (sheet margin) | |
-| Remnants: create (auto / semi-auto), draw edge, exact edge, rotate, reference | Have — nine automatic line shapes, semi-automatic (3 types), saved into stock on save, rotate/flip; reference points and marks missing | ★ |
+| Remnants: create (auto / semi-auto), draw edge, exact edge, rotate, reference | Have — nine automatic line shapes, semi-automatic (3 types), saved into stock on save, rotate/flip; reference points and marks missing. Beyond the original: **standard drops** — the leftover cut into the shop's standard sizes, biggest first, with *Drop layouts* to pick another split (MECHANICS SD1–SD8) | ★ |
 | Time and cost, Export data | Have | |
 | Snap points (end, mid, centre, intersection, tangent…), Distance & Angle, Orthogonal | Missing (the part-gap snap while dragging is in) | ★★ |
 | Macros (record) | Missing | ★ |
@@ -54,7 +54,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 
 | Original | Rebuild | Pri |
 |---|---|---|
-| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); one lead's free end dragged by hand in the Part view, on one hole or every hole of the same shape (MECHANICS LE1–LE8); moving a lead's start by drag (TEC-27), types 14–16, force placement, dynamic/custom leads missing | ★★ |
+| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); one lead's free end dragged by hand in the Part view, on one hole or every hole of the same shape, and one lead's shape changed by clicking it (MECHANICS LE1–LE9); moving a lead's start by drag (TEC-27), types 14–16, force placement, dynamic/custom leads missing | ★★ |
 | Micro-joints: Automatic, Semi-auto, 6 types, corner lead-in, nano-joints, move point, to geometry | Part — Lantek's automatic count (ceil P/F150, size-class min/max, even), holes too, centred on elements, corner joints straddle corners, joint leads (`joints.rs`, MECHANICS AM1–AM6); lead and joint tables per material × thickness section of the machine file (MTL7); per-class V records, zone modes, nano-joints missing | ★ |
 | Loops (2 types), Round angles | Part — loops | ★ |
 | **Bridges** (join parts so they cut as one) | Missing | ★★ |
@@ -103,7 +103,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Each open job keeps its own file (Save no longer writes into the previous job's file) | Have | |
 | Lantek import XML (`import-xml`, one job file per material and thickness) and BLM program set back into a job (`import-program`) | Have — same rules as the window (`engine/imports.rs`) | |
 | ByStar Fiber laser job (`.bvc`) opened as an editable job, every nest as its sheet(s) (`import-program`; Open CNC program in the window) | Have — `bvc.rs`, MECHANICS BV1–BV20; what it doesn't carry over is FEATURES JOB-74 | |
-| ByStar Fiber laser output (`.bvc` per nest or per job, the original's post and its switches) | Part — `bystar.rs`, MECHANICS BV21–BV72, every file read back before it is written; micro-joints, cut-off lines, engraving and point marks written (#127); this app's own switches for the machine maker's CAM form, off by default, and a local comparison with its nests (#128, what still differs: FEATURES MAC-83, MAC-84, MAC-94 onward); a few post switches left out (FEATURES MAC-74, MAC-86–MAC-93) and the machine proof (#129) to come | ★★ |
+| ByStar Fiber laser output (`.bvc` per nest or per job, the original's post and its switches) | Part — `bystar.rs`, MECHANICS BV21–BV72, every file read back before it is written; micro-joints, cut-off lines, engraving and point marks written (#127); this app's own switches for the machine maker's CAM form, off by default, and a local comparison with its nests (#128, what still differs: FEATURES MAC-83, MAC-84, MAC-96 onward); a few post switches left out (FEATURES MAC-74, MAC-88–MAC-95) and the machine proof (#129) to come | ★★ |
 | Lantek database browser for agents | Missing (`todo:` in GUI_MAP; needs a Lantek SQL Server connection, Windows) | ★ |
 | Sheet stock / remnant stock operations | Have — `stock`, `stock-book` (with `refs=` for new remnants' names; changed remnant lines remake unused remnants), `sheet-add`, `sheet-change`, `sheet-delete`; `nest` takes from stock through the window's code, with the best sheet format / combination searches when the window's options are on (`engine/stockflow.rs`, MECHANICS SA1–SA6, BN6–BN8) | |
 | Semi-automatic remnant and rotate/flip remnant sheet for agents | Missing (`todo:` in GUI_MAP) | ★ |

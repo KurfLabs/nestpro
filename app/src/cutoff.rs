@@ -87,6 +87,48 @@ pub fn polyline_dist(p: P, pts: &[P]) -> f64 {
     pts.windows(2).map(|w| seg_point(p, w[0], w[1])).fold(f64::MAX, f64::min)
 }
 
+/// How near an end of a cut line must be to another line to stop on it (mm).
+pub const MEET_TOL: f64 = 0.01;
+
+/// The other remnant line that the end `p` of line `own` stops on, if any:
+/// `p` lies on it, ends included (a corner or a T).
+pub fn meets(p: P, own: usize, lines: &[CutLine]) -> Option<usize> {
+    lines.iter().enumerate().find(|(k, l)| *k != own && l.kind == CutKind::Remnant && l.pts.len() >= 2 && polyline_dist(p, &l.pts) <= MEET_TOL).map(|(k, _)| k)
+}
+
+/// The order to cut remnant lines in (BL40): a line whose end stops on the
+/// middle of another — not at that one's end — is cut before it, as the
+/// original's L-shaped cut-offs are; otherwise as listed. Indexes into `lines`
+/// (remnant lines only).
+pub fn stops_first(lines: &[CutLine]) -> Vec<usize> {
+    let rem: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].kind == CutKind::Remnant && lines[i].pts.len() >= 2).collect();
+    // before[i]: the lines that must be cut before line i.
+    let before: Vec<Vec<usize>> = rem
+        .iter()
+        .map(|&t| {
+            let tl = &lines[t].pts;
+            let (t0, t1) = (tl[0], *tl.last().unwrap());
+            rem.iter()
+                .copied()
+                .filter(|&s| s != t)
+                .filter(|&s| {
+                    let sl = &lines[s].pts;
+                    [sl[0], *sl.last().unwrap()].iter().any(|&e| polyline_dist(e, tl) <= MEET_TOL && dist(e, t0) > MEET_TOL && dist(e, t1) > MEET_TOL)
+                })
+                .collect()
+        })
+        .collect();
+    let mut done: Vec<usize> = vec![];
+    while done.len() < rem.len() {
+        let next = (0..rem.len()).find(|&k| !done.contains(&rem[k]) && before[k].iter().all(|b| done.contains(b)));
+        // A ring of lines each stopping on the next can't be ordered: the
+        // rest go as listed.
+        let k = next.unwrap_or_else(|| (0..rem.len()).find(|&k| !done.contains(&rem[k])).unwrap());
+        done.push(rem[k]);
+    }
+    done
+}
+
 /// Rounded corners: each corner of the polyline becomes an arc of radius `r`
 /// (or less, where the sides are short) — "Round the remnant line"
 /// (RM3: the original puts a fillet between elements that aren't tangent
@@ -263,7 +305,7 @@ pub fn path_hits_part(parts: &[Part], sheet: &[Placed], pts: &[P]) -> Option<usi
 /// edge, RE16) so the remnant stays held.
 pub fn gcode_lines(lines: &[CutLine], spec: &SheetSpec, bridge: f64) -> Vec<(String, Vec<P>)> {
     let mut v: Vec<(String, Vec<P>)> = lines.iter().filter(|l| l.kind == CutKind::Free).map(|l| ("CUT LINE".to_string(), l.pts.clone())).collect();
-    v.extend(lines.iter().filter(|l| l.kind == CutKind::Remnant).map(|l| ("REMNANT LINE".to_string(), crate::remline::with_bridges(&l.pts, spec.w, spec.h, bridge))));
+    v.extend(stops_first(lines).into_iter().map(|i| ("REMNANT LINE".to_string(), crate::remline::with_bridges(&lines[i].pts, spec.w, spec.h, bridge))));
     v
 }
 
@@ -312,13 +354,16 @@ impl App {
             self.status = "This sheet already has a remnant line — delete the edge first.".into();
             return;
         }
-        let ls = self.cfg.stock.line.clone();
-        let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::engine::sheetmachine::kerf(&self.result.format(self.cur_sheet, &self.spec), &self.cur_spec()) / 2.0);
-        if lines.is_empty() {
-            self.status = format!("No remnant: less than the minimum width ({}) is left past the parts.", self.unit().len(ls.min_width, 0));
-            return;
+        // SD2, SD6, SD7: standard drops when they're on.
+        let st = self.cfg.stock.clone();
+        match crate::engine::drops::auto_cut(&self.parts, self.sheet_now(), &self.result.format(self.cur_sheet, &self.spec), &self.cur_spec(), &st, self.unit()) {
+            Ok((lines, what)) => {
+                if self.set_remnant_lines(lines, &what) && st.drops.on && what.starts_with("Standard drops") {
+                    self.status.push_str(" Drop layouts (Sheet tab) shows other ways to cut it.");
+                }
+            }
+            Err(e) => self.status = e,
         }
-        self.set_remnant_lines(lines, ls.shape.label());
     }
 
     /// Replace the sheet's remnant lines with these (they're refused if one
@@ -336,7 +381,9 @@ impl App {
         list.extend(lines);
         self.sel_cut = None;
         self.refresh();
+        let n = self.remnant_pieces().len();
         self.status = match self.remnant_info() {
+            Some(_) if n > 1 => format!("{what}: {n} remnants."),
             Some((w, h, a)) => format!("{what}: remnant about {} ({}).", self.unit().size(w, h, 0), self.unit().area(a)),
             None => format!("{what}: remnant line added."),
         };
@@ -422,12 +469,13 @@ impl App {
     /// The automatic remnant line on sheet `i`, unless it already has one.
     pub fn auto_lines_sheet(&mut self, i: usize) {
         let keep = self.cur_sheet;
-        let ls = self.cfg.stock.line.clone();
+        let st = self.cfg.stock.clone();
         self.cur_sheet = i;
         if !self.cut_list().iter().any(|l| l.kind == CutKind::Remnant) {
-            let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::engine::sheetmachine::kerf(&self.result.format(self.cur_sheet, &self.spec), &self.cur_spec()) / 2.0);
-            if !lines.is_empty() && lines.iter().all(|l| path_hits_part(&self.parts, self.sheet_now(), &l.pts).is_none()) {
-                self.cut_list_mut().extend(lines);
+            if let Ok((lines, _)) = crate::engine::drops::auto_cut(&self.parts, self.sheet_now(), &self.result.format(self.cur_sheet, &self.spec), &self.cur_spec(), &st, self.unit()) {
+                if lines.iter().all(|l| path_hits_part(&self.parts, self.sheet_now(), &l.pts).is_none()) {
+                    self.cut_list_mut().extend(lines);
+                }
             }
         }
         self.cur_sheet = keep;
@@ -559,12 +607,19 @@ impl App {
                     self.cfg.stock.line.shape = shape;
                     let _ = self.cfg.save();
                 }
-                if ui.small_button("Remnant options…").on_hover_text("Sheet Remnants: offset, minimum width, Min X/Y, rounding, bridges at the edge, minimum area").clicked() {
+                if ui.small_button("Remnant options…").on_hover_text("Sheet Remnants: offset, minimum width, Min X/Y, rounding, bridges at the edge, minimum area, standard drop sizes").clicked() {
                     self.stockui.open = true;
                     self.stockui.show_options = true;
                     self.stockui.loaded = false;
                 }
             });
+            let open = self.dropsui.open;
+            if ribbon_button(ui, Icon::Grid, "Drop\nlayouts", open, has)
+                .on_hover_text("The ways your standard drop sizes can cut this sheet's leftover, side by side — click one to cut the sheet that way (sizes in Remnant options)")
+                .clicked()
+            {
+                self.dropsui.open = !open;
+            }
             if ribbon_button(ui, Icon::Fit, "Exact\nedge", false, has)
                 .on_hover_text("A stepped remnant line that hugs the parts, keeping every free corner of the sheet")
                 .clicked()

@@ -508,7 +508,20 @@ pub fn trim_side(q: P, w: f64, h: f64) -> Option<u8> {
 /// past the end by Z040 (right/top) or Z039 (left/bottom). None when an end
 /// isn't on a sheet edge.
 pub fn final_cut_sub(a: P, b: P, w: f64, h: f64, p: &AdiParams) -> Option<String> {
-    let (s0, s1) = (trim_side(a, w, h)?, trim_side(b, w, h)?);
+    trim_sub(a, b, w, h, p, true)
+}
+
+/// A cut-off that starts at a sheet edge and stops where it meets another
+/// cut-off (BL40): written as the post writes an L-shaped cut-off's first leg —
+/// the trim's start from the edge, then straight to the meeting point and no
+/// further: no HD_DWN_OFF, no run-on. None when `a` isn't on a sheet edge.
+pub fn stop_cut_sub(a: P, b: P, w: f64, h: f64, p: &AdiParams) -> Option<String> {
+    trim_sub(a, b, w, h, p, false)
+}
+
+fn trim_sub(a: P, b: P, w: f64, h: f64, p: &AdiParams, to_edge: bool) -> Option<String> {
+    let s0 = trim_side(a, w, h)?;
+    let s1 = if to_edge { trim_side(b, w, h)? } else { 0 };
     let rel = |q: P| [q[0] - a[0], q[1] - a[1]];
     let (mut start, mut appr) = (rel(a), rel(a));
     match s0 {
@@ -532,6 +545,7 @@ pub fn final_cut_sub(a: P, b: P, w: f64, h: f64, p: &AdiParams) -> Option<String
     let (mut stop, mut exit) = (rel(b), rel(b));
     let k = TRIM_STOP_BEFORE_END;
     match s1 {
+        0 => {}
         1 => {
             stop[0] += k;
             exit[0] -= p.trim_neg;
@@ -553,7 +567,11 @@ pub fn final_cut_sub(a: P, b: P, w: f64, h: f64, p: &AdiParams) -> Option<String
     let mut s = String::from(";M01\r\nR16=chk_pret\r\nCICLA:\r\nINITPART(1)\r\n;\r\n");
     let _ = write!(s, "NEXT_L({},{},0,0,3,1,{},{},{},{})\r\n", plain(start[0]), plain(start[1]), plain(d[0]), plain(d[1]), plain(appr[0]), plain(appr[1]));
     let _ = write!(s, "G01 G40 X{} Y{}\r\nPROFILE\r\n", coord(start[0]), coord(start[1]));
-    let _ = write!(s, "G01 X{} Y{}\r\nHD_DWN_OFF\r\nG01 X{} Y{}\r\n", coord(stop[0]), coord(stop[1]), coord(exit[0]), coord(exit[1]));
+    if to_edge {
+        let _ = write!(s, "G01 X{} Y{}\r\nHD_DWN_OFF\r\nG01 X{} Y{}\r\n", coord(stop[0]), coord(stop[1]), coord(exit[0]), coord(exit[1]));
+    } else {
+        let _ = write!(s, "G01 X{} Y{}\r\n", coord(stop[0]), coord(stop[1]));
+    }
     s.push_str("ENDGEO\r\nIF R16==1\r\n\t  STOPRE\r\n\t  R16=0\r\n   GOTOB CICLA\r\nENDIF\r\nENDPART\r\nRET\r\n");
     Some(s)
 }
@@ -571,6 +589,7 @@ pub fn cut_path_sub(pts: &[P], origin: P) -> String {
 }
 
 /// Everything written for one sheet.
+#[derive(Clone)]
 pub struct BlmSet {
     pub nest: String,
     /// (file name, contents) of the SPF files, in zip order.
@@ -643,16 +662,29 @@ pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &Sheet
     // Cut lines (remnant last): one subprogram each, called after the parts.
     // (name, ORIG, file contents, length in X, length in Y)
     let mut cut_subs: Vec<(String, P, String, f64, f64)> = vec![];
-    let mut ordered: Vec<&crate::cutoff::CutLine> = cuts.iter().filter(|c| c.kind == crate::cutoff::CutKind::Free).collect();
-    ordered.extend(cuts.iter().filter(|c| c.kind == crate::cutoff::CutKind::Remnant));
-    for c in ordered {
+    // Remnant cut-offs that stop on another are cut before it (BL40).
+    let mut ordered: Vec<crate::cutoff::CutLine> = cuts.iter().filter(|c| c.kind == crate::cutoff::CutKind::Free).cloned().collect();
+    ordered.extend(crate::cutoff::stops_first(cuts).into_iter().map(|i| cuts[i].clone()));
+    for c in &ordered {
         if c.pts.len() < 2 {
             continue;
         }
         let name = sub_name(&nest, variants.len() + cut_subs.len() + 1);
-        let (a, b) = (c.pts[0], *c.pts.last().unwrap());
+        let (mut a, mut b) = (c.pts[0], *c.pts.last().unwrap());
         let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
-        let trim = if c.pts.len() == 2 && len > TRIM_STOP_BEFORE_END + adi().trim_pos.max(adi().trim_neg) { final_cut_sub(a, b, spec.w, spec.h, &adi()) } else { None };
+        let long = c.pts.len() == 2 && len > TRIM_STOP_BEFORE_END + adi().trim_pos.max(adi().trim_neg);
+        let (ea, eb) = (trim_side(a, spec.w, spec.h).is_some(), trim_side(b, spec.w, spec.h).is_some());
+        let trim = if long && ea && eb {
+            final_cut_sub(a, b, spec.w, spec.h, &adi())
+        } else if long && c.kind == crate::cutoff::CutKind::Remnant && ea != eb {
+            // BL40: from its edge end to where it meets the other cut.
+            if eb {
+                std::mem::swap(&mut a, &mut b);
+            }
+            stop_cut_sub(a, b, spec.w, spec.h, &adi())
+        } else {
+            None
+        };
         let body = trim.unwrap_or_else(|| cut_path_sub(&c.pts, a));
         let (lo, hi2) = c.pts.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(l, h), q| ([l[0].min(q[0]), l[1].min(q[1])], [h[0].max(q[0]), h[1].max(q[1])]));
         if c.kind == crate::cutoff::CutKind::Remnant {

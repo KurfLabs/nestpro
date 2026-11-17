@@ -59,20 +59,29 @@ impl App {
         crate::ct1::for_spec(&self.spec)
     }
 
+    /// Standard leads' tooltip: what the button puts on, in shop words.
     pub fn machine_tech_tip(&self) -> String {
         let mt = self.machine_tech();
-        let q = mt.leads.quality(1);
-        let classes: Vec<String> = crate::leads::CLASS_NAMES.iter().zip(q.recs.iter()).map(|(n, r)| format!("{n}: type {} ({} / {} mm)", r.kind, r.d_in, r.d_out)).collect();
+        let u = self.unit();
+        let overlap = if mt.overlap > 0.0 { format!(", and the cut runs {} past its start before it leaves", u.len(mt.overlap, 1)) } else { String::new() };
+        let from = if mt.source.is_some() { "Sizes from the machine's technology file." } else { "Built-in sizes (no machine file found)." };
         format!(
-            "Standard leads: the machine's own lead-in and lead-out on every contour, whatever its shape — {} mm in, {} mm out, {} mm overlap past the start, position {} ({}). (Auto lead-ins instead picks by contour class.)\n{}.\nTables by contour class (quality 1): {}",
-            mt.lead_in,
-            mt.lead_out,
-            mt.overlap,
-            mt.zone,
-            mt.source.as_ref().map_or("built-in BLM values".to_string(), |p| p.display().to_string()),
-            mt.table_label(),
-            classes.join(", ")
+            "Put the machine's standard lead on every cut, holes and outside alike: a {} lead-in and a {} lead-out{overlap}.\n{from}\nAuto lead-ins picks a lead for each kind of contour instead.",
+            u.len(mt.lead_in, 1),
+            u.len(mt.lead_out, 1),
         )
+    }
+
+    /// The last line of every Technology command's tooltip: which parts it
+    /// changes.
+    fn scope_line(&self) -> String {
+        let t = self.tech_targets();
+        let pcs: u32 = t.iter().filter_map(|&i| self.parts.get(i)).map(|p| p.qty).sum();
+        match t.as_slice() {
+            [] => "Pick a part first.".into(),
+            [i] if !self.tech_all => format!("Changes {} only ({pcs} pcs).", self.parts[*i].name),
+            _ => format!("Changes all {} part types in the job ({pcs} pcs).", t.len()),
+        }
     }
 
     /// Lead-in, lead-out, overlap and position from the machine's CT1
@@ -103,7 +112,7 @@ impl App {
     pub(crate) fn edit_tech(&mut self, what: &str, f: impl Fn(&mut Option<PartTech>, (f64, f64))) {
         let targets = self.tech_targets();
         if targets.is_empty() {
-            self.status = "Select a part first (or tick 'All parts').".into();
+            self.status = "Pick a part first, or choose All part types.".into();
             return;
         }
         self.checkpoint();
@@ -128,8 +137,13 @@ impl App {
             self.tech_all = true;
         }
         let has = !self.tech_targets().is_empty();
-        let n_scope = self.tech_targets().len();
         let in_part = self.workspace == crate::Workspace::Part;
+        // Every command's tooltip ends with which parts it changes; with All
+        // part types chosen, each group's name says so too (no badge on the
+        // buttons themselves, where it hid their icons).
+        let scope = self.scope_line();
+        let tip = |main: &str| format!("{main}\n\n{scope}");
+        let note = (self.tech_all && self.parts.len() > 1).then_some("all parts");
         let picked = in_part && !self.sel_elem_info.is_empty();
         // What the commands work on comes first, so it is always in view
         // (the ribbon folds groups from the right when the window is narrow).
@@ -156,13 +170,13 @@ impl App {
                         egui::Button::new(RichText::new(text).color(th().text)).min_size(Vec2::new(width, 26.0))
                     }
                 };
-                if ui.add_enabled(sel.is_some(), choice(one, !self.tech_all)).on_hover_text("The technology commands change the selected part type — every piece of it on every sheet (technology belongs to the part, not to one placed piece)").clicked() {
+                if ui.add_enabled(sel.is_some(), choice(one, !self.tech_all)).on_hover_text("The commands below change this part only: every piece of it, on every sheet.").clicked() {
                     self.tech_all = false;
                     if self.workspace == crate::Workspace::Nesting {
                         self.tech_nest_all = Some(false);
                     }
                 }
-                if ui.add(choice(all, self.tech_all)).on_hover_text("The technology commands change every part type in the job").clicked() {
+                if ui.add(choice(all, self.tech_all)).on_hover_text("The commands below change every part in the job.").clicked() {
                     self.tech_all = true;
                     if self.workspace == crate::Workspace::Nesting {
                         self.tech_nest_all = Some(true);
@@ -170,25 +184,23 @@ impl App {
                 }
             });
         });
-        ribbon_group(ui, "Lead-ins", |ui| {
-            if scoped(ribbon_button_ex(ui, Icon::LeadIn, "Auto\nlead-ins", false, has, true), n_scope, self.tech_all)
-                .on_hover_text("Leads by contour class, from the machine's tables by default: round holes and parts at the position's angle, rectangles at its corner or nearest side, other shapes at the nearest valid corner, else the middle of the nearest long-enough line")
+        ribbon_group_noted(ui, "Lead-ins", note, |ui| {
+            if ribbon_button_ex(ui, Icon::LeadIn, "Auto\nlead-ins", false, has, true)
+                .on_hover_text(tip("Put a lead-in and lead-out on every cut, holes and outside, in the shape picked under Type, near the spot picked under Position. With Machine tables, each kind of contour (round hole, slot, rectangle…) gets the lead the machine is set up for. Leads you changed by hand stay as they are."))
                 .clicked()
             {
                 self.run_tech(TechRerun::AutoLeads);
             }
-            if scoped(ribbon_button(ui, Icon::Remove, "Delete\nlead-ins", false, has), n_scope, self.tech_all).clicked() {
+            if ribbon_button(ui, Icon::Remove, "Delete\nlead-ins", false, has).on_hover_text(tip("Take every lead-in and lead-out off, including ones changed by hand. Each cut then pierces right on the part's edge.")).clicked() {
                 self.edit_tech("Lead-ins removed", |t, b| TechEdit::DeleteLeads.apply(t, b));
             }
-            if scoped(ribbon_button(ui, Icon::StandardLeads, "Standard\nleads", false, has), n_scope, self.tech_all)
-                .on_hover_text(self.machine_tech_tip())
-                .clicked()
-            {
+            if ribbon_button(ui, Icon::StandardLeads, "Standard\nleads", false, has).on_hover_text(tip(&self.machine_tech_tip())).clicked() {
                 self.run_tech(TechRerun::StandardLeads);
             }
             if in_part
                 && ribbon_button(ui, Icon::OnElement, "On element", false, picked)
-                    .on_hover_text("Click a line or arc on the part, then put the lead-in in its middle")
+                    .on_hover_text("Click a line or arc on the part first, then this: the cut starts in the middle of it.")
+                    .on_disabled_hover_text("Click a line or arc on the part first, then this: the cut starts in the middle of it.")
                     .clicked()
             {
                 self.lead_on_element();
@@ -197,65 +209,68 @@ impl App {
             ui.vertical(|ui| {
                 ui.add_space(6.0);
                 ui.label(RichText::new("Type").size(11.0).color(th().text_dim));
-                crate::leadmenu::picker(ui, &mut self.lead_choice, self.lead_menu_demo);
+                let table = crate::leadmenu::table_lines(&self.machine_tech().leads.quality(1).recs, self.unit());
+                crate::leadmenu::picker(ui, &mut self.lead_choice, self.lead_menu_demo, "The lead shape Auto lead-ins puts on. Click to see each one.\nTo change just one lead, click that lead on the part.", &table);
             });
             ui.add_space(6.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new("Position").size(11.0).color(th().text_dim));
+                ui.label(RichText::new("Position").size(11.0).color(th().text_dim)).on_hover_text("Where on each contour Auto lead-ins starts the cut.");
                 self.position_pad(ui);
             });
         });
 
-        ribbon_group(ui, "Micro-joints", |ui| {
-            if scoped(ribbon_button(ui, Icon::Joint, "Auto\njoints", false, has), n_scope, self.tech_all)
-                .on_hover_text("One joint per the machine's maximum distance (100 mm by default) on every contour, holes too, rounded up to an even number, each centred on its line or arc; within the size class's fewest/most")
+        let every = self.unit().len(self.machine_tech().joint_every, 0);
+        ribbon_group_noted(ui, "Micro-joints", note, |ui| {
+            if ribbon_button(ui, Icon::Joint, "Auto\njoints", false, has)
+                .on_hover_text(tip(&format!("Add micro-joints (small uncut tabs that hold the part in the sheet) on every cut, holes too: about one every {every}, spread evenly. Spacing, gap and type are in Joint settings.")))
                 .clicked()
             {
                 self.run_tech(TechRerun::AutoJoints);
             }
-            if scoped(ribbon_button(ui, Icon::Remove, "Delete\njoints", false, has), n_scope, self.tech_all).clicked() {
+            if ribbon_button(ui, Icon::Remove, "Delete\njoints", false, has).on_hover_text(tip("Take every micro-joint off.")).clicked() {
                 self.edit_tech("Micro-joints removed", |t, b| TechEdit::DeleteJoints.apply(t, b));
             }
             if in_part
                 && ribbon_button(ui, Icon::OnElement, "On element", false, picked)
-                    .on_hover_text("A micro-joint in the middle of each selected line or arc")
+                    .on_hover_text("Click lines or arcs on the part first (Shift for more), then this: a micro-joint goes in the middle of each.")
+                    .on_disabled_hover_text("Click lines or arcs on the part first (Shift for more), then this: a micro-joint goes in the middle of each.")
                     .clicked()
             {
                 self.joint_on_elements();
             }
-            if ribbon_button(ui, Icon::Gear, "Joint\nsettings", self.show_joint_sizes, true).on_hover_text("Joint type (plain gap, with leads, at corners), gap width, lead distances and angle, and the automatic count by size").clicked() {
+            if ribbon_button(ui, Icon::Gear, "Joint\nsettings", self.show_joint_sizes, true).on_hover_text("Joint type, gap width, joint leads, spacing, and how many joints a contour gets by its size.").clicked() {
                 if !self.show_joint_sizes {
                     self.auto_joints = crate::ct1::for_spec(&self.spec).joint_sizes;
                 }
                 self.show_joint_sizes = !self.show_joint_sizes;
             }
         });
-        ribbon_group(ui, "Loops", |ui| {
-            if scoped(ribbon_button(ui, Icon::Loop, "Auto\nloops", false, has), n_scope, self.tech_all)
-                .on_hover_text("Small loops outside sharp outer corners (90° or less)")
+        ribbon_group_noted(ui, "Loops", note, |ui| {
+            if ribbon_button(ui, Icon::Loop, "Auto\nloops", false, has)
+                .on_hover_text(tip("Add a small loop outside every sharp outside corner (90° or tighter), so the corner comes out crisp instead of burnt round. Click again to take them off."))
                 .clicked()
             {
                 self.run_tech(TechRerun::AutoLoops);
             }
-            if scoped(ribbon_button(ui, Icon::Remove, "Delete\nloops", false, has), n_scope, self.tech_all).clicked() {
+            if ribbon_button(ui, Icon::Remove, "Delete\nloops", false, has).on_hover_text(tip("Take the corner loops off.")).clicked() {
                 self.edit_tech("Loops removed", |t, b| TechEdit::Loops(false).apply(t, b));
             }
         });
-        ribbon_group(ui, "Cut technology", |ui| {
-            if scoped(ribbon_button(ui, Icon::CutTech, "Own\ntechnology", false, has), n_scope, self.tech_all)
-                .on_hover_text("Give the part its own technology with the defaults")
+        ribbon_group_noted(ui, "Cut technology", note, |ui| {
+            if ribbon_button(ui, Icon::CutTech, "Own\ntechnology", false, has)
+                .on_hover_text(tip("Give the part its own lead, joint and cut settings, starting from the defaults. Without them it is cut with the machine's automatic leads and no joints."))
                 .clicked()
             {
                 self.edit_tech("Own cut technology", |t, b| TechEdit::Own.apply(t, b));
             }
-            if scoped(ribbon_button(ui, Icon::Remove, "Remove own\ntechnology", false, has), n_scope, self.tech_all)
-                .on_hover_text("Back to the sheet's automatic technology")
+            if ribbon_button(ui, Icon::Remove, "Remove own\ntechnology", false, has)
+                .on_hover_text(tip("Drop the part's own settings: it goes back to the machine's automatic leads and no joints."))
                 .clicked()
             {
                 self.edit_tech("Technology removed (automatic again)", |t, b| TechEdit::Delete.apply(t, b));
             }
             if ribbon_button(ui, Icon::SizeBands, "Quality\nby size", self.show_cut_ranges, true)
-                .on_hover_text("Cut quality by contour size: e.g. small holes with fine quality (the original's automatic cut technology list)")
+                .on_hover_text("Pick a cut quality by contour size, e.g. cut small holes at a finer, slower quality.")
                 .clicked()
             {
                 self.show_cut_ranges = !self.show_cut_ranges;
@@ -264,9 +279,9 @@ impl App {
             if in_part {
                 let custom = self.shown_part().is_some_and(|i| self.parts[i].shape == crate::nest::Shape::Custom);
                 let tip = if custom {
-                    "Open the cut technology panel: choose Cut (or one of the machine's qualities), Mark, No cut, Bend line or Leave out, then click, box or sweep over contours"
+                    "Choose how each contour is made (cut at a quality, marked, not cut, bend line or left out), then click or drag over the contours."
                 } else {
-                    "A built-in shape's contours are always cut: open an imported drawing to paint its contours"
+                    "A built-in shape is always cut all round. Open an imported drawing to choose per contour."
                 };
                 if ribbon_button(ui, Icon::Brush, "Paint\ncontours", self.cut_panel.open, custom).on_hover_text(tip).clicked() {
                     self.cut_panel.open = !self.cut_panel.open;
@@ -278,7 +293,7 @@ impl App {
         });
         // Texts: in the original a text is an element with a type (marking,
         // special or plain note) and gets the marking technology; see MECHANICS.md.
-        ribbon_group(ui, "Text", |ui| {
+        ribbon_group_noted(ui, "Text", note, |ui| {
             ui.vertical(|ui| {
                 // Three compact rows fill exactly a big button's height, so
                 // this group's title lines up with the others.
@@ -286,7 +301,7 @@ impl App {
                 ui.spacing_mut().interact_size.y = 21.0;
                 ui.spacing_mut().button_padding.y = 1.0;
                 ui.add(egui::TextEdit::singleline(&mut self.text_draft).desired_width(118.0).hint_text("Text or #REF"))
-                    .on_hover_text(format!("Special texts fill in: {}", crate::nest::TEXT_PARAMS.iter().map(|(k, v)| format!("{k} = {v}")).collect::<Vec<_>>().join(", ")));
+                    .on_hover_text(format!("The text to put on the part. These fill themselves in: {}", crate::nest::TEXT_PARAMS.iter().map(|(k, v)| format!("{k} = {v}")).collect::<Vec<_>>().join(", ")));
                 egui::ComboBox::from_id_salt("text_kind").width(118.0).selected_text(short_kind(self.text_kind)).show_ui(ui, |ui| {
                     for k in crate::nest::TextKind::ALL {
                         ui.selectable_value(&mut self.text_kind, k, k.label());
@@ -297,21 +312,21 @@ impl App {
                     crate::units::drag_len_in(ui, &mut self.text_height, self.cfg.nesting.units, 2.0, 100.0);
                     ui.label(RichText::new("Arc").size(11.0).color(th().text_dim));
                     ui.add(egui::DragValue::new(&mut self.text_curve).range(-2000.0..=2000.0).speed(0.5).suffix(" r"))
-                        .on_hover_text("Bend the text along an arc of this radius (mm). 0 = straight, positive = over the top of a circle, negative = round the bottom. Or select a line, arc or circle and press On element.");
+                        .on_hover_text("Bend the text round an arc of this radius (mm): 0 = straight, more than 0 = over the top of a circle, less than 0 = round the bottom. Or click a line, arc or circle and press On element.");
                 });
             });
             let in_part = self.workspace == crate::Workspace::Part;
             let on_elem = in_part && !self.sel_elems.is_empty();
             let tip = if on_elem {
-                "Put the text next to the selected line (along it) or arc/circle (curved round it), inside the material"
+                "Put the text beside the line you clicked (along it), or round the arc or circle, inside the material."
             } else if in_part {
-                "Click on the part to place the text (tip: select a line or arc first to place it relative to it)"
+                "Then click on the part where the text goes. (Click a line or arc first to put it along that.)"
             } else {
-                "Add the text along the bottom of the part"
+                "Add the text along the bottom of the part."
             };
             let label = if on_elem { "On element" } else if in_part { "Place" } else { "Add" };
-            if scoped(ribbon_button(ui, Icon::Text, label, self.placing_text, has && !self.text_draft.trim().is_empty()), n_scope, self.tech_all)
-                .on_hover_text(tip)
+            if ribbon_button(ui, Icon::Text, label, self.placing_text, has && !self.text_draft.trim().is_empty())
+                .on_hover_text(if in_part { tip.to_string() } else { format!("{tip}\n\n{scope}") })
                 .clicked()
             {
                 if on_elem {
@@ -324,7 +339,7 @@ impl App {
                     self.add_text_to_targets(&txt, h, kind);
                 }
             }
-            if scoped(ribbon_button(ui, Icon::Remove, "Delete\ntexts", false, has), n_scope, self.tech_all).on_hover_text("Remove all texts from the part").clicked() {
+            if ribbon_button(ui, Icon::Remove, "Delete\ntexts", false, has).on_hover_text(format!("Remove every text from the part.\n\n{scope}")).clicked() {
                 let targets = self.tech_targets();
                 self.checkpoint();
                 for i in targets {
@@ -351,14 +366,16 @@ impl App {
                 let fill = if on { th().accent } else if resp.hovered() { th().hover } else { Color32::TRANSPARENT };
                 ui.painter().rect_filled(cr.shrink(1.5), CornerRadius::same(3), fill);
                 ui.painter().circle_filled(cr.center(), 2.0, if on { Color32::WHITE } else { th().text_dim });
-                if resp.on_hover_text(format!("Position {pos}")).clicked() {
+                if resp.on_hover_text(position_words(pos)).clicked() {
                     self.lead_pos = pos;
                 }
             }
         }
     }
 
-    /// Settings for automatic micro-joints by contour size.
+    /// The Micro-joints window: a *Joint* tab (type and sizes, set on a
+    /// drawing of one joint) and a *How many* tab (spacing and the count by
+    /// contour size, rule P7).
     pub fn joint_sizes_window(&mut self, ctx: &egui::Context) {
         self.cut_ranges_window(ctx);
         if !self.show_joint_sizes {
@@ -370,109 +387,69 @@ impl App {
         let mut edit = cur;
         let mt = self.machine_tech();
         let sizes_before = self.auto_joints;
+        let unit = self.cfg.nesting.units;
+        let applies = if targets.is_empty() {
+            "Select a part first".to_string()
+        } else if self.tech_all {
+            format!("For all {} parts", targets.len())
+        } else {
+            "For the selected part".to_string()
+        };
         egui::Window::new("Micro-joints").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            // Joint type and its leads (the original's micro-joint types and joint leads).
-            ui.label(RichText::new("Type and leads").strong());
-            ui.add_enabled_ui(!targets.is_empty(), |ui| {
-                egui::Grid::new("jt").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                    ui.label("Type");
-                    egui::ComboBox::from_id_salt("joint_type").width(190.0).selected_text(edit.joint_type.label()).show_ui(ui, |ui| {
-                        for jt in crate::nest::JointType::ALL {
-                            ui.selectable_value(&mut edit.joint_type, jt, jt.label());
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Gap width");
-                    crate::units::drag_len_in(ui, &mut edit.joint_width, self.cfg.nesting.units, 0.05, 10.0);
-                    ui.end_row();
-                    let leads = edit.joint_type.has_leads();
-                    ui.label("Lead-in distance").on_hover_text("How far off the contour the lead-in starts (perpendicular distance)");
-                    ui.add_enabled_ui(leads, |ui| crate::units::drag_len_in(ui, &mut edit.joint_lead, self.cfg.nesting.units, 0.0, 50.0)).inner;
-                    ui.end_row();
-                    let mut out = edit.joint_lead_out.unwrap_or(edit.joint_lead);
-                    ui.label("Lead-out distance").on_hover_text("0 = no lead-out: the beam just stops at the gap");
-                    if ui.add_enabled_ui(leads, |ui| crate::units::drag_len_in(ui, &mut out, self.cfg.nesting.units, 0.0, 50.0)).inner.changed() {
-                        edit.joint_lead_out = Some(out);
-                    }
-                    ui.end_row();
-                    ui.label("Lead angle").on_hover_text("Inclined leads only; perpendicular leads ignore it");
-                    ui.add_enabled(edit.joint_type == crate::nest::JointType::LeadsInclined || edit.joint_type == crate::nest::JointType::Corner, egui::DragValue::new(&mut edit.joint_angle).range(1.0..=90.0).speed(0.5).suffix("°"));
-                    ui.end_row();
-                    ui.label("One every").on_hover_text("Automatic joints: one per this many mm of each contour, holes too (the machine's maximum distance, CT1 F150). 0 = the fixed number of joints on the outside");
-                    crate::units::drag_len_in(ui, &mut edit.joint_every, self.cfg.nesting.units, 0.0, 5000.0);
-                    ui.end_row();
-                });
-                if ui
-                    .button("Machine values")
-                    .on_hover_text(format!(
-                        "From the machine's technology file: type {}, gap {} mm, lead-in {} mm at {}°, lead-out {} mm, one joint per {} mm ({})",
-                        mt.joint_type,
-                        mt.joint_gap,
-                        mt.joint_lead,
-                        mt.joint_angle,
-                        mt.joint_lead_out,
-                        mt.joint_every,
-                        mt.source.as_ref().map_or("built-in BLM values".to_string(), |p| p.display().to_string())
-                    ))
-                    .clicked()
-                {
-                    edit.joint_width = mt.joint_gap;
-                    edit.joint_lead = mt.joint_lead;
-                    edit.joint_lead_out = Some(mt.joint_lead_out);
-                    edit.joint_angle = mt.joint_angle;
-                    edit.joint_every = mt.joint_every;
-                    if let Some(jt) = crate::nest::JointType::from_code(mt.joint_type) {
-                        edit.joint_type = jt;
-                    }
-                }
-                ui.label(
-                    RichText::new("With leads, each joint cuts out into the scrap, stops, re-pierces and cuts back in; the leads lean away from the gap — drag the red handle on a joint in the Part view to change them. Each gap sits on one line or arc longer than the gap; a joint next to a corner goes on the corner.")
-                        .size(11.0)
-                        .color(th().text_dim),
-                );
-            });
-            ui.separator();
-            ui.label(RichText::new("Automatic count by size").strong());
-            ui.label(RichText::new("A contour is small if its box is within the small size, large if it reaches the large size in both directions, otherwise medium. Each class keeps the count between its fewest and most (blank = the general limits).").size(12.0));
-            ui.add_space(6.0);
-            let c = &mut self.auto_joints;
-            egui::Grid::new("aj").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.label("");
-                ui.label(RichText::new("X").strong());
-                ui.label(RichText::new("Y").strong());
-                ui.end_row();
-                ui.label("Small up to");
-                crate::units::drag_len_in(ui, &mut c.small[0], self.cfg.nesting.units, 0.0, 99999.999);
-                crate::units::drag_len_in(ui, &mut c.small[1], self.cfg.nesting.units, 0.0, 99999.999);
-                ui.end_row();
-                ui.label("Large from");
-                crate::units::drag_len_in(ui, &mut c.large[0], self.cfg.nesting.units, 0.0, 99999.999);
-                crate::units::drag_len_in(ui, &mut c.large[1], self.cfg.nesting.units, 0.0, 99999.999);
-                ui.end_row();
-                ui.label("");
-                ui.label(RichText::new("Fewest").strong());
-                ui.label(RichText::new("Most").strong());
-                ui.end_row();
-                for (k, name) in ["Parts · small", "Parts · medium", "Parts · large", "Holes · small", "Holes · medium", "Holes · large"].iter().enumerate() {
-                    ui.label(*name);
-                    let pair = if k < 3 { &mut c.parts[k] } else { &mut c.holes[k - 3] };
-                    ui.add(egui::DragValue::new(&mut pair[0]).range(-1..=999).custom_formatter(|v, _| if v < 0.0 { "—".into() } else { format!("{v:.0}") }));
-                    ui.add(egui::DragValue::new(&mut pair[1]).range(-1..=99999).custom_formatter(|v, _| if v < 0.0 { "—".into() } else { format!("{v:.0}") }));
-                    ui.end_row();
-                }
-                ui.label("General");
-                ui.add(egui::DragValue::new(&mut c.min).range(0..=999));
-                ui.add(egui::DragValue::new(&mut c.max).range(0..=99999));
-                ui.end_row();
-            });
-            ui.add_space(6.0);
+            ui.set_width(JW);
+            let rules_on = self.auto_joints != crate::nest::AutoJoints::default();
             ui.horizontal(|ui| {
-                if ui.button("Original defaults").on_hover_text("Every contour medium, 0 to 99999 joints").clicked() {
-                    self.auto_joints = crate::nest::AutoJoints::default();
+                ui.spacing_mut().item_spacing.x = 14.0;
+                if joint_tab(ui, "Joint", self.joint_tab == 0, false).on_hover_text("Joint type, gap and leads").clicked() {
+                    self.joint_tab = 0;
                 }
-                if ui.button("Machine values").on_hover_text("The size classes of the machine's technology file (F121, F122, F136–F149)").clicked() {
-                    self.auto_joints = mt.joint_sizes;
+                let tip = if rules_on { "Spacing and the count by contour size (size rules are on)" } else { "Spacing and the count by contour size" };
+                if joint_tab(ui, "How many", self.joint_tab == 1, rules_on).on_hover_text(tip).clicked() {
+                    self.joint_tab = 1;
                 }
+            });
+            ui.add_space(2.0);
+            if self.joint_tab == 0 {
+                ui.add_enabled_ui(!targets.is_empty(), |ui| joint_type_ui(ui, &mut edit, unit));
+            } else {
+                joint_count_ui(ui, &mut edit, &mut self.auto_joints, unit, !targets.is_empty());
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&applies).size(11.0).color(th().text_dim));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let u = self.unit();
+                    if self.joint_tab == 0 {
+                        let tip = format!(
+                            "Use the machine's joint settings: {}, a {} gap, lead-in {} at {}°, lead-out {}.",
+                            crate::nest::JointType::from_code(mt.joint_type).map_or("plain gap", |j| j.label()).to_lowercase(),
+                            u.len(mt.joint_gap, 2),
+                            u.len(mt.joint_lead, 1),
+                            mt.joint_angle,
+                            u.len(mt.joint_lead_out, 1),
+                        );
+                        if ui.add_enabled(!targets.is_empty(), egui::Button::new("Machine values")).on_hover_text(tip).clicked() {
+                            edit.joint_width = mt.joint_gap;
+                            edit.joint_lead = mt.joint_lead;
+                            edit.joint_lead_out = Some(mt.joint_lead_out);
+                            edit.joint_angle = mt.joint_angle;
+                            if let Some(jt) = crate::nest::JointType::from_code(mt.joint_type) {
+                                edit.joint_type = jt;
+                            }
+                        }
+                    } else {
+                        let tip = format!("Use the machine's spacing (one joint every {}) and its joint counts by contour size.", u.len(mt.joint_every, 0));
+                        if ui.button("Machine values").on_hover_text(tip).clicked() {
+                            self.auto_joints = mt.joint_sizes;
+                            if !targets.is_empty() {
+                                edit.joint_every = mt.joint_every;
+                            }
+                        }
+                        if ui.button("No size rules").on_hover_text("Every contour counts as medium, with no limit on the number of joints.").clicked() {
+                            self.auto_joints = crate::nest::AutoJoints::default();
+                        }
+                    }
+                });
             });
         });
         // The size rules edited here act on the active machine's tables.
@@ -483,7 +460,7 @@ impl App {
             self.show_joint_sizes = false;
         }
         if edit != cur && !targets.is_empty() {
-            let (jt, w, l, a, every) = (edit.joint_type, edit.joint_width, edit.joint_lead, edit.joint_angle, edit.joint_every);
+            let (jt, w, l, lo, a, every) = (edit.joint_type, edit.joint_width, edit.joint_lead, edit.joint_lead_out, edit.joint_angle, edit.joint_every);
             // A gap or spacing set here is the programmer's: a gas change
             // leaves it (GS14).
             let (own_w, own_every) = (w != cur.joint_width, every != cur.joint_every);
@@ -492,6 +469,7 @@ impl App {
                 x.joint_type = jt;
                 x.joint_width = w;
                 x.joint_lead = l;
+                x.joint_lead_out = lo;
                 x.joint_angle = a;
                 x.joint_every = every;
                 if own_w {
@@ -504,6 +482,218 @@ impl App {
             });
         }
     }
+}
+
+/// Width of the Micro-joints window's content.
+const JW: f32 = 340.0;
+
+/// A tab title with an underline when it is shown, and an amber dot when
+/// something on it is switched on.
+fn joint_tab(ui: &mut egui::Ui, text: &str, on: bool, dot: bool) -> egui::Response {
+    let col = if on { th().text_strong } else { th().text_dim };
+    let r = ui.add(egui::Button::new(RichText::new(text).size(13.0).color(col)).frame(false));
+    if on {
+        ui.painter().line_segment([r.rect.left_bottom() + Vec2::new(0.0, 3.0), r.rect.right_bottom() + Vec2::new(0.0, 3.0)], Stroke::new(2.0, th().accent));
+    }
+    if dot {
+        ui.painter().circle_filled(r.rect.right_top() + Vec2::new(4.0, 4.0), 3.0, crate::jointpics::MEDIUM);
+    }
+    r
+}
+
+/// A section title with an (i) that explains it on hover.
+fn joint_section(ui: &mut egui::Ui, title: &str, tip: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).strong());
+        if !tip.is_empty() {
+            let (r, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+            let c = if resp.hovered() { th().text } else { th().text_dim };
+            ui.painter().circle_stroke(r.center(), 6.0, Stroke::new(1.0, c));
+            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "i", egui::FontId::proportional(9.5), c);
+            resp.on_hover_text(tip);
+        }
+    });
+}
+
+fn joint_hint(ui: &mut egui::Ui, s: &str) {
+    ui.label(RichText::new(s).size(11.0).color(th().text_dim));
+}
+
+/// The Joint tab: the four types as pictures, then one joint drawn large
+/// with its size boxes on the sizes they set.
+fn joint_type_ui(ui: &mut egui::Ui, edit: &mut PartTech, unit: crate::units::LenUnit) {
+    use crate::jointpics as jp;
+    use crate::nest::JointType;
+    joint_section(ui, "Type", "");
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let tw = (JW - 18.0) / 4.0;
+        for (jt, name) in JointType::ALL.into_iter().zip(["Plain gap", "Square leads", "Angled leads", "Corner"]) {
+            let (r, resp) = ui.allocate_exact_size(Vec2::new(tw, tw / 2.0 + 24.0), Sense::click());
+            let on = edit.joint_type == jt;
+            let p = ui.painter();
+            let fill = if on { th().accent_soft } else if resp.hovered() { th().hover } else { th().card };
+            p.rect_filled(r, CornerRadius::same(7), fill);
+            p.rect_stroke(r, CornerRadius::same(7), Stroke::new(if on { 1.5 } else { 1.0 }, if on { th().accent } else { th().border }), egui::StrokeKind::Inside);
+            jp::type_tile(p, Rect::from_min_size(r.min + Vec2::splat(4.0), Vec2::new(tw - 8.0, (tw - 8.0) / 2.0)), jt);
+            p.text(r.center_bottom() - Vec2::new(0.0, 5.0), egui::Align2::CENTER_BOTTOM, name, egui::FontId::proportional(11.0), if on { th().text_strong } else { th().text });
+            if resp.on_hover_text(jt.label()).clicked() {
+                edit.joint_type = jt;
+            }
+        }
+    });
+    ui.add_space(4.0);
+    joint_section(
+        ui,
+        "Sizes",
+        "Type a size in the box on the drawing. Each gap sits on one line or arc longer than the gap; a joint next to a corner goes on the corner.",
+    );
+    let jt = edit.joint_type;
+    let r = Rect::from_min_size(ui.cursor().min, Vec2::new(JW, jp::joint_height(jt, JW)));
+    let m = jp::joint(ui.painter(), r, jt);
+    // A child ui over the drawing: boxes placed on it leave the rest of the
+    // window where it was.
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+        let fw = if unit == crate::units::LenUnit::Inch { 74.0 } else { 66.0 };
+        let at = |c: egui::Pos2, w: f32| Rect::from_center_size(c, Vec2::new(w, 18.0));
+        ui.put(at(m.gap, fw), crate::units::len_drag(&mut edit.joint_width, unit, 0.05, 10.0)).on_hover_text("Gap: the bit left uncut that holds the part in the sheet");
+        if let Some(c) = m.lead_out {
+            let mut out = edit.joint_lead_out.unwrap_or(edit.joint_lead);
+            let field = crate::units::len_drag_word(&mut out, unit, 0.0, 50.0, "None", |v| v <= 0.0, 0.0);
+            if ui.put(at(c, fw), field).on_hover_text("Lead-out: how far the cut runs out into the scrap before the gap, square to the contour. None = the beam just stops at the gap").changed() {
+                edit.joint_lead_out = Some(out);
+            }
+        }
+        if let Some(c) = m.lead_in {
+            ui.put(at(c, fw), crate::units::len_drag(&mut edit.joint_lead, unit, 0.0, 50.0)).on_hover_text("Lead-in: how far off the contour the cut re-pierces after the gap, square to the contour");
+        }
+        if let Some(c) = m.angle {
+            ui.put(at(c, 48.0), egui::DragValue::new(&mut edit.joint_angle).range(1.0..=90.0).speed(0.5).suffix("°")).on_hover_text("The leads' angle to the contour: 90° is square to it, less leans them further away from the gap");
+        }
+    });
+    ui.advance_cursor_after_rect(r);
+    ui.add_space(2.0);
+    jp::legend(ui, jt.has_leads());
+    joint_hint(
+        ui,
+        match jt {
+            JointType::Gap => "The beam goes off across the gap and back on after it. No leads.",
+            JointType::Corner => "Joints go on the outside corners first. Drag the red handle on a joint in the Part view to bend its leads.",
+            _ => "Cuts out into the scrap, stops, re-pierces and cuts back in. Drag the red handle on a joint in the Part view to bend its leads.",
+        },
+    );
+}
+
+/// The How many tab: the spacing, the size map with its limits and the
+/// fewest / most joints for each size class (rule P7).
+fn joint_count_ui(ui: &mut egui::Ui, edit: &mut PartTech, aj: &mut crate::nest::AutoJoints, unit: crate::units::LenUnit, has_part: bool) {
+    use crate::jointpics as jp;
+    joint_section(ui, "Spacing", "Auto joints puts one joint per this length of each contour, holes too. Off = a fixed number of joints, on the outside only.");
+    let (r, _) = ui.allocate_exact_size(Vec2::new(JW, 80.0 * JW / 336.0), Sense::hover());
+    jp::spacing(ui.painter(), r);
+    ui.add_enabled_ui(has_part, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("One joint every");
+            ui.add_sized([84.0, 18.0], crate::units::len_drag_word(&mut edit.joint_every, unit, 0.0, 5000.0, "Off", |v| v <= 0.0, 0.0));
+        });
+    });
+    ui.separator();
+    joint_section(
+        ui,
+        "Size classes",
+        "Each contour is sorted by its box: small if it fits inside the small size, large if it reaches the large size both ways, otherwise medium. Holes and parts each have their own counts.",
+    );
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(Vec2::new(104.0, 92.0), Sense::hover());
+        jp::size_map(ui.painter(), r, aj);
+        ui.vertical(|ui| {
+            let none = |v: f64| v <= 0.0;
+            let pair = |ui: &mut egui::Ui, name: &str, c: Color32, v: &mut [f64; 2], large: bool| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.add_sized([70.0, 18.0], egui::Label::new(RichText::new(name).color(c)));
+                    for (k, axis) in ["Width", "Height"].into_iter().enumerate() {
+                        if k == 1 {
+                            ui.label("×");
+                        }
+                        let f = if large {
+                            crate::units::len_drag_word(&mut v[k], unit, 0.0, jp::NO_LIMIT_MM, "No limit", jp::is_no_limit, jp::NO_LIMIT_MM)
+                        } else {
+                            crate::units::len_drag_word(&mut v[k], unit, 0.0, jp::NO_LIMIT_MM, "None", none, 0.0)
+                        };
+                        ui.add_sized([70.0, 18.0], f).on_hover_text(axis);
+                    }
+                });
+            };
+            pair(ui, "Small up to", jp::SMALL, &mut aj.small, false);
+            pair(ui, "Large from", jp::LARGE, &mut aj.large, true);
+            ui.label(RichText::new("Medium = everything else").size(11.0).color(jp::MEDIUM));
+        });
+    });
+    ui.add_space(4.0);
+    joint_section(ui, "Joints per contour", "Click a box to set the fewest and most joints for that size. Grey = it follows Every contour.");
+    let general = *aj;
+    egui::Grid::new("aj_counts").num_columns(4).spacing([6.0, 5.0]).show(ui, |ui| {
+        ui.label("");
+        for (name, c) in [("Small", jp::SMALL), ("Medium", jp::MEDIUM), ("Large", jp::LARGE)] {
+            ui.add_sized([82.0, 16.0], egui::Label::new(RichText::new(name).strong().size(11.5).color(c)));
+        }
+        ui.end_row();
+        for (row, hole) in [("Parts", false), ("Holes", true)] {
+            ui.label(row);
+            for k in 0..3 {
+                let pair = if hole { &mut aj.holes[k] } else { &mut aj.parts[k] };
+                count_cell(ui, pair, &general, if hole { "Holes" } else { "Parts" }, ["small", "medium", "large"][k]);
+            }
+            ui.end_row();
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Every contour").color(th().text_dim)).on_hover_text("The limits a size class follows when it has none of its own");
+        ui.label("fewest");
+        ui.add(egui::DragValue::new(&mut aj.min).range(0..=999));
+        ui.label("most");
+        ui.add(egui::DragValue::new(&mut aj.max).range(0..=99999).custom_formatter(|v, _| if v >= jp::NO_LIMIT_COUNT as f64 { "No limit".into() } else { format!("{v:.0}") }).custom_parser(no_limit_count));
+    });
+}
+
+/// "no limit" typed in a count box.
+fn no_limit_count(s: &str) -> Option<f64> {
+    let t = s.trim().to_ascii_lowercase();
+    if t.is_empty() || (t.len() >= 2 && "no limit".starts_with(&t)) { Some(99999.0) } else { t.parse().ok() }
+}
+
+/// One size class's count, as words ("any", "0–2"); a click opens its
+/// fewest / most.
+fn count_cell(ui: &mut egui::Ui, pair: &mut [i32; 2], general: &crate::nest::AutoJoints, what: &str, size: &str) {
+    use crate::jointpics as jp;
+    let (text, follows) = jp::range_text(*pair, general);
+    let resp = ui.add_sized([82.0, 20.0], egui::Button::new(RichText::new(text).color(if follows { th().text_dim } else { th().text_strong })));
+    let resp = resp.on_hover_text(format!("{what}, {size}: click to set the fewest and most joints"));
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(190.0);
+        ui.label(RichText::new(format!("{what}, {size}")).strong());
+        let same = |v: f64, _: std::ops::RangeInclusive<usize>| if v < 0.0 { "as Every contour".into() } else if v >= jp::NO_LIMIT_COUNT as f64 { "No limit".into() } else { format!("{v:.0}") };
+        egui::Grid::new("cell").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label("Fewest");
+            ui.add(egui::DragValue::new(&mut pair[0]).range(-1..=999).custom_formatter(same));
+            ui.end_row();
+            ui.label("Most");
+            ui.add(egui::DragValue::new(&mut pair[1]).range(-1..=99999).custom_formatter(same).custom_parser(no_limit_count));
+            ui.end_row();
+        });
+        ui.horizontal(|ui| {
+            if ui.small_button("None").on_hover_text("No joints on these contours").clicked() {
+                *pair = [0, 0];
+            }
+            if ui.small_button("Any").on_hover_text("No limit either way").clicked() {
+                *pair = [0, jp::NO_LIMIT_COUNT];
+            }
+            if ui.small_button("As Every contour").clicked() {
+                *pair = [-1, -1];
+            }
+        });
+    });
 }
 
 impl App {
@@ -522,7 +712,7 @@ impl App {
         // With the qualities set on its contours by hand (CQ6).
         let geo = targets.first().map(|&i| (self.parts[i].geometry(), self.parts[i].cut_qualities()));
         egui::Window::new("Cut technology by size").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.label(RichText::new("Each contour's size is the radius of a circle with the same area. The first ticked row it falls in sets its quality (from ≤ r < up to).").size(12.0));
+            ui.label(RichText::new("A contour's size here is the radius (r) of a circle with the same area. The first ticked row it fits sets the quality it is cut at.").size(12.0));
             ui.add_space(6.0);
             ui.add_enabled_ui(!targets.is_empty(), |ui| {
                 egui::Grid::new("cut_ranges").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
@@ -559,7 +749,7 @@ impl App {
             }
             ui.add_space(4.0);
             let slowest = mt.qualities.label(crate::nest::CutQuality::new(1).unwrap_or(crate::nest::CutQuality::FALLBACK));
-            if ui.button(format!("Example: small holes at {slowest}")).on_hover_text(format!("Row 1: holes up to r {} mm cut at {slowest}", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
+            if ui.button(format!("Example: small holes at {slowest}")).on_hover_text(format!("Fill in row 1: holes up to r {} mm are cut at {slowest}.", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
                 edit.cut_ranges = Default::default();
                 edit.cut_ranges[0].on = true;
             }
@@ -634,7 +824,7 @@ impl App {
     pub fn add_text_to_targets(&mut self, txt: &str, height: f64, kind: crate::nest::TextKind) {
         let targets = self.tech_targets();
         if targets.is_empty() {
-            self.status = "Select a part first (or tick 'All parts').".into();
+            self.status = "Pick a part first, or choose All part types.".into();
             return;
         }
         self.checkpoint();
@@ -646,24 +836,19 @@ impl App {
     }
 }
 
-/// A small count in the top corner of a technology button: how many part
-/// types the command will change ("all 10", or "1" for the selected part), so
-/// the scope is visible on the button itself, not only in "Apply to".
-fn scoped(r: egui::Response, n: usize, all: bool) -> egui::Response {
-    if n == 0 {
-        return r;
+/// A Position cell's tooltip: where Auto lead-ins starts each cut.
+fn position_words(pos: u8) -> &'static str {
+    match pos {
+        7 => "Start each cut near the top-left corner",
+        8 => "Start each cut near the middle of the top",
+        9 => "Start each cut near the top-right corner",
+        4 => "Start each cut near the middle of the left side",
+        5 => "Start each cut nearest the drawing's zero point",
+        6 => "Start each cut near the middle of the right side",
+        1 => "Start each cut near the bottom-left corner",
+        2 => "Start each cut near the middle of the bottom",
+        _ => "Start each cut near the bottom-right corner",
     }
-    let text = if all { format!("all {n}") } else if n == 1 { "1 type".to_string() } else { format!("{n} types") };
-    let painter = r.ctx.layer_painter(r.layer_id);
-    // Neutral grey, so it never reads as the blue "on" mark of a toggle.
-    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(10.5), th().text_dim);
-    let size = galley.size() + Vec2::new(8.0, 2.0);
-    let pill = egui::Rect::from_min_size(egui::Pos2::new(r.rect.right() - size.x - 1.0, r.rect.top() + 1.0), size);
-    painter.rect_filled(pill, CornerRadius::same(7), th().panel);
-    painter.rect_stroke(pill, CornerRadius::same(7), Stroke::new(1.0, th().border), egui::StrokeKind::Inside);
-    painter.galley(pill.min + Vec2::new(4.0, 1.0), galley, th().text_dim);
-    let what = if all { format!("Changes all {n} part types in the job.") } else { "Changes the selected part type only (every piece of it).".to_string() };
-    r.on_hover_text(what)
 }
 
 /// The automatic technology commands that can be run again on all part types.

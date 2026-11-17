@@ -10,6 +10,7 @@ pub mod arrange;
 pub mod catalogue;
 pub mod contours;
 pub mod cutorder;
+pub mod drops;
 pub mod folderops;
 pub mod imports;
 pub mod inuse;
@@ -1008,7 +1009,7 @@ fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, e
     // LE8), else a new one with its foot at the drawn contour's start.
     let mut e = hand_lead(part, ci).map(|(e, _)| e).unwrap_or_else(|| {
         let own = cut_contour(part, ci).unwrap_or_default();
-        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false }
+        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false, kind: None }
     });
     match end {
         LeadEnd::In => e.lead_in = Some((len, ang)),
@@ -1022,6 +1023,54 @@ fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, e
     let short = got.filter(|g| g.0 < len - 0.05).map_or(String::new(), |g| format!(" — cut {}: the rest would cross the part", unit.len(g.0, 1)));
     let also = if took > 0 { format!(", and on {} too", others(took)) } else { String::new() };
     Ok(format!("Contour {no}'s {} moved by hand: {} at {ang:.0}° from the contour{also}{short}.", end.label(), unit.len(len, 1)))
+}
+
+/// Give contour `ci`'s lead its own shape `kind` (LE9): the Part view's
+/// lead card and `lead-edit type=`. The lead keeps where it starts and about
+/// how far it reaches; ends moved by hand go, so the new shape shows. With
+/// `same`, every hole of its shape takes it too (LE8).
+pub fn set_lead_type(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, kind: nest::LeadType, same: bool) -> Result<String, String> {
+    let part = parts.get(idx).ok_or("No such part.")?;
+    let no = contour_number(part, ci);
+    let plan = cnc::plan_part(parts, idx, spec);
+    let Some(c) = plan.contours.iter().find(|c| c.contour == ci) else {
+        return Err(format!("Contour {no} isn't cut (see part-info for the cut contours), so it has no lead."));
+    };
+    if c.punch.is_some() {
+        return Err(format!("Contour {no} is punched on this machine: it has no leads."));
+    }
+    if c.closing {
+        return Err(format!("Contour {no} starts at its first micro-joint's lead-in: delete the joints first to give it a lead of its own."));
+    }
+    let mut e = hand_lead(part, ci).map(|(e, _)| e).unwrap_or_else(|| {
+        let own = cut_contour(part, ci).unwrap_or_default();
+        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false, kind: None }
+    });
+    e.kind = Some(kind);
+    e.lead_in = None;
+    e.lead_out = None;
+    let took = store_hand_lead(&mut parts[idx], ci, e, same)?;
+    let also = if took > 0 { format!(", and on {} too", others(took)) } else { String::new() };
+    Ok(format!("Contour {no}'s lead is now {}{also}.", lead_shape_words(kind)))
+}
+
+/// The shape contour `ci`'s lead is cut with, and whether it was picked for
+/// that lead alone (LE9) rather than set for the whole part.
+pub fn lead_shape(part: &Part, ci: usize) -> (nest::LeadType, bool) {
+    match hand_lead(part, ci).and_then(|(e, _)| e.kind) {
+        Some(k) => (k, true),
+        None => (part.tech.map_or(nest::LeadType::Machine, |t| t.lead_type), false),
+    }
+}
+
+/// A lead shape in a sentence: "an arc lead", "the machine table's lead".
+pub fn lead_shape_words(k: nest::LeadType) -> String {
+    match k {
+        nest::LeadType::Machine => "the machine table's lead".into(),
+        nest::LeadType::Arc => "an arc lead".into(),
+        nest::LeadType::Line => "an inclined lead".into(),
+        k => format!("a {} lead", k.label().to_lowercase()),
+    }
 }
 
 /// "the other hole like it" / "the 3 holes like it": the other holes of the

@@ -179,6 +179,79 @@ pub fn clip_to_sheet(a: P, b: P, w: f64, h: f64) -> Option<(P, P)> {
     Some(([a[0] + d[0] * t0, a[1] + d[1] * t0], [a[0] + d[0] * t1, a[1] + d[1] * t1]))
 }
 
+/// A cut read from a program as a cut line on the sheet (MAC-41, OUT-7). An
+/// end the program runs to or from outside the sheet (a cut-off's way in and
+/// run-on) is on the sheet edge; an end inside is where the cut stops — on
+/// another cut-off, for an L-shaped one. A cut with an end on the edge is a
+/// remnant line: its first and last pieces run to the edge, its corners stay
+/// (a stepped cut-off); one with no end on the edge is a free cut.
+pub fn program_cut(c: &[P], w: f64, h: f64) -> Option<CutLine> {
+    let mut pts: Vec<P> = c.to_vec();
+    pts.dedup_by(|a, b| (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-6);
+    if pts.len() < 2 {
+        return None;
+    }
+    let out = |p: P| p[0] <= 0.0 || p[1] <= 0.0 || p[0] >= w || p[1] >= h;
+    // Points of one straight run with the end's piece (the way in, the cut's
+    // start 10 mm in, the run-on) collapse onto it.
+    let straight = |a: P, b: P, c: P| ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() < 1e-3 * (1.0 + (c[0] - a[0]).hypot(c[1] - a[1]));
+    let mut v: Vec<P> = vec![pts[0]];
+    for i in 1..pts.len() {
+        if v.len() >= 2 && straight(v[v.len() - 2], v[v.len() - 1], pts[i]) {
+            v.pop();
+        }
+        v.push(pts[i]);
+    }
+    let (sa, sb) = (out(v[0]), out(*v.last().unwrap()));
+    if !sa && !sb {
+        return Some(CutLine { pts: v, kind: CutKind::Free });
+    }
+    let n = v.len();
+    if sa {
+        let (p, _) = clip_to_sheet(v[0], v[1], w, h)?;
+        v[0] = p;
+    }
+    if sb {
+        let (_, q) = clip_to_sheet(v[n - 2], v[n - 1], w, h)?;
+        v[n - 1] = q;
+    }
+    Some(CutLine { pts: v, kind: CutKind::Remnant })
+}
+
+/// A cut-off that stops a hair off the one it meets (the original's programs
+/// round the two to a few hundredths apart) is ended on it, so the two are
+/// read as meeting.
+fn meet_up(cuts: &mut [CutLine], w: f64, h: f64) {
+    let inside = |p: P| p[0] > 0.0 && p[1] > 0.0 && p[0] < w && p[1] < h;
+    for i in 0..cuts.len() {
+        if cuts[i].kind != CutKind::Remnant {
+            continue;
+        }
+        for end in [0, cuts[i].pts.len() - 1] {
+            let p = cuts[i].pts[end];
+            if !inside(p) {
+                continue;
+            }
+            let near = (0..cuts.len()).filter(|&j| j != i && cuts[j].kind == CutKind::Remnant).find_map(|j| {
+                cuts[j].pts.windows(2).find_map(|s| {
+                    let (dx, dy) = (s[1][0] - s[0][0], s[1][1] - s[0][1]);
+                    let l2 = dx * dx + dy * dy;
+                    let t = if l2 < 1e-12 { 0.0 } else { (((p[0] - s[0][0]) * dx + (p[1] - s[0][1]) * dy) / l2).clamp(0.0, 1.0) };
+                    let q = [s[0][0] + t * dx, s[0][1] + t * dy];
+                    ((q[0] - p[0]).hypot(q[1] - p[1]) <= MEET_SNAP).then_some(q)
+                })
+            });
+            if let Some(q) = near {
+                cuts[i].pts[end] = q;
+            }
+        }
+    }
+}
+
+/// How far apart a stopping cut-off's end and the cut it meets may be read
+/// as meeting (mm).
+const MEET_SNAP: f64 = 0.1;
+
 /// A nesting read back from machine programs: a BLM program set (one sheet)
 /// or a ByStar Fiber job (`.bvc`, a sheet or several per nest).
 pub struct ProgramJob {
@@ -292,17 +365,8 @@ pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usi
         })
         .collect();
     let sheet: Vec<Placed> = im.placed.iter().map(|&(k, x, y)| Placed { part: k, x, y, w: parts[k].w, h: parts[k].h, turns: 0, mirror: false, spin: Default::default() }).collect();
-    let cuts: Vec<CutLine> = im
-        .cuts
-        .iter()
-        .filter_map(|c| {
-            let (a, b) = (*c.first()?, *c.last()?);
-            Some(match clip_to_sheet(a, b, spec.w, spec.h) {
-                Some((p, q)) => CutLine { pts: vec![p, q], kind: CutKind::Remnant },
-                None => CutLine { pts: c.clone(), kind: CutKind::Free },
-            })
-        })
-        .collect();
+    let mut cuts: Vec<CutLine> = im.cuts.iter().filter_map(|c| program_cut(c, spec.w, spec.h)).collect();
+    meet_up(&mut cuts, spec.w, spec.h);
     let mut notes = im.notes;
     notes.extend(gas_notes);
     // One sheet of the job's size: no sheet formats, as before (`JobFile::formats`).
@@ -599,4 +663,24 @@ pub fn set_layer(cfg: &AppSettings, spec: &SheetSpec, reads: &[crate::formats::I
         }
     }
     (next, gave_way)
+}
+
+#[cfg(test)]
+mod program_cut_tests {
+    use super::*;
+
+    /// OUT-7, BL40: a stepped cut-off read from a program keeps its corners,
+    /// its ends on the sheet edges; a cut with no end outside is a free cut.
+    #[test]
+    fn a_stepped_cut_off_keeps_its_corners() {
+        // The way in from below the sheet, the cut 10 mm in, the steps, the
+        // stop 10 mm before the top edge and the run-on past it.
+        let path = vec![[700.0, -10.0], [700.0, 10.0], [700.0, 300.0], [650.0, 300.0], [650.0, 490.0], [650.0, 510.0]];
+        let c = program_cut(&path, 1000.0, 500.0).unwrap();
+        assert_eq!(c.kind, CutKind::Remnant);
+        assert_eq!(c.pts, vec![[700.0, 0.0], [700.0, 300.0], [650.0, 300.0], [650.0, 500.0]]);
+        let free = program_cut(&[[100.0, 100.0], [200.0, 100.0]], 1000.0, 500.0).unwrap();
+        assert_eq!(free.kind, CutKind::Free);
+        assert_eq!(free.pts, vec![[100.0, 100.0], [200.0, 100.0]]);
+    }
 }

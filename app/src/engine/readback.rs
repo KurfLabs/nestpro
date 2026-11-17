@@ -338,6 +338,40 @@ fn cut_line_stray(w: &[P], line: &CutLine, tol: f64) -> Option<f64> {
     first_stray(w, &line.pts, tol).map(|h| h.1)
 }
 
+/// The sheet's size as the set's sheet program states it (`R21`, `R22`).
+fn sheet_size(set: &BlmSet) -> (f64, f64) {
+    let main = set.spf.iter().find(|f| f.0.eq_ignore_ascii_case(&format!("{}.SPF", set.nest))).map_or("", |f| f.1.as_str());
+    let val = |k: &str| main.lines().find_map(|l| l.trim().strip_prefix(k)).and_then(|v| v.trim().parse::<f64>().ok());
+    (val("R21=").unwrap_or(f64::MAX), val("R22=").unwrap_or(f64::MAX))
+}
+
+/// For a straight cut-off with an end inside the sheet: how the written cut
+/// misses that end — running past it or stopping short. None when it stops
+/// there (or both ends are on the sheet edge, which it runs past, MAC-42).
+fn stop_issue(written: &[Cut], line: &CutLine, (w, h): (f64, f64), tol: f64) -> Option<String> {
+    let [a, b] = line.pts[..] else { return None };
+    let inside = |p: P| p[0] > crate::blm::TRIM_EDGE_TOL && p[1] > crate::blm::TRIM_EDGE_TOL && p[0] < w && p[1] < h;
+    let l = dist(a, b);
+    if l < 1e-9 {
+        return None;
+    }
+    for (from, end) in [(a, b), (b, a)] {
+        if !inside(end) {
+            continue;
+        }
+        // How far along from `from` past `end` the written points go.
+        let u = [(end[0] - from[0]) / l, (end[1] - from[1]) / l];
+        let reach = written.iter().flat_map(|c| c.pts.iter()).map(|p| (p[0] - end[0]) * u[0] + (p[1] - end[1]) * u[1]).fold(f64::MIN, f64::max);
+        if reach > tol {
+            return Some(format!("runs {reach:.2} mm past where it should stop, into the next remnant"));
+        }
+        if reach < -tol {
+            return Some(format!("stops {:.2} mm short of the cut it should meet", -reach));
+        }
+    }
+    None
+}
+
 /// Everything wrong with a written set, in shop terms. Empty = it cuts what
 /// was planned.
 pub fn check_set(set: &BlmSet, parts: &[Part], sheet: &[Placed], plan: &SheetPlan, cuts: &[CutLine]) -> Vec<String> {
@@ -402,8 +436,10 @@ pub fn check_set(set: &BlmSet, parts: &[Part], sheet: &[Placed], plan: &SheetPla
             planned[i] = None;
             continue;
         }
-        // Not a part: it must be a planned cut-off, placed at that line's start.
-        let line = lines.iter().position(|e| e.is_some_and(|e| dist(e.pts[0], orig.0) <= START_TOL));
+        // Not a part: it must be a planned cut-off, placed at that line's
+        // start — or at its other end, for a cut-off that stops on another and
+        // is written from its sheet-edge end (BL40).
+        let line = lines.iter().position(|e| e.is_some_and(|e| dist(e.pts[0], orig.0) <= START_TOL || (e.pts.len() == 2 && dist(e.pts[1], orig.0) <= START_TOL)));
         let Some(k) = line else {
             issues.push(format!("the sheet program calls {stem} at X{:.1} Y{:.1}, which is no planned part or cut-off line", orig.0[0], orig.0[1]));
             continue;
@@ -412,6 +448,12 @@ pub fn check_set(set: &BlmSet, parts: &[Part], sheet: &[Placed], plan: &SheetPla
             let d = written.iter().find_map(|w| cut_line_stray(&w.pts, line, tol));
             if let Some(d) = d {
                 issues.push(format!("the cut-off line from X{:.1} Y{:.1} is written {d:.2} mm off its planned line", orig.0[0], orig.0[1]));
+            }
+            // BL40: an end inside the sheet is where it meets another cut-off:
+            // the cut must reach it and go no further, or it would cut into the
+            // remnant on the other side.
+            if let Some(m) = stop_issue(&written, line, sheet_size(set), tol) {
+                issues.push(format!("the cut-off line from X{:.1} Y{:.1} {m}", orig.0[0], orig.0[1]));
             }
             // Compensation would move it off the line the numbers show.
             if written.iter().any(|w| w.comp.is_some()) {
@@ -1496,5 +1538,42 @@ mod tests {
         assert_eq!(p[0].pts.last(), Some(&[30.0, 0.0]));
         // Counter-clockwise from left to right runs under the centre.
         assert!(p[0].pts.iter().any(|q| (q[1] + 5.0).abs() < 0.01), "{:?}", &p[0].pts[..4]);
+    }
+
+    /// BL40, MAC-41: an L-shaped cut-off. The leg that stops on the full line
+    /// is written from its sheet edge to the meeting point and no further, and
+    /// cut before the line it stops on; the read-back passes it, finds a leg
+    /// run on into the next remnant, and opening the set keeps the leg's end.
+    #[test]
+    fn a_cut_off_that_stops_on_another_is_written_cut_first_and_read_back() {
+        let (parts, placed, plan, _) = job();
+        let full = CutLine { pts: vec![[600.0, -0.02], [600.0, 500.02]], kind: CutKind::Remnant };
+        for leg in [vec![[-0.02, 300.0], [600.0, 300.0]], vec![[600.0, 300.0], [-0.02, 300.0]]] {
+            let cuts = vec![full.clone(), CutLine { pts: leg, kind: CutKind::Remnant }];
+            let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"));
+            assert!(check_set(&set, &parts, &placed, &plan, &cuts).is_empty(), "{:?}", check_set(&set, &parts, &placed, &plan, &cuts));
+            let main = &set.spf[0].1;
+            // The leg is called first, placed at its edge end.
+            let leg_at = main.find("ORIG(-0.02,300,0)").expect(main);
+            assert!(leg_at < main.find("ORIG(600,-0.02,0)").unwrap(), "{main}");
+            let leg = set.spf.iter().find(|f| f.1.contains("NEXT_L(10,0,0,0,3,1,20,0,-10,0)")).expect("the leg's trim start").1.clone();
+            assert!(leg.contains("G01 G40 X10. Y0.\r\nPROFILE\r\nG01 X600.02 Y0.\r\nENDGEO"), "{leg}");
+            assert!(!leg.contains("HD_DWN_OFF"));
+            // Run on 50 mm into the remnant past the full line: found.
+            let mut bad = set.clone();
+            for f in bad.spf.iter_mut().filter(|f| f.1 == leg) {
+                f.1 = f.1.replace("G01 X600.02 Y0.", "G01 X650.02 Y0.");
+            }
+            let issues = check_set(&bad, &parts, &placed, &plan, &cuts);
+            assert!(issues.iter().any(|i| i.contains("runs 50.00 mm past")), "{issues:?}");
+            // Opened again: the leg still stops on the full line.
+            let im = crate::progimport::parse_set(&set.spf, Some(&set.xml)).unwrap();
+            let back: Vec<CutLine> = im.cuts.iter().filter_map(|c| crate::engine::imports::program_cut(c, 1000.0, 500.0)).collect();
+            assert_eq!(back.len(), 2, "{back:?}");
+            let l = back.iter().find(|c| (c.pts[0][1] - 300.0).abs() < 0.01).expect("the leg");
+            let xs = [l.pts[0][0], l.pts[1][0]];
+            assert!(xs.iter().any(|x| x.abs() < 0.01) && xs.iter().any(|x| (x - 600.0).abs() < 0.01), "{:?}", l.pts);
+            assert_eq!(l.kind, CutKind::Remnant);
+        }
     }
 }

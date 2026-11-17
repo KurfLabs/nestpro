@@ -6453,6 +6453,18 @@
   "source": "MECHANICS LE8"
  },
  {
+  "name": "one lead's own shape: keeps how far the old lead reached off the contour",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE9"
+ },
+ {
+  "name": "one lead's own shape: ends moved by hand are dropped",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE9"
+ },
+ {
   "name": "hand-moved lead shared with turned or mirrored holes",
   "group": "leads",
   "value": false,
@@ -8213,6 +8225,60 @@
   "value": "the material list as read under the write lock; files first read without the lock are read again when the list changed in between; an open job that was unknown is found again in that list by its name (MA34)",
   "source": "MA35",
   "estimated": true
+ },
+ {
+  "name": "standard drop sizes",
+  "group": "standard drops",
+  "value": "off, no sizes; either way round; sizes under the minimum area of remnants left out; each drop cut to its exact size, its cut half a cut outside it",
+  "source": "SD1"
+ },
+ {
+  "name": "standard drops, automatic layout",
+  "group": "standard drops",
+  "value": "biggest drop that fits sets a row's width along one long edge, filled from the far edge with the longest that fit; then a second row on the other long edge; an L's leg one row against the sheet edge",
+  "source": "SD2"
+ },
+ {
+  "name": "drop layouts offered",
+  "group": "standard drops",
+  "value": "biggest first (Auto), most drop area, each size on its own, each size first then biggest first; duplicates once; at most 8",
+  "source": "SD3"
+ },
+ {
+  "name": "rows that fill the strip",
+  "group": "standard drops",
+  "value": "share one cut when less than 1 mm would be left between their cuts; the second row is short by up to a cut",
+  "source": "SD4"
+ },
+ {
+  "name": "cuts between drops",
+  "group": "standard drops",
+  "value": "each starts at a sheet edge and ends at an edge or on another cut; a cut stopping on another's middle is cut first; the rest of the leftover stays with the skeleton",
+  "source": "SD5"
+ },
+ {
+  "name": "no standard drop fits",
+  "group": "standard drops",
+  "value": "no remnant line, the leftover goes with the skeleton; 'keep the leftover as one remnant' (off) makes the usual line",
+  "source": "SD6"
+ },
+ {
+  "name": "standard drops and other line shapes",
+  "group": "standard drops",
+  "value": "one step, staircase and irregular shapes make the usual line",
+  "source": "SD7"
+ },
+ {
+  "name": "standard drops for agents",
+  "group": "standard drops",
+  "value": "remnant mode=drops lists layouts; layout=N cuts one; sizes= tries other sizes (mm)",
+  "source": "SD8"
+ },
+ {
+  "name": "LC5 cut-off stopping on another",
+  "group": "BLM LC5",
+  "value": "from its sheet-edge end: trim start, straight to the meeting point, no HD_DWN_OFF, no run-on; cut before the cut-off it stops on; read-back allows 0.125 mm past the meeting point",
+  "source": "BL40"
  }
 ]
 }

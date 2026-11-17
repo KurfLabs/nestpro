@@ -18,6 +18,7 @@ mod ct1;
 mod cutpanel;
 mod orderpick;
 mod leadmenu;
+mod jointpics;
 mod joints;
 mod kerf;
 mod leads;
@@ -26,6 +27,7 @@ mod jobtree;
 mod filename;
 mod dock;
 mod cutoff;
+mod dropsui;
 mod cuttime;
 mod techtable;
 mod dbbrowse;
@@ -322,6 +324,8 @@ pub struct App {
     pub result_card: Option<ResultCard>,
     pub auto_joints: nest::AutoJoints,
     pub show_joint_sizes: bool,
+    /// Micro-joints window: the tab shown, 0 = Joint, 1 = How many (kept while the app runs).
+    pub joint_tab: u8,
     /// Cut Technology → By size window.
     pub show_cut_ranges: bool,
     /// Nest parts grouped by their Group attribute (CT1 A785 sets the start value).
@@ -362,6 +366,14 @@ pub struct App {
     /// Part view: a lead just moved on one hole alone, offered to the holes
     /// of its shape (part, contour, how many) (LE8).
     pub lead_offer: Option<(usize, usize, usize)>,
+    /// Part view: the lead clicked on (part, contour), whose card changes
+    /// its shape (LE9).
+    pub sel_lead: Option<(usize, usize)>,
+    /// Screenshots only (--lead-card-menu): the selected lead's shape menu open.
+    pub lead_card_demo: bool,
+    /// Where that card sits (part, contour; top left), worked out from its
+    /// size the frame before.
+    pub lead_card_at: Option<((usize, usize), egui::Pos2)>,
     /// Follow Windows' light/dark setting (the original's default style takes
     /// the system colours).
     pub follow_system: bool,
@@ -412,6 +424,8 @@ pub struct App {
     pub blm: blm::BlmSettings,
     /// The nesting Verify Machining panel.
     pub nverify: v44::NestVerify,
+    /// The Drop layouts window (standard drops, SD8).
+    pub dropsui: dropsui::DropsUi,
     /// Part view: selected elements (by index), the part they belong to, the
     /// start of a box selection, and details of the selection for the ribbon.
     pub sel_elems: Vec<usize>,
@@ -667,6 +681,7 @@ impl App {
             result_card: None,
             auto_joints: nest::AutoJoints::default(),
             show_joint_sizes: false,
+            joint_tab: 0,
             show_cut_ranges: false,
             group_nest: crate::ct1::active().group_parts,
             job_folders: vec![],
@@ -682,6 +697,9 @@ impl App {
             part_ext_lock: None,
             lead_same: false,
             lead_offer: None,
+            sel_lead: None,
+            lead_card_demo: false,
+            lead_card_at: None,
             part_view_last: 0.0,
             follow_system: false,
             options_open: false,
@@ -709,6 +727,7 @@ impl App {
             dbb: Default::default(),
             blm: blm::BlmSettings::for_machine(""),
             nverify: v44::NestVerify { check_safe: true, value: 5.0, ..Default::default() },
+            dropsui: Default::default(),
             sel_elems: vec![],
             elem_part: None,
             box_start: None,
@@ -2878,6 +2897,7 @@ impl eframe::App for App {
         self.unknown_material_card(&ctx);
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
+        self.drops_window(&ctx);
         if self.follow_system {
             if let Some(t) = ctx.system_theme() {
                 let dark = t == egui::Theme::Dark;
@@ -3480,6 +3500,28 @@ fn main() -> eframe::Result {
                     app.auto_remnant_edge();
                 }
             }
+            // --drops (screenshots): standard drops on with made-up sizes, the
+            // leftover cut off and the Drop layouts window open.
+            if std::env::args().any(|a| a == "--drops") {
+                app.tab = Tab::Sheet;
+                app.cur_sheet = app.result.sheets.len().saturating_sub(1);
+                app.cfg.stock.drops = engine::drops::DropSettings { on: true, sizes: vec![[1828.8, 1219.2], [1219.2, 1219.2], [1219.2, 609.6], [609.6, 609.6]], keep_odd: false };
+                if !std::env::args().any(|a| a.starts_with("--remline=")) {
+                    app.cfg.stock.line.shape = remline::LineShape::VerticalStrip;
+                }
+                app.cut_lines.clear();
+                app.auto_remnant_edge();
+                app.dropsui.open = true;
+                // --drops-layout=N: that layout cut, the window closed.
+                if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--drops-layout=").and_then(|v| v.parse::<usize>().ok())) {
+                    let sheet = app.result.sheets.get(app.cur_sheet).cloned().unwrap_or_default();
+                    let st = app.cfg.stock.clone();
+                    if let Some(l) = engine::drops::layouts(&app.parts, &sheet, &app.result.format(app.cur_sheet, &app.spec), &app.cur_spec(), &st.line, &st.drops.sizes, st.min_remnant_m2).ok().and_then(|v| v.into_iter().nth(n.saturating_sub(1))) {
+                        app.apply_drop_layout(&l);
+                    }
+                    app.dropsui.open = false;
+                }
+            }
             // --stock-demo (screenshots): two made-up sheets in the stock, the
             // smaller one picked, so the window shows a real choice.
             if std::env::args().any(|a| a == "--stock-demo") {
@@ -3714,6 +3756,32 @@ fn main() -> eframe::Result {
                     }
                 }
             }
+            // --joints=joint|count (screenshots): the Micro-joints window on that
+            // tab for the plate with holes; --joint-type=gap|square|angled|corner
+            // picks the part's joint type, --joint-rules sets demo size rules.
+            if let Some(tab) = std::env::args().find_map(|a| a.strip_prefix("--joints=").map(|s| s.to_string())) {
+                app.tab = Tab::Technology;
+                app.sel_part = app.parts.iter().position(|p| p.name == "Square hole").or((!app.parts.is_empty()).then_some(0));
+                app.tech_nest_all = Some(false);
+                app.show_joint_sizes = true;
+                app.joint_tab = u8::from(tab == "count");
+                app.auto_joints = crate::ct1::for_spec(&app.spec).joint_sizes;
+                if std::env::args().any(|a| a == "--joint-rules") {
+                    app.auto_joints = nest::AutoJoints { small: [50.0, 50.0], parts: [[0, 2], [-1, -1], [-1, -1]], holes: [[0, 0], [-1, -1], [-1, -1]], ..nest::AutoJoints::default() };
+                }
+                let jt = match std::env::args().find_map(|a| a.strip_prefix("--joint-type=").map(|s| s.to_string())).as_deref() {
+                    Some("square") => nest::JointType::Leads,
+                    Some("angled") => nest::JointType::LeadsInclined,
+                    Some("corner") => nest::JointType::Corner,
+                    _ => nest::JointType::Gap,
+                };
+                if let Some(i) = app.sel_part {
+                    let mut t = app.parts[i].tech.unwrap_or_default();
+                    t.joint_type = jt;
+                    t.joint_every = 100.0;
+                    app.parts[i].tech = Some(t);
+                }
+            }
             // --paint-panel / --paint-contours (screenshots): the cut technology
             // panel on the first imported part with Slow (1) chosen and All the
             // same contours on; --paint-contours also paints, through the same
@@ -3910,6 +3978,22 @@ fn main() -> eframe::Result {
             if let Some(t) = std::env::args().find_map(|a| a.strip_prefix("--lead-menu=").and_then(leadmenu::named)) {
                 app.tab = Tab::Technology;
                 app.lead_menu_demo = Some(t);
+            }
+            // --lead-pick=<contour> (screenshots, with --part): that cut
+            // contour's lead clicked on, its card shown (LE9); with
+            // --lead-shape=<type> given that shape through the engine first,
+            // with --lead-card-menu its shape menu open.
+            if let (Some(idx), Some(ci)) = (app.shown_part(), std::env::args().find_map(|a| a.strip_prefix("--lead-pick=").and_then(|v| v.parse::<usize>().ok()))) {
+                if let Some(k) = std::env::args().find_map(|a| a.strip_prefix("--lead-shape=").and_then(leadmenu::named)) {
+                    let spec = app.spec.clone();
+                    match engine::set_lead_type(&mut app.parts, idx, &spec, ci, k, false) {
+                        Ok(m) | Err(m) => app.status = m,
+                    }
+                    app.refresh();
+                }
+                app.sel_lead = Some((idx, ci));
+                app.lead_card_demo = std::env::args().any(|a| a == "--lead-card-menu");
+                app.tab = Tab::Technology;
             }
             // --tech-result (screenshots): Auto lead-ins run on one part type,
             // with its result card and "Apply to all".

@@ -387,6 +387,10 @@ pub struct LeadEdit {
     /// lead moved by hand is cut with this lead, at the same place on it.
     #[serde(default)]
     pub same: bool,
+    /// This lead's own shape, picked on the lead in the Part view (LE9);
+    /// `None` = the shape the part's technology gives it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<LeadType>,
 }
 
 /// One row of the automatic cut technology list (rule CT1): the technology
