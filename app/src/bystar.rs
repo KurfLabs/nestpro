@@ -155,6 +155,122 @@ pub const SWITCHES: &[SwitchDef] = &[
     sw("X009", "This app's own: a preview picture per nest", OnOff, "0", "BV72", Built),
 ];
 
+/// The switches as Settings → Machines shows them (BV61): grouped by what
+/// they change on the cut, each with its name in shop words. A switch of
+/// this app's own that writes the machine maker's CAM form is marked so.
+/// Switches in no group (no effect in this app's programs, not followed yet,
+/// the post's unused texts) are listed only under "All post codes".
+pub const GROUPS: &[(&str, &str, &[(&str, &str)])] = &[
+    ("Units", "The unit the program is written in. The machine reads both.", &[("X007", "Name an inch program \"English\", the machine's own word, not \"Imperial\"")]),
+    (
+        "Piercing",
+        "How each contour is pierced. Off: cuts pierce Fine, engraving Normal, and a contour without a lead-in isn't pierced.",
+        &[
+            ("B014", "Take each cut quality's pierce from the technology table below"),
+            ("X003", "Pierce contours that have no lead-in, at their start, inside the cut"),
+            ("B044", "Pierce contours that have no lead-in, just before the cut starts"),
+            ("B007", "This cut quality pierces Normal"),
+            ("B008", "This cut quality pierces Fine"),
+            ("B009", "This cut quality pierces with no pierce time"),
+        ],
+    ),
+    (
+        "Leads",
+        "The leads come from the part's technology; these change how they are written.",
+        &[
+            ("X002", "Write the lead-out after the cut ends"),
+            ("B024", "Open a lead-in at every contour, even one without a lead-in, and pierce there"),
+            ("B006", "Split the first move of a contour without a lead-in at this distance"),
+        ],
+    ),
+    (
+        "Kerf compensation",
+        "The machine compensates every cut itself; these say where it is switched on and off.",
+        &[
+            ("X004", "Switch it on inside the lead-in, and off at each part's start"),
+            ("B011", "Switch it on after the rapid move instead of before"),
+            ("B040", "Switch it on after the lead-in"),
+            ("B031", "No compensation on engraving and point marks"),
+            ("B012", "Switch it off after engraving"),
+        ],
+    ),
+    (
+        "Technology column",
+        "The machine's parameter column each contour is cut with (its operation mode).",
+        &[
+            ("X005", "Write the column on every contour, not only when it changes"),
+            ("B015", "Take each cut quality's column from the technology table below"),
+            ("B026", "This cut quality is engraving"),
+            ("B042", "Cut quality 7 is cut as this quality"),
+            ("B043", "Cut quality 3 is cut as this quality"),
+        ],
+    ),
+    (
+        "Engraving and point marks",
+        "",
+        &[
+            ("B036", "Engrave uncompensated as an inside contour: 1 pierces Fine, 2 Normal"),
+            ("B013", "Point marks as a circle of this diameter"),
+            ("B033", "Point-mark circles in the engraving column"),
+            ("B050", "A point mark too small for a circle as a tiny cut"),
+        ],
+    ),
+    (
+        "Micro-joints",
+        "",
+        &[("B038", "Stop the cut at each joint and start again after it"), ("B049", "Joints on arcs cut straight across")],
+    ),
+    ("Height sensor", "", &[("B039", "When it is switched: 0 at every contour, 1 not for engraving, 2 only in remnant cut-offs")]),
+    (
+        "Remnant cut-offs",
+        "Lengths are in the program's unit and whole numbers.",
+        &[
+            ("B003", "Run past each sheet edge by"),
+            ("B004", "Height sensor off for the last stretch before each edge"),
+            ("B005", "Run-up between the pierce and where the sensor goes off"),
+            ("B025", "A cut-off line that starts inside the sheet gets its own pierce"),
+            ("B045", "Cut quality of cut-off lines (0 = quality 1)"),
+        ],
+    ),
+    (
+        "Parts on the sheet",
+        "",
+        &[
+            ("X006", "Write part positions and turns exactly, not rounded"),
+            ("B021", "Write part positions with 3 decimals"),
+            ("B018", "Split full circles into two half circles"),
+            ("C004", "Part program name prefix"),
+            ("B016", "Use the part program's name as its part number; number the cut-off programs"),
+            ("B028", "Name cut-off programs like part programs"),
+        ],
+    ),
+    (
+        "Files sent to the machine",
+        "",
+        &[
+            ("B017", "All sheets of a job in one .bvc"),
+            ("B010", "Keep only the .bvc, not the loose files beside it"),
+            ("X008", "The full job file: part sizes and shapes, margins, remnant sheets"),
+            ("X009", "A preview picture of each nest"),
+            ("X001", "Name the job's gas in the job file"),
+            ("B041", "Mark the cutting head as vertical in the program"),
+            ("B029", "An empty remnant list in the job file"),
+            ("B030", "An empty big-part list in the job file"),
+            ("B022", "Part ids and quantities under 1 are fixed"),
+        ],
+    ),
+];
+
+/// A switch's group and its name in shop words (`GROUPS`), if it has one.
+pub fn shown_as(key: &str) -> Option<(&'static str, &'static str)> {
+    GROUPS.iter().find_map(|g| g.2.iter().find(|s| s.0 == key).map(|s| (g.0, s.1)))
+}
+
+/// This app's own switches that write the machine maker's CAM form (BV67–BV72).
+pub fn cam_form(key: &str) -> bool {
+    matches!(key, "X002" | "X003" | "X004" | "X005" | "X006" | "X007" | "X008" | "X009")
+}
+
 pub fn switch(key: &str) -> Option<&'static SwitchDef> {
     SWITCHES.iter().find(|s| s.key.eq_ignore_ascii_case(key))
 }
@@ -185,11 +301,28 @@ pub struct MachinePost {
     /// table; empty text = no pierce commands.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pierces: BTreeMap<u8, String>,
+    /// The program unit picked here, mm per unit (1 = mm, 25.4 = inch); none
+    /// = the post library's (CF1 A006), else mm (BV70).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<f64>,
 }
 
 impl MachinePost {
     pub fn is_empty(&self) -> bool {
         *self == MachinePost::default()
+    }
+
+    /// BV70: pick the program unit (`Some(true)` inch, `Some(false)` mm, None =
+    /// the post library's). B001 (the unit's name in the program) follows it,
+    /// on for inch, so the program never says Metric with inch numbers.
+    pub fn set_unit(&mut self, inch: Option<bool>) {
+        self.unit = inch.map(|i| if i { 25.4 } else { 1.0 });
+        let p = Post::load(self);
+        let b001 = if (p.unit - 25.4).abs() < 1e-9 { "1" } else { "0" };
+        let _ = self.set_switch("B001", b001);
+        if inch.is_none() {
+            self.set.remove("B001");
+        }
     }
 
     /// Set switch `key` (any case) to `value`, checked against its kind.
@@ -238,8 +371,11 @@ pub struct Post {
     pub from: BTreeMap<&'static str, &'static str>,
     /// CF1 A005: the machine tolerance, mm (0.005 without one).
     pub tol: f64,
-    /// CF1 A006: mm per program unit (1 = mm, 25.4 = inch).
+    /// mm per program unit (1 = mm, 25.4 = inch): picked in Settings, else
+    /// the post library's (CF1 A006), else mm (BV25, BV70).
     pub unit: f64,
+    /// Where the unit came from: "set", "file" or "default".
+    pub unit_from: &'static str,
     /// Operation mode by quality (index 1–12).
     pub modes: [i64; 13],
     /// Pierce text by quality (index 0 = marking, 1–12).
@@ -322,7 +458,12 @@ impl Post {
             pierces[q] = m.pierces.get(&(q as u8)).cloned().unwrap_or_else(|| seed_pierce(q).to_string());
         }
         let point_type = cf1.and_then(|t| line_value(t, "A004")).and_then(|v| v.parse::<f64>().ok()).map_or(2, |v| v.round() as i64);
-        Post { values, from, tol: num("A005").unwrap_or(0.005), unit: num("A006").unwrap_or(1.0), modes, pierces, point_type, file_error: None }
+        let (unit, unit_from) = match (m.unit.filter(|u| u.is_finite() && *u > 0.0), num("A006")) {
+            (Some(u), _) => (u, "set"),
+            (None, Some(u)) => (u, "file"),
+            (None, None) => (1.0, "default"),
+        };
+        Post { values, from, tol: num("A005").unwrap_or(0.005), unit, unit_from, modes, pierces, point_type, file_error: None }
     }
 
     pub fn raw(&self, key: &str) -> &str {
@@ -2019,6 +2160,22 @@ mod bystar_tests {
         assert_eq!(whole(-12.5), "-12");
         assert_eq!(digits(1.0005, 3), "1");
         assert_eq!(digits(1.0006, 3), "1.001");
+    }
+
+    #[test]
+    fn every_switch_programs_follow_is_shown_in_a_group_in_shop_words() {
+        // B001 is the Units choice; B002, B020, B027, B032 change nothing here (BV66).
+        let elsewhere = ["B001", "B002", "B020", "B027", "B032"];
+        for d in SWITCHES.iter().filter(|d| d.status == Status::Built && !elsewhere.contains(&d.key)) {
+            assert!(shown_as(d.key).is_some(), "{} has no group on the settings page", d.key);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for g in GROUPS {
+            for s in g.2 {
+                assert!(switch(s.0).is_some_and(|d| d.status == Status::Built), "{} isn't a switch programs follow", s.0);
+                assert!(seen.insert(s.0), "{} is in two groups", s.0);
+            }
+        }
     }
 
     #[test]

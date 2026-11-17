@@ -388,3 +388,34 @@ fn the_comparison_runs_on_a_made_up_cam_nest_and_names_nothing() {
     assert!(!out.contains("DEMO"), "no job, part or file names: {out}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn the_program_unit_is_picked_on_the_machine_and_its_name_follows() {
+    // BV70: inch without a post library file; B001 (the unit's name) follows.
+    let d = dir("bysoft_unit");
+    let mut s = bystar_job(&d, false);
+    let r = call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "unit": "inch"}));
+    assert_eq!((r["data"]["unit"].as_str(), r["data"]["unit_from"].as_str()), (Some("inch"), Some("set")), "{r}");
+    let b001 = r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "B001").unwrap().clone();
+    assert_eq!(b001["value"], "1");
+    let ccp = bystar_program_text(&mut s, 1);
+    assert!(ccp.contains("MeasurementSystem=\"Imperial\" Thickness=\"0.118110236\""), "{}", &ccp[..300]);
+    call(&mut s, "export", None, json!({}));
+    // The settings page shows each switch in its group, in shop words.
+    let x003 = r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "X003").unwrap().clone();
+    assert_eq!((x003["group"].as_str(), x003["cam_form"].as_bool()), (Some("Piercing"), Some(true)), "{x003}");
+    // Back to mm, then to the post library's (none: mm), B001 off again.
+    let r = call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "unit": "mm"}));
+    assert_eq!(r["data"]["unit"], "mm");
+    assert!(bystar_program_text(&mut s, 1).contains("MeasurementSystem=\"Metric\""));
+    let r = call(&mut s, "machine-switches", None, json!({"machine": "Demo ByStar Fiber laser", "unit": "file"}));
+    assert_eq!((r["data"]["unit"].as_str(), r["data"]["unit_from"].as_str()), (Some("mm"), Some("default")), "{r}");
+    let b001 = r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "B001").unwrap().clone();
+    assert_eq!((b001["value"].as_str(), b001["from"].as_str()), (Some("0"), Some("default")));
+    assert!(err(&mut s, "machine-switches", json!({"machine": "Demo ByStar Fiber laser", "unit": "furlongs"})).contains("mm, inch, or file"));
+    // Settings saved before have no unit and load as they were.
+    let old: crate::bystar::MachinePost = serde_json::from_str(r#"{"set": {"B015": "1"}}"#).unwrap();
+    assert_eq!(old.unit, None);
+    assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"set":{"B015":"1"}}"#);
+    let _ = std::fs::remove_dir_all(&d);
+}

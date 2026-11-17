@@ -1608,7 +1608,7 @@ impl App {
     /// default and what this app does with it, and the technology table's
     /// ByStar Fiber columns (BV58).
     fn settings_bystar(&mut self, ui: &mut egui::Ui, k: usize, start: &str) {
-        use crate::bystar::{Kind, Post, Status, PIERCES, SWITCHES};
+        use crate::bystar::{Post, Status, PIERCES, SWITCHES};
         card(ui, "ByStar Fiber laser post", "Without post files the machine uses the post's built-in defaults. A switch changed here wins over the files.", |ui| {
             let m = &mut self.cfg.machines[k];
             file_row(ui, "Post settings (.ps1)", &mut m.bystar.ps1, ("Post settings", &["ps1", "PS1"]), start);
@@ -1630,57 +1630,73 @@ impl App {
             ui.scroll_to_cursor(Some(egui::Align::TOP));
             self.setui.show_switches = self.shot_mode_now();
         }
-        let own = self.setui.show_own_switches;
-        card(ui, "Post switches", "Each switch with the post's default. \"Written\": programs follow it. \"Not yet\": kept and shown; a sheet it would change is refused until it is built. \"No effect\": the post doesn't use it in the files either.", |ui| {
+        // BV61: the switches grouped by what they change on the cut, in shop
+        // words; everything off writes what the original's post writes.
+        let tag = th().accent_fg;
+        ui.label(RichText::new("Everything off writes the programs the original's post wrote. Switches marked ").size(12.5).color(th().text_dim));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("machine's CAM").size(11.0).color(tag).strong());
+            ui.label(RichText::new("write what the machine maker's own CAM writes, the form your machine already runs.").size(12.5).color(th().text_dim));
+        });
+        ui.add_space(6.0);
+        for (gi, (group, sub, rows)) in crate::bystar::GROUPS.iter().enumerate() {
+            if gi == 0 && self.setui.show_own_switches {
+                ui.scroll_to_cursor(Some(egui::Align::TOP));
+            }
+            card(ui, group, sub, |ui| {
+                let m = &mut self.cfg.machines[k];
+                if gi == 0 {
+                    // BV70: the program unit (B001 follows it).
+                    let p = Post::load(&m.bystar);
+                    row(ui, "Program unit", |ui| {
+                        let inch = (p.unit - 25.4).abs() < 1e-9;
+                        let mut pick: Option<Option<bool>> = None;
+                        egui::ComboBox::from_id_salt(("bystar_unit", k)).width(90.0).selected_text(if inch { "inch" } else if (p.unit - 1.0).abs() < 1e-9 { "mm" } else { "other" }).show_ui(ui, |ui| {
+                            if ui.selectable_label(!inch, "mm").clicked() {
+                                pick = Some(Some(false));
+                            }
+                            if ui.selectable_label(inch, "inch").clicked() {
+                                pick = Some(Some(true));
+                            }
+                        });
+                        let from = match p.unit_from {
+                            "set" => "picked here",
+                            "file" => "from the post library",
+                            _ => "default",
+                        };
+                        ui.label(RichText::new(from).size(11.5).color(th().text_dim));
+                        if p.unit_from == "set" && ui.small_button("↺").on_hover_text("Use the post library's unit (else mm)").clicked() {
+                            pick = Some(None);
+                        }
+                        if let Some(u) = pick {
+                            m.bystar.set_unit(u);
+                        }
+                    });
+                }
+                let p = Post::load(&m.bystar);
+                for (key, label) in rows.iter() {
+                    let Some(d) = crate::bystar::switch(key) else { continue };
+                    switch_row(ui, &mut m.bystar, &p, d, label);
+                }
+            });
+            ui.add_space(8.0);
+        }
+        // Every code of the post, as its parameter file lists them.
+        egui::CollapsingHeader::new(RichText::new("All post codes (B000–R007, X001–X009), as the post's parameter file lists them").size(13.0)).id_salt(("bystar_all", k)).show(ui, |ui| {
+            ui.label(RichText::new("\"Written\": programs follow it. \"Not yet\": kept and shown; a sheet it would change is refused until it is built. \"No effect\": the post doesn't use it in the files either.").size(11.5).color(th().text_dim));
             let m = &mut self.cfg.machines[k];
             let p = Post::load(&m.bystar);
             egui::Grid::new("bystar_switches").striped(true).num_columns(5).spacing([10.0, 4.0]).show(ui, |ui| {
-                for h in ["Switch", "What it does", "Value", "Default", ""] {
+                for h in ["Code", "What it does", "Value", "Default", ""] {
                     ui.label(RichText::new(h).strong().size(12.0));
                 }
                 ui.end_row();
                 for d in SWITCHES {
-                    if own && d.key == "R007" {
-                        ui.scroll_to_cursor(Some(egui::Align::TOP));
-                    }
                     let changed = p.changed(d.key);
                     let key = if p.from.get(d.key) == Some(&"set") { format!("{} •", d.key) } else { d.key.to_string() };
                     ui.label(RichText::new(key).monospace().size(12.0)).on_hover_text(format!("Rule {}", d.rule));
                     ui.label(RichText::new(d.what).size(12.0));
-                    let mut new: Option<String> = None;
-                    match d.kind {
-                        Kind::OnOff => {
-                            let mut on = p.on(d.key);
-                            if ui.checkbox(&mut on, "").changed() {
-                                new = Some(if on { "1" } else { "0" }.into());
-                            }
-                        }
-                        Kind::Quality => {
-                            let mut q = p.num(d.key).trunc().clamp(0.0, 12.0) as i64;
-                            if ui.add(egui::DragValue::new(&mut q).range(0..=12)).on_hover_text("A cut quality 1–12; 0 = none").changed() {
-                                new = Some(q.to_string());
-                            }
-                        }
-                        Kind::Choice => {
-                            let mut c = p.num(d.key).round().clamp(0.0, 2.0) as i64;
-                            if ui.add(egui::DragValue::new(&mut c).range(0..=2)).changed() {
-                                new = Some(c.to_string());
-                            }
-                        }
-                        Kind::Length | Kind::Size => {
-                            let mut v = p.num(d.key);
-                            if ui.add(egui::DragValue::new(&mut v).speed(0.1).max_decimals(4)).changed() {
-                                new = Some(crate::bystar::num(v));
-                            }
-                        }
-                        Kind::Text => {
-                            let mut t = p.raw(d.key).to_string();
-                            if ui.add(egui::TextEdit::singleline(&mut t).desired_width(120.0)).changed() {
-                                new = Some(t);
-                            }
-                        }
-                    }
-                    if let Some(v) = new {
+                    if let Some(v) = switch_control(ui, &p, d) {
                         let _ = m.bystar.set_switch(d.key, &v);
                     }
                     ui.label(RichText::new(if d.default.is_empty() { "empty" } else { d.default }).size(12.0).color(th().text_dim));
@@ -1735,4 +1751,54 @@ impl App {
             });
         });
     }
+}
+
+/// A switch's control for its kind (BV61); the new value when changed.
+fn switch_control(ui: &mut egui::Ui, p: &crate::bystar::Post, d: &crate::bystar::SwitchDef) -> Option<String> {
+    use crate::bystar::Kind;
+    match d.kind {
+        Kind::OnOff => {
+            let mut on = p.on(d.key);
+            ui.checkbox(&mut on, "").changed().then(|| if on { "1" } else { "0" }.to_string())
+        }
+        Kind::Quality => {
+            let mut q = p.num(d.key).trunc().clamp(0.0, 12.0) as i64;
+            let dv = egui::DragValue::new(&mut q).range(0..=12).custom_formatter(|v, _| if v < 0.5 { "none".into() } else { format!("{v:.0}") }).custom_parser(|s| if s.trim().eq_ignore_ascii_case("none") { Some(0.0) } else { s.trim().parse().ok() });
+            ui.add(dv).on_hover_text("A cut quality 1–12; none = no quality").changed().then(|| q.to_string())
+        }
+        Kind::Choice => {
+            let mut c = p.num(d.key).round().clamp(0.0, 2.0) as i64;
+            ui.add(egui::DragValue::new(&mut c).range(0..=2)).changed().then(|| c.to_string())
+        }
+        Kind::Length | Kind::Size => {
+            let unit = if (p.unit - 25.4).abs() < 1e-9 { " in" } else { " mm" };
+            let mut v = p.num(d.key);
+            ui.add(egui::DragValue::new(&mut v).speed(0.1).max_decimals(4).suffix(unit)).changed().then(|| crate::bystar::num(v))
+        }
+        Kind::Text => {
+            let mut t = p.raw(d.key).to_string();
+            ui.add(egui::TextEdit::singleline(&mut t).desired_width(120.0)).changed().then_some(t)
+        }
+    }
+}
+
+/// One switch on the grouped page (BV61): its name in shop words, its
+/// control, a mark when it writes the machine maker's CAM form, its post
+/// code in grey, and a reset when it is changed here.
+fn switch_row(ui: &mut egui::Ui, m: &mut crate::bystar::MachinePost, p: &crate::bystar::Post, d: &crate::bystar::SwitchDef, label: &str) {
+    ui.horizontal(|ui| {
+        let (r, resp) = ui.allocate_exact_size(egui::vec2(470.0, 24.0), egui::Sense::hover());
+        ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), th().text_strong);
+        resp.on_hover_text(format!("{} ({}, rule {})", d.what, d.key, d.rule));
+        if let Some(v) = switch_control(ui, p, d) {
+            let _ = m.set_switch(d.key, &v);
+        }
+        if crate::bystar::cam_form(d.key) {
+            ui.label(RichText::new("machine's CAM").size(11.0).color(th().accent_fg).strong()).on_hover_text("Writes what the machine maker's own CAM writes. Off: the original's post form.");
+        }
+        ui.label(RichText::new(d.key).monospace().size(11.0).color(th().text_dim));
+        if p.from.get(d.key) == Some(&"set") && ui.small_button("↺").on_hover_text(format!("Back to the post file's value (else the default, {})", if d.default.is_empty() { "empty" } else { d.default })).clicked() {
+            m.set.remove(d.key);
+        }
+    });
 }
