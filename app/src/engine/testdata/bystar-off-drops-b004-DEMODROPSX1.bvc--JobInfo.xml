@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<JobInfo Guid="00000000-0000-0000-0000-000000000000" Name="DEMO-DROPS" Material="STEEL" Thickness="3" MeasurementSystem="Metric" Parameter="">
+  <PartInfos>
+    <PartInfo Id="1" Name="DEMO-PLATE" Quantity="4" />
+  </PartInfos>
+  <MaterialInfos>
+    <MaterialInfo Id="1" Quantity="1" SizeX="3000" SizeY="1000" FormatType="Sheet" ArticleInfo="" />
+  </MaterialInfos>
+  <PlanInfos>
+    <PlanInfo Multiplicity="1" Name="DEMODROPSX1" MaterialId="1" EstimatedCuttingTime="92" SizeX="3000.02" SizeY="1000.02">
+      <PlanPartInfos>
+        <PlanPartInfo PartId="1" Quantity="4" SubProgramName="1" />
+        <PlanPartInfo PartId="1" Quantity="4" SubProgramName="2" />
+        <PlanPartInfo PartId="1" Quantity="4" SubProgramName="3" />
+      </PlanPartInfos>
+      <SortInfos />
+      <EstimatedCuttingTime>92</EstimatedCuttingTime>
+    </PlanInfo>
+  </PlanInfos>
+</JobInfo>

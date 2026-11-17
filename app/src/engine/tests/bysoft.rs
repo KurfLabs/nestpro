@@ -556,3 +556,77 @@ fn a_cut_off_line_running_past_the_edge_senses_off_before_the_edge_not_at_its_en
     assert!(checked >= 3, "{ccp}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn drop_cuts_running_past_the_edge_with_b004_write_what_127_wrote() {
+    // S4: with B004 = 1 the sensing-off point of a standard drop's cut
+    // (ending 0.02 mm past the edge) is still on the sheet, as #127 wrote and
+    // the read-back accepted: byte for byte the same files (golden, recorded
+    // from #127's writer). With B004 = 0 that point fell past the edge (the
+    // read-back refused the sheet); now it is written (sensing off on the edge).
+    let d = dir("bysoft_drops_b004");
+    let mut s = drops_job(&d);
+    set(&mut s, "B004=1");
+    let files = bystar_files_written(&mut s, &d, "DEMO-DROPS");
+    let list: Vec<String> = files.iter().map(|f| f.0.clone()).collect();
+    same_as_recorded("bystar-off-drops-b004-files.txt", &(list.join("\n") + "\n"));
+    for (f, bytes) in &files {
+        same_as_recorded(&format!("bystar-off-drops-b004-{}", f.replace('!', "--")), &String::from_utf8(bytes.clone()).unwrap());
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn x008_refuses_a_remnant_with_a_narrow_step() {
+    // S1: a remnant line with a 0.5 mm step leaves a stepped remnant whose
+    // missing area is tiny; it still isn't a rectangle.
+    let d = dir("bysoft_x008_narrow");
+    let mut s = form_job(&d);
+    call(&mut s, "cut-line", None, json!({"sheet": 3, "points": "600,0;600,250;600.5,250;600.5,500"}));
+    set(&mut s, "X008=1");
+    let e = err(&mut s, "export", json!({}));
+    assert!(e.contains("isn't one") && e.contains("turn X008 off"), "{e}");
+    set(&mut s, "X008=0");
+    call(&mut s, "export", None, json!({}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn b001_follows_the_picked_unit_whatever_the_files_and_other_settings_say() {
+    // S5: with a unit picked, B001 comes from it when the post is loaded:
+    // clearing the switches changed here ("Use the files' values for every
+    // switch") or replacing the parameter file can't leave inch numbers named
+    // Metric.
+    let mut m = crate::bystar::MachinePost::default();
+    m.set_unit(Some(true));
+    m.set.clear();
+    let p = crate::bystar::Post::load(&m);
+    assert!(p.on("B001") && (p.unit - 25.4).abs() < 1e-9, "{:?}", p.raw("B001"));
+    assert!(m.set_switch("B001", "0").unwrap_err().contains("follows the program unit"));
+    let d = dir("bysoft_unit_files");
+    let mut s = bystar_job(&d, false);
+    let (inch_on, inch_off) = (d.join("DEMO-ON.ps1"), d.join("DEMO-OFF.ps1"));
+    std::fs::write(&inch_on, "B001 1 ; inch\n").unwrap();
+    std::fs::write(&inch_off, "B001 0 ; metric\n").unwrap();
+    let ms = |s: &mut Session, a: Value| {
+        let mut a = a;
+        a["machine"] = json!("Demo ByStar Fiber laser");
+        call(s, "machine-switches", None, a)
+    };
+    ms(&mut s, json!({"ps1": inch_on.to_str().unwrap()}));
+    ms(&mut s, json!({"unit": "inch"}));
+    ms(&mut s, json!({"ps1": inch_off.to_str().unwrap()}));
+    let ccp = bystar_program_text(&mut s, 1);
+    assert!(ccp.contains("MeasurementSystem=\"Imperial\" Thickness=\"0.118110236\""), "{}", &ccp[..300]);
+    call(&mut s, "export", None, json!({}));
+    // No unit picked: the files decide, as before (B001 from the parameter
+    // file, the unit from the post library).
+    ms(&mut s, json!({"unit": "file"}));
+    let cf1 = d.join("DEMO-INCH.CF1");
+    std::fs::write(&cf1, "A006 25.4 ; inch\n").unwrap();
+    let r = ms(&mut s, json!({"ps1": inch_on.to_str().unwrap(), "cf1": cf1.to_str().unwrap()}));
+    let b001 = r["data"]["switches"].as_array().unwrap().iter().find(|v| v["switch"] == "B001").unwrap().clone();
+    assert_eq!((b001["value"].as_str(), b001["from"].as_str(), r["data"]["unit_from"].as_str()), (Some("1"), Some("file"), Some("file")), "{r}");
+    assert!(bystar_program_text(&mut s, 1).contains("MeasurementSystem=\"Imperial\""));
+    let _ = std::fs::remove_dir_all(&d);
+}

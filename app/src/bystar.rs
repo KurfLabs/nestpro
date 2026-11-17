@@ -317,12 +317,9 @@ impl MachinePost {
     /// on for inch, so the program never says Metric with inch numbers.
     pub fn set_unit(&mut self, inch: Option<bool>) {
         self.unit = inch.map(|i| if i { 25.4 } else { 1.0 });
-        let p = Post::load(self);
-        let b001 = if (p.unit - 25.4).abs() < 1e-9 { "1" } else { "0" };
-        let _ = self.set_switch("B001", b001);
-        if inch.is_none() {
-            self.set.remove("B001");
-        }
+        // B001 is worked out from the unit whenever the post is loaded
+        // (`Post::parse`), so no value of its own is kept.
+        self.set.remove("B001");
     }
 
     /// Set switch `key` (any case) to `value`, checked against its kind.
@@ -330,6 +327,10 @@ impl MachinePost {
     pub fn set_switch(&mut self, key: &str, value: &str) -> Result<(), String> {
         let def = switch(key).ok_or_else(|| format!("{key} isn't one of the post's switches (B000–B050, C001–C013, R000–R007, and this app's X001–X009)"))?;
         let v = value.trim();
+        // BV70: with a program unit picked here, B001 follows it.
+        if def.key == "B001" && self.unit.is_some() {
+            return Err("B001 (inch named in the program) follows the program unit picked for this machine; pick the unit instead (machine-switches unit=mm|inch, or unit=file for the post files' values)".into());
+        }
         if def.kind != Text && v.parse::<f64>().map_or(true, |x| !x.is_finite()) {
             return Err(format!("{}: \"{v}\" isn't a number", def.key));
         }
@@ -463,6 +464,13 @@ impl Post {
             (None, Some(u)) => (u, "file"),
             (None, None) => (1.0, "default"),
         };
+        // BV70: a program unit picked for the machine sets B001 (the unit's
+        // name in the program) whatever the files or other settings say, so
+        // a program never names one unit and is written in the other.
+        if unit_from == "set" {
+            values.insert("B001", if (unit - 25.4).abs() < 1e-9 { "1".to_string() } else { "0".to_string() });
+            from.insert("B001", "set");
+        }
         Post { values, from, tol: num("A005").unwrap_or(0.005), unit, unit_from, modes, pierces, point_type, file_error: None }
     }
 
@@ -1414,12 +1422,15 @@ pub fn cutoff_pieces(pts: &[P], w: f64, h: f64, b003: f64, b004: f64, b005: f64,
     // The far piece: from the pierce on to the end and past a far edge.
     let mut far: Vec<(Vec<P>, Option<bool>)> = vec![];
     if to_edge {
-        // BV38: sensing goes off B004 before the far edge, measured on the
-        // sheet: where the line leaves the sheet, not where it ends (a line
-        // may run on past the edge, as a standard drop's cut does).
+        // BV38: sensing goes off B004 before the line's end (half of what is
+        // left when shorter). A line that runs on past the edge (a standard
+        // drop's cut) keeps that point while it is still on the sheet; only
+        // when it would fall past the edge (the head leaving the sheet with
+        // the sensor on) is it B004 before where the line leaves the sheet.
+        let at_end = |end: f64| if end - b004 >= sp { end - b004 } else { sp + (end - sp) / 2.0 };
         let back: Vec<P> = p.iter().rev().copied().collect();
         let exit = entry(&back, w, h, 0.0).map_or(len, |s| (len - s).clamp(sp, len));
-        let off = if exit - b004 >= sp { exit - b004 } else { sp + (exit - sp) / 2.0 };
+        let off = if at_end(len) <= exit + tol { at_end(len) } else { at_end(exit) };
         let run_up = (sp + b005).min(off);
         far.push((sub_path(&p, sp, run_up), None));
         far.push((sub_path(&p, run_up, off), Some(false)));
@@ -2035,11 +2046,17 @@ fn box_of(pts: &[P]) -> [f64; 4] {
     [lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]]
 }
 
-/// BV71: a remnant is a rectangle: no holes, its area its box's (within
-/// 1 mm² or 0.1 %).
+/// BV71: how far (mm) a remnant's outline may lie off its box's edges and
+/// still be a rectangle.
+pub const RECT_TOL: f64 = 0.01;
+
+/// BV71: a remnant is a rectangle: no holes, every point of its outline on
+/// its box's edges (within `RECT_TOL`), and its area its box's (within
+/// `RECT_TOL` times the box's outline), so a step of any size is not one.
 pub fn is_rectangle(o: &crate::stock::Outline) -> bool {
     let b = box_of(&o.outer);
-    o.holes.is_empty() && (b[2] * b[3] - o.area_mm2()).abs() <= (0.001 * o.area_mm2()).max(1.0)
+    let on_edge = |p: &P| (p[0] - b[0]).abs().min((p[0] - b[0] - b[2]).abs()) <= RECT_TOL || (p[1] - b[1]).abs().min((p[1] - b[1] - b[3]).abs()) <= RECT_TOL;
+    o.holes.is_empty() && o.outer.iter().all(on_edge) && (b[2] * b[3] - o.area_mm2()).abs() <= RECT_TOL * 2.0 * (b[2] + b[3])
 }
 
 /// BV72: a nest's preview picture (X009): 500 × 250 pixels, white, the sheet

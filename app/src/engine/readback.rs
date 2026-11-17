@@ -1074,7 +1074,12 @@ fn full_job_file(file: &str, job: &crate::bvc::JobInfo, in_it: &[usize], nests: 
                 [o.outer.iter().map(|p| p[0]).fold(f64::MAX, f64::min), o.outer.iter().map(|p| p[1]).fold(f64::MAX, f64::min)],
                 [o.outer.iter().map(|p| p[0]).fold(f64::MIN, f64::max), o.outer.iter().map(|p| p[1]).fold(f64::MIN, f64::max)],
             );
-            let fits = |r: &[f64; 4]| (r[0] - lo[0]).abs() <= 0.001 && (r[1] - lo[1]).abs() <= 0.001 && (r[0] + r[2] - hi[0]).abs() <= 0.001 && (r[1] + r[3] - hi[1]).abs() <= 0.001 && (r[2] * r[3] - o.area_mm2()).abs() <= (0.001 * o.area_mm2()).max(1.0);
+            // The listed rectangle is the stored remnant's box, and the
+            // remnant fills it: every point of its outline on the box's edges
+            // and as much area (BV71, 0.01 mm).
+            let on_edge = |p: &P| (p[0] - lo[0]).abs().min((p[0] - hi[0]).abs()) <= 0.01 || (p[1] - lo[1]).abs().min((p[1] - hi[1]).abs()) <= 0.01;
+            let filled = o.holes.is_empty() && o.outer.iter().all(on_edge) && ((hi[0] - lo[0]) * (hi[1] - lo[1]) - o.area_mm2()).abs() <= 0.02 * ((hi[0] - lo[0]) + (hi[1] - lo[1]));
+            let fits = |r: &[f64; 4]| filled && (r[0] - lo[0]).abs() <= 0.001 && (r[1] - lo[1]).abs() <= 0.001 && (r[0] + r[2] - hi[0]).abs() <= 0.001 && (r[1] + r[3] - hi[1]).abs() <= 0.001;
             match left.iter().position(fits) {
                 Some(i) => {
                     left.remove(i);
