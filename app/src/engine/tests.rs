@@ -3129,6 +3129,14 @@ fn an_agents_save_job_books_the_stock_as_the_windows_save_does() {
     assert_eq!(rec.formats[0].made, rem, "the record holds the remnants it stored");
     let j = jobfile::load(&jp).unwrap();
     assert!(!j.booked && j.held.get("S1") == Some(&1), "the job file holds what its record holds");
+    // Undo can't step back past the save to a file that holds none of the
+    // sheets its record holds (stock-book would take them again).
+    assert!(m.contains("Undo can't go back past this save"), "{r}");
+    let e = err(&mut s, "undo", json!({}));
+    assert!(e.contains("Nothing to undo"), "{e}");
+    let j = jobfile::load(&jp).unwrap();
+    assert!(j.library.is_some() && j.held.get("S1") == Some(&1));
+    assert_eq!(in_stock(), 9);
 
     // Unchanged, saved again: nothing more taken.
     let r = call(&mut s, "library", None, json!({"mode": "save-job"}));
@@ -3206,9 +3214,13 @@ fn an_agent_deletes_library_records_but_not_a_job_in_use() {
     let e = err(&mut s, "library", json!({"mode": "delete", "kind": "part", "name": "DEMO-NONE"}));
     assert!(e.contains("no library part is called 'DEMO-NONE'") && e.contains("Nothing was deleted"), "{e}");
 
-    // The part, by name.
+    // The part, by name. The job file isn't that record, so it's left as
+    // it is (not saved again, nor booked).
+    let file = std::fs::metadata(&jp).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
     let r = call(&mut s, "library", None, json!({"mode": "delete", "kind": "part", "name": "DEMO-P1"}));
     assert!(r["message"].as_str().unwrap().starts_with("Deleted library part 'DEMO-P1'"), "{r}");
+    assert_eq!(std::fs::metadata(&jp).unwrap().modified().unwrap(), file, "deleting another record saved the job file");
     assert_eq!(names(&mut s), vec![("job".to_string(), "DEMO-9".to_string())]);
 
     // Sam has the job open in the window on PROG-2: refused, naming them.

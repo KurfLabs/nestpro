@@ -2316,7 +2316,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             if was_booked {
                                 m.push_str(" The record now holds the stock this job file booked; this job file no longer changes the stock by itself: library mode=save-job books its changes.");
                             }
-                            Ok(Outcome { message: m, data: json!({ "id": rec.id }), changed: true, files: vec![Stock::file(&ctx.library_dir)] })
+                            let files = if note.as_deref().is_some_and(|n| !n.is_empty()) { vec![Stock::file(&ctx.library_dir)] } else { vec![] };
+                            Ok(Outcome { message: m, data: json!({ "id": rec.id }), changed: true, files })
                         }
                         // Stopped after the booking (the record couldn't be
                         // written): the job file keeps what was booked, so
@@ -2376,16 +2377,19 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     // what it holds, so saving it again books only what
                     // changed.
                     let mut m = format!("Deleted library {what} '{name}' ({}).", crate::library::auto_ref(k, id));
+                    let mut unlinked = false;
                     if k == L::Job {
                         let n: i32 = held.values().sum();
                         let sheets = held.iter().filter(|(_, n)| **n > 0).map(|(r, n)| format!("{r} ×{n}")).collect::<Vec<_>>().join(", ");
                         m.push_str(&if n > 0 { format!(" The stock is as it was: the {n} sheet(s) it took ({sheets}) stay taken, and its remnants stay in stock (stock mode=add gives sheets back).") } else { " The stock is as it was.".to_string() });
                         if job.library.is_some_and(|r| r.id == id) {
                             job.library = None;
+                            unlinked = true;
                             m.push_str(" This job file was that job: library mode=save-job saves it as a new job.");
                         }
                     }
-                    Ok(Outcome::msg(m))
+                    // Only a job file that was the deleted job changes.
+                    Ok(Outcome { message: m, data: Value::Null, changed: unlinked, files: vec![] })
                 }
                 m => Err(format!("library mode '{m}'?")),
             }
