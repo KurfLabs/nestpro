@@ -37,6 +37,9 @@ pub struct PostConfig {
     pub sign_y: f64,
     /// A024 circles in one move.
     pub circles_one_move: bool,
+    /// The machine is an OMAX waterjet: its programs are `.omx` path files
+    /// (omax.rs), not G-code; the values above then only name old programs.
+    pub omax: bool,
 }
 
 impl Default for PostConfig {
@@ -57,6 +60,7 @@ impl Default for PostConfig {
             sign_x: 1.0,
             sign_y: 1.0,
             circles_one_move: false,
+            omax: false,
         }
     }
 }
@@ -173,8 +177,18 @@ impl PostConfig {
     /// File name of a sheet's program: Expert names it after the job (CFT A007
     /// "CNC name = job name") plus the sheet, with the post's extension.
     pub fn file_name(&self, job: &str, sheet: usize) -> String {
+        if self.omax { Self::name_with(job, sheet, crate::omax::EXTENSION) } else { self.iso_file_name(job, sheet) }
+    }
+
+    /// The G-code program's name, whatever the machine writes now (to
+    /// remove an old one, EXP1).
+    pub fn iso_file_name(&self, job: &str, sheet: usize) -> String {
+        Self::name_with(job, sheet, &self.extension)
+    }
+
+    pub fn name_with(job: &str, sheet: usize, ext: &str) -> String {
         let j: String = job.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_uppercase();
-        format!("{}X{}{}", if j.is_empty() { "JOB".into() } else { j }, sheet, self.extension)
+        format!("{}X{}{}", if j.is_empty() { "JOB".into() } else { j }, sheet, ext)
     }
 }
 

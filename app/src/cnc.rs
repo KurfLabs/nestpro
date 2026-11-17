@@ -2300,7 +2300,7 @@ mod kerf_plan_tests {
         assert_eq!(feeds, vec![(true, 2, 5000.0), (false, 3, 9500.0)]);
         // Pierce times by quality (TT5): 0.2 s for the hole, 0.3 s + pierce type 1 (5 s) outside.
         assert!((p.times.pierce - 5.5).abs() < 1e-9, "{:?}", p.times);
-        // Head up after each contour (H006).
+        // Head down once per contour (H006, CTM12).
         assert!((p.times.head - 1.4).abs() < 1e-9, "{:?}", p.times);
         // The outside's cut takes its length at 9500 mm/min plus the corner stops.
         let out = &p.contours[1];

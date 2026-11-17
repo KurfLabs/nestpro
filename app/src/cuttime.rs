@@ -74,7 +74,7 @@ pub struct TimeSettings {
     pub v90: f64,
     /// D001 (with D169 = 1): beam-off time, s.
     pub cut_off: f64,
-    /// H006 / H007: head up / head down, s.
+    /// H005 / H006: head up / head down, s (CTM12). H007 is a sheet-clamp time.
     pub head_up: f64,
     pub head_down: f64,
     /// O / P / Q acceleration records: rapids, straight cuts, arcs (CTM6).
@@ -158,8 +158,8 @@ impl TimeSettings {
                 (b'D', 167) => s.precut_pct = num.unwrap_or(100.0),
                 (b'D', 168) => s.v90 = num.unwrap_or(NO_LIMIT),
                 (b'D', 169) => cutoff_mode = num.unwrap_or(1.0) as i64,
-                (b'H', 6) => s.head_up = num.unwrap_or(0.0),
-                (b'H', 7) => s.head_down = num.unwrap_or(0.0),
+                (b'H', 5) => s.head_up = num.unwrap_or(0.0),
+                (b'H', 6) => s.head_down = num.unwrap_or(0.0),
                 (b'N', 1..=23) => s.factors[n - 1] = num.unwrap_or(1.0),
                 (b'S', 1) => s.jerk = num.unwrap_or(0.0) > 0.0,
                 (b'O' | b'P' | b'Q', _) => {
@@ -474,11 +474,19 @@ mod tests {
     }
 
     #[test]
+    fn head_up_is_h005_and_head_down_h006() {
+        // CTM12: H005 up, H006 down; H007 belongs to the sheet clamps.
+        let s = TimeSettings::from_text("H005 0.2\nH006 0.3\nH007 0.4\n");
+        assert_eq!((s.head_up, s.head_down), (0.2, 0.3));
+    }
+
+    #[test]
     fn the_template_time_file_is_read() {
         let s = template();
         assert_eq!(s.pierce_mode, PierceMode::Table);
         assert_eq!((s.cut_source, s.mark_source), (SpeedSource::Table, SpeedSource::Table));
-        assert_eq!(s.head_up, 0.7);
+        // The template's 0.7 s is H006, the head going down (CTM12).
+        assert_eq!((s.head_up, s.head_down), (0.0, 0.7));
         assert_eq!(s.arc_acc[0].acc, [8000.0, 8000.0]);
         assert!(s.jerk);
         // No Q record: arcs use the straight-cut record (CTM6).
