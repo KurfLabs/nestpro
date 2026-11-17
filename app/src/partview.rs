@@ -274,6 +274,9 @@ impl App {
                 if p.tech.is_some() {
                     chip(ui, "T", th().accent_soft, th().accent_fg);
                 }
+                if p.rots.grain {
+                    chip(ui, "G", th().warn_bg, th().warn_fg).on_hover_text(format!("Grain: {}", crate::engine::grain::lock_of(p).label()));
+                }
             });
         }
         if let Some(k) = pick {
@@ -442,6 +445,7 @@ impl App {
             // Every contour in its state or quality colour (CS7).
             crate::cutpanel::paint_contour_colours(&painter, part, &mt, &to_s, 1.6, self.cut_panel.open, (!machined).then_some(edge));
         }
+        crate::grainui::paint_grain_callout(&painter, part, &to_s);
         // Painting with the cut technology panel (CS6), or picking the cut
         // order (CO11): clicks, boxes and sweeps take contours instead of
         // picking elements.

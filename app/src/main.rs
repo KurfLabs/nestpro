@@ -11,6 +11,7 @@ mod cnc;
 mod engine;
 mod filewatch;
 mod gas;
+mod grainui;
 mod mcp;
 mod ct1;
 mod cutpanel;

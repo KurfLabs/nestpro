@@ -136,6 +136,7 @@ const QUALITIES: &[&str] = &["auto", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 const CUT_QUALITIES: &[&str] = &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 const TEXTS: &[&str] = &["mark", "special", "note"];
 const CONTOUR_STATES: &[&str] = &["cut", "mark", "no-cut", "bend-line", "leave-out"];
+const GRAIN_LOCKS: &[&str] = &["free", "grain", "fixed"];
 
 pub static OPS: &[Op] = &[
     // --- job ---
@@ -179,9 +180,13 @@ pub static OPS: &[Op] = &[
         a("contours", Ty::Str, "Contour choices, in order, as contour-tech makes them: \"CONTOURS=WHAT; …\" with WHAT a state (cut, mark, no-cut, bend-line, leave-out), quality 1-12 or auto, and/or same, e.g. \"7=mark; 1=leave-out; 2=quality 1 same\""),
         a("qty", Ty::Int, "Quantity for every imported part (default: the file's, else from the file name, else 1)"), a("name", Ty::Str, "Reference (one part only)"), a("group", Ty::Str, "Group for the imported parts"),
     ] },
-    Op { name: "edit-part", group: "Parts", kind: Kind::Write, help: "Change a part's reference, quantity, size (built-in shapes), rotations or group. Changing the size of a part with technology needs tech=copy (keep it, change a copy) or tech=drop (remove its technology).", args: &[
+    Op { name: "edit-part", group: "Parts", kind: Kind::Write, help: "Change a part's reference, quantity, size (built-in shapes), rotations, grain lock or group. Changing the size of a part with technology needs tech=copy (keep it, change a copy) or tech=drop (remove its technology).", args: &[
         PART, a("name", Ty::Str, "New reference"), a("qty", Ty::Int, "Quantity ordered"), a("w", Ty::Num, "Length X, mm (built-in shapes)"), a("h", Ty::Num, "Width Y, mm (built-in shapes)"),
         a("rotate", Ty::Bool, "May turn 90°"), a("mirror", Ty::Bool, "May be mirrored"), a("group", Ty::Str, "Group"), c("tech", &["copy", "drop"], "Size change on a part with technology"),
+        c("grain", GRAIN_LOCKS, "Grain lock: free (its rotations decide), grain (the sheet's grain runs along the part's X as drawn: nested at 0° and 180° only, never across the grain) or fixed (0° only)"),
+    ] },
+    Op { name: "turn-part", group: "Parts", kind: Kind::Write, help: "Turn a part's own drawing by a quarter turn, with its contours, texts, picked lead-ins and micro-joints, so it is drawn the way the sheet's grain (along the sheet's length, X) must run through it. A part with no grain lock is kept to the grain from then on (grain, see edit-part). Copies already nested stay where they are on the sheet; nest again so they follow the grain. To turn a nested copy on the sheet instead, use rotate or turn.", args: &[
+        PART, r("by", Ty::Int, "Degrees counter-clockwise: 90 (left), 180, or -90 (right)"),
     ] },
     Op { name: "remove-part", group: "Parts", kind: Kind::Write, help: "Take a part out of the job (its placed copies go too).", args: &[PART] },
     Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default; each cut or marked contour's place in the cut order, cut_order from 1, and cut_order_by_hand when set with part-cut-order), the whole cut order (contours in the order cut, and those set by hand), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
@@ -853,7 +858,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         if (n as u32) < p.qty && !job.sheets.is_empty() {
             let (w, h) = p.bbox();
             let fits = |a: f64, b: f64| a <= job.spec.w - 2.0 * job.spec.margin && b <= job.spec.h - 2.0 * job.spec.margin;
-            let why = if !fits(w, h) && !(p.rotate && fits(h, w)) { " — larger than the sheet" } else { "" };
+            let why = if !fits(w, h) && !(p.may_turn_90() && fits(h, w)) { " — larger than the sheet" } else { "" };
             warnings.push(format!("{}: {} of {} nested{why}", p.name, n, p.qty));
         }
     }
@@ -943,7 +948,7 @@ fn part_info(job: &JobFile, i: usize) -> Value {
         "area_mm2": r1(p.net_area()), "cut_len_mm": r1(p.cut_length()),
         // MA26: at the job's material and thickness.
         "weight_kg": (crate::cnc::weight_kg(job.spec.material, p.net_area(), job.spec.thickness) * 1000.0).round() / 1000.0,
-        "rotations": { "turn_90": p.rotate, "plain": p.rots.plain, "mirrored": p.rots.mirrored },
+        "rotations": { "turn_90": p.rotate, "plain": p.rots.plain, "mirrored": p.rots.mirrored, "grain": super::grain::lock_of(p).key() },
         "contours": contours,
         "cut_order": {
             "contours": order.iter().map(|o| o.0 + 1).collect::<Vec<_>>(),
@@ -1926,8 +1931,17 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             if let Some(v) = a.bool("rotate")? {
                 d.rotate = v;
             }
+            // GR2: a mirror change keeps the grain lock (Fixed stays 0° only).
+            let lock = super::grain::lock_of(&d);
             if let Some(v) = a.bool("mirror")? {
                 d.rots.mirrored = [v; 4];
+                if lock != super::grain::Lock::Free {
+                    super::grain::set_lock(&mut d, lock);
+                }
+            }
+            if let Some(v) = a.str("grain") {
+                let lock = super::grain::Lock::from_key(&v).ok_or_else(|| format!("grain={v}? Say free, grain or fixed."))?;
+                super::grain::set_lock(&mut d, lock);
             }
             if let Some(v) = a.str("group") {
                 d.group = v;
@@ -1970,6 +1984,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 job.stale = true;
             }
             Ok(Outcome::msg(format!("Part {} '{}' changed.", i + 1, job.parts[i].name)))
+        }
+        "turn-part" => {
+            let i = one_part(job, &a)?;
+            let by = a.int("by")?.ok_or("Say by=90 (left), by=180 or by=-90 (right).")?;
+            let done = super::grain::turn_part(&mut job.parts, &mut job.sheets, i, by as i32)?;
+            if done.nested {
+                job.stale = true;
+            }
+            Ok(Outcome::msg(done.message))
         }
         "remove-part" => {
             let i = one_part(job, &a)?;
@@ -3320,6 +3343,9 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Parts/Back to\nnesting", "view: switches screens"),
     ("Parts/Previous\npart", "view: parts are named by number"),
     ("Parts/Next\npart", "view: parts are named by number"),
+    ("Grain/Turn\nleft", "turn-part"),
+    ("Grain/Turn\nright", "turn-part"),
+    ("Grain/Lock", "edit-part"),
     ("Draw/Points", "todo: [DRW-1] drafting (greyed out in the app too)"),
     ("Draw/Shapes", "todo: [DRW-1] drafting (greyed out in the app too)"),
     ("Draw/Delete\ngeometry", "todo: [DRW-1] drafting (greyed out in the app too)"),
