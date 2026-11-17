@@ -131,6 +131,17 @@ impl Default for LeadQuality {
     }
 }
 
+/// B184 as written in a CT1: `OFF` / `ON`, or a number (0 = off; the original
+/// keeps one bit per cutting type, any bit set counts as on here — estimate, AL12).
+fn by_quality(v: Option<&String>) -> Option<bool> {
+    let w = v?.split_whitespace().next()?;
+    match w.to_ascii_uppercase().as_str() {
+        "OFF" => Some(false),
+        "ON" => Some(true),
+        _ => w.parse::<f64>().ok().map(|x| x != 0.0),
+    }
+}
+
 /// All qualities plus the global lead codes of the CT1.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LeadTable {
@@ -225,6 +236,15 @@ impl LeadTable {
                 if let Some(v) = num(&format!("E{}", 814 + 8 * (q - 1) + k)) {
                     l.recs[k].overlap = v;
                 }
+            }
+        }
+        // B184 "manage leads by quality" off: every quality cuts with quality 1's
+        // leads, and the E block is not used (AL12). A file without B184 keeps
+        // each quality's own table (our choice).
+        if by_quality(m.get("B184")) == Some(false) {
+            let q1 = t.q[0].clone();
+            for l in t.q.iter_mut().skip(1) {
+                *l = q1.clone();
             }
         }
         t
@@ -725,11 +745,15 @@ pub fn local_lead_in(form: u8, d: f64, a: f64, r: f64, tol: f64) -> Vec<P> {
     }
 }
 
-/// Laser arc leads (rule AL9), lead-in in
-/// the local frame. Type 13: a straight of D, then an arc of R sweeping 90° − A
-/// that arrives along +x. Type 12: a straight of D parallel to the contour at
+/// Laser arc leads (rules AL9, AL13), lead-in in
+/// the local frame. Type 13: a straight of D, then an arc of R that arrives
+/// along +x; on a straight contour the arc sweeps 90° − A. On a round contour
+/// (`round` = its radius and whether it is a hole) the straight lies on the
+/// tangent from the circle's centre to the lead arc (turned by A), so the arc
+/// sweeps 180° − acos(R/(r − R)) − A in a hole and acos(R/(r + R)) − A on a
+/// round part (AL13). Type 12: a straight of D parallel to the contour at
 /// height 2R (coming back against the cut), then a half circle down to the start.
-pub fn local_laser_in(kind: u8, d: f64, a: f64, r: f64) -> Vec<P> {
+pub fn local_laser_in(kind: u8, d: f64, a: f64, r: f64, round: Option<(f64, bool)>) -> Vec<P> {
     let pi = std::f64::consts::PI;
     if kind == 12 {
         let mut v = vec![[d, 2.0 * r], [0.0, 2.0 * r]];
@@ -737,10 +761,20 @@ pub fn local_laser_in(kind: u8, d: f64, a: f64, r: f64) -> Vec<P> {
         v
     } else {
         let a = a.to_radians().clamp(0.0, 0.5 * pi);
-        let (f0, f1) = (pi + a, 1.5 * pi);
+        // The arc's sweep: 90° − A on a straight contour; on a circle the
+        // tangent from its centre sets it (AL13). A lead arc too big for the
+        // circle, or an angle that leaves no arc, keeps the straight-contour shape (our choice).
+        let sweep = match round {
+            Some((rc, true)) if r > 0.0 && rc - r > r => pi - (r / (rc - r)).acos() - a,
+            Some((rc, false)) if r > 0.0 && rc > 0.0 => (r / (rc + r)).acos() - a,
+            _ => 0.5 * pi - a,
+        };
+        let sweep = if sweep > 0.0 { sweep } else { 0.5 * pi - a };
+        let (f0, f1) = (1.5 * pi - sweep, 1.5 * pi);
         let arc: Vec<P> = (0..=ARC_STEPS).map(|k| f0 + (f1 - f0) * k as f64 / ARC_STEPS as f64).map(|f| [r * f.cos(), r + r * f.sin()]).collect();
         let s = arc[0];
-        let mut v = vec![[s[0] - d * a.sin(), s[1] + d * a.cos()]];
+        // The straight arrives at the arc's start along its tangent.
+        let mut v = vec![[s[0] + d * f0.sin(), s[1] - d * f0.cos()]];
         v.extend(arc);
         v
     }
@@ -871,10 +905,11 @@ fn build_rec(pts: &[P], inner: bool, r: &LeadRec, circle: Option<(P, f64)>, tol:
         }
         12 | 13 => {
             let ov = r.overlap.clamp(0.0, per / 2.0);
-            let lin = to_world(&local_laser_in(r.kind, r.d_in, r.a_in, r.r_in), start, t_first, n_first);
+            let round = circle.map(|(_, rc)| (rc, inner));
+            let lin = to_world(&local_laser_in(r.kind, r.d_in, r.a_in, r.r_in, round), start, t_first, n_first);
             let lout = if out_ok(r.r_out) || out_ok(r.d_out) {
                 let (o, t, n) = out_frame(pts, inner, circle, ov);
-                to_world(&mirror_out(local_laser_in(r.kind, r.d_out, r.a_out, r.r_out)), o, t, n)
+                to_world(&mirror_out(local_laser_in(r.kind, r.d_out, r.a_out, r.r_out, round)), o, t, n)
             } else {
                 vec![]
             };
@@ -1274,6 +1309,86 @@ mod lead_tests {
         assert!((r13.r_in - 10.0 / 3.0).abs() < 1e-9 && (r13.d_in - (100.0f64 - 20.0 * 10.0 / 3.0).sqrt()).abs() < 1e-9);
         let g = build(&pts, true, &LeadRec::new(13, (7.0, 5.0), (0.0, 0.0), (7.5, 5.5)), circle, true, LIN_TOL);
         assert!(g.lead_in.iter().chain(g.lead_out.iter()).all(|q| dist(*q, [50.0, 50.0]) <= 10.0 + 1e-6));
+    }
+
+    /// Sweep (degrees) of a type 13 lead-in's arc: from its start (lead_in[1]) to
+    /// the contour (the last point), about the arc's centre `l`.
+    fn sweep_deg(g: &LeadGeo, l: P) -> f64 {
+        let (s, e) = (g.lead_in[1], *g.lead_in.last().unwrap());
+        let (a, b) = ([s[0] - l[0], s[1] - l[1]], [e[0] - l[0], e[1] - l[1]]);
+        (a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]).abs().to_degrees()
+    }
+
+    #[test]
+    fn laser_arc_leads_on_round_holes_aim_their_straight_at_the_centre() {
+        // AL13: on a circle the straight of a type 13 lead lies on the tangent from
+        // the centre to the lead arc (turned by A), not across the cut as on a line.
+        let c = crate::nest::circle(50.0, 50.0, 10.0, 96);
+        let (_, circle) = classify(&c, true);
+        let (cc, rc) = circle.unwrap();
+        let pts = crate::cnc::start_at_point(c.clone(), [50.0, 40.0]);
+        let wall = |p: P| rc - dist(p, cc);
+        // The machine table's round hole (D 7, A 0, R 7.5) limited to the centre:
+        // R = r/3, D = √(r² − 2rR) = the tangent's length, so the pierce is the centre.
+        let g = build(&pts, true, &LeadRec { overlap: 0.0, ..LeadRec::new(13, (7.0, 0.0), (0.0, 0.0), (7.5, 0.0)) }, circle, true, LIN_TOL);
+        assert!(dist(g.lead_in[0], cc) < 0.05, "{:?}", g.lead_in[0]);
+        // With A 45: the arc sweeps 180° − acos(R/(r − R)) − 45° = 75°, and the
+        // pierce is 4.9 mm from the wall (the straight-line rule put it at 1.9 mm).
+        let g = build(&pts, true, &LeadRec { overlap: 0.0, ..LeadRec::new(13, (7.0, 0.0), (45.0, 0.0), (7.5, 0.0)) }, circle, true, LIN_TOL);
+        assert!((wall(g.lead_in[0]) - 4.90).abs() < 0.05, "{}", wall(g.lead_in[0]));
+        let r = rc / 3.0;
+        assert!((sweep_deg(&g, [50.0, 40.0 + r]) - 75.0).abs() < 0.5, "{}", sweep_deg(&g, [50.0, 40.0 + r]));
+        assert!(g.lead_in.iter().all(|q| dist(*q, cc) <= rc + 1e-6));
+        // A stainless hole of the shop's kind: Ø14.29, R 2, A 45 → 67.9°, as the real programs cut it.
+        let c = crate::nest::circle(0.0, 0.0, 14.29 / 2.0, 96);
+        let (_, circle) = classify(&c, true);
+        let pts = crate::cnc::start_at_point(c.clone(), [0.0, -14.29 / 2.0]);
+        let g = build(&pts, true, &LeadRec { overlap: 0.0, ..LeadRec::new(13, (2.0, 0.0), (45.0, 0.0), (2.0, 0.0)) }, circle, true, LIN_TOL);
+        let rc = circle.unwrap().1;
+        assert!((sweep_deg(&g, [0.0, -rc + 2.0]) - 67.9).abs() < 0.5, "{}", sweep_deg(&g, [0.0, -rc + 2.0]));
+    }
+
+    #[test]
+    fn laser_arc_leads_on_round_parts_point_away_from_the_centre() {
+        // AL13: a round part's type 13 lead: the straight lies on the line from the
+        // part's centre, and the arc sweeps acos(R/(r + R)) − A.
+        let c = crate::nest::circle(50.0, 50.0, 10.0, 96);
+        let (_, circle) = classify(&c, false);
+        let (cc, rc) = circle.unwrap();
+        let pts = crate::cnc::start_at_point(c.clone(), [50.0, 40.0]);
+        let g = build(&pts, false, &LeadRec { overlap: 0.0, ..LeadRec::new(13, (5.0, 0.0), (0.0, 0.0), (2.0, 0.0)) }, circle, false, LIN_TOL);
+        let (p, t) = (g.lead_in[0], g.lead_in[1]);
+        let cross = (t[0] - p[0]) * (cc[1] - p[1]) - (t[1] - p[1]) * (cc[0] - p[0]);
+        assert!(cross.abs() < 0.05 * dist(t, p) * dist(cc, p), "pierce, arc start and centre in line");
+        assert!(dist(p, cc) > dist(t, cc), "the pierce is further out than the arc's start");
+        let want = (2.0 / (rc + 2.0)).acos().to_degrees();
+        assert!((sweep_deg(&g, [50.0, 38.0]) - want).abs() < 0.5, "{} vs {want}", sweep_deg(&g, [50.0, 38.0]));
+        // A straight contour keeps the 90° − A arc.
+        let line = rect(100.0, 50.0);
+        let g = build(&line, false, &LeadRec { overlap: 0.0, ..LeadRec::new(13, (5.0, 0.0), (30.0, 0.0), (2.0, 0.0)) }, None, false, LIN_TOL);
+        assert!((sweep_deg(&g, g.lead_in.last().map(|e| [e[0], e[1] - 2.0]).unwrap()) - 60.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn leads_by_quality_off_gives_every_quality_the_first_ones() {
+        // AL12: B184 OFF → qualities 2–12 cut with quality 1's (B block) leads.
+        let codes = |b184: Option<&str>| {
+            let mut m: HashMap<String, String> = [("B206", "13"), ("B216", "0.0"), ("E000", "1"), ("E006", "13"), ("E016", "45.0"), ("E071", "1"), ("E087", "45.0")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            if let Some(v) = b184 {
+                m.insert("B184".into(), v.into());
+            }
+            m
+        };
+        let t = LeadTable::from_codes(&codes(Some("OFF")));
+        assert_eq!(t.quality(3), t.quality(1));
+        assert_eq!(t.quality(3).recs[0].a_in, 0.0);
+        let t = LeadTable::from_codes(&codes(Some("0")));
+        assert_eq!(t.quality(2).recs[0].a_in, 0.0);
+        for on in [Some("ON"), Some("255"), None] {
+            let t = LeadTable::from_codes(&codes(on));
+            assert_eq!(t.quality(3).recs[0].a_in, 45.0, "{on:?}");
+            assert_eq!(t.quality(1).recs[0].a_in, 0.0);
+        }
     }
 
     #[test]
