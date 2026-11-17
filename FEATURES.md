@@ -394,6 +394,8 @@ original (or a real job).
 | AGT-1 | The window notices when an agent changed the open job file and reloads it (asks when both changed) | 2026-11-04 (`filewatch.rs`) |
 | AGT-2 | Agent operation for the Lantek import XML (`import-xml`) | 2026-11-04 (`engine/imports.rs`) |
 | AGT-3 | Agent operation for opening a BLM LC5 program set (`import-program`) | 2026-11-04 (`engine/imports.rs`) |
+| AGT-8 | Agents' `library mode=save-job` books the stock as the window's save does: under the write lock after the save checks (a refused save takes nothing), remnants under their automatic names, a job file booked before its first save handing its booking over without taking it twice; the reply says what was booked | 2026-11-17 (`engine::ops` `library`, `JobFile::stock_on_save`, MECHANICS LB10) |
+| AGT-9 | Agents' `library mode=delete` deletes a library job or part as the window's 🗑 does; a job in use is refused naming who and since when; the stock is left as it is, as in the window | 2026-11-17 (`engine::ops` `library`, MECHANICS LB17) |
 | — | Agent operations on the window's stock: `stock`, `stock-book`, `sheet-add`, `sheet-change`, `sheet-delete`, `nest stock=` | 2026-11-04 (`engine/stockflow.rs`, MECHANICS SA1–SA6) |
 | — | Command line and MCP server on a shared engine; every ribbon command mapped | 2026-11-04 |
 | — | **Nest sheet**: re-nest only the current sheet's parts onto that sheet, other sheets untouched (ribbon, Nesting Explorer right-click, agents' `renest-sheet`) | 2026-11-04 (`engine::renest_sheet`, MECHANICS RN1–RN6: group zones, stock remnants rebuilt, undo keeps cut lines and follows the stock) |

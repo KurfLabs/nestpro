@@ -5776,13 +5776,19 @@
  {
   "name": "agents: stock on a library job",
   "group": "shared library",
-  "value": "stock-book book and release refused on a job file opened from or saved into the Library (its sheets are booked when someone saves it in the window); status still answers",
+  "value": "stock-book book and release refused on a job file opened from or saved into the Library (its sheets are booked when it is saved into the Library); status still answers",
   "source": "MECHANICS LB10; estimated"
  },
  {
   "name": "agents: a booked job file saved into the Library",
   "group": "shared library",
-  "value": "save-job hands the file's booking to the record (the record keeps its sheets and remnants) and the file stops following the stock (booked off), as one opened from the Library; later changes are booked when someone saves the job in the window",
+  "value": "save-job brings the file's booking in step (nothing taken twice) and hands it to the record; the file stops following the stock by itself (booked off), as one opened from the Library; later changes are booked at its next save-job",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
+  "name": "agents: save-job and the stock",
+  "group": "shared library",
+  "value": "booked as the window's save under the write lock after the revision and name checks: sheets taken or given back, remnants stored (when the settings store them on save) under automatic names; a refused save takes nothing; the reply says what was booked",
   "source": "MECHANICS LB10; estimated"
  },
  {
@@ -5934,6 +5940,12 @@
   "group": "shared library",
   "value": "the lists say so in LB11's words, once; later looks are made in the background until it's back, then everything is read again",
   "source": "MECHANICS LB16; estimated"
+ },
+ {
+  "name": "agents: delete a library job or part",
+  "group": "shared library",
+  "value": "library mode=delete (kind, id or name) as the window's delete; a job in use refused naming who and since when; the stock is left as it is",
+  "source": "MECHANICS LB17; estimated"
  },
  {
   "name": "warn when a job is in use (fresh install)",

@@ -205,9 +205,10 @@ pub static OPS: &[Op] = &[
         c("quality", CUT_QUALITIES, "all-quality: the machine's cut quality 1-12, as part-info shows each contour's"),
     ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
-    Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it (each record with who last saved it and when: saved_by, e.g. \"sam on PROG-2 (agent)\", and saved_at in this PC's local time), open a library job into this job file, add a library product to the job, or save parts / the job into it (recorded as saved by this PC's user, marked (agent)). A job opened from the library, or saved into it, saves over its own record; a save over a job or library part someone else saved since this job file read it is refused, saying who and when (LB7, LB10).", args: &[
-        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do. open: this job file becomes the library job (its own changes are dropped; it leaves the stock alone: its sheets are booked when someone saves it in the window). save-job: over the job's own record, or a new record; a job file booked with stock-book hands its booking to the record and no longer follows the stock (LB10); job names are unique across the Library, whatever their capitals; list marks old jobs that share a name (same_name_as)", choices: &["list", "open", "add", "save-part", "save-job"] },
-        a("find", Ty::Str, "list: text to look for"), a("id", Ty::Int, "add: the product's record number; open: the job's"), a("name", Ty::Str, "add: the product's name; open: the job's"),
+    Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it (each record with who last saved it and when: saved_by, e.g. \"sam on PROG-2 (agent)\", and saved_at in this PC's local time), open a library job into this job file, add a library product to the job, save parts / the job into it (recorded as saved by this PC's user, marked (agent)), or delete a job or part from it. A job opened from the library, or saved into it, saves over its own record; saving it books its sheets and remnants against the stock as the window's save does, and the reply says what was booked. A save over a job or library part someone else saved since this job file read it is refused, saying who and when, and takes nothing from stock (LB7, LB8, LB10). A job someone has in use can't be saved over or deleted (CU12, LB17).", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do. open: this job file becomes the library job (its own changes are dropped; it holds what the record holds, and leaves the stock alone until it's saved). save-job: over the job's own record, or a new record, booking the stock as the window's save does (its sheets taken, the ones it no longer uses given back, remnants stored under their automatic names; LB10); a job file booked with stock-book hands its booking to the record, nothing taken twice, and no longer follows the stock by itself; job names are unique across the Library, whatever their capitals; list marks old jobs that share a name (same_name_as). delete: a library job or part (kind=, with id or name); the stock is left as it is, as in the window (LB17)", choices: &["list", "open", "add", "save-part", "save-job", "delete"] },
+        a("find", Ty::Str, "list: text to look for"), a("id", Ty::Int, "add: the product's record number; open: the job's; delete: the record's"), a("name", Ty::Str, "add: the product's name; open: the job's; delete: the record's"),
+        c("kind", &["job", "part"], "delete: a library job or a library part"),
         a("qty", Ty::Int, "add: quantity"), a("parts", Ty::Parts, "save-part: which parts"), a("folder", Ty::Str, "save-part: the part folder a new library part goes into, its path (\"Acme/2026-11\", made if missing; default: the one named like the job's week); a part already in the Library stays where it is"),
         a("copy", Ty::Bool, "save-job: save as a new job under the first free name (\"DEMO-7 (1)\") instead of over its record; the copy holds no stock of the original (default false)"),
     ] },
@@ -343,7 +344,7 @@ pub static OPS: &[Op] = &[
         a("min_w", Ty::Num, "list: shortest length"), a("max_w", Ty::Num, "list: longest length"), a("min_h", Ty::Num, "list: narrowest width"), a("max_h", Ty::Num, "list: widest width"),
         a("show_zero", Ty::Bool, "list: also items at quantity 0"), a("remnants", Ty::Str, "list: \"only\", \"none\" or \"all\" (default)"),
     ] },
-    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. When a sheet the job is nested on has gone (another PC or job took it), nothing is booked and the reply says who took it and when: nest again to use what's in stock now. release gives the sheets back and takes its unused remnants out again. A job file that is a library job (opened from the Library, or saved into it) isn't booked or released here: its sheets are booked when someone saves it in the window, and a booked job file saved into the Library (library mode=save-job) hands its booking to the record (LB10).", args: &[
+    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. When a sheet the job is nested on has gone (another PC or job took it), nothing is booked and the reply says who took it and when: nest again to use what's in stock now. release gives the sheets back and takes its unused remnants out again. A job file that is a library job (opened from the Library, or saved into it) isn't booked or released here: its sheets are booked when it's saved into the Library (library mode=save-job, or the window's Save to library), and a booked job file saved into the Library hands its booking to the record (LB10).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "book, release or status", choices: &["book", "release", "status"] },
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
     ] },
@@ -2277,23 +2278,53 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     // A name another job in the Library holds is refused (JX16);
                     // checked again under the write lock as it's saved.
                     lib.check_job_name(&job.name, to.id()).map_err(|e| format!("{e} (rename name=…), then save-job again. Nothing was saved"))?;
-                    match lib.save_job_in(job, to, folder) {
+                    // Booked as the window's save books it (LB8, LB10): under
+                    // the write lock, after the revision and name checks, so a
+                    // save refused for either takes nothing from stock. What
+                    // the job file holds (as read from its record, or booked
+                    // with stock-book before its first save) is only brought
+                    // in step, never taken again. New remnants get their
+                    // automatic names.
+                    let (name, material) = (job.name.clone(), job.spec.material);
+                    let mut note: Option<String> = None;
+                    let r = lib.save_job_with(to, &name, folder, material, || {
+                        note = Some(job.stock_on_save(ctx, false, None));
+                        Ok(job.clone())
+                    });
+                    let was_booked = std::mem::replace(&mut job.booked, false);
+                    // What was booked, said as stock-book says it.
+                    let stock = note.as_deref().map_or_else(String::new, |note| match (note.is_empty(), stockflow::sheets_used(&job.formats, job.sheets.len()) == job.held) {
+                        (true, _) => " Stock: it already matches the job.".to_string(),
+                        (false, true) => format!(" Stock booked: {note}."),
+                        (false, false) => format!(" Stock not booked: {note}."),
+                    });
+                    match r {
                         Ok(rec) => {
                             job.library = Some(rec);
                             let mut m = if to == SaveTo::New { format!("Saved job '{}' into the library as record {}.", job.name, rec.id) } else { format!("Saved job '{}' over its library record {}.", job.name, rec.id) };
-                            // A booked job file hands its booking to the record
-                            // and stops following the stock, as one opened from
-                            // the Library does (LB10): following it still, a
-                            // later save refused because someone saved the job
-                            // since would leave its changes taken twice.
-                            if job.booked {
-                                job.booked = false;
-                                m.push_str(" The record keeps the stock this job file booked; from now on its sheets are booked when someone saves it in the window, so this job file no longer changes the stock.");
+                            m.push_str(&stock);
+                            // A job file booked with stock-book hands its booking
+                            // to the record (LB10): what it held was brought in
+                            // step above, not taken again, and from now on its
+                            // changes are booked when it's saved into the Library
+                            // again (a later save refused because someone saved
+                            // the job since books nothing).
+                            if was_booked {
+                                m.push_str(" The record now holds the stock this job file booked; this job file no longer changes the stock by itself: library mode=save-job books its changes.");
                             }
-                            Ok(Outcome { message: m, data: json!({ "id": rec.id }), changed: true, files: vec![] })
+                            Ok(Outcome { message: m, data: json!({ "id": rec.id }), changed: true, files: vec![Stock::file(&ctx.library_dir)] })
                         }
+                        // Stopped after the booking (the record couldn't be
+                        // written): the job file keeps what was booked, so
+                        // saving again books only what changed since (LB13).
+                        Err(Refused::Failed(e)) if note.is_some() => Ok(Outcome {
+                            message: format!("Not saved into the library: {e}.{stock} This job file keeps that booking: library mode=save-job again saves it and books only what changed since."),
+                            data: json!({ "saved": false }),
+                            changed: true,
+                            files: vec![Stock::file(&ctx.library_dir)],
+                        }),
                         Err(Refused::Changed(c)) => Err(format!(
-                            "Library job '{}' ({}) was saved by {} since this job file read it. Nothing was saved. To work on theirs, read it again with library mode=open id={} (this file's changes are dropped); to keep yours, save it as a new job with library mode=save-job copy=true.",
+                            "Library job '{}' ({}) was saved by {} since this job file read it. Nothing was saved and nothing taken from stock. To work on theirs, read it again with library mode=open id={} (this file's changes are dropped); to keep yours, save it as a new job with library mode=save-job copy=true.",
                             c.name,
                             crate::library::auto_ref(crate::library::Kind::Job, c.id),
                             c.saved_by_stamp(&ctx.clock),
@@ -2304,6 +2335,53 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         Err(Refused::InUse(u)) => Err(crate::engine::inuse::agent_refusal(&u, &ctx.clock, "Nothing was saved. To keep this job file's changes now, save it as a new job with library mode=save-job copy=true; library mode=list says which jobs are in use (in_use).")),
                         Err(Refused::Failed(e)) => Err(e),
                     }
+                }
+                "delete" => {
+                    // As the window's 🗑 and "Delete from the library" (LB17):
+                    // the record goes, its place in its folder tree with it;
+                    // a job someone has in use is refused, naming who and
+                    // since when (CU11, CU12). Like the window, the stock is
+                    // left as it is: a deleted job's sheets stay taken and
+                    // its remnants stay in stock.
+                    use crate::library::Kind as L;
+                    let k = match a.str("kind").as_deref() {
+                        Some("job") => L::Job,
+                        Some("part") => L::Product,
+                        _ => return Err("library delete needs kind=job or kind=part, and the record's 'id' or 'name' (library mode=list)".into()),
+                    };
+                    let what = if k == L::Job { "job" } else { "part" };
+                    let list: Vec<Entry> = lib.entries().into_iter().filter(|e| e.kind == k).collect();
+                    let e = match (a.int("id")?, a.str("name")) {
+                        (Some(id), _) => list.iter().find(|e| e.id == id as u64).ok_or_else(|| format!("no library {what} is record {id} — see library mode=list. Nothing was deleted."))?,
+                        (None, Some(n)) => {
+                            let same: Vec<&Entry> = list.iter().filter(|e| e.name == n).collect();
+                            let same = if same.is_empty() { list.iter().filter(|e| e.name.eq_ignore_ascii_case(&n)).collect() } else { same };
+                            match same[..] {
+                                [e] => e,
+                                [] => return Err(format!("no library {what} is called '{n}' — see library mode=list. Nothing was deleted.")),
+                                _ => return Err(format!("{} library {what}s are called '{n}' (records {}): give the record's id. Nothing was deleted.", same.len(), same.iter().map(|e| e.id.to_string()).collect::<Vec<_>>().join(", "))),
+                            }
+                        }
+                        _ => return Err(format!("library delete needs the {what}'s 'id' or 'name' (library mode=list)")),
+                    };
+                    let (id, name) = (e.id, e.name.clone());
+                    let held = if k == L::Job { lib.load_job(id).map(|j| j.held).unwrap_or_default() } else { Default::default() };
+                    lib.delete(k, id)?;
+                    // A job file that was this library job is one no longer
+                    // (the window does the same with its open job); it keeps
+                    // what it holds, so saving it again books only what
+                    // changed.
+                    let mut m = format!("Deleted library {what} '{name}' ({}).", crate::library::auto_ref(k, id));
+                    if k == L::Job {
+                        let n: i32 = held.values().sum();
+                        let sheets = held.iter().filter(|(_, n)| **n > 0).map(|(r, n)| format!("{r} ×{n}")).collect::<Vec<_>>().join(", ");
+                        m.push_str(&if n > 0 { format!(" The stock is as it was: the {n} sheet(s) it took ({sheets}) stay taken, and its remnants stay in stock (stock mode=add gives sheets back).") } else { " The stock is as it was.".to_string() });
+                        if job.library.is_some_and(|r| r.id == id) {
+                            job.library = None;
+                            m.push_str(" This job file was that job: library mode=save-job saves it as a new job.");
+                        }
+                    }
+                    Ok(Outcome::msg(m))
                 }
                 m => Err(format!("library mode '{m}'?")),
             }
@@ -2467,13 +2545,13 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let file = Stock::file(&ctx.library_dir);
             let mode = a.need_str("mode")?;
             // A job file that is a library job (opened from the Library or
-            // saved into it) leaves the stock to the window, which books the
-            // job's sheets when someone saves it there (LB10). Booked here as
-            // well, a save refused because someone saved it since would leave
-            // them taken twice.
+            // saved into it) has its sheets booked when it's saved into the
+            // Library, under the write lock after the save check (LB8, LB10).
+            // Booked here as well, a save refused because someone saved it
+            // since would leave them taken twice.
             if let (Some(rec), "book" | "release") = (job.library, mode.as_str()) {
                 return Err(format!(
-                    "Job file '{}' is library job {} (opened from the Library or saved into it): its sheets are booked when someone saves it in the window, so stock-book mode={mode} is refused here. Nothing was changed in the stock. To take its sheets from stock, open the job in the window and save it there; stock-book mode=status shows what that would take.",
+                    "Job file '{}' is library job {} (opened from the Library or saved into it): its sheets are booked when it's saved into the Library, so stock-book mode={mode} is refused here. Nothing was changed in the stock. To take its sheets from stock, save it with library mode=save-job (or in the window); stock-book mode=status shows what that would take.",
                     job.name,
                     crate::library::auto_ref(crate::library::Kind::Job, rec.id)
                 ));

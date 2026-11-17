@@ -1716,11 +1716,21 @@ impl JobFile {
     /// `book_stock` with the new remnants' references given for (sheet, piece)
     /// (the window's Prompt for references, UI14).
     pub fn book_stock_named(&mut self, ctx: &Ctx, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
+        let note = self.stock_on_save(ctx, force_lines, names);
+        self.booked = true;
+        note
+    }
+
+    /// Book the job against the stock as the window's save does
+    /// (`stockflow::on_save`): the sheets its nestings use taken, the ones it
+    /// no longer holds given back, its remnants stored (when the stock
+    /// settings store them on save) under their automatic names, or the
+    /// ones in `names`. Leaves `booked` as it is. Returns the notes.
+    pub fn stock_on_save(&mut self, ctx: &Ctx, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
         self.normalise_formats();
         let (mut formats, mut held) = (std::mem::take(&mut self.formats), std::mem::take(&mut self.held));
         let note = stockflow::on_save(&ctx.library_at(), &self.stock_sheets(), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
         (self.formats, self.held) = (formats, held);
-        self.booked = true;
         note
     }
 
