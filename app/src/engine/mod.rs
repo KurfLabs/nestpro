@@ -12,6 +12,7 @@ pub mod contours;
 pub mod cutorder;
 pub mod drops;
 pub mod folderops;
+pub mod grain;
 pub mod imports;
 pub mod inuse;
 pub mod librarycheck;
@@ -650,7 +651,11 @@ pub fn step_turn(part: &Part, old: Placed, back: bool) -> Result<Placed, &'stati
         return Err("This part is not allowed to rotate.");
     }
     if !old.spin.is_none() {
-        // At a free angle (HM14): a quarter turn about its own middle.
+        // At a free angle (HM14): a quarter turn about its own middle, while
+        // the part may still take other angles (not kept to the grain, GR1).
+        if !nest::free_angles_allowed(part, old.mirror) {
+            return Err("This part may no longer sit at other angles (it is kept to the grain): turn it to 0° or 180° first.");
+        }
         let c = nest::placed_pivot(part, &old);
         return Ok(arrange::turn_about(part, old, c, if back { -90.0 } else { 90.0 }));
     }

@@ -794,6 +794,21 @@ A005, A011, A012, A015, A016, A017 and A019. The rebuild follows this for the st
 | R5 | When the sheet axes are turned 90/180/270°, the nesting corner turns with them. |
 | R6 | The main direction comes from the machine's settings (cut machines: two values, main and secondary). |
 
+### Grain direction (rebuild)
+
+Parts that are bent later must sit a set way to the sheet's grain (a bend across the grain is
+stronger). The original's eight rotation permissions (R1) can say this but not why; the rebuild
+adds a grain lock on top of them, and a way to turn the part's own drawing to the grain.
+
+| # | Rule | Source |
+|---|------|--------|
+| GR1 | **The sheet's grain runs along its X**: its length, the first number of a 3000 × 1500 sheet; a remnant keeps the axes of the sheet it was cut from. A part **kept to the grain** is never placed at 90° or 270°, nor at any angle other than a quarter turn, by Nest all, Nest sheet, the ghost drop or a turn by hand, whatever its eight rotations and "may turn 90°" say. A half turn still runs along the grain, so 180° stays allowed. | rebuild |
+| GR2 | **Grain lock**, per part: *Free* (its rotations decide), *Keep grain* (0° and 180°) or *Fixed* (0° only). Keep grain and Fixed leave the 90°/270° permissions as they were, so Free gives them back; Fixed turns 180° off and Free turns it on again. Set in Part Properties → Grain, on the Part screen (Home → Grain → Lock) and by agents (`edit-part grain=free/grain/fixed`). It is kept with the part, in jobs and in the Library. | rebuild |
+| GR3 | **Turn left / Turn right** on the Part screen (agents: `turn-part by=90/180/-90`) turn the part's own drawing a quarter turn about its box, which stays at 0, 0: contours, marking lines, texts, lead-ins picked or moved by hand and micro-joints picked on it turn with it. A part of a built-in shape becomes a drawing of its own with the same outline and holes. The lead position pad is not turned: it names a side of the sheet. | rebuild; the pad: estimate |
+| GR4 | Turning a *Free* part's drawing keeps it to the grain from then on (*Keep grain*): a part is turned on the Part screen to put it on the grain. | rebuild |
+| GR5 | Copies already nested **stay exactly where they are** when the drawing turns (the same points on the same spots: the placement turns the other way, or the same way when it is mirrored), and the job counts as changed since its last nest, so the next Nest all lays them along the grain. | rebuild |
+| GR6 | A part kept to the grain shows a **GRAIN** arrow along its X above the drawing on the Part screen, with "0° or 180°" or "fixed at 0°", and a **G** badge in the job's part tiles and the Part screen's part list. | rebuild |
+
 ### How the rebuild nests (`nest.rs`)
 
 - **Level picker** (Sheet tab → Nest → Automatic level, default 3): each level tries exactly

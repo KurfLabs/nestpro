@@ -8367,6 +8367,49 @@
   "group": "OMAX output",
   "value": "runs on one circle become arcs (BL38 fit)",
   "source": "OM5"
+ },
+ {
+  "name": "sheet grain direction",
+  "group": "grain",
+  "value": "along the sheet's X (its length); remnants keep their sheet's axes",
+  "source": "GR1"
+ },
+ {
+  "name": "grain part turns",
+  "group": "grain",
+  "value": "0\u00b0 and 180\u00b0 only; no other angles",
+  "source": "GR1"
+ },
+ {
+  "name": "grain lock settings",
+  "group": "grain",
+  "value": "Free / Keep grain (0\u00b0, 180\u00b0) / Fixed (0\u00b0)",
+  "source": "GR2"
+ },
+ {
+  "name": "turn part drawing",
+  "group": "grain",
+  "value": "quarter turns about the part's box, technology picked on it turns too; lead position pad not turned",
+  "source": "GR3",
+  "estimated": true
+ },
+ {
+  "name": "turning a free part",
+  "group": "grain",
+  "value": "becomes Keep grain",
+  "source": "GR4"
+ },
+ {
+  "name": "nested copies when the drawing turns",
+  "group": "grain",
+  "value": "stay on the same spot; job marked changed since the last nest",
+  "source": "GR5"
+ },
+ {
+  "name": "grain callout",
+  "group": "grain",
+  "value": "GRAIN arrow along X above the part, G badge",
+  "source": "GR6"
  }
 ]
 }
