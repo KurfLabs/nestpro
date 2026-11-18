@@ -206,8 +206,9 @@ pub struct UpdateState {
     /// The banner was put away for this version (Later): it comes back for a
     /// newer one.
     pub later: Option<String>,
-    /// What's new is open.
-    pub whats_new: bool,
+    /// What's new is open, with the notes of this release (the one the
+    /// banner or the card showed when it was pressed).
+    pub whats_new: Option<crate::engine::updates::Offer>,
     /// Screenshots: (press Update when I close, open What's new) once the
     /// check has answered.
     pub demo: (bool, bool),
@@ -239,7 +240,7 @@ impl UpdateState {
         self.fetch = Fetch::No;
         self.chosen = None;
         self.later = None;
-        self.whats_new = false;
+        self.whats_new = None;
     }
 
     /// UP11, UP12: a check answered. A PC whose Library is a shop's now
@@ -255,9 +256,17 @@ impl UpdateState {
             h.withdraw();
             self.fetch = Fetch::No;
             self.chosen = None;
-            self.whats_new = false;
+            self.whats_new = None;
         }
         self.found = Some(found);
+    }
+
+    /// UP13: the release the banner is about: the chosen one while it
+    /// downloads or waits for the program to close (even when a later check
+    /// couldn't answer), else the one offered.
+    pub fn banner_release(&self) -> Option<crate::engine::updates::Offer> {
+        let fetching = !matches!(self.fetch, Fetch::No);
+        (if fetching { self.chosen.clone() } else { None }).or_else(|| self.offer.clone())
     }
 
     /// S6: the newest release in the latest check.
@@ -1770,6 +1779,22 @@ mod settings_ui_tests {
         // A check that couldn't answer withdraws nothing chosen.
         u.receive(crate::updates::Found::NotChecked("Couldn't check for updates".into()), h);
         assert!(matches!(&u.fetch, Fetch::Ready(v) if v == "9.2.0"));
+        // N1: the banner still shows the chosen release, so its What's new
+        // has that release's notes even with nothing offered now.
+        assert!(u.offer.is_none());
+        assert_eq!(u.banner_release().map(|o| o.version), Some("9.2.0".to_string()));
+        // The dialog opened from that banner shows those notes.
+        let mut app = crate::App::new(None);
+        app.setui.upd = u;
+        app.setui.upd.whats_new = app.setui.upd.banner_release();
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_pass(egui::RawInput::default(), |c| app.whats_new_window(c));
+            out.textures_delta.clear();
+            text = crate::ui_parts::shown_text(&out);
+        }
+        assert!(text.contains("What's new in 9.2.0"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2107,7 +2132,9 @@ impl App {
                 Ok(found) => {
                     u.receive(found, h);
                     let (chosen, whats) = std::mem::take(&mut u.demo);
-                    u.whats_new |= whats && u.offer.is_some();
+                    if whats && u.offer.is_some() {
+                        u.whats_new = u.offer.clone();
+                    }
                     if chosen {
                         self.update_when_closed();
                     }
@@ -2143,7 +2170,7 @@ impl App {
         let u = &self.setui.upd;
         let fetching = !matches!(u.fetch, Fetch::No);
         // While a chosen release downloads or waits, the banner is about it.
-        let Some(o) = (if fetching { u.chosen.clone() } else { None }).or_else(|| u.offer.clone()) else { return };
+        let Some(o) = u.banner_release() else { return };
         if !fetching && u.later.as_deref() == Some(o.version.as_str()) {
             return;
         }
@@ -2188,8 +2215,9 @@ impl App {
                                 self.update_when_closed();
                             }
                         }
+                        // N1: the notes of the release this banner shows.
                         if ui.button("What's new").clicked() {
-                            self.setui.upd.whats_new = true;
+                            self.setui.upd.whats_new = Some(o.clone());
                         }
                     });
                 });
@@ -2199,13 +2227,7 @@ impl App {
     /// UP13: What's new: the release's notes, its changes to machine programs
     /// first.
     pub fn whats_new_window(&mut self, ctx: &egui::Context) {
-        if !self.setui.upd.whats_new {
-            return;
-        }
-        let Some(o) = self.setui.upd.offer.clone() else {
-            self.setui.upd.whats_new = false;
-            return;
-        };
+        let Some(o) = self.setui.upd.whats_new.clone() else { return };
         let t = th();
         let mut open = true;
         let mut update = false;
@@ -2246,7 +2268,7 @@ impl App {
             self.update_when_closed();
         }
         if !open || update {
-            self.setui.upd.whats_new = false;
+            self.setui.upd.whats_new = None;
         }
     }
 
@@ -2330,7 +2352,7 @@ impl App {
             self.setui.upd.checked_at = None;
         }
         if whats {
-            self.setui.upd.whats_new = true;
+            self.setui.upd.whats_new = self.setui.upd.offer.clone();
         }
         if update {
             self.setui.upd.fetch = Fetch::No;

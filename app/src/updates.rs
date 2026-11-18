@@ -319,11 +319,31 @@ pub fn download_in_background(h: &'static Handoff, c: Chosen) -> Receiver<Result
 /// it to `apply`. Ok(None): nothing to install (none chosen, or not ready in
 /// time: the next start offers it again).
 pub fn finish_on_close(h: &Handoff, limit: Duration, apply: impl FnOnce(&Chosen) -> Result<(), String>) -> Result<Option<String>, String> {
+    finish_on_close_with(h, limit, |c| standalone(&c.dir, &c.own), CHECK_TIMEOUT, apply)
+}
+
+/// `finish_on_close`, with the shop lookup given (tests). The lookup has
+/// `lookup_limit`: a share that doesn't answer in time installs nothing (the
+/// next start offers the release again), and the program still ends.
+pub fn finish_on_close_with(
+    h: &Handoff,
+    limit: Duration,
+    lookup: impl FnOnce(&Chosen) -> Result<(), NotStandalone> + Send + 'static,
+    lookup_limit: Duration,
+    apply: impl FnOnce(&Chosen) -> Result<(), String>,
+) -> Result<Option<String>, String> {
     let Some(c) = h.take_ready(limit) else { return Ok(None) };
-    match standalone(&c.dir, &c.own) {
-        Ok(()) => {}
-        Err(NotStandalone::InShop(name)) => return Err(format!("Version {} wasn't installed: this PC is in shop {name} now.", c.version)),
-        Err(NotStandalone::Unknown(e)) => return Err(format!("Version {} wasn't installed: {e}", c.version)),
+    let (tx, rx) = channel();
+    let c2 = c.clone();
+    spawn("update shop lookup", move || {
+        let _ = tx.send(lookup(&c2));
+    })
+    .map_err(|e| format!("Version {} wasn't installed: {e}", c.version))?;
+    match rx.recv_timeout(lookup_limit) {
+        Ok(Ok(())) => {}
+        Ok(Err(NotStandalone::InShop(name))) => return Err(format!("Version {} wasn't installed: this PC is in shop {name} now.", c.version)),
+        Ok(Err(NotStandalone::Unknown(e))) => return Err(format!("Version {} wasn't installed: {e}", c.version)),
+        Err(_) => return Err(format!("Version {} wasn't installed: this PC's Library didn't answer in {} s, so it isn't known whether this PC is in a shop. It is offered again next time.", c.version, lookup_limit.as_secs())),
     }
     apply(&c)?;
     Ok(Some(c.version))
@@ -710,5 +730,25 @@ mod tests {
             Ok("[]".into())
         };
         assert_eq!(github::release_list(deadline, &get), Ok(vec![]));
+    }
+
+    /// S1: the shop lookup on close has a time limit: a share that stalls
+    /// installs nothing, and the program still ends.
+    #[test]
+    fn a_stalled_share_on_close_installs_nothing_and_doesnt_hang() {
+        let d = tmp("close_stall");
+        let l = lib(&d);
+        let h = handoff();
+        let n = h.start(chosen(&d, &l, "0.2.0"));
+        h.done(n, true);
+        let t = Instant::now();
+        let stall = |_: &Chosen| {
+            std::thread::sleep(Duration::from_millis(400));
+            Ok(())
+        };
+        let r = finish_on_close_with(h, Duration::from_secs(1), stall, Duration::from_millis(100), |_| panic!("installed without knowing whether this PC is in a shop"));
+        assert!(matches!(&r, Err(e) if e.contains("didn't answer")), "{r:?}");
+        assert!(t.elapsed() < Duration::from_millis(350), "waited for the share: {:?}", t.elapsed());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

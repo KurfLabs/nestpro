@@ -168,7 +168,8 @@ downloaded or read, so the newest release could go missing and an older one be o
   "Changes machine programs" entries are shown first.
 - **Update when I close** downloads the full package in the background
   (`download_updates`, through `GithubSource`). When the window closes, the program waits up
-  to 90 seconds for a download still running, looks again that the PC isn't in a shop, and
+  to 90 seconds for a download still running, looks again (within 30 seconds) that the PC isn't
+  in a shop, and
   hands the downloaded package (`get_update_pending_restart`) to
   `wait_exit_then_apply_updates`, which installs once the program has ended. The program
   isn't restarted. A download not done in time installs nothing; the next start offers it
