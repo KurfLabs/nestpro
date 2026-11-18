@@ -18,6 +18,8 @@ pub const VERSION: u32 = 1;
 /// Records per sub-folder, as Lantek (n / 1000).
 pub const PER_FOLDER: u64 = 1000;
 pub const INDEX: &str = "index.json";
+/// The list, as a refusal names it (UP7).
+const LIST: &str = "The Library's list of jobs and parts";
 
 /// Automatic references, as Lantek makes them (rules RF2, RF3): a fixed text then
 /// a 6-character counter from "000001" to "999999" — "JOB" for jobs,
@@ -326,6 +328,10 @@ pub struct Library {
     /// What this PC has seen of the holds on jobs in use, to judge when one
     /// is gone (CU7). Each window and agent session keeps its own.
     pub watch: crate::engine::inuse::Watch,
+    /// The program version this works as (UP5, UP7): what it saves records
+    /// it, and it never saves over a file a newer version wrote. This
+    /// program's own, unless a test plays a PC on another version.
+    pub version: String,
 }
 
 /// Said when the Library folder isn't there (LB11): the share, the server or
@@ -383,7 +389,51 @@ impl Library {
     /// The Library in `dir`, as `who` going by `clock`, without setting
     /// anything up (reading).
     pub fn at(dir: &Path, who: &Who, clock: &Clock) -> Library {
-        Library { dir: dir.to_path_buf(), who: who.clone(), clock: clock.clone(), watch: Default::default() }
+        Library { dir: dir.to_path_buf(), who: who.clone(), clock: clock.clone(), watch: Default::default(), version: crate::updates::VERSION.to_string() }
+    }
+
+    /// The same Library, worked on by a program on `version` (UP5, UP7):
+    /// an agent session's own (a test plays a PC on another version).
+    pub fn on_version(mut self, version: &str) -> Library {
+        self.version = version.to_string();
+        self
+    }
+
+    /// UP7, UP8: the versions its files are judged by: this program's, and
+    /// the shop's when the Library is a shop.
+    pub fn versions(&self) -> shared::Versions {
+        crate::shop::versions(&self.dir, &self.version)
+    }
+
+    /// UP7: may this program store record `id` of `kind` (None: a new
+    /// record) and its line in the list? Not when a newer version wrote the
+    /// record or the list last. The record is read here: only one that isn't
+    /// there counts as missing; one that can't be read just now is refused,
+    /// as it can't be told older. Called under the write lock, before
+    /// anything is booked, stored or deleted.
+    pub fn may_store(&self, kind: Kind, id: Option<u64>) -> Result<(), String> {
+        let record = match id {
+            None => None,
+            Some(id) => match std::fs::read(self.path(kind, id)) {
+                Ok(b) => Some(b),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("{} can't be read before saving over it ({e}). Nothing was saved.", record_words(kind, id))),
+            },
+        };
+        self.may_write_record(kind, id, record.as_deref())
+    }
+
+    /// UP7: a save over record `id` (and the list's line for it) is refused
+    /// when a newer version wrote the record or the list last. Read under
+    /// the write lock, before anything is booked or written.
+    fn may_write_record(&self, kind: Kind, id: Option<u64>, record: Option<&[u8]>) -> Result<(), String> {
+        let v = self.versions();
+        if let (Some(id), Some(b)) = (id, record) {
+            if let Some(n) = v.newer(shared::recorded_version(b).as_deref()) {
+                return Err(n.refusal(&record_words(kind, id)));
+            }
+        }
+        shared::may_write_over(&self.dir.join(INDEX), &v, LIST)
     }
 
     /// The same Library, judging holds by what `watch` has seen (CU7).
@@ -447,9 +497,13 @@ impl Library {
         serde_json::from_str::<Index>(&t).map(read_entries).map_err(|e| e.to_string())
     }
 
+    /// Write the list, recording this program's version (UP5): refused when
+    /// a newer version wrote it last (UP7).
     fn write_index(&self, entries: &[Entry], lock: &WriteLock) -> Result<(), String> {
+        let path = self.dir.join(INDEX);
+        shared::may_write_over(&path, &self.versions(), LIST)?;
         let i = Index { format: FORMAT.into(), version: VERSION, entries: entries.to_vec() };
-        shared::write_file(&self.dir.join(INDEX), serde_json::to_string_pretty(&i).map_err(|e| e.to_string())?.as_bytes(), Some(lock))
+        shared::write_file(&path, shared::stamped(&i, &self.version)?.as_bytes(), Some(lock))
     }
 
     /// Rebuild the index from the record files (after copying folders in,
@@ -585,6 +639,8 @@ impl Library {
                 Err(e) => return Err(Refused::Failed(format!("can't read record {id} before saving over it ({e}). Nothing was saved"))),
             },
         };
+        // UP7: never over a record or list a newer version wrote.
+        self.may_write_record(kind, to.id(), before.as_deref()).map_err(Refused::Failed)?;
         let now = before.as_ref().map(|b| serde_json::from_slice::<OnDisk>(b).unwrap_or_default());
         if let Some(c) = now.as_ref().and_then(|d| self.changed(kind, to, d)) {
             return Err(Refused::Changed(c));
@@ -742,7 +798,7 @@ impl Library {
         let rec = self.store(Kind::Job, to, job, |job, saved, rec| {
             week = job.week.clone();
             let job = JobFile { saved: Some(saved), library: Some(rec), ..job };
-            let text = crate::jobfile::to_text(&job)?;
+            let text = crate::jobfile::to_text_on(&job, &self.version)?;
             Ok((text, move |id| job_entry(id, &job, 0)))
         })?;
         if to.id().is_none() {
@@ -774,9 +830,23 @@ impl Library {
 
     /// A Library job, linked to its record and the revision read (LB7).
     pub fn load_job(&self, id: u64) -> Result<JobFile, String> {
-        let mut j = crate::jobfile::load(&self.path(Kind::Job, id))?;
+        self.load_job_read(id).map(|(j, _)| j)
+    }
+
+    /// `load_job`, and why it is read-only here (UP9): a newer version saved
+    /// it last (UP7, UP8). None for a job this program may save over.
+    pub fn load_job_read(&self, id: u64) -> Result<(JobFile, Option<shared::Newer>), String> {
+        let (mut j, written) = crate::jobfile::load_versioned(&self.path(Kind::Job, id))?;
         j.library = Some(Record { id, revision: j.library.map_or(0, |r| r.revision) });
-        Ok(j)
+        Ok((j, self.versions().newer(written.as_deref())))
+    }
+
+    /// UP9: why library part `id` is read-only here: a newer version saved
+    /// it last. Added to a job it is used as it is; saving it back is
+    /// refused (UP7).
+    pub fn product_newer(&self, id: u64) -> Option<shared::Newer> {
+        let b = std::fs::read(self.path(Kind::Product, id)).ok()?;
+        self.versions().newer(shared::recorded_version(&b).as_deref())
     }
 
     /// Save a product, recording who saved it and when (LB5) and its
@@ -800,7 +870,7 @@ impl Library {
         self.store(Kind::Product, to, || Ok(part), |part, saved, rec| {
             crate::materials::not_deleted(&self.dir, material, "the library part")?;
             let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, material_name: read_name.clone(), thickness, saved: Some(saved), revision: rec.revision };
-            let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
+            let text = shared::stamped(&pf, &self.version)?;
             Ok((text, move |id| product_entry(id, &pf, 0)))
         })
     }
@@ -839,6 +909,9 @@ impl Library {
                 None => format!("{} It can't be deleted while it's in use: try again when it's closed. Nothing was deleted.", u.said(&self.clock)),
             })?;
         }
+        // UP7: not a record, or the list, a newer version wrote; nor one
+        // that can't be read just now.
+        self.may_store(kind, Some(id)).map_err(|e| e.replace("Nothing was saved.", "Nothing was deleted."))?;
         lock.still_held()?;
         let _ = std::fs::write(self.deleted_mark(kind, id), b"");
         let _ = std::fs::remove_file(self.path(kind, id));
@@ -868,6 +941,12 @@ impl Library {
         }
         Ok(rec)
     }
+}
+
+/// "Library job JOB000007", "Library part SHP000003", as a refusal names it.
+fn record_words(kind: Kind, id: u64) -> String {
+    let what = if kind == Kind::Job { "Library job" } else { "Library part" };
+    format!("{what} {}", auto_ref(kind, id))
 }
 
 /// Record files read: (kind, number) → (stamp, line in the list).
@@ -1033,7 +1112,7 @@ mod library_tests {
         assert_eq!((p1, p2), (1, 2));
         assert_eq!(lib.path(Kind::Product, 1234), dir.join("Products").join("1").join("1234.json"));
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
-        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
+        let job = JobFile { program_version: None, format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
         let j = lib.save_job(&job, SaveTo::New).unwrap().id;
         // Saving again over the same number keeps one record.
         lib.save_job(&job, SaveTo::Over(j)).unwrap();

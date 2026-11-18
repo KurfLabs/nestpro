@@ -354,6 +354,7 @@ impl App {
             saved: None,
             lib_folder: None,
             material_names: vec![],
+            read_only: None,
         });
         let i = self.jobs.len() - 1;
         self.open_job(i);

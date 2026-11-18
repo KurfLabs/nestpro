@@ -284,6 +284,7 @@ impl App {
         }
         let j = &self.jobs[i];
         crate::jobfile::JobFile {
+            program_version: None,
             format: crate::jobfile::FORMAT.into(),
             version: crate::jobfile::VERSION,
             name: j.name.clone(),

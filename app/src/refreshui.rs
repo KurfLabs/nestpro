@@ -286,12 +286,12 @@ impl App {
     /// changes. It holds what their save holds; the stock isn't touched
     /// (LB9). The job in front stays in front, on the same sheet.
     fn reload_open_job(&mut self, lib: &Library, i: usize, c: &Changed) -> bool {
-        let Ok(j) = lib.load_job(c.id) else { return false };
+        let Ok((j, newer)) = lib.load_job_read(c.id) else { return false };
         let revision = j.library.map_or(0, |r| r.revision);
         let name = if self.jobs.iter().enumerate().any(|(k, o)| k != i && o.name == j.name) { self.jobs[i].name.clone() } else { j.name.clone() };
         let place = crate::folders::load(lib, Kind::Job).map(|t| crate::libui::place_in(&t, c.id)).unwrap_or_else(|_| (self.jobs[i].lib_folder.unwrap_or(crate::folders::TOP), self.jobs[i].week.clone()));
         let file = self.jobs[i].file.clone();
-        let mut job = crate::libui::job_from_library(c.id, name, j, place);
+        let mut job = crate::libui::job_from_library(c.id, name, j, place, newer);
         job.file = file;
         self.jobs[i] = job;
         if i == self.cur_job {

@@ -7522,6 +7522,42 @@
   "group": "shop",
   "value": "said, naming the folder (LB11); never taken for no shop; nothing made",
   "source": "SH8; own design"
+ },
+ {
+  "name": "file version",
+  "group": "versions",
+  "value": "every Library file (job, library part, the Library's list, sheet stock, material list, shop file) records program_version, the version that last wrote it; none = written before, counts as old",
+  "source": "UP5; own design"
+ },
+ {
+  "name": "version order",
+  "group": "versions",
+  "value": "compared as numbers, part by part (0.10.0 newer than 0.9.0; a missing part is 0; text after - or + left out); a version that isn't numbers counts as newer",
+  "source": "UP6; own design"
+ },
+ {
+  "name": "older never overwrites newer",
+  "group": "versions",
+  "value": "a save, stock change, material change, list update, delete or shop-file change over a file a newer version wrote is refused, checked and written under one hold of the write lock, before anything is booked, stored or copied for undo: 'X is read-only on this PC. <message> Nothing was saved.'; render and part drawings never write over job or Library files",
+  "source": "UP7; own design"
+ },
+ {
+  "name": "update message",
+  "group": "versions",
+  "value": "in a shop with a shop version at least the file's: 'Made by version 0.5.0. Update this PC: the shop is on 0.5.0.'; otherwise only the file's: 'Made by version 0.5.0. Update this PC to 0.5.0 or later.'",
+  "source": "UP8; own design"
+ },
+ {
+  "name": "read-only job",
+  "group": "versions",
+  "value": "a job or library part a newer version saved opens read-only: window banner, Save and Save to library refused; agents: read operations answer with read_only, changes refused, library open of a newer job refused",
+  "source": "UP9; own design"
+ },
+ {
+  "name": "rolled back from",
+  "group": "versions",
+  "value": "files written by a release the shop rolled back from count as the shop version's (the list is filled by roll back); the newer-layout check stays",
+  "source": "UP10; own design"
  }
 ]
 }

@@ -91,7 +91,7 @@ pub fn start_shop(dir: &Path, name: &str, who: &Who, clock: &Clock, version: &st
         started: Saved { by: who.clone(), at },
         other: Map::new(),
     };
-    if let Err(e) = shop::write(dir, &s, &lock) {
+    if let Err(e) = shop::write(dir, &s, &lock, version) {
         undo(&made);
         return Err(cant_write(dir, &e));
     }
@@ -131,7 +131,13 @@ pub fn record_pc(dir: &Path, who: &Who, clock: &Clock, version: &str) -> Result<
 /// person, in the window, after a warning: an agent is refused with the
 /// reason and nothing changes. Under the Library's write lock (LB1).
 pub fn make_admin(dir: &Path, who: &Who, clock: &Clock) -> Result<ShopFile, String> {
-    change_admin(dir, who, clock, None)
+    change_admin(dir, who, clock, None, crate::updates::VERSION)
+}
+
+/// `make_admin` by a program on `version`: refused when a newer program
+/// wrote the shop file last (UP7).
+pub fn make_admin_on(dir: &Path, who: &Who, clock: &Clock, version: &str) -> Result<ShopFile, String> {
+    change_admin(dir, who, clock, None, version)
 }
 
 /// SH7: `make_admin` as the window asks it: "`who`'s PC in place of
@@ -140,10 +146,10 @@ pub fn make_admin(dir: &Path, who: &Who, clock: &Clock) -> Result<ShopFile, Stri
 /// the question was open), nothing changes and the refusal names the admin
 /// PC now, so the person can ask again.
 pub fn replace_admin(dir: &Path, who: &Who, clock: &Clock, replacing: &str) -> Result<ShopFile, String> {
-    change_admin(dir, who, clock, Some(replacing))
+    change_admin(dir, who, clock, Some(replacing), crate::updates::VERSION)
 }
 
-fn change_admin(dir: &Path, who: &Who, clock: &Clock, replacing: Option<&str>) -> Result<ShopFile, String> {
+fn change_admin(dir: &Path, who: &Who, clock: &Clock, replacing: Option<&str>, version: &str) -> Result<ShopFile, String> {
     if who.agent {
         return Err(AGENT_ADMIN.into());
     }
@@ -158,7 +164,7 @@ fn change_admin(dir: &Path, who: &Who, clock: &Clock, replacing: Option<&str>) -
     if s.admin.pc != who.pc {
         let was = std::mem::take(&mut s.admin.pc);
         s.admin = Admin { pc: who.pc.clone(), by: who.clone(), at: clock.now(), was: Some(was) };
-        shop::write(dir, &s, &lock)?;
+        shop::write(dir, &s, &lock, version)?;
     }
     Ok(s)
 }
