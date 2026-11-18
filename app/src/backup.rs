@@ -369,10 +369,16 @@ impl Plan {
     }
 
     /// Today's backup is there: copy it to the second place if it isn't
-    /// there yet (the PC that took it stopped before copying, BK5).
-    fn already(&self, library: &Path, dir: &Path, entry: Entry, today: (i64, u32, u32)) -> Daily {
+    /// there yet (the PC that took it stopped before copying, BK5), then
+    /// tidy that place by the settings as they are under the lock.
+    fn already(&self, library: &Path, own: &Settings, dir: &Path, entry: Entry, today: (i64, u32, u32)) -> Daily {
         let second = match (self.second_place(), self.ns()) {
-            (Some(place), Some(ns)) => Some(copy_to_second(&entry, &place, library, dir, &ns, self.settings.keep(), today)),
+            (Some(place), Some(ns)) => Some(copy_to_second(&entry, &place, library, dir, &ns).map(|(to, copied)| {
+                if copied {
+                    prune_second(library, own, &place, &ns, today);
+                }
+                to
+            })),
             _ => None,
         };
         Daily::AlreadyToday { entry, second }
@@ -443,7 +449,7 @@ pub fn take(library: &Path, own: &Settings, who: &Who, clock: &Clock, why: Why) 
         let p = plan(library, own)?;
         let dir = p.dir.clone()?;
         if let Some(e) = p.of_today(&dir, today)? {
-            return Ok(p.already(library, &dir, e, today));
+            return Ok(p.already(library, own, &dir, e, today));
         }
     }
     let mut lock = WriteLock::take(library)?;
@@ -454,7 +460,7 @@ pub fn take(library: &Path, own: &Settings, who: &Who, clock: &Clock, why: Why) 
         && let Some(e) = p.of_today(&dir, today)?
     {
         drop(lock);
-        return Ok(p.already(library, &dir, e, today));
+        return Ok(p.already(library, own, &dir, e, today));
     }
     if !dir.is_dir() {
         // Only the folder itself, in a folder that is there: never the
@@ -516,7 +522,12 @@ pub fn take(library: &Path, own: &Settings, who: &Who, clock: &Clock, why: Why) 
     drop(lock);
     let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
     let entry = Entry { name, path, day: today, time: now, pc: shared::file_safe(&who.pc), seq: n, bytes };
-    let second = p.second_place().map(|place| copy_to_second(&entry, &place, library, &dir, &ns, p.settings.keep(), today));
+    let second = p.second_place().map(|place| {
+        copy_to_second(&entry, &place, library, &dir, &ns).map(|(to, _)| {
+            prune_second(library, own, &place, &ns, today);
+            to
+        })
+    });
     Ok(Daily::Taken(Done { entry, files, removed, second }))
 }
 
@@ -567,12 +578,28 @@ fn prune(dir: &Path, ns: &Ns, keep: u32, today: (i64, u32, u32), mut lock: Optio
     removed
 }
 
-/// Copy a backup to the second place (BK5), then remove this Library's own
-/// backups there past Keep and its own `.part` files left a day or more. A
-/// place that can't be reached or written is reported, never made, and
-/// stops nothing. A file of the same name already there is never replaced:
-/// when it is this very backup, it is the copy; otherwise it is reported.
-fn copy_to_second(entry: &Entry, place: &Path, library: &Path, dir: &Path, ns: &Ns, keep: u32, today: (i64, u32, u32)) -> Result<PathBuf, String> {
+/// Remove this Library's backups in the second place past Keep (BK4, BK5),
+/// by Keep and the second place as they are once this PC holds the
+/// Library's write lock (another PC may have just changed them), checking
+/// the lock before each. Nothing when the lock can't be had or the second
+/// place is another now.
+fn prune_second(library: &Path, own: &Settings, place: &Path, ns: &Ns, today: (i64, u32, u32)) -> Vec<String> {
+    shared::pause("backup: copied to second place");
+    let Ok(mut lock) = WriteLock::take(library) else { return vec![] };
+    let Ok(p) = plan(library, own) else { return vec![] };
+    if p.second_place().as_deref() != Some(place) {
+        return vec![];
+    }
+    prune(place, ns, p.settings.keep(), today, Some(&mut lock))
+}
+
+/// Copy a backup to the second place (BK5), and remove this Library's own
+/// `.part` files there left a day or more. A place that can't be reached or
+/// written is reported, never made, and stops nothing. A file of the same
+/// name already there is never replaced: when it is this very backup, it is
+/// the copy; otherwise it is reported. Gives the copy, and whether it was
+/// made now.
+fn copy_to_second(entry: &Entry, place: &Path, library: &Path, dir: &Path, ns: &Ns) -> Result<(PathBuf, bool), String> {
     let only_in = || format!("so this backup is only in {}", dir.display());
     if !place.is_dir() {
         return Err(format!("The second place {} can't be reached, {}.", place.display(), only_in()));
@@ -584,7 +611,7 @@ fn copy_to_second(entry: &Entry, place: &Path, library: &Path, dir: &Path, ns: &
     let to = place.join(&entry.name);
     if std::fs::symlink_metadata(&to).is_ok() {
         let same = std::fs::metadata(&to).is_ok_and(|m| m.is_file() && m.len() == entry.bytes) && marked(&to, &ns.id);
-        return if same { Ok(to) } else { Err(format!("The second place {} already holds another file named {}, {}.", place.display(), entry.name, only_in())) };
+        return if same { Ok((to, false)) } else { Err(format!("The second place {} already holds another file named {}, {}.", place.display(), entry.name, only_in())) };
     }
     if let Ok(rd) = std::fs::read_dir(place) {
         for e in rd.flatten() {
@@ -608,8 +635,7 @@ fn copy_to_second(entry: &Entry, place: &Path, library: &Path, dir: &Path, ns: &
         let _ = std::fs::remove_file(&part);
         return Err(format!("This backup couldn't be copied to the second place {} ({e}), {}.", place.display(), only_in()));
     }
-    prune(place, ns, keep, today, None);
-    Ok(to)
+    Ok((to, true))
 }
 
 /// A file's size and last change, to tell it changed while it was read.

@@ -648,7 +648,11 @@ pub fn write_file(path: &Path, bytes: &[u8], lock: Option<&WriteLock>) -> Result
 /// `write_file` into a folder that must already be there: the folder and
 /// those above it are never made, so a write into a Library that went away
 /// (the share dropped) fails instead of making an empty folder in its place
-/// (LB11). The shop's files are written this way (SH2).
+/// (LB11). The shop's files are written this way (SH2). Nothing is put in
+/// the folder or taken out of it unless the write lock is still this
+/// writer's: it is checked before the temporary file is made and before a
+/// failed one is cleared away (a temporary file left once the lock was lost
+/// is harmless: no one reads it).
 pub fn write_existing(path: &Path, bytes: &[u8], lock: &WriteLock) -> Result<(), String> {
     replace_in(path, bytes, || lock.still_held(), false)
 }
@@ -659,6 +663,8 @@ fn replace(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>) ->
 }
 
 /// `replace`, making the file's folder first only when `make_parent`.
+/// Without `make_parent` (`write_existing`), `fence` is also checked before
+/// the temporary file is made and before a failed one is removed.
 fn replace_in(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>, make_parent: bool) -> Result<(), String> {
     if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         if make_parent {
@@ -666,6 +672,10 @@ fn replace_in(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>,
         } else if !d.is_dir() {
             return Err(format!("{} can't be reached", d.display()));
         }
+    }
+    let strict = !make_parent;
+    if strict {
+        fence()?;
     }
     let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
     let tmp = path.with_file_name(format!("{name}.{}.tmp", writer_tag()));
@@ -676,7 +686,7 @@ fn replace_in(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>,
         f.sync_all()
     })();
     let done = written.map_err(|e| e.to_string()).and_then(|_| rename(&tmp, path, &fence));
-    if done.is_err() {
+    if done.is_err() && (!strict || fence().is_ok()) {
         let _ = std::fs::remove_file(&tmp);
     }
     done
