@@ -20,6 +20,9 @@ pub struct Session {
     /// job's material was in it, whatever list another session in the same
     /// process installed since.
     seen: Option<std::sync::Arc<super::material::List>>,
+    /// Why the open job is read-only (UP9): a newer version saved its file
+    /// last. Operations that change it are refused; reading it works.
+    read_only: Option<crate::shared::Newer>,
 }
 
 /// What a call gave back: the JSON answer and, for render, the PNG.
@@ -47,7 +50,7 @@ pub fn job_path(s: &str) -> PathBuf {
 
 impl Session {
     pub fn new(ctx: Ctx) -> Session {
-        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None }
+        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None, read_only: None }
     }
 
     /// Open a job file (again, when it changed on disk).
@@ -56,10 +59,13 @@ impl Session {
         if same && self.job.is_some() && mtime(path) == self.stamp {
             return Ok(());
         }
-        let j = jobfile::load(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
-        if same && self.job.is_some() {
-            // Changed on disk by someone else (the window, another agent):
-            // undoing to a copy from before that would drop their change.
+        let (j, written) = jobfile::load_versioned(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+        self.read_only = self.ctx.versions().newer(written.as_deref());
+        // Changed on disk by someone else (the window, another agent):
+        // undoing to a copy from before that would drop their change. A job
+        // a newer version saved is only read here (UP9): its undo copy is
+        // that version's, and stays.
+        if same && self.job.is_some() && self.read_only.is_none() {
             let _ = std::fs::remove_file(backup_path(path));
         }
         self.undo.clear();
@@ -69,12 +75,27 @@ impl Session {
         Ok(())
     }
 
-    fn save(&mut self, before: Option<JobFile>) -> Result<(), String> {
+    /// The job file's save lock (`jobfile::save_lock`), taken once the file
+    /// is checked under it: not one a newer version saved (UP7). Held from
+    /// before anything the change books or stores until the file is written.
+    fn lock_job_file(&self) -> Result<Option<crate::shared::WriteLock>, String> {
+        let path = self.path.as_ref().ok_or("no job open")?;
+        let lock = jobfile::save_lock(&self.ctx.library_dir)?;
+        jobfile::may_save(path, &self.ctx.versions())?;
+        Ok(lock)
+    }
+
+    /// Save the open job (under `lock`, from `lock_job_file`), keeping the
+    /// file as it was beside it for undo. Checked first, so the undo copy
+    /// is never changed for a save that is refused (UP7).
+    fn save(&mut self, before: Option<JobFile>, lock: Option<&crate::shared::WriteLock>) -> Result<(), String> {
         let (Some(job), Some(path)) = (&self.job, &self.path) else { return Err("no job open".into()) };
+        let versions = self.ctx.versions();
+        jobfile::may_save(path, &versions)?;
         if path.exists() && before.is_some() {
             let _ = std::fs::copy(path, backup_path(path));
         }
-        jobfile::save(path, job)?;
+        jobfile::save_under(path, job, &versions, lock)?;
         self.stamp = mtime(path);
         if let Some(b) = before {
             self.undo.push(b);
@@ -144,6 +165,9 @@ impl Session {
                 if p.exists() && !force {
                     return Err(format!("{} already exists — pick another name, or force=true to overwrite it.", p.display()));
                 }
+                // UP7: force never writes over a job a newer version saved.
+                let file = p.file_name().map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+                crate::shared::may_write_over(&p, &self.ctx.versions(), &format!("The job file {file}"))?;
                 let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "New job".into());
                 let mut a = args.clone();
                 if let Some(m) = a.as_object_mut() {
@@ -153,10 +177,12 @@ impl Session {
                 if let Some(d) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
                     std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
                 }
+                let lock = jobfile::save_lock(&self.ctx.library_dir)?;
                 self.job = Some(j);
                 self.path = Some(p.clone());
+                self.read_only = None;
                 self.undo.clear();
-                self.save(None)?;
+                self.save(None, lock.as_ref())?;
                 return Ok(done(Outcome {
                     message,
                     data: Value::Null,
@@ -173,11 +199,47 @@ impl Session {
                 None => return Err("No job open — give the job file (job).".into()),
             },
         }
+        // UP9: a job a newer version saved is read-only here: nothing that
+        // changes it runs (nor books stock for it), and its file stays as it
+        // is. Listing the Library changes nothing, so it still answers.
+        if let Some(n) = &self.read_only {
+            let listing = op.name == "library" && ops::Args(&args).str("mode").as_deref() == Some("list");
+            if op.kind == Kind::Write && !listing {
+                let file = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+                return Err(n.refusal(&format!("The job file {file}")));
+            }
+        }
         match op.name {
             "undo" => return self.undo_step().map(done),
             "render" => return self.render(&args),
             _ => {}
         }
+        // UP7: a change is never made to a job file a newer version saved,
+        // nor anything booked or stored for it. Operations that store in the
+        // Library or the stock themselves (library, stock-book) are short:
+        // they run under the job file's save lock, checked first. Others
+        // (a nest can take a while) are checked now, and again under the
+        // lock before anything is booked or written.
+        let listing = op.name == "library" && ops::Args(&args).str("mode").as_deref() == Some("list");
+        let early = match op.kind {
+            Kind::Write if listing => None,
+            Kind::Write if matches!(op.name, "library" | "stock-book") => {
+                let lock = self.lock_job_file()?;
+                // A booked job's change is booked after the call (below): a
+                // stock a newer version changed is refused now, under the
+                // lock, before the call stores anything in the Library.
+                if op.name == "library" && self.job.as_ref().is_some_and(|j| j.booked) {
+                    crate::shared::may_write_over(&crate::stock::Stock::file(&self.ctx.library_dir), &self.ctx.versions(), "The sheet stock")?;
+                }
+                Some(lock)
+            }
+            Kind::Write => {
+                let path = self.path.as_ref().ok_or("no job open")?;
+                jobfile::may_save(path, &self.ctx.versions())?;
+                None
+            }
+            _ => None,
+        };
         let job = self.job.as_mut().unwrap();
         let before = job.clone();
         let mut out = match ops::run(job, &self.ctx, name, &args) {
@@ -189,9 +251,26 @@ impl Session {
                 return Err(e);
             }
         };
+        let lock = match early {
+            Some(l) => l,
+            None if out.changed && op.kind == Kind::Write => match self.lock_job_file() {
+                Ok(l) => l,
+                Err(e) => {
+                    self.job = Some(before);
+                    return Err(e);
+                }
+            },
+            None => None,
+        };
+        let job = self.job.as_mut().unwrap();
         // A booked job keeps the stock in step with every change (as the
-        // window does on every save).
+        // window does on every save); not with a stock a newer version
+        // changed (UP7): the change is refused and the job left as it was.
         if out.changed && op.kind == Kind::Write && job.booked && op.name != "stock-book" {
+            if let Err(e) = crate::shared::may_write_over(&crate::stock::Stock::file(&self.ctx.library_dir), &self.ctx.versions(), "The sheet stock") {
+                *job = before;
+                return Err(e);
+            }
             let note = job.book_stock(&self.ctx, true);
             if !note.is_empty() {
                 out.message = format!("{} Stock: {note}.", out.message);
@@ -203,8 +282,9 @@ impl Session {
         // none of them (a save or stock-book would take them again).
         let into_library = name == "library" && out.changed && ops::Args(&args).str("mode").as_deref() == Some("save-job");
         if out.changed && op.kind == Kind::Write {
-            self.save(Some(before))?;
+            self.save(Some(before), lock.as_ref())?;
         }
+        drop(lock);
         if into_library {
             self.undo.clear();
             if let Some(p) = &self.path {
@@ -221,22 +301,28 @@ impl Session {
         if let Some(p) = &self.path {
             reply.json["job"] = json!(p.display().to_string());
         }
+        if let Some(n) = &self.read_only {
+            reply.json["read_only"] = json!(format!("This job is read-only on this PC. {}", n.message()));
+        }
         Ok(reply)
     }
 
     fn undo_step(&mut self) -> Result<Outcome, String> {
         let path = self.path.clone().ok_or("no job open")?;
+        // UP7: checked under the save lock before the stock is touched.
+        let lock = self.lock_job_file()?;
         let prev = match self.undo.pop() {
             Some(j) => j,
             // Across runs: the copy kept beside the file.
             None => jobfile::load(&backup_path(&path)).map_err(|_| "Nothing to undo.".to_string())?,
         };
         let note = self.restock_for_undo(prev)?;
-        jobfile::save(&path, self.job.as_ref().unwrap())?;
+        let versions = self.ctx.versions();
+        jobfile::save_under(&path, self.job.as_ref().unwrap(), &versions, lock.as_ref())?;
         // The copy beside the file moves one step back too, so a later run
         // can undo once more.
         match self.undo.last() {
-            Some(older) => jobfile::save(&backup_path(&path), older)?,
+            Some(older) => jobfile::save_under(&backup_path(&path), older, &versions, lock.as_ref())?,
             None => {
                 let _ = std::fs::remove_file(backup_path(&path));
             }
@@ -302,6 +388,7 @@ impl Session {
             (render::sheet_scene(job, k, width, path)?, format!("sheet {}", k + 1), dir.join(format!("{stem}-sheet{}.png", k + 1)))
         };
         let out = a.str("out").map(PathBuf::from).unwrap_or(default_out);
+        ops::refuse_protected(&self.ctx, &out)?;
         let png = render::write(&scene, &out)?;
         let image = match png {
             Some(p) => Some(p),

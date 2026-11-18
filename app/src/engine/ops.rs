@@ -392,8 +392,8 @@ pub static OPS: &[Op] = &[
     ] },
     // --- reference ---
     // --- the shop (spec #178) ---
-    Op { name: "shop", group: "Library", kind: Kind::Global, help: "The shop this PC's Library belongs to (Settings → Shop): status gives its name, its folder (the Library's folder), its admin PC and who made it the admin PC and when, whether shop settings are changed only on the admin PC or from any PC, and every PC in it with who used it last, its version and when it was last seen (this PC's local time). Calling it records this PC in the shop's PCs list, as opening the program does; when it can't, the shop is still given, with this_pc_recorded false and why. A PCs list that can't be read is refused, naming its folder. A Library that isn't a shop says so; one that can't be reached is refused, naming its folder. Changing the admin PC (mode=admin) is refused for agents with the reason: a person does it in the window.", args: &[
-        c("mode", &["status", "admin"], "status (default): the shop and its PCs; admin: make this PC the admin PC (refused for agents: a person does it in Settings → Shop)"),
+    Op { name: "shop", group: "Library", kind: Kind::Global, help: "The shop this PC's Library belongs to (Settings → Shop): status gives its name, its folder (the Library's folder), its admin PC and who made it the admin PC and when, whether shop settings are changed only on the admin PC or from any PC, and every PC in it with who used it last, its version and when it was last seen (this PC's local time). Calling it records this PC in the shop's PCs list, as opening the program does; when it can't, the shop is still given, with this_pc_recorded false and why. A PCs list that can't be read is refused, naming its folder. A Library that isn't a shop says so; one that can't be reached is refused, naming its folder. Changing the admin PC (mode=admin) is refused for agents with the reason: a person does it in the window. mode=updates: this PC's version and, for a PC not in a shop, the newest public release and the one the window offers (newer plain releases only), with its \"Changes machine programs\" entries; a PC in a shop never checks GitHub (it updates to the release its admin PC rolls out); no connection says \"Couldn't check for updates\". Installing an update stays a person's choice in the window.", args: &[
+        c("mode", &["status", "admin", "updates"], "status (default): the shop and its PCs; admin: make this PC the admin PC (refused for agents: a person does it in Settings → Shop); updates: this PC's version and the newest release"),
     ] },
     Op { name: "setup", group: "Library", kind: Kind::Global, help: "Set this PC up for a shop. join=<folder> joins the shop in that folder (`nestpro setup --join \\\\srv\\Nesting`): the folder is tidied (spaces, quotes, doubled or end separators) and, on Windows, a mapped drive letter becomes the \\\\server\\share path behind it, so every PC names the same Library; then it checks, in order, that the folder can be reached, holds a Library and a shop file, that this PC can take the Library's write lock there and, under it, make, change and remove a file there, and compares this PC's version with the shop version (an older PC may join and is told to update). Each check is in the message and in data.checks. A refusal says what to fix and lists the checks made; nothing is changed or made in the folder. Joined, this PC is in the shop's PCs list and its Library folder setting is the shop folder (this session works there from now on); its own Library is left as it was, and its materials join the shop's list (materials_joined). start=<folder> name=<name> starts a shop in that Library folder (the Library's folder becomes the shop folder in place: the shop file and its Shop, Updates and Backups folders are added, and no job, library part or stock file is changed or moved), with this PC as its admin PC and shop settings changed only on the admin PC. A folder that can't be reached, holds no Library, can't be written by this PC or is already a shop is refused, naming it, and nothing is made. `nestpro setup --start \\\\srv\\Nesting --name Acme`.", args: &[
         a("join", Ty::Path, "Join the shop in this folder (e.g. \\\\srv\\Nesting)"),
@@ -1345,7 +1345,16 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             return Err(format!("These job files exist already: {} — use force=true to overwrite, or another dir.", there.join(", ")));
         }
     }
+    // UP7: none is written when one of them is a newer version's.
+    let versions = ctx.versions();
+    for f in &files {
+        jobfile::may_save(f, &versions)?;
+    }
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
+    let lock = jobfile::save_lock(&ctx.library_dir)?;
+    for f in &files {
+        jobfile::may_save(f, &versions)?;
+    }
     let mut notes = im.notes.clone();
     let mut jobs = vec![];
     for (xj, f) in im.jobs.into_iter().zip(&files) {
@@ -1363,7 +1372,7 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         j.stale = !xj.parts.is_empty();
         jobs.push(json!({"job": f.display().to_string(), "name": xj.name, "material": super::material::name_or(j.spec.material, "?"), "thickness": j.spec.thickness, "parts": xj.parts.iter().map(|p| json!({"name": p.name, "qty": p.qty})).collect::<Vec<_>>()}));
         j.parts = xj.parts;
-        jobfile::save(f, &j)?;
+        jobfile::save_under(f, &j, &versions, lock.as_ref())?;
     }
     let mut o = Outcome::read(
         format!("XML import {}: {} of {} product(s) into {} job file(s). Set the sheet of each, then nest.{}", path.display(), im.added, im.products, files.len(), if notes.is_empty() { String::new() } else { format!(" — {}", notes.join("; ")) }),
@@ -1513,10 +1522,56 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
     crate::formats::read_file_with(path, fmt, &ctx.cfg, opts)
 }
 
+/// UP7: a picture, drawing or program is never written over a job file or
+/// one of the Library's own records: a job file (`.snjob`, or any file
+/// holding a job, stamped or not), a library part record, the list, the
+/// folder trees, the stock, the material list (the Library's or this PC's),
+/// the shop file or a PC's record, nor over any file a version of this
+/// program records it wrote. An export of its own (PNG, DXF, CNC) is never
+/// refused by where it is: beside a Library job is fine. `out` is judged
+/// where it really is (a relative path, `..` or a link to a record counts).
+pub(super) fn refuse_protected(ctx: &Ctx, out: &Path) -> Result<(), String> {
+    let refused = || Err(format!("{} is a job file or one of the Library's own files: pictures and drawings are never written over those. Pick another out. Nothing was written.", out.display()));
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let at = real(out).or_else(|| Some(real(out.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")))?.join(out.file_name()?))).unwrap_or_else(|| out.to_path_buf());
+    if at.extension().is_some_and(|e| e.eq_ignore_ascii_case(jobfile::EXT)) {
+        return refused();
+    }
+    // What the file there is: one of this program's (stamped, or in one of
+    // its formats, as a job file saved before stamps is).
+    #[derive(serde::Deserialize)]
+    struct Format {
+        #[serde(default)]
+        format: Option<String>,
+    }
+    if let Ok(b) = std::fs::read(&at) {
+        let ours = serde_json::from_slice::<Format>(&b).ok().and_then(|k| k.format).is_some_and(|f| f.starts_with("nestpro-"));
+        if ours || crate::shared::recorded_version(&b).is_some() {
+            return refused();
+        }
+    }
+    // The Library's records by where they are: its JSON files at the top
+    // (the list, the shop file, the folder trees) and in Products, Shop and
+    // Sheets (library parts, PCs' records, stock, material list).
+    if let Some(lib) = real(&ctx.library_dir) {
+        if let Ok(rel) = at.strip_prefix(&lib) {
+            let json = rel.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
+            let first = rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
+            if json && (rel.components().count() == 1 || ["Products", crate::shop::PCS, crate::stock::FOLDER].contains(&first.as_str())) {
+                return refused();
+            }
+        }
+    }
+    if real(&ctx.pc_dir).is_some_and(|d| at == d.join(crate::materials::FILE)) {
+        return refused();
+    }
+    Ok(())
+}
+
 /// The Library, as the agent's user (LB5).
 fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
     reach_library(ctx, "Nothing was read from or saved to the Library, and the job is as it was")?;
-    Ok(crate::library::Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?.watching(&ctx.watch))
+    Ok(crate::library::Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?.watching(&ctx.watch).on_version(&ctx.version))
 }
 
 /// The Library folder can be used, or the refusal naming it, what was left
@@ -2083,6 +2138,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let g = p.geometry();
             let marks = p.custom.as_ref().map_or(vec![], |c| c.marks.clone());
             let out = PathBuf::from(a.need_str("out")?);
+            refuse_protected(ctx, &out)?;
             if let Some(d) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
                 std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
             }
@@ -2159,7 +2215,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     // The job as saved now, linked to its record and revision
                     // (LB10). Its stock booking stays the record's: this file
                     // leaves the stock alone (stock-book refuses it).
-                    let mut j = lib.load_job(id)?;
+                    let (mut j, newer) = lib.load_job_read(id)?;
+                    // UP9: opened into this job file it would be saved by this
+                    // older version, dropping what only the newer one knows.
+                    if let Some(n) = newer {
+                        return Err(format!("{} It wasn't opened into this job file: saved here, it would lose what only the newer version knows about it.", n.refusal(&format!("Library job {}", crate::library::auto_ref(crate::library::Kind::Job, id)))));
+                    }
                     j.booked = false;
                     let saved = j.saved.as_ref().map(|s| format!(", saved by {} at {}", s.by.label(), ctx.clock.stamp(s.at))).unwrap_or_default();
                     // Reading a job in use is allowed; saving over it isn't (CU12).
@@ -2178,6 +2239,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         _ => return Err("library add needs 'id' or 'name'".into()),
                     };
                     let pf = lib.load_product(id)?;
+                    // UP9: a part a newer version saved is used as it is;
+                    // saving it back is refused (UP7).
+                    let newer = lib.product_newer(id).map_or_else(String::new, |n| format!(" It is read-only on this PC: {} save-part can't save it back.", n.message()));
                     // Saved back, it goes over that part as read here (LB7). A
                     // part of that name already in the job keeps what it read.
                     if !job.parts.iter().any(|q| q.name == pf.part.name) {
@@ -2192,7 +2256,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     if pf.material != job.spec.material || (pf.thickness - job.spec.thickness).abs() > 1e-6 {
                         note = format!(" (stored for {} {} mm; the job is {} {} mm)", super::material::name_or(pf.material, "?"), pf.thickness, super::material::name_or(job.spec.material, "?"), job.spec.thickness);
                     }
-                    let m = format!("Added {} from the library as part {}{note}.", p.name, job.parts.len() + 1);
+                    let m = format!("Added {} from the library as part {}{note}.{newer}", p.name, job.parts.len() + 1);
                     job.parts.push(p);
                     job.stale = true;
                     Ok(Outcome::msg(m))
@@ -2239,6 +2303,13 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             c.id
                         )
                     };
+                    // UP7: every part, and the list, checked under one hold of
+                    // the write lock before the first is saved: none is saved
+                    // when one is a newer version's.
+                    let _lock = lib.lock()?;
+                    for &to in &to {
+                        lib.may_store(crate::library::Kind::Product, to.id())?;
+                    }
                     for (&i, &to) in t.iter().zip(&to) {
                         if let Err(c) = lib.check(crate::library::Kind::Product, to) {
                             return Err(refused(c, matches!(to, SaveTo::Read(_)), i));
@@ -2619,6 +2690,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             Some(rows.iter().zip(refs).map(|(row, r)| ((row.sheet, row.piece), r)).collect())
                         }
                     };
+                    // UP7: not into a stock a newer version changed: refused
+                    // before the job is marked booked or saved.
+                    {
+                        let _lock = ctx.library_at().lock()?;
+                        crate::shared::may_write_over(&file, &ctx.versions(), "The sheet stock")?;
+                    }
                     let note = job.book_stock_named(ctx, true, names.as_ref());
                     // Its sheets couldn't be taken (another PC took one, SV10):
                     // said so, not "Booked".
@@ -3520,6 +3597,12 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("startup.rs/Use this PC only", "gui: this PC keeps its own Library, in the default place; agents work in the Library this PC's settings name"),
     ("startup.rs/Start working", "view: closes the first-run screen"),
     ("Settings → Shop/Make this PC the admin PC", "gui: a person changes the admin PC, after a warning (SH7); shop mode=admin refuses agents with the reason"),
+    // --- updates on a PC of its own (UP11–UP14) ---
+    ("Settings → Shop/Check now", "shop"),
+    ("Settings → Shop/What's new", "shop"),
+    ("Settings → Shop/Update when I close", "gui: installing an update is a person's choice, in the window (UP14); shop mode=updates says what is offered"),
+    ("settings_ui.rs/What's new", "shop"),
+    ("settings_ui.rs/Later", "view: puts the update banner away for this version (UP13)"),
     // --- labels built at run time ("{expression}") ---
     ("ERP / MES/{&format!(\"{}\\njobs\", p.name())}", "todo: [AGT-7] bring ERP work in as a job"),
     ("Text/{label}", "text"),

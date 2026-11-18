@@ -117,11 +117,32 @@ pub fn read(dir: &Path) -> Result<Option<ShopFile>, String> {
     }
 }
 
-/// Write the shop file, under the Library's write lock (LB1, LB3). Never
-/// makes the shop folder: a Library that went away fails the write (SH2).
-pub fn write(dir: &Path, shop: &ShopFile, lock: &WriteLock) -> Result<(), String> {
-    let text = serde_json::to_vec_pretty(shop).map_err(|e| e.to_string())?;
-    shared::write_existing(&file(dir), &text, lock)
+/// Write the shop file, under the Library's write lock (LB1, LB3),
+/// recording `version` as the program that wrote it (UP5). Refused when a
+/// newer program wrote it last (UP7). Never makes the shop folder: a
+/// Library that went away fails the write (SH2).
+pub fn write(dir: &Path, shop: &ShopFile, lock: &WriteLock, version: &str) -> Result<(), String> {
+    shared::may_write_over(&file(dir), &versions(dir, version), "The shop file")?;
+    // The version this program records replaces the one it was read with.
+    let mut shop = shop.clone();
+    shop.other.remove(shared::VERSION_FIELD);
+    let text = shared::stamped(&shop, version)?;
+    shared::write_existing(&file(dir), text.as_bytes(), lock)
+}
+
+/// The shop file's field for the shop version: the release every PC in the
+/// shop runs. Rolling out sets it (spec #178); a shop that hasn't rolled one
+/// out has none.
+pub const SHOP_VERSION: &str = "shop_version";
+
+/// UP7, UP8: the versions a Library file in `dir` is judged by: this
+/// program's `this`, and the shop's version when `dir` is a shop folder that
+/// records one. A shop file that can't be read just now names no shop
+/// version (the refusal then names only the file's). The releases the shop
+/// rolled back from (UP10) are filled in by roll back; none yet.
+pub fn versions(dir: &Path, this: &str) -> shared::Versions {
+    let shop = read(dir).ok().flatten().and_then(|s| s.other.get(SHOP_VERSION).and_then(Value::as_str).map(String::from));
+    shared::Versions { this: this.to_string(), shop, rolled_back_from: vec![] }
 }
 
 /// Write this PC's record, under the Library's write lock (LB1, LB3). The

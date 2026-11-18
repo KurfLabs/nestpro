@@ -91,7 +91,7 @@ pub fn start_shop(dir: &Path, name: &str, who: &Who, clock: &Clock, version: &st
         started: Saved { by: who.clone(), at },
         other: Map::new(),
     };
-    if let Err(e) = shop::write(dir, &s, &lock) {
+    if let Err(e) = shop::write(dir, &s, &lock, version) {
         undo(&made);
         return Err(cant_write(dir, &e));
     }
@@ -131,7 +131,13 @@ pub fn record_pc(dir: &Path, who: &Who, clock: &Clock, version: &str) -> Result<
 /// person, in the window, after a warning: an agent is refused with the
 /// reason and nothing changes. Under the Library's write lock (LB1).
 pub fn make_admin(dir: &Path, who: &Who, clock: &Clock) -> Result<ShopFile, String> {
-    change_admin(dir, who, clock, None)
+    change_admin(dir, who, clock, None, crate::updates::VERSION)
+}
+
+/// `make_admin` by a program on `version`: refused when a newer program
+/// wrote the shop file last (UP7).
+pub fn make_admin_on(dir: &Path, who: &Who, clock: &Clock, version: &str) -> Result<ShopFile, String> {
+    change_admin(dir, who, clock, None, version)
 }
 
 /// SH7: `make_admin` as the window asks it: "`who`'s PC in place of
@@ -140,10 +146,10 @@ pub fn make_admin(dir: &Path, who: &Who, clock: &Clock) -> Result<ShopFile, Stri
 /// the question was open), nothing changes and the refusal names the admin
 /// PC now, so the person can ask again.
 pub fn replace_admin(dir: &Path, who: &Who, clock: &Clock, replacing: &str) -> Result<ShopFile, String> {
-    change_admin(dir, who, clock, Some(replacing))
+    change_admin(dir, who, clock, Some(replacing), crate::updates::VERSION)
 }
 
-fn change_admin(dir: &Path, who: &Who, clock: &Clock, replacing: Option<&str>) -> Result<ShopFile, String> {
+fn change_admin(dir: &Path, who: &Who, clock: &Clock, replacing: Option<&str>, version: &str) -> Result<ShopFile, String> {
     if who.agent {
         return Err(AGENT_ADMIN.into());
     }
@@ -158,7 +164,7 @@ fn change_admin(dir: &Path, who: &Who, clock: &Clock, replacing: Option<&str>) -
     if s.admin.pc != who.pc {
         let was = std::mem::take(&mut s.admin.pc);
         s.admin = Admin { pc: who.pc.clone(), by: who.clone(), at: clock.now(), was: Some(was) };
-        shop::write(dir, &s, &lock)?;
+        shop::write(dir, &s, &lock, version)?;
     }
     Ok(s)
 }
@@ -195,6 +201,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         // Agents never change the admin PC (SH7): the engine's own rule
         // refuses it, whoever the session says it works for.
         "admin" => make_admin(dir, &ctx.who.clone().as_agent(), &ctx.clock).map(|_| unreachable!("an agent changed the admin PC")),
+        "updates" => Ok(super::updates::run(ctx)),
         _ => {
             // Using the program on this PC records it (SH4). When it can't,
             // the shop is still shown, with why this PC isn't in it (SH6).
@@ -389,23 +396,11 @@ pub struct Joined {
     pub unrecorded: Option<String>,
 }
 
-/// The shop version in a shop file (rolled out by the admin PC, ADR 0006):
+/// The shop version in a shop file (rolled out by the admin PC, ADR 0006;
+/// what the version guard judges files by, UP8):
 /// None while the shop has none yet.
 pub fn shop_version(s: &ShopFile) -> Option<&str> {
-    s.other.get("shop_version").and_then(Value::as_str).filter(|v| !v.trim().is_empty())
-}
-
-/// `0.5.0` or `v0.5.0` as numbers, compared part by part (`0.10.0` is newer
-/// than `0.9.0`); None for anything else.
-pub fn version_parts(v: &str) -> Option<[u64; 3]> {
-    let v = v.trim();
-    let v = v.strip_prefix('v').unwrap_or(v);
-    let mut out = [0u64; 3];
-    let mut parts = v.split('.');
-    for o in &mut out {
-        *o = parts.next()?.parse().ok()?;
-    }
-    parts.next().is_none().then_some(out)
+    s.other.get(shop::SHOP_VERSION).and_then(Value::as_str).filter(|v| !v.trim().is_empty())
 }
 
 /// SH12: this PC's version against the shop's, as a check; None when there
@@ -413,8 +408,8 @@ pub fn version_parts(v: &str) -> Option<[u64; 3]> {
 /// read as a version). The second value is the update line for an older PC.
 fn version_check(shop: Option<&str>, mine: &str) -> Option<(Check, Option<String>)> {
     let shop = shop?;
-    let (s, m) = (version_parts(shop)?, version_parts(mine)?);
-    Some(match m.cmp(&s) {
+    // UP6: the version guard's order (a missing part is 0).
+    Some(match crate::shared::version_order(mine, shop)? {
         std::cmp::Ordering::Equal => (Check::new("version", Mark::Ok, format!("This PC runs the shop version, {mine}.")), None),
         std::cmp::Ordering::Less => {
             let update = format!("Update this PC: the shop is on {shop}.");

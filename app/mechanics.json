@@ -7476,6 +7476,30 @@
   "source": "UP4; own design"
  },
  {
+  "name": "update check (PC of its own)",
+  "group": "releases",
+  "value": "GitHub Releases at start and once a day, background, 30 s for the whole check (shop lookup included), no request after it; never in a shop; an unreadable release index fails the check; no connection = 'Couldn't check for updates' on the card only",
+  "source": "UP11; own design"
+ },
+ {
+  "name": "release offered",
+  "group": "releases",
+  "value": "newest plain MAJOR.MINOR.PATCH newer than this version, numeric compare; no pre-releases; nothing in a shop",
+  "source": "UP12; own design"
+ },
+ {
+  "name": "update banner",
+  "group": "releases",
+  "value": "'Version X is out': What's new, Update when I close, Later; 'Changes machine programs' entries first",
+  "source": "UP13; own design"
+ },
+ {
+  "name": "update when I close",
+  "group": "releases",
+  "value": "download in background, install after the window closes (waits up to 90 s for a running download), no restart; withdrawn when the Library changes or becomes a shop's; Windows installer builds only (Linux: releases are for Windows)",
+  "source": "UP14; own design"
+ },
+ {
   "name": "start a shop",
   "group": "shop",
   "value": "Settings → Shop → Start a shop here, or setup start= name=; refused (nothing made) for no name, unreachable, no Library, already a shop, not writable",
@@ -7570,6 +7594,42 @@
   "group": "shop",
   "value": "Start a shop: folder + name, asks before making a Library in a folder with none; Just this PC: Library in Documents\\Sheet Nesting\\Library",
   "source": "SH16; own design"
+ },
+ {
+  "name": "file version",
+  "group": "versions",
+  "value": "every Library file (job, library part, the Library's list, sheet stock, material list, shop file) records program_version, the version that last wrote it; none = written before, counts as old",
+  "source": "UP5; own design"
+ },
+ {
+  "name": "version order",
+  "group": "versions",
+  "value": "compared as numbers, part by part (0.10.0 newer than 0.9.0; a missing part is 0; text after - or + left out); a version that isn't numbers counts as newer",
+  "source": "UP6; own design"
+ },
+ {
+  "name": "older never overwrites newer",
+  "group": "versions",
+  "value": "a save, stock change, material change, list update, delete or shop-file change over a file a newer version wrote is refused, checked and written under one hold of the write lock, before anything is booked, stored or copied for undo: 'X is read-only on this PC. <message> Nothing was saved.'; render and part drawings never write over job or Library files",
+  "source": "UP7; own design"
+ },
+ {
+  "name": "update message",
+  "group": "versions",
+  "value": "in a shop with a shop version at least the file's: 'Made by version 0.5.0. Update this PC: the shop is on 0.5.0.'; otherwise only the file's: 'Made by version 0.5.0. Update this PC to 0.5.0 or later.'",
+  "source": "UP8; own design"
+ },
+ {
+  "name": "read-only job",
+  "group": "versions",
+  "value": "a job or library part a newer version saved opens read-only: window banner, Save and Save to library refused; agents: read operations answer with read_only, changes refused, library open of a newer job refused",
+  "source": "UP9; own design"
+ },
+ {
+  "name": "rolled back from",
+  "group": "versions",
+  "value": "files written by a release the shop rolled back from count as the shop version's (the list is filled by roll back); the newer-layout check stays",
+  "source": "UP10; own design"
  }
 ]
 }

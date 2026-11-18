@@ -668,6 +668,173 @@ fn rename(from: &Path, to: &Path, fence: &impl Fn() -> Result<(), String>) -> Re
     }
 }
 
+// ---------------------------------------------------------------------------
+// Older never overwrites newer (spec #178, UP5–UP10): every Library file
+// records the program version that last wrote it, and a program never writes
+// over a file a newer one wrote.
+// ---------------------------------------------------------------------------
+
+/// UP5: the field a Library file records the program version that last
+/// wrote it in, first in the file. A file written before versions were
+/// recorded has none and counts as old.
+pub const VERSION_FIELD: &str = "program_version";
+
+/// UP6: a version as numbers ("0.10.0" → 0, 10, 0), anything after a `-` or
+/// `+` left out. None when it isn't numbers.
+fn version_numbers(v: &str) -> Option<Vec<u64>> {
+    let core = v.trim().split(['-', '+']).next()?;
+    core.split('.').map(|p| p.parse::<u64>().ok()).collect()
+}
+
+/// UP6: `a` is newer than `b`, part by part as numbers, a missing part
+/// counting as 0 (0.10.0 is newer than 0.9.0, and 0.5 is 0.5.0).
+fn is_newer(a: &[u64], b: &[u64]) -> bool {
+    let n = a.len().max(b.len());
+    let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
+    (0..n).map(|i| at(a, i).cmp(&at(b, i))).find(|o| o.is_ne()) == Some(std::cmp::Ordering::Greater)
+}
+
+/// UP6: how version `a` stands to `b` (0.10.0 is newer than 0.9.0), as
+/// joining a shop compares this PC's with the shop's (SH12); None when
+/// either isn't numbers.
+pub fn version_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let (a, b) = (version_numbers(a)?, version_numbers(b)?);
+    Some(if is_newer(&a, &b) {
+        std::cmp::Ordering::Greater
+    } else if is_newer(&b, &a) {
+        std::cmp::Ordering::Less
+    } else {
+        std::cmp::Ordering::Equal
+    })
+}
+
+/// The program versions a Library file is judged by (UP7): this program's,
+/// and, in a shop, the shop's version and the releases it has rolled back
+/// from. The window and the agents give the engine their own (a test plays
+/// a PC on another version).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Versions {
+    /// This program's version.
+    pub this: String,
+    /// The shop's version, when the Library is a shop that records one.
+    pub shop: Option<String>,
+    /// UP10: the releases the shop has rolled back from. What they wrote
+    /// counts as the shop version's, so it can be saved again. Roll back
+    /// fills this list; until then it is empty.
+    pub rolled_back_from: Vec<String>,
+}
+
+/// A file a newer program wrote (UP7), and what to say about it (UP8).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Newer {
+    /// The version the file records.
+    pub written: String,
+    /// The shop's version, when it is the one to update to.
+    pub shop: Option<String>,
+}
+
+impl Versions {
+    /// This program's version alone, outside a shop.
+    pub fn this(v: &str) -> Versions {
+        Versions { this: v.to_string(), ..Default::default() }
+    }
+
+    /// UP6, UP7: the file recorded as written by `written` is newer than this
+    /// program, so it is read-only here. A file with no version is old
+    /// (UP5); one whose version isn't numbers counts as newer, as it can't be
+    /// told older. A file a release the shop rolled back from wrote counts
+    /// as the shop version's (UP10).
+    pub fn newer(&self, written: Option<&str>) -> Option<Newer> {
+        let w = written.map(str::trim).filter(|w| !w.is_empty())?;
+        let this = version_numbers(&self.this).unwrap_or_default();
+        let shop = self.shop.as_deref().and_then(version_numbers);
+        let Some(file) = version_numbers(w) else {
+            return Some(Newer { written: w.to_string(), shop: None });
+        };
+        let counts_as = match &shop {
+            Some(s) if self.rolled_back_from.iter().filter_map(|r| version_numbers(r)).any(|r| !is_newer(&r, &file) && !is_newer(&file, &r)) => s.clone(),
+            _ => file.clone(),
+        };
+        if !is_newer(&counts_as, &this) {
+            return None;
+        }
+        // UP8: the shop's version is named when updating to it is enough.
+        let shop = shop.filter(|s| !is_newer(&file, s)).and(self.shop.clone());
+        Some(Newer { written: w.to_string(), shop })
+    }
+}
+
+impl Newer {
+    /// UP8: "Made by version 0.5.0. Update this PC: the shop is on 0.5.0."
+    /// Outside a shop (or when the shop's version is older than the file's)
+    /// only the file's version is named.
+    pub fn message(&self) -> String {
+        let w = &self.written;
+        if version_numbers(w).is_none() {
+            return format!("Made by version {w}, which this PC can't read. Update this PC.");
+        }
+        match &self.shop {
+            Some(s) => format!("Made by version {w}. Update this PC: the shop is on {s}."),
+            None => format!("Made by version {w}. Update this PC to {w} or later."),
+        }
+    }
+
+    /// UP7: a save over the file `what` names, refused.
+    pub fn refusal(&self, what: &str) -> String {
+        format!("{what} is read-only on this PC. {} Nothing was saved.", self.message())
+    }
+}
+
+/// UP5: the version a Library file's text records (None: written before
+/// versions were recorded, or not a file of this program's).
+pub fn recorded_version(bytes: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Recorded {
+        #[serde(default)]
+        program_version: Option<serde_json::Value>,
+    }
+    let r: Recorded = serde_json::from_slice(bytes).ok()?;
+    match r.program_version? {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Null => None,
+        v => Some(v.to_string()),
+    }
+}
+
+/// UP5: a file's `program_version` as read into a struct: a version that
+/// isn't text (a number) is kept as written, so it is never taken for none.
+pub fn version_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(v) => Some(v.to_string()),
+    })
+}
+
+/// UP5: `value` as a Library file's text, recording `version` as the
+/// program that wrote it, first, before the file's own fields.
+pub fn stamped<T: Serialize>(value: &T, version: &str) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct Stamped<'a, T> {
+        program_version: &'a str,
+        #[serde(flatten)]
+        value: &'a T,
+    }
+    serde_json::to_string_pretty(&Stamped { program_version: version, value }).map_err(|e| e.to_string())
+}
+
+/// UP7: may this program write over `path`? Not when the file there was
+/// last written by a newer program: refused, naming it (`what`) and saying
+/// to update this PC (UP8). A file that isn't there yet may be written; one
+/// that can't be read just now is refused, as it can't be told older.
+pub fn may_write_over(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
+    match std::fs::read(path) {
+        Ok(b) => versions.newer(recorded_version(&b).as_deref()).map_or(Ok(()), |n| Err(n.refusal(what))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{what} can't be read before saving over it ({e}). Nothing was saved.")),
+    }
+}
+
 #[cfg(test)]
 mod shared_tests {
     use super::*;
@@ -962,5 +1129,100 @@ mod shared_tests {
             assert!(left.is_empty(), "takeover marks left behind: {left:?}");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    fn on(this: &str, shop: Option<&str>) -> Versions {
+        Versions { this: this.into(), shop: shop.map(String::from), rolled_back_from: vec![] }
+    }
+
+    #[test]
+    fn versions_compare_as_numbers_not_text() {
+        // UP6: 0.10.0 is newer than 0.9.0, though "0.10.0" < "0.9.0" as text.
+        assert!(on("0.9.0", None).newer(Some("0.10.0")).is_some());
+        assert!(on("0.10.0", None).newer(Some("0.9.0")).is_none());
+        // The same version is never newer; nor an older one.
+        assert!(on("0.5.0", None).newer(Some("0.5.0")).is_none());
+        assert!(on("0.5.0", None).newer(Some("0.4.9")).is_none());
+        assert!(on("1.0.0", None).newer(Some("0.99.99")).is_none());
+        // A missing part counts as 0; a suffix after the numbers is left out.
+        assert!(on("0.5.0", None).newer(Some("0.5")).is_none());
+        assert!(on("0.5.0", None).newer(Some("0.5.0-rc1")).is_none());
+        assert!(on("0.5.0", None).newer(Some("0.5.1+build7")).is_some());
+    }
+
+    #[test]
+    fn a_file_with_no_version_is_old_and_one_that_cant_be_read_is_never_saved_over() {
+        // UP5: written before versions were recorded.
+        assert!(on("0.1.0", None).newer(None).is_none());
+        assert!(on("0.1.0", None).newer(Some("")).is_none());
+        // UP6: a version that isn't numbers can't be told older, so it counts
+        // as newer and is never written over.
+        let n = on("0.4.0", None).newer(Some("next")).expect("an unreadable version was taken as older");
+        assert_eq!(n.message(), "Made by version next, which this PC can't read. Update this PC.");
+        assert!(on("0.4.0", None).newer(Some("0..1")).is_some());
+    }
+
+    #[test]
+    fn the_message_names_the_shops_version_in_a_shop_and_only_the_files_outside() {
+        // UP8.
+        assert_eq!(on("0.4.0", Some("0.5.0")).newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC: the shop is on 0.5.0.");
+        assert_eq!(on("0.4.0", None).newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC to 0.5.0 or later.");
+        // A shop on a version older than the file's: updating to the shop's
+        // wouldn't be enough, so the file's is named.
+        assert_eq!(on("0.4.0", Some("0.4.0")).newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC to 0.5.0 or later.");
+        assert_eq!(on("0.4.0", Some("0.6.0")).newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC: the shop is on 0.6.0.");
+        let n = on("0.4.0", Some("0.5.0")).newer(Some("0.5.0")).unwrap();
+        assert_eq!(n.refusal("The sheet stock"), "The sheet stock is read-only on this PC. Made by version 0.5.0. Update this PC: the shop is on 0.5.0. Nothing was saved.");
+    }
+
+    #[test]
+    fn files_written_by_a_release_the_shop_rolled_back_from_count_as_the_shop_versions() {
+        // UP10: the seam roll back fills. The shop went back from 0.5.0 to
+        // 0.4.0: what 0.5.0 wrote is saved again on 0.4.0, but not on 0.3.0.
+        let v = Versions { this: "0.4.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()] };
+        assert!(v.newer(Some("0.5.0")).is_none());
+        assert!(v.newer(Some("0.6.0")).is_some(), "only the releases rolled back from count");
+        let old = Versions { this: "0.3.0".into(), ..v.clone() };
+        assert!(old.newer(Some("0.5.0")).is_some());
+        // Not in a shop that records a version, nothing counts as another's.
+        let none = Versions { shop: None, ..v };
+        assert!(none.newer(Some("0.5.0")).is_some());
+    }
+
+    #[test]
+    fn a_file_records_the_version_that_wrote_it_first_and_keeps_its_own_fields() {
+        // UP5.
+        #[derive(Serialize)]
+        struct F {
+            format: &'static str,
+            n: f64,
+        }
+        let t = stamped(&F { format: "nestpro-demo", n: 0.1 }, "0.5.0").unwrap();
+        assert!(t.starts_with("{\n  \"program_version\": \"0.5.0\",\n  \"format\": \"nestpro-demo\""), "{t}");
+        assert_eq!(recorded_version(t.as_bytes()).as_deref(), Some("0.5.0"));
+        assert_eq!(recorded_version(br#"{"format":"nestpro-demo"}"#), None);
+        assert_eq!(recorded_version(br#"{"program_version":5}"#).as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn a_newer_file_is_never_written_over_and_a_missing_one_is_written() {
+        // UP7.
+        let d = std::env::temp_dir().join(format!("nestpro_version_guard_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("stock.json");
+        let v = on("0.4.0", None);
+        may_write_over(&f, &v, "The sheet stock").unwrap();
+        std::fs::write(&f, r#"{"program_version":"0.4.0"}"#).unwrap();
+        may_write_over(&f, &v, "The sheet stock").unwrap();
+        std::fs::write(&f, r#"{"program_version":"0.10.0"}"#).unwrap();
+        let e = may_write_over(&f, &v, "The sheet stock").unwrap_err();
+        assert_eq!(e, "The sheet stock is read-only on this PC. Made by version 0.10.0. Update this PC to 0.10.0 or later. Nothing was saved.");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

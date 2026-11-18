@@ -360,6 +360,11 @@ impl crate::App {
     /// Take in what a start or join answered: on success this PC's Library
     /// is the shop folder from now on (SH10).
     fn first_run_answer(&mut self, fr: &mut FirstRun, a: Answer) {
+        if matches!(a, Answer::Joined(_) | Answer::Started { .. }) {
+            // S2: a PC in a shop never takes a public release: whatever was
+            // offered or chosen from them is withdrawn.
+            self.setui.upd.withdraw(&crate::updates::HANDOFF);
+        }
         match a {
             Answer::Joined(j) => {
                 if !j.already {

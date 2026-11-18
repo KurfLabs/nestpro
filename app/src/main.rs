@@ -211,6 +211,9 @@ pub struct Job {
     /// back with the job's material while the list doesn't have it, so the
     /// job keeps its id and name (invariant 3).
     pub material_names: engine::material::ReadNames,
+    /// Why the job is read-only here (UP9): a newer version saved it. Shown
+    /// above the job; Save and Save to library are refused, saying so.
+    pub read_only: Option<String>,
 }
 
 pub struct App {
@@ -546,7 +549,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
     let p = |name: &str, shape, w, h, qty, color| Part { name: name.into(), shape, w, h, qty, rotate: true, color, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let mk = |week: &str, name: &str, parts: Vec<Part>, spec: SheetSpec| {
         let result = nest::nest(&parts, &spec);
-        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![] }
+        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![], read_only: None }
     };
     let mut steel5 = spec.clone();
     steel5.thickness = 5.0;
@@ -574,6 +577,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
             material_names: vec![],
             held: Default::default(),
             erp: None,
+            read_only: None,
         },
         mk(
             "W09_10",
@@ -772,9 +776,13 @@ impl App {
         // --shop-demo (screenshot runs only): a temporary Library of its own,
         // never the configured one or --library-dir's (SH5).
         if a.shot.is_some() && settings_ui::shop_demo_arg().is_some() {
-            if let Some(d) = settings_ui::shop_demo_dir() {
-                a.cfg.library_dir = d.display().to_string();
-            }
+            // No temporary folder: stop before any Library is read, so a
+            // screenshot can never show the configured (real) shop.
+            let Some(d) = settings_ui::shop_demo_dir() else {
+                eprintln!("--shop-demo: couldn't make a temporary folder for the demo Library; nothing was read.");
+                std::process::exit(2);
+            };
+            a.cfg.library_dir = d.display().to_string();
         }
         // The material list (MA14): the Library's, or this PC's own.
         a.reload_materials(true);
@@ -888,6 +896,7 @@ impl App {
             lib_folder: None,
             material_names: vec![],
             erp: None,
+            read_only: None,
         });
         let i = self.jobs.len() - 1;
         self.open_job(i);
@@ -917,6 +926,11 @@ impl App {
     }
 
     pub fn save_job_to(&mut self, path: &std::path::Path) {
+        // UP9: a job a newer version saved is never saved by this one.
+        if let Some(why) = self.read_only() {
+            self.status = format!("Not saved: this job is read-only on this PC. {why}");
+            return;
+        }
         // Someone else (an agent) changed the file since the window last read
         // or wrote it: don't write over their work without asking which to keep.
         if let Some(link) = self.job_link.clone().filter(|l| l.path == path) {
@@ -927,6 +941,13 @@ impl App {
                 return;
             }
         }
+        // UP7: never over a file a newer version saved: asked before any
+        // question, and again under the write lock below.
+        let versions = self.versions();
+        if let Err(e) = jobfile::may_save(path, &versions) {
+            self.status = format!("Couldn't save the job: {e}");
+            return;
+        }
         // A Library job's sheets are booked when it's saved to the Library,
         // after its revision check (LB8): saved to a file, it leaves the
         // stock alone, and the file is a copy holding none of its sheets or
@@ -936,6 +957,17 @@ impl App {
         if !library_job && !self.ready_to_save(stockui::SaveTarget::File(path.to_path_buf())) {
             return;
         }
+        // UP7: from the version check through the write, under the
+        // Library's write lock, and checked before any sheet is booked, so a
+        // newer version's save in between is never written over and a
+        // refused save books nothing.
+        let lock = match jobfile::save_lock(&self.library_dir()).and_then(|l| jobfile::may_save(path, &versions).map(|_| l)) {
+            Ok(l) => l,
+            Err(e) => {
+                self.status = format!("Couldn't save the job: {e}");
+                return;
+            }
+        };
         let stock_note = if library_job {
             self.result.normalise(&self.spec);
             " — its sheets are booked when it's saved to the Library.".to_string()
@@ -949,6 +981,9 @@ impl App {
         }
         let week = self.jobs.get(self.cur_job).map_or(String::new(), |j| j.week.clone());
         let j = jobfile::JobFile {
+            // As the file records it once saved (UP5), so the file watcher
+            // takes the file as this save's.
+            program_version: Some(updates::VERSION.to_string()),
             format: jobfile::FORMAT.into(),
             version: jobfile::VERSION,
             name: self.job_name.clone(),
@@ -972,7 +1007,9 @@ impl App {
             library_parts: self.lib_read.parts.clone(),
             material_name: engine::material::read_name(self.spec.material, &self.job_material_names),
         };
-        match jobfile::save(path, &j) {
+        let saved = jobfile::save_under(path, &j, &versions, lock.as_ref());
+        drop(lock);
+        match saved {
             Ok(()) => {
                 if library_job {
                     // The file is a copy (LB13): the window doesn't follow
@@ -999,7 +1036,7 @@ impl App {
 
     /// Open a saved job as a job of its own (a second copy gets " (1)").
     pub fn open_job_file(&mut self, path: &std::path::Path) {
-        let j = match jobfile::load(path) {
+        let (j, written) = match jobfile::load_versioned(path) {
             Ok(j) => j,
             Err(e) => {
                 self.status = format!("Couldn't open {}: {e}", path.display());
@@ -1010,7 +1047,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let tried = 0;
-        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, parts: j.library_parts }, lib_folder: None, material_names: engine::material::names_read(j.spec.material, &j.material_name) });
+        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, parts: j.library_parts }, lib_folder: None, material_names: engine::material::names_read(j.spec.material, &j.material_name), read_only: self.versions().newer(written.as_deref()).map(|n| n.message()) });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -1024,6 +1061,21 @@ impl App {
         self.mark_job_saved(self.cur_job);
         self.note_recent_job(path);
         self.status = format!("Opened job {} from {} — {} product(s), {} sheet(s).", self.job_name, path.display(), self.parts.len(), self.result.sheets.len());
+        if let Some(why) = self.read_only() {
+            self.status = format!("Opened job {} read-only. {why}", self.job_name);
+        }
+    }
+
+    /// UP7, UP8: the versions this window's files are judged by: this
+    /// program's, and the shop's when its Library is a shop.
+    pub fn versions(&self) -> shared::Versions {
+        shop::versions(&self.library_dir(), updates::VERSION)
+    }
+
+    /// UP9: why the job in front is read-only here (a newer version saved
+    /// it), or None.
+    pub fn read_only(&self) -> Option<String> {
+        self.jobs.get(self.cur_job).and_then(|j| j.read_only.clone())
     }
 
     pub fn open_job_dialog(&mut self) {
@@ -1184,7 +1236,7 @@ impl App {
             return;
         };
         self.store_job();
-        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![] });
+        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![], read_only: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.status = format!("Created job {} — add products, then nest.", self.job_name);
@@ -2037,6 +2089,13 @@ impl App {
     }
 
     pub fn new_job(&mut self) {
+        // UP9: a job read-only here is never emptied in place (Undo would
+        // bring the newer version's job back as this one's to save): a new
+        // job of its own starts instead, with its own undo.
+        if self.read_only().is_some() {
+            let week = self.jobs.get(self.cur_job).map_or_else(String::new, |j| j.week.clone());
+            return self.new_job_in_week(week);
+        }
         self.checkpoint();
         self.parts.clear();
         self.sel_part = None;
@@ -2812,6 +2871,9 @@ impl eframe::App for App {
         self.new_library_window(&ctx);
         self.first_run_window(&ctx);
         self.shop_admin_window(&ctx);
+        // UP11: releases for a PC of its own, checked off the window's thread.
+        self.update_tick(&ctx);
+        self.whats_new_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
         self.stock_window(&ctx);
@@ -2955,6 +3017,23 @@ impl eframe::App for App {
                     .stroke(Stroke::new(1.0, th().border)),
             )
             .show(ui, |ui| self.ribbon(ui));
+        // UP9: the job in front is read-only (a newer version saved it):
+        // said above it, on every screen, with what to do.
+        if let Some(why) = self.read_only() {
+            egui::Panel::top("read_only")
+                .frame(egui::Frame::new().fill(th().warn_bg).inner_margin(egui::Margin::symmetric(10, 5)).stroke(Stroke::new(1.0, th().border)))
+                .show_separator_line(false)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("🔒 {} is read-only on this PC.", self.job_name)).strong().color(th().warn_fg));
+                        ui.label(RichText::new(why).color(th().warn_fg));
+                    })
+                    .response
+                    .on_hover_text("A newer version of the program saved this job. This PC can show it and make programs from it, but never saves over it, so nothing the newer version saved is lost. Saving it is refused until this PC is updated.");
+                });
+        }
+        // UP13: "Version 0.5.0 is out" while a newer release is offered.
+        self.update_banner(ui);
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(th().chrome).stroke(Stroke::new(1.0, th().border)).inner_margin(egui::Margin::symmetric(8, 3)))
             .show(ui, |ui| {
@@ -3158,7 +3237,7 @@ fn main() -> eframe::Result {
             // Without the example jobs: one empty job (not for screenshots).
             if load_layout && !app.cfg.examples {
                 let spec = app.spec.clone();
-                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![] }];
+                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None, material_names: vec![], read_only: None }];
                 app.cur_job = 0;
                 app.job_name = "New job".into();
                 app.parts.clear();
@@ -3191,6 +3270,15 @@ fn main() -> eframe::Result {
             if !app.shot_mode_now() {
                 app.record_in_shop();
             }
+            // UP11: a PC of its own checks for releases (a screenshot only
+            // with a made-up list, --fake-releases=<file>).
+            let fake = std::env::args().find_map(|a| a.strip_prefix("--fake-releases=").map(PathBuf::from)).or_else(|| std::env::var_os("NESTPRO_FAKE_RELEASES").map(PathBuf::from));
+            let chosen = fake.is_some() && std::env::args().any(|a| a == "--update-chosen");
+            app.start_update_checks(fake);
+            // --update-chosen / --whats-new (screenshots, with --fake-releases):
+            // Update when I close pressed, or What's new open, once the check
+            // has answered.
+            app.setui.upd.demo = (chosen, std::env::args().any(|a| a == "--whats-new"));
             // Saved preferences (Settings → General / Appearance).
             app.warn_tech = app.cfg.warn_tech;
             app.dv.show_unbuilt = app.cfg.show_unbuilt;
@@ -3932,6 +4020,9 @@ fn main() -> eframe::Result {
     if let Err(e) = &res {
         eprintln!("window error: {e}");
     }
+    // UP14: the window has closed, and every job with it: an update chosen
+    // with Update when I close installs now.
+    updates::install_on_close();
     res
 }
 
@@ -4105,6 +4196,153 @@ mod tests {
 #[cfg(test)]
 mod job_tests {
     use super::*;
+
+    /// A version one major release ahead of this program's, and a shop
+    /// `Acme` on it in a new Library under `dir`.
+    fn newer_shop(dir: &std::path::Path) -> (String, std::path::PathBuf) {
+        let major: u64 = updates::VERSION.split('.').next().unwrap().parse().unwrap();
+        let newer = format!("{}.0.0", major + 1);
+        let _ = std::fs::remove_dir_all(dir);
+        let lib = dir.join("library");
+        crate::library::create(&lib).unwrap();
+        engine::shop::start(&lib, "Acme", &shared::Who::new("sam", "PC-A"), &shared::Clock::at(1_794_216_000), &newer).unwrap();
+        let f = lib.join(shop::FILE);
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        v[shop::SHOP_VERSION] = serde_json::json!(newer);
+        std::fs::write(&f, v.to_string()).unwrap();
+        (newer, lib)
+    }
+
+    #[test]
+    fn saving_over_a_newer_job_file_books_no_sheets() {
+        // S2 (UP7): the destination is checked before the stock is booked.
+        let dir = std::env::temp_dir().join(format!("nestpro_newer_dest_books_nothing_{}", std::process::id()));
+        let (newer, lib) = newer_shop(&dir);
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        stock::Stock::update(&a.library_at(), |s| s.add_sheet(stock::Item::sheet("DEMO-S1", a.spec.material, a.spec.thickness, 3000.0, 1500.0, 3), true)).unwrap();
+        a.add_part(Shape::Rectangle);
+        a.run_nesting();
+        assert!(a.result.formats.iter().any(|f| f.stock_ref == "DEMO-S1"), "not nested from stock");
+        let dest = dir.join("DEMO-001.snjob");
+        jobfile::save_on(&dest, &jobfile::JobFile::new_job("DEMO-001", engine::default_spec()), &shared::Versions::this(&newer), &lib).unwrap();
+        let (stock_before, dest_before) = (std::fs::read(stock::Stock::file(&lib)).unwrap(), std::fs::read(&dest).unwrap());
+        a.save_job_to(&dest);
+        assert!(a.status.contains("read-only on this PC"), "{}", a.status);
+        assert_eq!(std::fs::read(stock::Stock::file(&lib)).unwrap(), stock_before, "sheets were booked for a save that was refused");
+        assert_eq!(std::fs::read(&dest).unwrap(), dest_before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_job_from_a_read_only_job_starts_a_job_of_its_own() {
+        // S3 (UP9): never emptied in place, so Undo can't bring the newer
+        // version's job back as one this PC saves.
+        let dir = std::env::temp_dir().join(format!("nestpro_read_only_new_job_{}", std::process::id()));
+        let (newer, lib) = newer_shop(&dir);
+        let src = dir.join("DEMO-001.snjob");
+        let mut j = jobfile::JobFile::new_job("DEMO-001", engine::default_spec());
+        j.parts.push(engine::shape_part(Shape::Rectangle, 1, 0));
+        jobfile::save_on(&src, &j, &shared::Versions::this(&newer), &lib).unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        a.open_job_file(&src);
+        let (read_only, jobs) = (a.cur_job, a.jobs.len());
+        a.new_job();
+        assert_eq!(a.jobs.len(), jobs + 1, "the read-only job was emptied in place");
+        assert!(a.parts.is_empty() && a.read_only().is_none());
+        a.undo();
+        assert!(a.parts.is_empty(), "undo brought the newer job's parts into the new job");
+        assert!(a.jobs[read_only].read_only.is_some(), "the newer job isn't read-only any more");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_window_says_when_a_library_part_is_a_newer_versions_and_when_it_cant_add_parts() {
+        // S4 (UP9, UP7).
+        let dir = std::env::temp_dir().join(format!("nestpro_newer_part_window_{}", std::process::id()));
+        let (newer, lib) = newer_shop(&dir);
+        let at_newer = crate::library::Library::at(&lib, &shared::Who::new("sam", "PC-A"), &shared::Clock::at(1_794_216_000)).on_version(&newer);
+        let id = at_newer.save_product(&engine::shape_part(Shape::Rectangle, 1, 0), "Acme", 0, 3.0, crate::library::SaveTo::New).unwrap().id;
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        a.add_library_product(id);
+        let why = format!("Made by version {newer}. Update this PC: the shop is on {newer}.");
+        assert!(a.status.contains("read-only on this PC") && a.status.contains(&why), "{}", a.status);
+        // Adding the job's parts to a Library whose list the newer version
+        // wrote: refused, and said.
+        a.add_part(Shape::Rectangle);
+        a.parts.last_mut().unwrap().name = "DEMO-NEW".into();
+        a.add_products_to_library();
+        assert!(a.status.contains("0 product(s) added") && a.status.contains("Not added: ") && a.status.contains(&why), "{}", a.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_newer_save_that_changes_only_the_version_makes_the_open_job_read_only() {
+        // S7 (UP9): the file watcher takes the version from the same read as
+        // the job.
+        let dir = std::env::temp_dir().join(format!("nestpro_newer_stamp_watch_{}", std::process::id()));
+        let (newer, lib) = newer_shop(&dir);
+        let path = dir.join("DEMO-001.snjob");
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        a.save_job_to(&path);
+        assert!(a.read_only().is_none(), "{}", a.status);
+        // The window takes the file as it is now as its own.
+        if let (Some(l), Ok(j)) = (a.job_link.as_mut(), jobfile::load(&path)) {
+            l.disk_sig = engine::imports::job_sig(&j);
+        }
+        // A newer version saves it again, changing nothing but the version.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let stamp = format!("\"program_version\": \"{}\"", updates::VERSION);
+        assert!(text.contains(&stamp), "{text}");
+        std::fs::write(&path, text.replacen(&stamp, &format!("\"program_version\": \"{newer}\""), 1)).unwrap();
+        a.disk_poll = -10.0;
+        a.watch_job_file(&egui::Context::default());
+        assert!(a.read_only().is_some_and(|w| w.contains(&newer)), "{:?} {}", a.read_only(), a.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_job_a_newer_version_saved_opens_read_only_in_the_window_and_is_never_saved() {
+        // UP7, UP8, UP9: the window on this PC's own version; the job and the
+        // shop's version are one major release ahead.
+        let major: u64 = updates::VERSION.split('.').next().unwrap().parse().unwrap();
+        let newer = format!("{}.0.0", major + 1);
+        let dir = std::env::temp_dir().join(format!("nestpro_read_only_window_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = dir.join("library");
+        crate::library::create(&lib).unwrap();
+        engine::shop::start(&lib, "Acme", &shared::Who::new("sam", "PC-A"), &shared::Clock::at(1_794_216_000), &newer).unwrap();
+        let f = lib.join(shop::FILE);
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        v[shop::SHOP_VERSION] = serde_json::json!(newer);
+        std::fs::write(&f, v.to_string()).unwrap();
+        let src = dir.join("DEMO-001.snjob");
+        jobfile::save_on(&src, &jobfile::JobFile::new_job("DEMO-001", engine::default_spec()), &shared::Versions::this(&newer), &lib).unwrap();
+        let bytes = std::fs::read(&src).unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        a.open_job_file(&src);
+        let why = format!("Made by version {newer}. Update this PC: the shop is on {newer}.");
+        assert_eq!(a.read_only().as_deref(), Some(why.as_str()));
+        assert!(a.status.contains("read-only") && a.status.contains(&why), "{}", a.status);
+        // Save, Save as and Save to library are refused, saying why.
+        a.save_job_to(&src);
+        assert!(a.status.starts_with("Not saved: this job is read-only on this PC.") && a.status.contains(&why), "{}", a.status);
+        a.save_job_to(&dir.join("DEMO-001 copy.snjob"));
+        assert!(!dir.join("DEMO-001 copy.snjob").exists());
+        a.save_job_to_library();
+        assert!(a.status.contains("read-only") && a.status.contains(&why), "{}", a.status);
+        assert!(crate::library::Library::at(&lib, &a.who, &a.clock).entries().is_empty(), "it was saved into the Library");
+        assert_eq!(std::fs::read(&src).unwrap(), bytes, "the window wrote over the newer job");
+        // Another job, opened after it, isn't read-only.
+        a.new_job_in_week("W12".into());
+        assert_eq!(a.read_only(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_job_whose_material_isnt_in_the_list_keeps_its_name_saved_from_the_window() {

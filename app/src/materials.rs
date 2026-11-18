@@ -166,7 +166,7 @@ impl JoinedNow {
 /// PC sharing it answers from the same list. Refused, to be tried again the
 /// next time the list is read, while the Library can't be reached; nothing
 /// is stored then.
-pub fn join(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved) -> Result<Option<JoinedNow>, String> {
+pub fn join(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved, version: &str) -> Result<Option<JoinedNow>, String> {
     let Home::Library(d) = home else { return Ok(None) };
     if has_joined(pc_dir, d) {
         return Ok(None);
@@ -188,7 +188,7 @@ pub fn join(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: 
     if stored.as_ref() != Some(&joined.list) {
         let mut l = joined.list.clone();
         l.changed = Some(by());
-        store(home, &l, &lock)?;
+        store(home, &l, &lock, &crate::shop::versions(d, version))?;
     }
     drop(lock);
     let mut marks = joined_libraries(pc_dir);
@@ -244,7 +244,7 @@ pub fn fallback(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings) 
 /// refuses. Refused, saying what to do, while the Library can't be reached
 /// or holds no Library (LB11, LB12). Gives `f`'s answer and the list as
 /// stored.
-pub fn update<T>(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved, f: impl FnOnce(&mut List) -> Result<T, String>) -> Result<(T, List), String> {
+pub fn update<T>(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved, versions: &crate::shared::Versions, f: impl FnOnce(&mut List) -> Result<T, String>) -> Result<(T, List), String> {
     let refused = |e: String| format!("{e} The material list wasn't changed: try again once it can be reached.");
     let lock = match home {
         Home::Library(d) => {
@@ -256,10 +256,12 @@ pub fn update<T>(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings,
             WriteLock::take(home.lock_dir())?
         }
     };
+    // UP7: not over a list a newer version changed last.
+    crate::shared::may_write_over(&home.file(), versions, LIST)?;
     let mut l = load(home, pc_dir, cfg).map_err(refused)?;
     let out = f(&mut l)?;
     l.changed = Some(by());
-    store(home, &l, &lock)?;
+    store(home, &l, &lock, versions)?;
     Ok((out, l))
 }
 
@@ -338,7 +340,7 @@ pub fn apply(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by:
     // the one this window or session read last.
     let first = if deletes { load(home, pc_dir, cfg).ok().map(|seen| (reading_with(&seen, || lib.scan_records(None)), seen)) } else { None };
     crate::shared::pause("materials scanned");
-    update(home, pc_dir, cfg, by, |l| {
+    update(home, pc_dir, cfg, by, &lib.versions(), |l| {
         // What uses a material is read against the list read under the
         // lock; files read first against another list are read again.
         let base = l.clone();
@@ -383,7 +385,13 @@ pub fn not_deleted(library_dir: &Path, id: Id, what: &str) -> Result<(), String>
     Err(format!("{which} was deleted from the material list after it was picked, so {what} can't be saved in it: pick another material (see material mode=list), or add it again with material mode=add. Nothing was saved."))
 }
 
-fn store(home: &Home, l: &List, lock: &WriteLock) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(l).map_err(|e| e.to_string())?;
+/// The list, as a refusal names it (UP7).
+const LIST: &str = "The material list";
+
+/// Store the list, recording the program version that wrote it (UP5):
+/// refused when a newer version wrote it last (UP7).
+fn store(home: &Home, l: &List, lock: &WriteLock, versions: &crate::shared::Versions) -> Result<(), String> {
+    crate::shared::may_write_over(&home.file(), versions, LIST)?;
+    let text = crate::shared::stamped(l, &versions.this)?;
     crate::shared::write_file(&home.file(), text.as_bytes(), Some(lock))
 }
