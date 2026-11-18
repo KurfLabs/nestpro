@@ -7474,6 +7474,54 @@
   "group": "releases",
   "value": "v + package version, MAJOR.MINOR.PATCH only, on main; any other tag refused before building",
   "source": "UP4; own design"
+ },
+ {
+  "name": "start a shop",
+  "group": "shop",
+  "value": "Settings → Shop → Start a shop here, or setup start= name=; refused (nothing made) for no name, unreachable, no Library, already a shop, not writable",
+  "source": "SH1; own design"
+ },
+ {
+  "name": "shop folder",
+  "group": "shop",
+  "value": "the Library folder in place: adds shop.json + Shop, Updates, Backups; nothing else changed or moved; under the write lock",
+  "source": "SH2; own design"
+ },
+ {
+  "name": "shop file",
+  "group": "shop",
+  "value": "name, admin PC (who, when, the one before), shop settings changed only on the admin PC (new shop) or from any PC, who started it; later versions' fields kept",
+  "source": "SH3; own design"
+ },
+ {
+  "name": "PCs list",
+  "group": "shop",
+  "value": "Shop\\<PC>-<key of the whole name>.json per PC: PC, Windows user, version, last seen; written by that PC on opening the program, under the write lock; a PC that can't add itself is told so and can Add this PC",
+  "source": "SH4; own design"
+ },
+ {
+  "name": "Settings → Shop",
+  "group": "shop",
+  "value": "first page; two cards (This shop, PCs in this shop), one line each, details on hover; read on opening and Try again",
+  "source": "SH5; own design"
+ },
+ {
+  "name": "shop for agents",
+  "group": "shop",
+  "value": "shop mode=status: name, folder, admin PC, shop settings, PCs with version and last seen; setup start= name=",
+  "source": "SH6; own design"
+ },
+ {
+  "name": "change the admin PC",
+  "group": "shop",
+  "value": "Make this PC the admin PC, after a warning, records who and when; refused for agents with the reason",
+  "source": "SH7; own design"
+ },
+ {
+  "name": "shop folder unreachable",
+  "group": "shop",
+  "value": "said, naming the folder (LB11); never taken for no shop; nothing made",
+  "source": "SH8; own design"
  }
 ]
 }

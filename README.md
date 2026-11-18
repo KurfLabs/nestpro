@@ -85,6 +85,10 @@ nestpro ops --gui      # which GUI ribbon command each operation stands for
   --minutes 10 --text` on two PCs at once: it saves made-up jobs, parts and
   stock changes there and reports PASS or FAIL in plain words. It refuses a
   real Library.
+- **A shop.** `nestpro setup --start \\srv\Nesting --name Acme` makes that
+  Library's folder a shop's folder where it is (nothing moves), and `shop`
+  shows the shop, its admin PC and every PC with its version and when it was
+  last seen. Changing the admin PC is left to a person, in Settings → Shop.
 - **Job folders** are the Library's, the same on every PC: `job-folders
   --mode=list` shows the tree, and `new`, `rename`, `delete` (empty folders
   only) and `move` (a saved job or a folder) change it, as the Job Explorer's
