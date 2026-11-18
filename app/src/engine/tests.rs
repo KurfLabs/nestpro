@@ -12164,7 +12164,11 @@ fn a_backup_naming_a_file_twice_is_refused() {
 }
 
 /// S9: reading a big backup over a slow share renews the lock as it goes,
-/// so the restore keeps its lease (here 300 ms, every read 120 ms).
+/// so the restore keeps its lease: every read of an entry takes 40% of the
+/// lock's 30 s time to write, played on the lock's own clock (no real
+/// sleeps, so a loaded machine changes nothing), and the restore of 7
+/// entries, each read twice, still goes through. Without renewing while it
+/// reads, the third read runs the time out.
 #[test]
 fn reading_a_big_backup_keeps_the_lock() {
     let clock = Clock::at(1_794_216_000);
@@ -12174,16 +12178,20 @@ fn reading_a_big_backup_keeps_the_lock() {
     let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
     all.extend(files.iter().map(|(n, b)| (n.as_str(), b.as_slice())));
     let name = crafted_backup(&lib, &clock, &all);
-    crate::shared::HOLD_FOR_TEST.with(|h| h.set(Some(std::time::Duration::from_millis(300))));
-    crate::shared::hooks::set(|step| {
+    let reads = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let r2 = reads.clone();
+    crate::shared::hooks::set(move |step| {
         if step == "restore: entry read" {
-            std::thread::sleep(std::time::Duration::from_millis(120));
+            r2.set(r2.get() + 1);
+            crate::shared::play_time(crate::shared::HOLD_FOR * 4 / 10);
         }
     });
     let r = restore_as(&lib, "PC-A", &name, &clock);
     crate::shared::hooks::clear();
-    crate::shared::HOLD_FOR_TEST.with(|h| h.set(None));
     r.unwrap();
+    // The chosen backup and the "before restore" one were both read
+    // through: far more than the lock's time to write, played.
+    assert!(reads.get() >= 14, "only {} reads were played", reads.get());
     assert!(lib.join("Notes").join("5.json").is_file());
     let _ = std::fs::remove_dir_all(&d);
 }

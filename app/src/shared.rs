@@ -434,13 +434,6 @@ fn claim() -> (String, String) {
     (token, text)
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Test seam: locks this thread takes may replace files for this long
-    /// only (a long job must renew them), instead of HOLD_FOR.
-    pub(crate) static HOLD_FOR_TEST: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
-}
-
 /// A lock this writer holds: which, its token, and its time.
 #[derive(Clone)]
 struct Lease {
@@ -469,10 +462,6 @@ impl WriteLock {
     /// Take the write lock of the Library in `dir`, waiting while another
     /// writer has it (LB1) and taking over one that was abandoned (LB2).
     pub fn take(dir: &Path) -> Result<WriteLock, String> {
-        #[cfg(test)]
-        if let Some(hold) = HOLD_FOR_TEST.with(std::cell::Cell::get) {
-            return Self::take_for(dir, ABANDONED_AFTER, hold, LONGEST_WAIT);
-        }
         Self::take_for(dir, ABANDONED_AFTER, HOLD_FOR, LONGEST_WAIT)
     }
 
