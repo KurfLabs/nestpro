@@ -1062,6 +1062,11 @@ impl App {
 
     /// Open a saved job as a job of its own (a second copy gets " (1)").
     pub fn open_job_file(&mut self, path: &std::path::Path) {
+        // N1: no job is opened while a roll out runs.
+        if self.rollout.rolling {
+            self.status = rolloutui::ROLLING.into();
+            return;
+        }
         let (j, written) = match jobfile::load_versioned(path) {
             Ok(j) => j,
             Err(e) => {

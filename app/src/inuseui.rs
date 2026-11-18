@@ -406,6 +406,11 @@ impl App {
     fn take_to_open(&mut self, id: u64, name: &str) -> Option<InUse> {
         crate::shared::pause("opening");
         let lib = self.library().ok()?;
+        // S9: a PC newer than the shop version holds no job in the shop
+        // (the job opens read-only there anyway, UP21).
+        if crate::engine::shop::ahead_of_shop(&lib.dir, crate::updates::VERSION).is_some() {
+            return None;
+        }
         // The hold names the job as the Library lists it.
         let listed = lib.entries().into_iter().find(|e| e.kind == crate::library::Kind::Job && e.id == id).map(|e| e.name);
         match inuse::take(&lib, id, listed.as_deref().unwrap_or(name)) {
@@ -434,6 +439,12 @@ impl App {
     /// Open library job `id`. When someone else has it in use and warn is on,
     /// ask first (CU3, CU8); with warn off it opens as before (CU1).
     pub fn open_library_job(&mut self, id: u64) {
+        // N1: no job is opened while a roll out runs: one from the trial
+        // copy would be open when the PC goes back to the shop.
+        if self.rollout.rolling {
+            self.status = crate::rolloutui::ROLLING.into();
+            return;
+        }
         // Not asked again about a job held here, taken over from here (told
         // already), or opened here anyway.
         let known = self.inuse.held.contains(&id) || self.inuse.lost.contains_key(&id) || self.inuse.busy.contains_key(&id);

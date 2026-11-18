@@ -203,11 +203,15 @@ pub fn pack_in(folder: &Path, version: &str) -> Result<Pack, String> {
         Ok(m) if m.is_file() => m.len(),
         _ => return Err(format!("{} isn't there", p.display())),
     };
-    let size = field(a, "Size").and_then(Value::as_u64);
+    // The installer needs the size: an index without it isn't a release's.
+    let Some(size) = field(a, "Size").and_then(Value::as_u64) else {
+        return Err(format!("{} gives no size for version {version}'s package, so it can't be checked", f.display()));
+    };
     // The size is cheap to look at every time; the checksum is `verify`'s.
-    if let Some(size) = size.filter(|s| *s != len) {
+    if size != len {
         return Err(format!("{} is {len} bytes, but its index says {size}: it is incomplete or damaged", p.display()));
     }
+    let size = Some(size);
     let hex = |k: &str| field(a, k).and_then(Value::as_str).map(str::trim).filter(|h| !h.is_empty()).map(String::from);
     let notes = field(a, "NotesMarkdown").and_then(Value::as_str).unwrap_or_default().to_string();
     let index = serde_json::to_string_pretty(&json!({"Assets": [a]})).map_err(|e| e.to_string())?;
@@ -476,6 +480,11 @@ fn publish_release(dir: &Path, staging: &Path, pack: &Pack, lock: &WriteLock) ->
     let published = (|| -> Result<(), String> {
         if !dir.is_dir() {
             return Err(crate::library::unreachable(dir));
+        }
+        // N2: a folder of that name this program didn't make (no mark) is
+        // never moved aside or removed: it may hold someone else's files.
+        if target.exists() && !target.join(MADE_HERE).is_file() {
+            return Err(format!("{} holds files this program didn't put there, so it isn't replaced. Move them elsewhere (or rename the folder), then roll out again", target.display()));
         }
         shared::write_existing(&staging.join(INDEX), pack.index.as_bytes(), lock)?;
         let old = dir.join(shop::UPDATES).join(format!(".{}.{}.old", pack.version, shared::writer_tag()));
@@ -1138,6 +1147,40 @@ mod tests {
         assert_eq!(shop::read(&lib).unwrap().unwrap().shop_version(), Some("0.4.0"));
         // Whole again: the same version is refused.
         assert!(rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap_err().contains("already the shop version"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// N2: a folder named for the release in Updates that this program
+    /// didn't make is never replaced or removed: the roll out (a repair
+    /// here) is refused, naming it, and its files stay.
+    #[test]
+    fn an_unmarked_release_folder_is_never_replaced() {
+        let d = tmp("rollout_unmarked");
+        let lib = acme(&d, "0.4.0");
+        rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap();
+        let f = release_dir(&lib, "0.4.0");
+        std::fs::remove_file(f.join(MADE_HERE)).unwrap();
+        std::fs::write(f.join("drivers.txt"), "someone's").unwrap();
+        std::fs::write(f.join("KurfLabs.nestpro-0.4.0-full.nupkg"), "x").unwrap();
+        let e = rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap_err();
+        assert!(e.contains(&f.display().to_string()) && e.contains("didn't put there"), "{e}");
+        assert_eq!(std::fs::read_to_string(f.join("drivers.txt")).unwrap(), "someone's");
+        let left: Vec<String> = std::fs::read_dir(lib.join(shop::UPDATES)).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, ["0.4.0"], "a staging folder was left");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S8: an index without the package's size isn't a release's: refused.
+    #[test]
+    fn an_index_without_the_size_is_refused() {
+        let d = tmp("rollout_nosize");
+        let r = fake_release(&d, "0.5.0");
+        let mut idx: Value = serde_json::from_str(&std::fs::read_to_string(r.join(INDEX)).unwrap()).unwrap();
+        idx["Assets"][0].as_object_mut().unwrap().remove("Size");
+        std::fs::write(r.join(INDEX), idx.to_string()).unwrap();
+        assert!(pack_in(&r, "0.5.0").unwrap_err().contains("gives no size"));
+        let lib = acme(&d, "0.4.0");
+        assert!(rollout(&lib, &r, &sam(), "0.5.0").unwrap_err().contains("gives no size"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -7700,7 +7700,7 @@
  {
   "name": "roll out",
   "group": "shop",
-  "value": "person on the admin PC only (agents refused), not while a trial job is open; the release this PC runs, newer than the shop version (same version: package-only repair when damaged); package checked by size and SHA-256/SHA-1; staged in Updates before the lock, published under it; one-time changes, shop version + previous + layouts; only folders this program made are taken out",
+  "value": "person on the admin PC only (agents refused), not while a trial job is open; the release this PC runs, newer than the shop version (same version: package-only repair when damaged); package checked by size (required) and SHA-256/SHA-1, the admin PC offering the repair of a damaged shop-version package; staged in Updates before the lock, published under it; one-time changes, shop version + previous + layouts; only folders this program made are taken out, an unmarked release folder never replaced; no job opens while it runs",
   "source": "UP19; own design"
  },
  {
