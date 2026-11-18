@@ -1,10 +1,10 @@
 //! Updates in a shop, the window's side (spec #178, ADR 0006, UP15–UP22):
 //! what this PC installs from the shop folder and its banner ("Update ready,
 //! restart when you're done"), the trial banner with Stop trying, and on the
-//! admin PC the Updates card's Check GitHub, Try on this PC and Roll out to
-//! the shop, with the warning before it. The rules are engine::rollout and
+//! admin PC the Updates card's Check GitHub, Try on this PC, Roll out to
+//! the shop and Roll back, each with the warning before it. The rules are engine::rollout and
 //! engine::updates; the installer's calls are crate::updates. Agents read
-//! the same with `shop` (rolling out is refused for them).
+//! the same with `shop` (rolling out and rolling back are refused for them).
 
 use crate::engine::rollout::{self, TrialNow};
 use crate::engine::updates::{FromShop, Offer, Release};
@@ -41,8 +41,12 @@ pub struct RolloutUi {
     pub busy: Option<(String, Receiver<Result<Step, String>>)>,
     /// UP20: the warning before rolling out, open.
     pub warn: Option<WarnAsk>,
+    /// UP24: the warning before rolling back, open, about this shop folder.
+    pub back: Option<(PathBuf, rollout::RollBackAsk)>,
     /// What the last step said (Settings → Shop → Updates and the banner).
     pub note: Option<(bool, String)>,
+    /// Scroll Settings → Shop to the Updates card (screenshots).
+    pub show_card: bool,
     /// Where this PC keeps fetched releases and trial copies, and its
     /// settings file: None for the usual places (a test gives its own).
     pub local: Option<PathBuf>,
@@ -57,6 +61,10 @@ pub enum Step {
     Ready(WarnAsk),
     /// UP19: rolled out.
     RolledOut(rollout::RolledOut),
+    /// UP24: the shop in this folder may roll back: the warning.
+    BackReady(PathBuf, rollout::RollBackAsk),
+    /// UP23: rolled back.
+    RolledBack(rollout::RolledBack),
 }
 
 /// UP20: the warning before Roll out, and what it is about.
@@ -323,6 +331,13 @@ impl App {
         match got {
             Err(e) => self.rollout.note = Some((false, e)),
             Ok(Step::Ready(w)) => self.rollout.warn = Some(w),
+            Ok(Step::BackReady(dir, ask)) => self.rollout.back = Some((dir, ask)),
+            Ok(Step::RolledBack(r)) => {
+                // UP21: this PC goes back too, when its program closes.
+                self.rollout.look = true;
+                self.rollout.note = Some((true, format!("Rolled back to {}: it is the shop version again, and every PC installs it from the shop folder when its program closes. {} stays in Updates, so it can be rolled out again.", r.to, r.from)));
+                self.setui.shop = None;
+            }
             Ok(Step::Trial(t)) => self.trial_begun(t),
             Ok(Step::RolledOut(r)) => {
                 let shop = self.real_shop();
@@ -472,6 +487,29 @@ impl App {
         self.rollout.busy = Some((format!("Rolling out {v}…"), rx));
     }
 
+    /// UP24: Roll back: look whether the shop may go back (in the
+    /// background: the shop folder is on the share), then show the warning
+    /// or say why not.
+    fn prepare_rollback(&mut self) {
+        let (shop, who) = (self.real_shop(), self.who.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(rollout::rollback_ask(&shop, &who, updates::VERSION).map(|a| Step::BackReady(shop.clone(), a)));
+        });
+        self.rollout.note = None;
+        self.rollout.busy = Some(("Looking whether the shop can go back…".into(), rx));
+    }
+
+    /// UP23: Yes on the warning: roll back, in the background.
+    fn roll_back(&mut self, shop: PathBuf, to: String) {
+        let who = self.who.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(rollout::rollback(&shop, &who, updates::VERSION).map(Step::RolledBack));
+        });
+        self.rollout.busy = Some((format!("Rolling back to {to}…"), rx));
+    }
+
     /// UP16, UP21: the banners: a trial, and what this PC installs from its
     /// shop.
     pub fn shop_update_banner(&mut self, ui: &mut egui::Ui) {
@@ -548,8 +586,13 @@ impl App {
         let sv = trial.as_ref().map_or(s.shop_version().map(String::from), |m| m.shop_version.clone());
         let admin = s.admin.pc == self.who.pc;
         let this = updates::VERSION;
-        let (mut check, mut try_v, mut whats, mut roll, mut stop) = (false, None, None, false, false);
+        let (mut check, mut try_v, mut whats, mut roll, mut stop, mut back) = (false, None, None, false, false, false);
         let busy = self.rollout.busy.as_ref().map(|(w, _)| w.clone());
+        if self.rollout.show_card {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+            // A screenshot keeps it in view; a person can scroll on.
+            self.rollout.show_card = self.shot_mode_now();
+        }
         card(ui, "Updates", "The shop version, rolled out from the admin PC.", |ui| {
             row(ui, "Shop version", |ui| {
                 match &sv {
@@ -627,6 +670,10 @@ impl App {
                 if newer && trial_ready && can_check {
                     roll = page_button(ui, "Shop", "Roll out to the shop…", busy.is_none()).on_hover_text(format!("Makes {this}, the release this PC runs, the shop version: every PC installs it from the shop folder when its program closes. Warns first.")).clicked();
                 }
+                // UP23: back to the release kept beside the shop version.
+                if let (Some(p), None, true) = (s.previous_version(), &trial, can_check) {
+                    back = page_button(ui, "Shop", &format!("Roll back to {p}…"), busy.is_none()).on_hover_text(format!("Makes {p}, the release kept in the shop folder, the shop version again: every PC goes back to it when its program closes. Refused when the shop's files were saved in a layout {p} can't read. Warns first.")).clicked();
+                }
                 if trial.is_some() {
                     stop = page_button(ui, "Shop", "Stop trying", busy.is_none()).on_hover_text("Back to the shop folder and the shop version (it installs when the program closes).").clicked();
                 }
@@ -652,6 +699,9 @@ impl App {
         }
         if roll {
             self.prepare_rollout();
+        }
+        if back {
+            self.prepare_rollback();
         }
         if stop {
             self.stop_trying();
@@ -696,12 +746,53 @@ impl App {
         }
     }
 
-    /// `--rollout-demo=warning|ready|trial` (screenshot runs, with
+    /// UP24: the warning before Roll back. It still lets the admin go ahead.
+    pub fn rollback_window(&mut self, ctx: &egui::Context) {
+        let Some((shop, a)) = self.rollout.back.clone() else { return };
+        let t = th();
+        let (mut yes, mut no) = (false, false);
+        let mut open = true;
+        egui::Window::new(RichText::new(format!("Roll the shop back to {}?", a.to)).size(16.0).strong())
+            .id(egui::Id::unique("rollback_question"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_max_width(540.0);
+                ui.label(RichText::new(format!("{} becomes the shop version again, in place of {}. Every PC goes back to it from the shop folder when its program closes, never while a job is open.", a.to, a.from)).color(t.text_strong));
+                ui.add_space(6.0);
+                for (i, l) in a.lines.iter().enumerate() {
+                    // The first line is what may be lost: it stands out.
+                    let (size, colour) = if i == 0 { (13.0, t.warn_fg) } else { (12.5, t.text) };
+                    ui.label(RichText::new(format!("• {l}")).size(size).color(colour));
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    yes = ui.add(egui::Button::new(RichText::new(format!("Roll back to {}", a.to)).color(egui::Color32::WHITE)).fill(t.accent).min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                    no = ui.add(egui::Button::new(format!("Cancel — keep {}", a.from)).min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                });
+            });
+        if yes {
+            self.rollout.back = None;
+            self.roll_back(shop, a.to);
+        } else if no || !open {
+            self.rollout.back = None;
+        }
+    }
+
+    /// `--rollout-demo=warning|ready|trial|rollback|rollback-refused` (screenshot runs, with
     /// `--shop-demo` and `--fake-releases`): made-up shops on made-up PCs in
     /// the run's own folder. `warning`: this PC is the admin PC PC-A, on a
     /// newer release than the shop's, with the warning before Roll out open.
     /// `ready`: this PC (PC-B) has the shop version ready to install.
-    /// `trial`: PC-A trying a release on a copy of the shop.
+    /// `trial`: PC-A trying a release on a copy of the shop. `rollback`: the
+    /// admin PC PC-A, on the shop version, with an older release kept for
+    /// roll back and the warning before Roll back open; `rollback-refused`:
+    /// the same, but the shop's jobs are in a layout the release kept can't
+    /// read, and Roll back says so.
     pub fn demo_rollout(&mut self, what: &str) {
         use crate::shared::{Clock, Who};
         let Some(dir) = crate::settings_ui::shop_demo_dir() else { return };
@@ -724,6 +815,17 @@ impl App {
                 l.insert("jobs".into(), crate::jobfile::VERSION - 1);
             }
             s.other.insert(crate::shop::LAYOUTS.into(), serde_json::json!(l));
+            if what.starts_with("rollback") {
+                // UP23: the shop is on this program's release, `older` kept
+                // for roll back (it wrote older jobs when refused).
+                let mut kept = rollout::layouts();
+                if what == "rollback-refused" {
+                    kept.insert("jobs".into(), crate::jobfile::VERSION - 1);
+                }
+                s.other.insert(crate::shop::SHOP_VERSION.into(), serde_json::json!(v));
+                s.other.insert(crate::shop::PREVIOUS_VERSION.into(), serde_json::json!(older));
+                s.other.insert(crate::shop::PREVIOUS_LAYOUTS.into(), serde_json::json!(kept));
+            }
             crate::shop::write_judged(&dir, &s, &lock, v, &crate::shared::Versions::this(v))
         })();
         if let Err(e) = set {
@@ -752,6 +854,20 @@ impl App {
                 if let Some((_, rx)) = self.rollout.busy.take() {
                     match rx.recv() {
                         Ok(Ok(Step::Ready(w))) => self.rollout.warn = Some(w),
+                        Ok(Err(e)) => self.rollout.note = Some((false, e)),
+                        _ => {}
+                    }
+                }
+            }
+            "rollback" | "rollback-refused" => {
+                self.who = sam.clone();
+                self.rollout.show_card = true;
+                let _ = crate::engine::shop::record_pc(&dir, &sam, &Clock::at(now), v);
+                let _ = crate::engine::shop::record_pc(&dir, &Who::new("kim", "PC-B"), &Clock::at(now - 1200), v);
+                self.prepare_rollback();
+                if let Some((_, rx)) = self.rollout.busy.take() {
+                    match rx.recv() {
+                        Ok(Ok(Step::BackReady(d, a))) => self.rollout.back = Some((d, a)),
                         Ok(Err(e)) => self.rollout.note = Some((false, e)),
                         _ => {}
                     }

@@ -2910,6 +2910,7 @@ impl eframe::App for App {
         // folder; UP16: a trial on the admin PC.
         self.shop_update_tick(&ctx);
         self.rollout_window(&ctx);
+        self.rollback_window(&ctx);
         self.whats_new_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
@@ -3468,8 +3469,9 @@ fn main() -> eframe::Result {
             // --settings=shop-admin: with the admin PC question open (SH7).
             if let Some(what) = settings_ui::shop_demo_arg() {
                 app.demo_shop(&what);
-                // --rollout-demo=warning|ready|trial (with --fake-releases):
-                // updates in that shop (UP16, UP20, UP21).
+                // --rollout-demo=warning|ready|trial|rollback|rollback-refused
+                // (with --fake-releases): updates in that shop (UP16, UP20,
+                // UP21, UP23, UP24).
                 if let Some(w) = std::env::args().find_map(|a| a.strip_prefix("--rollout-demo=").map(str::to_string)) {
                     app.demo_rollout(&w);
                 }

@@ -7628,7 +7628,7 @@
  {
   "name": "rolled back from",
   "group": "versions",
-  "value": "files written by a release the shop rolled back from count as the shop version's (the list is filled by roll back); the newer-layout check stays",
+  "value": "files written by a release the shop rolled back from count as the shop version's (the list is kept by roll back, UP25); the newer-layout check stays",
   "source": "UP10; own design"
  },
  {
@@ -7720,6 +7720,30 @@
   "group": "shop",
   "value": "PCs list marks behind and ahead; agents' shop gives shop_version, previous_shop_version, releases_in_updates and behind/ahead per PC",
   "source": "UP22; own design"
+ },
+ {
+  "name": "roll back",
+  "group": "shop",
+  "value": "person on the admin PC only (agents refused); to the release kept beside the shop version, its packages whole in Updates; this PC on the shop version or the one kept; not a trial copy; shop file: shop version = the one kept, none kept before it, its layouts; both releases stay in Updates; every PC goes back when its program closes",
+  "source": "UP23; own design"
+ },
+ {
+  "name": "roll back refused for layouts",
+  "group": "shop",
+  "value": "refused when a kind of file is recorded in a newer layout than the release kept writes, or one it doesn't know: Jobs were saved in a layout 0.4.0 can't read. Restore a backup instead.; also for a one-time change it doesn't know; else a warning first: Jobs saved since 0.5.0 was rolled out may lose what only 0.5.0 knew about them when saved again, the PCs read-only until they go back",
+  "source": "UP24; own design"
+ },
+ {
+  "name": "releases rolled back from",
+  "group": "shop",
+  "value": "roll back adds the release left to the shop file's list (once each); files last written by any count as the shop version's, never as newer than they are; agents' shop gives rolled_back_from",
+  "source": "UP25; own design"
+ },
+ {
+  "name": "PC on the release left",
+  "group": "shop",
+  "value": "a PC still running the release rolled back from (not in a trial) finds the shop read-only: Restart to go back to 0.4.0, until it has installed it",
+  "source": "UP26; own design"
  }
 ]
 }
