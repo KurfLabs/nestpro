@@ -392,8 +392,8 @@ pub static OPS: &[Op] = &[
     ] },
     // --- reference ---
     // --- the shop (spec #178) ---
-    Op { name: "shop", group: "Library", kind: Kind::Global, help: "The shop this PC's Library belongs to (Settings → Shop): status gives its name, its folder (the Library's folder), its admin PC and who made it the admin PC and when, whether shop settings are changed only on the admin PC or from any PC, and every PC in it with who used it last, its version and when it was last seen (this PC's local time). Calling it records this PC in the shop's PCs list, as opening the program does. A Library that isn't a shop says so; one that can't be reached is refused, naming its folder. Changing the admin PC (mode=admin) is refused for agents with the reason: a person does it in the window.", args: &[
-        c("mode", &["status", "admin"], "status (default): the shop and its PCs; admin: make this PC the admin PC (refused for agents: a person does it in Settings → Shop)"),
+    Op { name: "shop", group: "Library", kind: Kind::Global, help: "The shop this PC's Library belongs to (Settings → Shop): status gives its name, its folder (the Library's folder), its admin PC and who made it the admin PC and when, whether shop settings are changed only on the admin PC or from any PC, and every PC in it with who used it last, its version and when it was last seen (this PC's local time). Calling it records this PC in the shop's PCs list, as opening the program does. A Library that isn't a shop says so; one that can't be reached is refused, naming its folder. Changing the admin PC (mode=admin) is refused for agents with the reason: a person does it in the window. Status also gives the backups: their folder, the last one (when, which PC), how many, Keep and the second place. mode=backup takes a backup now (Back up now): one zip of the Library (in a shop the shop folder, with the shop file and the PCs' records, without Updates and Backups) in the shop folder's Backups, or for a PC of its own in a Backups folder beside its Library; it says where it went, the copy in the second place (or why there's none: never fatal), the old backups removed past Keep and any file that couldn't be read.", args: &[
+        c("mode", &["status", "backup", "admin"], "status (default): the shop, its PCs and its backups; backup: take a backup now and say where it went; admin: make this PC the admin PC (refused for agents: a person does it in Settings → Shop)"),
     ] },
     Op { name: "setup", group: "Library", kind: Kind::Global, help: "Set this PC up for a shop. start=<folder> name=<name> starts a shop in that Library folder (the Library's folder becomes the shop folder in place: the shop file and its Shop, Updates and Backups folders are added, and no job, library part or stock file is changed or moved), with this PC as its admin PC and shop settings changed only on the admin PC. A folder that can't be reached, holds no Library, can't be written by this PC or is already a shop is refused, naming it, and nothing is made. `nestpro setup --start \\\\srv\\Nesting --name Acme`.", args: &[
         a("start", Ty::Path, "Start a shop in this Library folder (e.g. \\\\srv\\Nesting)"),
@@ -3506,6 +3506,8 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Settings → Shop/Try again", "shop"),
     ("Settings → Shop/Start a shop here…", "setup"),
     ("Settings → Shop/Start the shop", "setup"),
+    ("Settings → Shop/Back up now", "shop"),
+    ("Settings → Shop/Save backup settings", "todo: [APP-16] agents see Keep and the second place in shop status but can't change them yet"),
     ("Settings → Shop/Make this PC the admin PC", "gui: a person changes the admin PC, after a warning (SH7); shop mode=admin refuses agents with the reason"),
     // --- labels built at run time ("{expression}") ---
     ("ERP / MES/{&format!(\"{}\\njobs\", p.name())}", "todo: [AGT-7] bring ERP work in as a job"),

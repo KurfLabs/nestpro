@@ -175,6 +175,28 @@ pub struct SettingsUi {
     pub shop_admin_ask: bool,
     /// Shop page: the last result of a change (true: done).
     pub shop_note: Option<(bool, String)>,
+    /// Backups card (BK7): the backups as last read, with the shop (when
+    /// the page is opened, on Try again and when a backup ends).
+    pub backups: Option<Result<crate::backup::Overview, String>>,
+    /// Backups card: Keep and the second place as typed, before Save
+    /// backup settings.
+    pub backup_edit: Option<crate::backup::Settings>,
+    /// The backup running in the background, and how the last one went.
+    pub backup_run: std::sync::Arc<std::sync::Mutex<BackupRun>>,
+    /// The `BackupRun::ended` the card has seen.
+    pub backup_seen: u64,
+}
+
+/// A backup taken in the background (BK3, BK7): it's never taken on the
+/// window's own thread, so a big Library never holds the window up.
+#[derive(Default)]
+pub struct BackupRun {
+    /// Running since then (this PC's clock).
+    pub since: Option<u64>,
+    /// Counts the backups that ended.
+    pub ended: u64,
+    /// How the last one went (true: taken, or today's was there).
+    pub note: Option<(bool, String)>,
 }
 
 /// "lower left" → "Lower left".
@@ -1622,7 +1644,14 @@ mod settings_ui_tests {
 impl App {
     fn settings_shop(&mut self, ui: &mut egui::Ui) {
         let dir = self.library_dir();
+        // A backup that ended: read the shop and its backups again (BK7).
+        let ended = self.setui.backup_run.lock().map_or(0, |r| r.ended);
+        if ended != self.setui.backup_seen {
+            self.setui.backup_seen = ended;
+            self.setui.shop = None;
+        }
         if self.setui.shop.is_none() {
+            self.setui.backups = Some(crate::engine::shop::backups(&dir, &self.cfg.backups));
             // A Library that is no shop must be one to start a shop in
             // (LB12): read once with the shop, not at every frame.
             self.setui.shop = Some(crate::engine::shop::status(&dir).and_then(|s| match s {
@@ -1645,8 +1674,16 @@ impl App {
                     }
                 });
             }
-            Ok(None) => self.shop_not_started(ui, &dir),
-            Ok(Some(st)) => self.shop_cards(ui, &dir, &st),
+            Ok(None) => {
+                self.shop_not_started(ui, &dir);
+                ui.add_space(10.0);
+                self.backups_card(ui, &dir, None);
+            }
+            Ok(Some(st)) => {
+                self.shop_cards(ui, &dir, &st);
+                ui.add_space(10.0);
+                self.backups_card(ui, &dir, Some(&st.shop));
+            }
         }
         if let Some((ok, note)) = &self.setui.shop_note {
             ui.add_space(6.0);
@@ -1833,6 +1870,167 @@ impl App {
         let _ = crate::engine::shop::record_pc(&dir, &Who::new("sam", "PC-A"), &at(25 * 60), "0.1.0");
         let _ = crate::engine::shop::record_pc(&dir, &Who::new("kim", "PC-B"), &at(0), crate::updates::VERSION);
         let _ = crate::engine::shop::record_pc(&dir, &Who::new("lee", "PC-C"), &at(2 * 86400 + 3 * 3600), "0.0.9");
+        // Backups (BK7): the day's backups of the last days, the newest
+        // taken on this PC, and a second place that can't be reached.
+        let own = crate::backup::Settings::default();
+        for (who, ago) in [("PC-A", 3 * 86400), ("PC-C", 2 * 86400 + 3 * 3600), ("PC-A", 86400 + 1800)] {
+            let _ = crate::engine::shop::daily_backup(&dir, &own, &Who::new("sam", who), &at(ago));
+        }
+        if let Ok(Some(mut s)) = crate::shop::read(&dir)
+            && let Ok(lock) = crate::shared::WriteLock::take(&dir)
+        {
+            s.backups.second_place = r"\\nas\Backups".into();
+            let _ = crate::shop::write(&dir, &s, &lock);
+        }
+        if let Ok(d) = crate::engine::shop::backup_now(&dir, &own, &self.who, &at(25 * 60))
+            && let Ok(mut r) = self.setui.backup_run.lock()
+        {
+            r.note = Some(backup_note(&d));
+        }
         self.setui.shop = None;
     }
+
+    // -----------------------------------------------------------------------
+    // Backups (BK1–BK7): the rules are in crate::backup and engine::shop.
+    // -----------------------------------------------------------------------
+
+    /// BK7: the Backups card: the last backup (when, which PC), where they
+    /// go, Keep, the second place and Back up now. `shop`: the shop file
+    /// when the Library is a shop.
+    fn backups_card(&mut self, ui: &mut egui::Ui, dir: &std::path::Path, shop: Option<&crate::shop::ShopFile>) {
+        let t = th();
+        let (since, note) = self.setui.backup_run.lock().map(|r| (r.since, r.note.clone())).unwrap_or_default();
+        // Who may change Keep and the second place (SH3).
+        let may = match shop {
+            Some(s) if s.settings_by == crate::shop::SettingsBy::AdminPc && s.admin.pc != self.who.pc => Err(format!("Shop settings are changed only on the admin PC ({}).", s.admin.pc)),
+            _ => Ok(()),
+        };
+        let sub = if shop.is_some() { "One zip of the shop a day, by the first PC to open the program." } else { "One zip of this PC's Library a day, kept beside it." };
+        card(ui, "Backups", sub, |ui| {
+            let ov = match self.setui.backups.clone() {
+                Some(Ok(o)) => o,
+                Some(Err(e)) => {
+                    ui.label(RichText::new(format!("⚠ {e}")).size(12.0).color(t.warn_fg));
+                    return;
+                }
+                None => return,
+            };
+            row(ui, "Last backup", |ui| {
+                if let Some(at) = since {
+                    ui.spinner();
+                    ui.label(RichText::new(format!("Backing up… (since {})", self.clock.shown(at)))).on_hover_text("The program takes it in the background: carry on working. Saves from other PCs wait until it's done.");
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
+                } else if let Some(e) = &ov.last {
+                    let hover = format!("{} — {:.1} MB. {} backup{} kept.", e.name, e.bytes as f64 / 1e6, ov.count, if ov.count == 1 { "" } else { "s" });
+                    ui.label(RichText::new(format!("{} on {}", e.shown(), e.pc)).color(t.text_strong)).on_hover_text(hover);
+                } else {
+                    ui.label(RichText::new("None yet").color(t.text_dim));
+                }
+            });
+            row(ui, "Folder", |ui| match &ov.folder {
+                Ok(f) => {
+                    ui.label(RichText::new(f.display().to_string()).monospace().size(11.5)).on_hover_text("Each backup is one zip, named by its day and the PC that took it. Other files kept here are never touched.");
+                }
+                Err(e) => {
+                    ui.label(RichText::new(format!("⚠ {e}")).size(11.5).color(t.warn_fg));
+                }
+            });
+            let mut edit = self.setui.backup_edit.clone().unwrap_or_else(|| ov.settings.clone());
+            let lock_hover = may.as_ref().err().cloned();
+            row(ui, "Keep", |ui| {
+                ui.add_enabled_ui(may.is_ok(), |ui| {
+                    let r = ui.add(egui::DragValue::new(&mut edit.keep_days).range(1..=crate::backup::MOST_KEEP).suffix(" days"));
+                    r.on_hover_text(lock_hover.clone().unwrap_or_else(|| "Older backups are removed after each new one. The newest is always kept.".into()));
+                });
+            });
+            row(ui, "Second place", |ui| {
+                ui.add_enabled_ui(may.is_ok(), |ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut edit.second_place).desired_width(260.0).hint_text("None (e.g. \\\\nas\\Backups)"));
+                    r.on_hover_text(lock_hover.clone().unwrap_or_else(|| "Another drive or a NAS: each backup is copied there too, so a dead server doesn't take the backups with it. If it can't be reached, it's said here.".into()));
+                });
+            });
+            let changed = edit != ov.settings;
+            self.setui.backup_edit = changed.then_some(edit.clone());
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if page_button(ui, "Shop", "Back up now", since.is_none()).on_hover_text("Take a backup now, whatever was taken today: before a big change, say.").clicked() {
+                    self.start_backup(crate::backup::Why::Now);
+                }
+                if changed && page_button(ui, "Shop", "Save backup settings", may.is_ok()).clicked() {
+                    self.save_backup_settings(dir, &edit);
+                }
+            });
+            if let Some((ok, n)) = note {
+                ui.add_space(4.0);
+                ui.label(RichText::new(n).size(11.5).color(if ok { t.ok_fg } else { t.warn_fg }));
+            }
+        });
+    }
+
+    /// BK4, BK5: save Keep and the second place: in the shop file, or this
+    /// PC's settings for a PC of its own.
+    fn save_backup_settings(&mut self, dir: &std::path::Path, edit: &crate::backup::Settings) {
+        let mut own = self.cfg.backups.clone();
+        match crate::engine::shop::set_backup_settings(dir, &mut own, &self.who, edit) {
+            Ok(in_shop) => {
+                if !in_shop {
+                    self.cfg.backups = own;
+                    self.apply_settings(false);
+                }
+                self.setui.backup_edit = None;
+                self.setui.shop_note = Some((true, "Saved the backup settings.".into()));
+            }
+            Err(e) => self.setui.shop_note = Some((false, e)),
+        }
+        self.setui.shop = None;
+    }
+
+    /// BK2, BK3: take a backup in the background: the day's when the program
+    /// opens, or Back up now. One at a time.
+    pub fn start_backup(&self, why: crate::backup::Why) {
+        let run = self.setui.backup_run.clone();
+        {
+            let Ok(mut r) = run.lock() else { return };
+            if r.since.is_some() {
+                return;
+            }
+            r.since = Some(self.clock.now());
+        }
+        let (dir, who, clock, own) = (self.library_dir(), self.who.clone(), self.clock.clone(), self.cfg.backups.clone());
+        std::thread::spawn(move || {
+            use crate::backup::Daily;
+            let got = match why {
+                crate::backup::Why::Daily => crate::engine::shop::daily_backup(&dir, &own, &who, &clock),
+                crate::backup::Why::Now => crate::engine::shop::backup_now(&dir, &own, &who, &clock).map(Daily::Taken),
+            };
+            let note = match got {
+                Ok(Daily::Taken(d)) => Some(backup_note(&d)),
+                Ok(Daily::Done(_)) => None,
+                // No Library on this PC yet: nothing to back up, nothing said.
+                Err(_) if why == crate::backup::Why::Daily && !dir.is_dir() => None,
+                Err(e) => Some((false, e)),
+            };
+            if let Ok(mut r) = run.lock() {
+                r.since = None;
+                r.ended += 1;
+                r.note = note;
+            }
+        });
+    }
+}
+
+/// BK5, BK7: what the Backups card says of a backup this PC took: what it
+/// is, and a second place or a file that let it down (true: nothing did).
+fn backup_note(d: &crate::backup::Done) -> (bool, String) {
+    let mut n = format!("Backup taken: {}.", d.entry.name);
+    let mut ok = true;
+    if let Some(Err(e)) = &d.second {
+        n.push_str(&format!(" {e}"));
+        ok = false;
+    }
+    if !d.skipped.is_empty() {
+        n.push_str(&format!(" {} file(s) couldn't be read: {}.", d.skipped.len(), d.skipped.join(", ")));
+        ok = false;
+    }
+    (ok, n)
 }

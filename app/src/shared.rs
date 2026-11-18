@@ -334,6 +334,14 @@ struct Holder {
     /// with this PC's clock).
     since: u64,
     token: String,
+    /// How many times the holder renewed it (BK3): each renewal changes the
+    /// file, so a waiting PC sees it in use and never takes it over.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    renewed: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// The name a lock file (or a mark) goes by in the name of the mark that
@@ -393,7 +401,7 @@ fn within(since: Instant, wall: SystemTime, hold_for: Duration) -> Result<(), St
 fn claim() -> (String, String) {
     let who = Who::this_pc();
     let token = format!("{}-{}", writer_tag(), SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()));
-    let me = Holder { user: who.user, pc: who.pc, process: std::process::id(), since: now_secs(), token: token.clone() };
+    let me = Holder { user: who.user, pc: who.pc, process: std::process::id(), since: now_secs(), token: token.clone(), renewed: 0 };
     let text = serde_json::to_string(&me).unwrap_or_default();
     (token, text)
 }
@@ -515,6 +523,40 @@ impl WriteLock {
         // Reading the lock can be slow on a share: still inside the time
         // after it, so only the change itself is left to send (LB2).
         within(l.since, l.wall, l.hold_for)
+    }
+
+    /// Renew the lock for a long job (a backup, BK3): rewrite the lock file,
+    /// same token, so a PC waiting for it sees it change and starts its
+    /// abandon time again, and this writer's own time to write starts again.
+    /// Only while it's still this writer's (`still_held`); otherwise nothing
+    /// is changed and the job must stop.
+    pub fn renew(&mut self) -> Result<(), String> {
+        self.still_held()?;
+        let l = &self.0;
+        let mut h: Holder = std::fs::read(&l.file).ok().and_then(|t| serde_json::from_slice(&t).ok()).ok_or("the Library's write lock can't be read")?;
+        h.since = now_secs();
+        h.renewed += 1;
+        let text = serde_json::to_vec(&h).map_err(|e| e.to_string())?;
+        let (since, wall) = (Instant::now(), SystemTime::now());
+        replace(&l.file, &text, || self.still_held())?;
+        let (file, token) = (l.file.clone(), l.token.clone());
+        HELD.with(|held| {
+            for (x, _) in held.borrow_mut().iter_mut().filter(|(x, _)| x.file == file && x.token == token) {
+                (x.since, x.wall) = (since, wall);
+            }
+        });
+        (self.0.since, self.0.wall) = (since, wall);
+        Ok(())
+    }
+
+    /// `renew` once a third of this writer's time has gone, so a long job
+    /// that checks often keeps the lock without ever running out of time.
+    pub fn renew_if_due(&mut self) -> Result<(), String> {
+        if self.0.since.elapsed() >= self.0.hold_for / 3 || self.0.wall.elapsed().map_or(false, |d| d >= self.0.hold_for / 3) {
+            self.renew()
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -935,5 +977,38 @@ mod shared_tests {
             assert!(left.is_empty(), "takeover marks left behind: {left:?}");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// BK3: a long job that renews the lock keeps it far past the abandon
+    /// time: a PC waiting for it never takes it over, and gets it as soon as
+    /// the job lets go. The job can still write all the while.
+    #[test]
+    fn a_renewed_lock_is_never_taken_over_while_its_job_runs() {
+        let dir = scratch("renew");
+        let short = Duration::from_millis(300);
+        let mut lock = WriteLock::take_with(&dir, short, Duration::from_secs(10)).unwrap();
+        let let_go = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
+        let waiter = {
+            let (dir, let_go) = (dir.clone(), let_go.clone());
+            std::thread::spawn(move || {
+                let got = WriteLock::take_with(&dir, short, Duration::from_secs(10)).unwrap();
+                let at = Instant::now();
+                drop(got);
+                (at, *let_go.lock().unwrap())
+            })
+        };
+        let start = Instant::now();
+        while start.elapsed() < short * 4 {
+            std::thread::sleep(Duration::from_millis(15));
+            lock.renew_if_due().unwrap();
+        }
+        // Still this job's to write with, long after the abandon time.
+        lock.still_held().unwrap();
+        write_file(&dir.join("index.json"), b"{}", Some(&lock)).unwrap();
+        *let_go.lock().unwrap() = Some(Instant::now());
+        drop(lock);
+        let (got_at, let_go_at) = waiter.join().unwrap();
+        assert!(got_at >= let_go_at.unwrap(), "the waiting PC took the lock over while it was being renewed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

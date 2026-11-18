@@ -1,6 +1,7 @@
 ﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod appicon;
+mod backup;
 mod arrange_ui;
 mod bands;
 mod blm;
@@ -3167,6 +3168,8 @@ fn main() -> eframe::Result {
             // Never in a screenshot run, which works on made-up PCs.
             if !app.shot_mode_now() {
                 app.record_in_shop();
+                // BK2: the day's backup, if no PC has taken it yet today.
+                app.start_backup(crate::backup::Why::Daily);
             }
             // Saved preferences (Settings → General / Appearance).
             app.warn_tech = app.cfg.warn_tech;

@@ -200,6 +200,9 @@ pub struct AppSettings {
     /// While on, a quick check every few seconds shows other PCs' saves
     /// (LB14). Kept on each PC.
     pub refresh_minutes: u32,
+    /// Keep and the second place of this PC's own backups, when it isn't in
+    /// a shop (BK6; a shop keeps its own in the shop file).
+    pub backups: crate::backup::Settings,
 }
 
 /// Moving parts by hand on the sheet, and the units lengths are shown in
@@ -343,6 +346,7 @@ impl Default for AppSettings {
             nesting: Default::default(),
             integrations: default_integrations(),
             refresh_minutes: 0,
+            backups: Default::default(),
         }
     }
 }
@@ -451,6 +455,7 @@ impl AppSettings {
         s += &format!("refresh_minutes = {}\n", self.refresh_minutes);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
         s += &format!("nesting = {}\n", serde_json::to_string(&self.nesting).unwrap_or_default());
+        s += &format!("backups = {}\n", esc(&serde_json::to_string(&self.backups).unwrap_or_default()));
         crate::engine::material::write_pc(self, &mut s, |x| esc(x));
         for c in &self.connections {
             s += &format!(
@@ -550,6 +555,7 @@ impl AppSettings {
                     "auto_db" => st.auto_db = v != "false",
                     "ui_size" => st.ui_size = ui_size_from(v.parse().unwrap_or(0)),
                     "stock" => st.stock = serde_json::from_str(&v).unwrap_or_default(),
+                    "backups" => st.backups = serde_json::from_str(&v).unwrap_or_default(),
                     "nesting" => st.nesting = serde_json::from_str::<NestPrefs>(&v).unwrap_or_default().sane(),
                     "refresh_minutes" => st.refresh_minutes = crate::engine::refresh::period(v.parse::<i64>().unwrap_or(0)),
                     "scroll_speed" => st.scroll_speed = v.parse::<f32>().ok().filter(|x| (0.5..=6.0).contains(x)).unwrap_or(SCROLL_SPEED_DEFAULT),
@@ -943,6 +949,7 @@ mod settings_tests {
             ui_size: 2,
             scroll_speed: 3.0,
             refresh_minutes: 15,
+            backups: crate::backup::Settings { keep_days: 14, second_place: r"\\nas\Backups".into() },
             stock: crate::stock::StockSettings { order: crate::stock::Order::ByPriority, min_efficiency: 0.6, ..Default::default() },
             nesting: NestPrefs { units: crate::units::LenUnit::Inch, part_gap: 6.35, edge_margin: 6.35, step: 25.4 / 16.0, keys_clockwise: true, snap: false, snap_px: 20.0, halo: true, turn_step: 7.5, turn_bar: false },
             integrations: vec![crate::integrations::Integration {
