@@ -3232,6 +3232,10 @@ fn main() -> eframe::Result {
             theme::set_dark(&cc.egui_ctx, dark);
             let load_layout = shot.is_none();
             let mut app = App::new(shot);
+            // SH9: until the first-run screen is answered, nothing saves this
+            // PC's settings: a person who closes the program first gets the
+            // screen again.
+            app.cfg.setup_pending = first_run;
             // No mode asked for: keep following Windows, like the original's
             // default style (rule V5).
             app.follow_system = !want_dark && !want_light && load_layout;

@@ -132,6 +132,10 @@ pub struct AppSettings {
     /// The app's own product and job library (a local or shared folder);
     /// empty = Documents\Sheet Nesting\Library.
     pub library_dir: String,
+    /// SH9: the first-run screen hasn't been answered yet: these settings are
+    /// kept in memory only (`save` writes nothing), so a PC whose person
+    /// closes the program before choosing gets the screen again. Never saved.
+    pub setup_pending: bool,
     /// Start with the example jobs (W09_10 … W12).
     pub examples: bool,
     /// The active job: its library record, reopened at start (the original's
@@ -318,6 +322,7 @@ impl Default for AppSettings {
             lantek_dir: String::new(),
             export_dir: String::new(),
             library_dir: String::new(),
+            setup_pending: false,
             examples: true,
             active_job: String::new(),
             recent_jobs: vec![],
@@ -689,7 +694,16 @@ impl AppSettings {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        self.save_to(&Self::file())
+        self.save_unless_pending(&Self::file())
+    }
+
+    /// SH9: save in `f`, unless the first-run screen hasn't been answered
+    /// yet: then nothing is written.
+    pub fn save_unless_pending(&self, f: &Path) -> std::io::Result<()> {
+        if self.setup_pending {
+            return Ok(());
+        }
+        self.save_to(f)
     }
 
     /// Save the settings in `f`.
@@ -918,12 +932,30 @@ mod settings_tests {
         assert_eq!((Machine::default().gas(), Machine::default().gas_mismatch()), (Some(Gas::Nitrogen), None));
     }
 
+    /// SH9: settings kept while the first-run screen is unanswered are
+    /// never written; once it is answered they are.
+    #[test]
+    fn settings_are_not_saved_until_the_first_run_screen_is_answered() {
+        let d = std::env::temp_dir().join(format!("nestpro_setup_pending_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let f = d.join("nestpro").join(FILE_NAME);
+        let mut s = AppSettings { setup_pending: true, recent_jobs: vec!["DEMO-001.snjob".into()], ..AppSettings::default() };
+        s.save_unless_pending(&f).unwrap();
+        assert!(!f.exists() && !d.exists(), "settings were saved before the first-run screen was answered");
+        s.setup_pending = false;
+        s.save_unless_pending(&f).unwrap();
+        let back = AppSettings::read_from(&f).unwrap();
+        assert!(!back.setup_pending && back.recent_jobs == ["DEMO-001.snjob"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn settings_round_trip_through_text() {
         let s = AppSettings {
             lantek_dir: r"D:\Lantek\Expert".into(),
             export_dir: r"\\server\cnc\out".into(),
             library_dir: r"\\server\shop\library".into(),
+            setup_pending: false,
             examples: false,
             name_format: "[Reference]_[Quantity]_*".into(),
             ref_prefix: "J88-".into(),

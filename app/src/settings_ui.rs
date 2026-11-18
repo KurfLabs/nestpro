@@ -1748,6 +1748,15 @@ impl App {
 mod settings_ui_tests {
     use super::*;
 
+    /// SH16: Join a shop… is offered on a PC whose Library is no shop, and
+    /// on one whose Library can't be reached or used, not only on a working
+    /// one.
+    #[test]
+    fn join_a_shop_is_offered_when_this_pcs_library_cant_be_used() {
+        assert!(join_offered(&Err("The Library on \\\\srv\\Nesting can't be reached.".into())));
+        assert!(join_offered(&Ok(None)));
+    }
+
     /// Wait for the made-up download to answer.
     fn wait_fetch(u: &mut UpdateState) {
         for _ in 0..500 {
@@ -1980,12 +1989,22 @@ impl App {
             // SH8 (LB11): said, naming the folder; nothing is offered that
             // would make a shop or a Library in its place.
             Err(e) => {
+                let join = join_offered(&Err(e.clone()));
                 card(ui, "This shop", "This PC's Library can't be used just now.", |ui| {
                     ui.label(RichText::new(format!("⚠ {e}")).size(12.0).color(t.warn_fg));
                     ui.add_space(4.0);
-                    if page_button(ui, "Shop", "Try again", true).clicked() {
-                        self.setui.shop = None;
-                    }
+                    ui.horizontal(|ui| {
+                        if page_button(ui, "Shop", "Try again", true).clicked() {
+                            self.setui.shop = None;
+                        }
+                        // SH16: a PC whose Library is gone (or never was)
+                        // can still join a shop, after the checks; nothing is
+                        // made in place of the folder it can't reach.
+                        if join && page_button(ui, "Shop", "Join a shop…", true).on_hover_text("Use the shop's folder on the share, e.g. \\\\srv\\Nesting. The folder is checked first.").clicked() {
+                            self.firstrun = Some(crate::startup::FirstRun::join_from_settings());
+                            self.setui.shop_note = None;
+                        }
+                    });
                 });
             }
             Ok(None) => {
@@ -2756,6 +2775,12 @@ fn notes_text(ui: &mut egui::Ui, notes: &str) {
         let text = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")).map_or(l.to_string(), |e| format!("• {e}"));
         ui.label(RichText::new(text).size(12.0).color(t.text));
     }
+}
+
+/// SH16: Settings → Shop offers Join a shop… on a PC that isn't in a shop:
+/// its Library is no shop, or can't be reached or used (gone, or never made).
+pub fn join_offered(shop: &Result<Option<crate::engine::shop::Status>, String>) -> bool {
+    !matches!(shop, Ok(Some(_)))
 }
 
 /// `--shop-demo[=…]` on the command line.
