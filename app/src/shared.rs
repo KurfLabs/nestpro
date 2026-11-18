@@ -801,6 +801,11 @@ pub struct Versions {
     /// counts as the shop version's, so it can be saved again. Roll back
     /// fills this list; until then it is empty.
     pub rolled_back_from: Vec<String>,
+    /// UP21: the shop version, when this PC runs a release newer than it
+    /// and its Library isn't a trial copy: the whole shop is read-only on
+    /// this PC until it goes back to that version (when its program
+    /// closes), so nothing it saves is unreadable to the other PCs.
+    pub back_to: Option<String>,
 }
 
 /// A file a newer program wrote (UP7), and what to say about it (UP8).
@@ -810,6 +815,9 @@ pub struct Newer {
     pub written: String,
     /// The shop's version, when it is the one to update to.
     pub shop: Option<String>,
+    /// UP21: this PC runs a release newer than the shop version (this PC's
+    /// version, the shop's): read-only until it goes back.
+    pub back_to: Option<(String, String)>,
 }
 
 impl Versions {
@@ -824,11 +832,14 @@ impl Versions {
     /// told older. A file a release the shop rolled back from wrote counts
     /// as the shop version's (UP10).
     pub fn newer(&self, written: Option<&str>) -> Option<Newer> {
+        if let Some(n) = self.ahead() {
+            return Some(Newer { written: written.unwrap_or_default().trim().to_string(), ..n });
+        }
         let w = written.map(str::trim).filter(|w| !w.is_empty())?;
         let this = version_numbers(&self.this).unwrap_or_default();
         let shop = self.shop.as_deref().and_then(version_numbers);
         let Some(file) = version_numbers(w) else {
-            return Some(Newer { written: w.to_string(), shop: None });
+            return Some(Newer { written: w.to_string(), shop: None, back_to: None });
         };
         let counts_as = match &shop {
             Some(s) if self.rolled_back_from.iter().filter_map(|r| version_numbers(r)).any(|r| !is_newer(&r, &file) && !is_newer(&file, &r)) => s.clone(),
@@ -839,7 +850,14 @@ impl Versions {
         }
         // UP8: the shop's version is named when updating to it is enough.
         let shop = shop.filter(|s| !is_newer(&file, s)).and(self.shop.clone());
-        Some(Newer { written: w.to_string(), shop })
+        Some(Newer { written: w.to_string(), shop, back_to: None })
+    }
+
+    /// UP21: this PC runs a release newer than the shop version, outside a
+    /// trial: every file of the shop is read-only here, whoever wrote it.
+    pub fn ahead(&self) -> Option<Newer> {
+        let s = self.back_to.as_ref()?;
+        Some(Newer { written: String::new(), shop: Some(s.clone()), back_to: Some((self.this.clone(), s.clone())) })
     }
 }
 
@@ -848,6 +866,9 @@ impl Newer {
     /// Outside a shop (or when the shop's version is older than the file's)
     /// only the file's version is named.
     pub fn message(&self) -> String {
+        if let Some((this, shop)) = &self.back_to {
+            return format!("This PC runs {this}, newer than the shop version {shop}. Restart to go back to {shop}.");
+        }
         let w = &self.written;
         if version_numbers(w).is_none() {
             return format!("Made by version {w}, which this PC can't read. Update this PC.");
@@ -907,6 +928,11 @@ pub fn stamped<T: Serialize>(value: &T, version: &str) -> Result<String, String>
 /// to update this PC (UP8). A file that isn't there yet may be written; one
 /// that can't be read just now is refused, as it can't be told older.
 pub fn may_write_over(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
+    // UP21: a PC newer than the shop version writes nothing in the shop,
+    // not even a new file.
+    if let Some(n) = versions.ahead() {
+        return Err(n.refusal(what));
+    }
     match std::fs::read(path) {
         Ok(b) => versions.newer(recorded_version(&b).as_deref()).map_or(Ok(()), |n| Err(n.refusal(what))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1254,7 +1280,7 @@ mod version_tests {
     use super::*;
 
     fn on(this: &str, shop: Option<&str>) -> Versions {
-        Versions { this: this.into(), shop: shop.map(String::from), rolled_back_from: vec![] }
+        Versions { this: this.into(), shop: shop.map(String::from), ..Default::default() }
     }
 
     #[test]
@@ -1301,7 +1327,7 @@ mod version_tests {
     fn files_written_by_a_release_the_shop_rolled_back_from_count_as_the_shop_versions() {
         // UP10: the seam roll back fills. The shop went back from 0.5.0 to
         // 0.4.0: what 0.5.0 wrote is saved again on 0.4.0, but not on 0.3.0.
-        let v = Versions { this: "0.4.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()] };
+        let v = Versions { this: "0.4.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], back_to: None };
         assert!(v.newer(Some("0.5.0")).is_none());
         assert!(v.newer(Some("0.6.0")).is_some(), "only the releases rolled back from count");
         let old = Versions { this: "0.3.0".into(), ..v.clone() };
@@ -1309,6 +1335,25 @@ mod version_tests {
         // Not in a shop that records a version, nothing counts as another's.
         let none = Versions { shop: None, ..v };
         assert!(none.newer(Some("0.5.0")).is_some());
+    }
+
+    /// UP21: a PC on a release newer than the shop version (outside a
+    /// trial) saves nothing in the shop, a new file neither, and says to
+    /// restart to go back to the shop version.
+    #[test]
+    fn a_pc_newer_than_the_shop_version_writes_nothing_and_says_to_go_back() {
+        let v = Versions { this: "0.5.0".into(), shop: Some("0.4.0".into()), back_to: Some("0.4.0".into()), ..Default::default() };
+        let n = v.newer(Some("0.4.0")).expect("a file of the shop version was writable on a newer PC");
+        assert_eq!(n.message(), "This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0.");
+        assert!(v.newer(None).is_some(), "an old file was writable on a newer PC");
+        let d = std::env::temp_dir().join(format!("nestpro_version_ahead_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let e = may_write_over(&d.join("new.snjob"), &v, "The job file new.snjob").unwrap_err();
+        assert_eq!(e, "The job file new.snjob is read-only on this PC. This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0. Nothing was saved.");
+        // Without the mark (a trial copy, or the same version) nothing changes.
+        assert!(Versions { back_to: None, ..v }.newer(Some("0.4.0")).is_none());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

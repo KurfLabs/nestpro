@@ -11237,3 +11237,173 @@ fn the_command_line_join_exits_non_zero_on_a_refusal() {
     assert!(!d.join("srv").exists());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Trying a release and rolling it out (spec #178, UP15–UP22): the admin PC
+// rolls a made-up release out from a made-up release folder; the other PCs
+// install it from the shop folder, never from GitHub.
+// ---------------------------------------------------------------------------
+
+/// Shop Acme in a used test Library, PC-A its admin PC, with `version`
+/// rolled out by sam on PC-A.
+fn rolled_out_shop(d: &Path, version: &str) -> PathBuf {
+    let clock = Clock::at(1_794_216_000);
+    let mut a = used_library(d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    crate::engine::rollout::rollout(&lib, &crate::engine::rollout::fake_release(d, version), &Who::new("sam", "PC-A"), version).unwrap();
+    lib
+}
+
+/// A session on `version`, as `who`, in the Library `lib`.
+fn pc_running(lib: &Path, who: Who, version: &str) -> Session {
+    let mut s = shop_session(lib, who, &Clock::at(1_794_216_600));
+    s.ctx.version = version.into();
+    s
+}
+
+/// UP19, UP21, UP22: rolling a made-up release out copies it into
+/// Updates, keeps the previous one and sets the shop version; another PC
+/// (a second session, at the same time) is then offered the shop version
+/// from Updates, never the newer public release.
+#[test]
+fn a_release_rolled_out_reaches_another_pc_from_the_shop_folder_not_github() {
+    let d = dir("rollout_other_pc");
+    let lib = rolled_out_shop(&d, "0.4.0");
+    let rel = crate::engine::rollout::fake_release(&d, "0.5.0");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.4.0");
+    // GitHub would offer 0.9.0, if a PC in a shop ever read it.
+    b.ctx.releases = fake_releases(&d, json!([{"version": "0.9.0", "notes": ""}]));
+    let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["shop_version"], "0.4.0", "{r}");
+    assert_eq!(r["data"]["from_shop"], Value::Null, "up to date: nothing to install {r}");
+    // The admin PC rolls 0.5.0 out while PC-B keeps looking: PC-B sees the
+    // shop version before or after, never a release half in Updates.
+    std::thread::scope(|t| {
+        let (lib, rel) = (&lib, &rel);
+        t.spawn(move || crate::engine::rollout::rollout(lib, rel, &Who::new("sam", "PC-A"), "0.5.0").unwrap());
+        for _ in 0..20 {
+            let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+            match r["data"]["shop_version"].as_str() {
+                Some("0.4.0") => assert_eq!(r["data"]["from_shop"], Value::Null, "{r}"),
+                Some("0.5.0") => assert_eq!(r["data"]["from_shop"]["version"], "0.5.0", "{r}"),
+                v => panic!("shop version {v:?}: {r}"),
+            }
+        }
+    });
+    let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+    let f = &r["data"]["from_shop"];
+    assert_eq!(f["version"], "0.5.0", "{r}");
+    assert_eq!(f["folder"], lib.join("Updates").join("0.5.0").display().to_string(), "{r}");
+    assert_eq!(f["back"], false, "{r}");
+    assert_eq!(r["data"]["offer"], Value::Null, "a public release was offered in a shop: {r}");
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Update ready, restart when you're done") && m.contains("never from GitHub") && !m.contains("0.9.0"), "{m}");
+    // The shop keeps 0.5.0 and the one before; the PCs list marks PC-B.
+    let st = call(&mut b, "shop", None, json!({}));
+    assert_eq!(st["data"]["shop_version"], "0.5.0", "{st}");
+    assert_eq!(st["data"]["previous_shop_version"], "0.4.0", "{st}");
+    assert_eq!(st["data"]["releases_in_updates"], json!(["0.4.0", "0.5.0"]), "{st}");
+    let pcb = st["data"]["pcs"].as_array().unwrap().iter().find(|p| p["pc"] == "PC-B").cloned().unwrap();
+    assert_eq!((pcb["behind"].as_bool(), pcb["ahead"].as_bool()), (Some(true), Some(false)), "{pcb}");
+    // PC-A recorded itself on this program's own version when it started
+    // the shop, older than 0.5.0 too.
+    assert!(st["message"].as_str().unwrap().contains("Shop version 0.5.0; behind it: PC-A, PC-B."), "{st}");
+    // What PC-B chose to install stands only while 0.5.0 is the shop
+    // version: once the shop moves on, nothing installs on close.
+    let c = crate::updates::Chosen { version: "0.5.0".into(), dir: lib.clone(), own: d.join("own"), src: crate::updates::Source::Folder(lib.join("Updates").join("0.5.0")), why: crate::updates::Why::Shop };
+    assert_eq!(c.stands(), Ok(()));
+    let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+    let n = h.start(c.clone());
+    h.done(n, true);
+    let mut applied = None;
+    let r = crate::updates::finish_on_close(h, std::time::Duration::from_secs(1), |c| {
+        applied = Some(c.src.clone());
+        Ok(())
+    });
+    assert_eq!(r, Ok(Some("0.5.0".into())));
+    assert_eq!(applied, Some(crate::updates::Source::Folder(lib.join("Updates").join("0.5.0"))));
+    crate::engine::rollout::rollout(&lib, &crate::engine::rollout::fake_release(&d, "0.6.0"), &Who::new("sam", "PC-A"), "0.6.0").unwrap();
+    assert!(matches!(c.stands(), Err(crate::updates::NotStandalone::Moved(e)) if e.contains("0.6.0")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP19: an agent asking to roll out is refused with the reason, and
+/// nothing changes; reading the shop version and the PCs' versions is
+/// allowed.
+#[test]
+fn an_agent_asking_to_roll_out_is_refused_with_the_reason() {
+    let d = dir("rollout_agent");
+    let lib = rolled_out_shop(&d, "0.4.0");
+    let before = files_under(&lib);
+    let mut a = pc_running(&lib, Who::new("sam", "PC-A").as_agent(), "0.5.0");
+    let e = err(&mut a, "shop", json!({"mode": "rollout"}));
+    assert_eq!(e, crate::engine::rollout::AGENT_ROLLOUT);
+    assert_eq!(files_under(&lib), before, "a refused roll out changed the shop folder");
+    let st = call(&mut a, "shop", None, json!({}));
+    assert_eq!(st["data"]["shop_version"], "0.4.0", "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+fn moved_machines(dir: &Path, lock: &crate::shared::WriteLock) -> Result<(), String> {
+    crate::shared::write_existing(&dir.join("machines-moved.txt"), b"moved", lock)
+}
+
+/// A made-up one-time change of release 0.5.0 (UP18).
+const MOVE_MACHINES: &[crate::engine::rollout::OneTimeChange] = &[crate::engine::rollout::OneTimeChange { name: "machines-into-shop", release: "0.5.0", what: "Moves the machines into the shop", run: moved_machines }];
+
+/// UP16, UP18, UP21: a session in a trial works on the trial copy: its
+/// saves, stock changes and the release's one-time changes land in the
+/// copy, and the shop folder stays byte-for-byte as it was. The same PC on
+/// the shop itself, newer than the shop version, saves nothing there. When
+/// the shop rolls a release out meanwhile, the trial is over.
+#[test]
+fn a_trial_works_on_a_copy_and_never_changes_the_shop_folder() {
+    use crate::engine::rollout::{self, TrialNow};
+    let d = dir("rollout_trial");
+    let lib = rolled_out_shop(&d, "0.4.0");
+    let sam = Who::new("sam", "PC-A");
+    // Only the admin PC tries a release, and only one newer than the shop's.
+    assert!(rollout::start_trial(&lib, &d.join("Trials"), "0.5.0", &Who::new("kim", "PC-B"), &Clock::at(1_794_216_600), "0.4.0", &Default::default()).unwrap_err().contains("admin PC (PC-A)"));
+    assert!(rollout::start_trial(&lib, &d.join("Trials"), "0.4.0", &sam, &Clock::at(1_794_216_600), "0.4.0", &Default::default()).unwrap_err().contains("isn't newer"));
+    let t = rollout::start_trial(&lib, &d.join("Trials"), "0.5.0", &sam, &Clock::at(1_794_216_600), "0.4.0", &Default::default()).unwrap();
+    assert!(t.copy.starts_with(d.join("Trials")) && t.backup.starts_with(lib.join("Backups")), "{t:?}");
+    let shop_now = files_under(&lib);
+    // The copy is the shop's Library, marked as a trial.
+    assert!(t.copy.join("Jobs").is_dir() && t.copy.join("Sheets").is_dir(), "{:?}", files_under(&t.copy).keys());
+    assert_eq!(rollout::trial_now(&t.copy, "0.4.0"), TrialNow::Trying { mark: t.mark.clone(), installed: false });
+    // After the restart this PC runs 0.5.0: the release's one-time changes
+    // run on the copy, once.
+    assert_eq!(rollout::trial_changes_with(&t.copy, "0.5.0", MOVE_MACHINES).unwrap(), ["Moves the machines into the shop"]);
+    assert!(rollout::trial_changes_with(&t.copy, "0.5.0", MOVE_MACHINES).unwrap().is_empty());
+    assert!(t.copy.join("machines-moved.txt").is_file());
+    // Work in the trial: a job saved to the Library, stock, the PCs list.
+    let mut s = pc_running(&t.copy, sam.clone().as_agent(), "0.5.0");
+    call(&mut s, "new", Some(d.join("DEMO-002 trial.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1, "name": "DEMO-P2"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S2", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    call(&mut s, "shop", None, json!({}));
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(files_under(&lib), shop_now, "the trial changed the shop folder");
+    // The same PC on the shop itself (not a trial), newer than the shop
+    // version: the shop is read-only on it (UP21).
+    let mut on_shop = pc_running(&lib, sam.clone().as_agent(), "0.5.0");
+    let job3 = d.join("DEMO-003.snjob");
+    let e = on_shop.call("new", Some(job3.to_str().unwrap()), &json!({"w": 2000, "h": 1000, "thickness": 3})).map(|r| r.json.to_string()).unwrap_err();
+    assert!(e.contains("This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0."), "{e}");
+    let e = err(&mut on_shop, "stock", json!({"mode": "create", "ref": "S3", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    let r = call(&mut on_shop, "shop", None, json!({"mode": "updates"}));
+    assert_eq!((r["data"]["from_shop"]["version"].as_str(), r["data"]["from_shop"]["back"].as_bool()), (Some("0.4.0"), Some(true)), "{r}");
+    // Rolling 0.5.0 out makes the change on the shop itself, and ends the
+    // trial (the shop moved on).
+    let out = rollout::rollout_with(&lib, &rollout::fake_release(&d, "0.5.0"), &sam, "0.5.0", MOVE_MACHINES).unwrap();
+    assert_eq!(out.changes, ["Moves the machines into the shop"]);
+    assert!(lib.join("machines-moved.txt").is_file());
+    assert!(matches!(rollout::trial_now(&t.copy, "0.5.0"), TrialNow::Over { said, .. } if said.contains("rolled out 0.5.0")));
+    // Now on the shop version, the same PC saves in the shop again.
+    call(&mut on_shop, "new", Some(job3.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut on_shop, "library", None, json!({"mode": "save-job"}));
+    let _ = std::fs::remove_dir_all(&d);
+}

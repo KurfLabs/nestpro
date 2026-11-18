@@ -58,6 +58,7 @@ mod library;
 mod folders;
 mod libtree;
 mod refreshui;
+mod rolloutui;
 mod shared;
 mod shop;
 mod region;
@@ -420,6 +421,8 @@ pub struct App {
     pub cfg: settings::AppSettings,
     pub cfg_saved: settings::AppSettings,
     pub setui: settings_ui::SettingsUi,
+    /// Updates in a shop: the shop version, a trial and roll out (UP15–UP22).
+    pub rollout: rolloutui::RolloutUi,
     pub applied_machine: Option<settings::Machine>,
     /// The machine's post-processor settings (block numbers, units, extension…).
     pub post: post::PostConfig,
@@ -728,6 +731,7 @@ impl App {
             cfg: settings::AppSettings::load(),
             cfg_saved: settings::AppSettings::default(),
             setui: Default::default(),
+            rollout: Default::default(),
             applied_machine: None,
             post: post::PostConfig::default(),
             dbb: Default::default(),
@@ -2874,6 +2878,10 @@ impl eframe::App for App {
         self.shop_admin_window(&ctx);
         // UP11: releases for a PC of its own, checked off the window's thread.
         self.update_tick(&ctx);
+        // UP21: a PC in a shop installs the shop version from the shop
+        // folder; UP16: a trial on the admin PC.
+        self.shop_update_tick(&ctx);
+        self.rollout_window(&ctx);
         self.whats_new_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
@@ -3035,6 +3043,8 @@ impl eframe::App for App {
         }
         // UP13: "Version 0.5.0 is out" while a newer release is offered.
         self.update_banner(ui);
+        // UP16, UP21: a trial, or the shop version ready to install.
+        self.shop_update_banner(ui);
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(th().chrome).stroke(Stroke::new(1.0, th().border)).inner_margin(egui::Margin::symmetric(8, 3)))
             .show(ui, |ui| {
@@ -3435,6 +3445,11 @@ fn main() -> eframe::Result {
             // --settings=shop-admin: with the admin PC question open (SH7).
             if let Some(what) = settings_ui::shop_demo_arg() {
                 app.demo_shop(&what);
+                // --rollout-demo=warning|ready|trial (with --fake-releases):
+                // updates in that shop (UP16, UP20, UP21).
+                if let Some(w) = std::env::args().find_map(|a| a.strip_prefix("--rollout-demo=").map(str::to_string)) {
+                    app.demo_rollout(&w);
+                }
             }
             // --in-use=note|ask|warning|taken (screenshots, with --library-dir=
             // a new, empty folder): jobs in use on made-up PCs (CU8–CU10).

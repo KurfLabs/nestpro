@@ -125,7 +125,14 @@ pub fn read(dir: &Path) -> Result<Option<ShopFile>, String> {
 /// newer program wrote it last (UP7). Never makes the shop folder: a
 /// Library that went away fails the write (SH2).
 pub fn write(dir: &Path, shop: &ShopFile, lock: &WriteLock, version: &str) -> Result<(), String> {
-    shared::may_write_over(&file(dir), &versions(dir, version), "The shop file")?;
+    write_judged(dir, shop, lock, version, &versions(dir, version))
+}
+
+/// `write`, judged by `versions` (UP19: rolling out, the admin PC runs the
+/// release it rolls out, newer than the shop version it replaces, so only
+/// the file's own version counts).
+pub fn write_judged(dir: &Path, shop: &ShopFile, lock: &WriteLock, version: &str, versions: &shared::Versions) -> Result<(), String> {
+    shared::may_write_over(&file(dir), versions, "The shop file")?;
     // The version this program records replaces the one it was read with.
     let mut shop = shop.clone();
     shop.other.remove(shared::VERSION_FIELD);
@@ -138,14 +145,73 @@ pub fn write(dir: &Path, shop: &ShopFile, lock: &WriteLock, version: &str) -> Re
 /// out has none.
 pub const SHOP_VERSION: &str = "shop_version";
 
-/// UP7, UP8: the versions a Library file in `dir` is judged by: this
+/// The shop version this shop rolled out before the one it is on now, kept
+/// for roll back (UP19).
+pub const PREVIOUS_VERSION: &str = "previous_shop_version";
+/// The file layouts of the release the shop rolled out last (UP19, UP20):
+/// `{"jobs": 2, "library": 1, …}`.
+pub const LAYOUTS: &str = "layouts";
+/// The one-time changes made to the shop's files, by their names (UP18).
+pub const CHANGES_MADE: &str = "one_time_changes";
+/// The mark of a trial copy (UP16): only ever in a copy, never in a shop.
+pub const TRIAL: &str = "trial";
+
+/// UP16: a trial copy's mark, in the copy's shop file: the shop it was
+/// copied from, the release tried on it and the shop version then.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrialMark {
+    /// The shop folder, as this PC names it.
+    pub shop_folder: String,
+    /// The release tried.
+    pub version: String,
+    /// The shop version when the trial began (None: none was rolled out).
+    #[serde(default)]
+    pub shop_version: Option<String>,
+    pub by: Who,
+    pub at: u64,
+}
+
+impl ShopFile {
+    /// The shop version: the release every PC in the shop runs (ADR 0006).
+    /// None while none is rolled out.
+    pub fn shop_version(&self) -> Option<&str> {
+        self.other.get(SHOP_VERSION).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())
+    }
+
+    /// The shop version before the last roll out (UP19).
+    pub fn previous_version(&self) -> Option<&str> {
+        self.other.get(PREVIOUS_VERSION).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty())
+    }
+
+    /// UP16: the mark of a trial copy; None for a shop.
+    pub fn trial(&self) -> Option<TrialMark> {
+        self.other.get(TRIAL).and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    /// UP18: the one-time changes made to these files.
+    pub fn changes_made(&self) -> Vec<String> {
+        self.other.get(CHANGES_MADE).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default()
+    }
+
+    /// UP20: the file layouts recorded at the last roll out; None before.
+    pub fn layouts(&self) -> Option<std::collections::BTreeMap<String, u32>> {
+        self.other.get(LAYOUTS).and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+}
+
+/// UP7, UP8, UP21: the versions a Library file in `dir` is judged by: this
 /// program's `this`, and the shop's version when `dir` is a shop folder that
 /// records one. A shop file that can't be read just now names no shop
 /// version (the refusal then names only the file's). The releases the shop
-/// rolled back from (UP10) are filled in by roll back; none yet.
+/// rolled back from (UP10) are filled in by roll back; none yet. A PC on a
+/// release newer than the shop version, in the shop itself (not a trial
+/// copy), gets the whole shop read-only (UP21).
 pub fn versions(dir: &Path, this: &str) -> shared::Versions {
-    let shop = read(dir).ok().flatten().and_then(|s| s.other.get(SHOP_VERSION).and_then(Value::as_str).map(String::from));
-    shared::Versions { this: this.to_string(), shop, rolled_back_from: vec![] }
+    let s = read(dir).ok().flatten();
+    let shop = s.as_ref().and_then(|s| s.shop_version().map(String::from));
+    let trial = s.as_ref().is_some_and(|s| s.trial().is_some());
+    let back_to = shop.clone().filter(|v| !trial && shared::version_order(this, v) == Some(std::cmp::Ordering::Greater));
+    shared::Versions { this: this.to_string(), shop, rolled_back_from: vec![], back_to }
 }
 
 /// Write this PC's record, under the Library's write lock (LB1, LB3). The

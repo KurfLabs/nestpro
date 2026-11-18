@@ -269,7 +269,9 @@ impl UpdateState {
             Found::Releases(l) => crate::engine::updates::offer(crate::updates::VERSION, l, None),
             _ => None,
         };
-        if matches!(found, Found::InShop(_)) {
+        // A public release chosen is withdrawn; the shop's own (UP21) is
+        // left alone.
+        if matches!(found, Found::InShop(_)) && self.chosen.is_some() {
             h.withdraw();
             self.fetch = Fetch::No;
             self.chosen = None;
@@ -302,7 +304,7 @@ impl UpdateState {
         if matches!(self.fetch, Fetch::Running(..) | Fetch::Ready(_)) {
             return;
         }
-        let c = crate::updates::Chosen { version: o.version.clone(), dir, own, src };
+        let c = crate::updates::Chosen { version: o.version.clone(), dir, own, src, why: crate::updates::Why::Public };
         self.fetch = Fetch::Running(o.version.clone(), crate::updates::download_in_background(h, c));
         self.chosen = Some(o);
     }
@@ -2000,7 +2002,11 @@ impl App {
             }
         }
         ui.add_space(10.0);
-        self.updates_card(ui);
+        // UP15: a PC in a shop updates from the shop folder: its own card.
+        match self.setui.shop.clone() {
+            Some(Ok(Some(st))) => self.shop_updates_card(ui, &st),
+            _ => self.updates_card(ui),
+        }
         if let Some((ok, note)) = &self.setui.shop_note {
             ui.add_space(6.0);
             ui.label(RichText::new(note).size(11.5).color(if *ok { t.ok_fg } else { t.warn_fg }));
@@ -2109,7 +2115,12 @@ impl App {
                     let hover = format!("{} opened the program on {} {} with version {}.", p.user, p.pc, self.clock.when(p.last_seen), p.version);
                     ui.label(RichText::new(format!("{}{tag}", p.pc)).color(t.text_strong)).on_hover_text(&hover);
                     ui.label(&p.user).on_hover_text(&hover);
-                    ui.label(&p.version).on_hover_text(&hover);
+                    // UP22: the PCs behind the shop version are marked.
+                    match crate::engine::shop::against(&p.version, s.shop_version()) {
+                        (true, _) => ui.label(RichText::new(format!("{}  ⬇ behind", p.version)).color(t.warn_fg)).on_hover_text(format!("{hover} The shop is on {}: it installs that from the shop folder when its program closes.", s.shop_version().unwrap_or_default())),
+                        (_, true) => ui.label(RichText::new(format!("{}  ahead", p.version)).color(t.warn_fg)).on_hover_text(format!("{hover} Newer than the shop version {}: the shop is read-only on it until it goes back, when its program closes.", s.shop_version().unwrap_or_default())),
+                        _ => ui.label(&p.version).on_hover_text(&hover),
+                    };
                     ui.label(self.clock.shown(p.last_seen)).on_hover_text(&hover);
                     ui.end_row();
                 }
@@ -2620,7 +2631,10 @@ impl App {
                     notes_text(ui, &o.notes);
                 });
                 ui.add_space(8.0);
-                if matches!(self.setui.upd.fetch, Fetch::No | Fetch::Failed(..)) {
+                // Only for the public release offered to a PC of its own: in a
+                // shop the admin PC tries and rolls out (UP15).
+                let offered = self.setui.upd.offer.as_ref().is_some_and(|x| x.version == o.version);
+                if offered && matches!(self.setui.upd.fetch, Fetch::No | Fetch::Failed(..)) {
                     let b = egui::Button::new(RichText::new("Update when I close").color(egui::Color32::WHITE)).fill(t.accent);
                     update = ui.add(b).clicked();
                 }

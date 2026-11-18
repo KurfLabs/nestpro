@@ -89,6 +89,63 @@ pub fn shop_of(dir: &Path, own: &Path) -> Result<Option<ShopFile>, String> {
     crate::shop::read(dir)
 }
 
+/// UP21: what a PC in a shop installs, from the shop folder (never GitHub).
+#[derive(Clone, Debug, PartialEq)]
+pub enum FromShop {
+    /// Its Library isn't a shop's.
+    NotInShop,
+    /// Its Library is a trial copy (UP16): the release tried installs, not
+    /// the shop's.
+    Trial(crate::shop::TrialMark),
+    /// The shop has no shop version yet: nothing to install.
+    NoVersion,
+    /// This PC runs the shop version.
+    UpToDate(String),
+    /// This PC runs another version than the shop's: `version` installs from
+    /// `folder` (the shop folder's `Updates\<version>`) when the program
+    /// closes. `back`: this PC is newer, and goes back to it (UP21).
+    Update { version: String, folder: std::path::PathBuf, back: bool },
+    /// The shop version's packages aren't in `Updates`: why.
+    Missing { version: String, why: String },
+}
+
+/// UP21: what this PC (on `this`) installs from the shop in `dir`. A shop
+/// folder that can't be reached is refused, naming it (LB11).
+pub fn from_shop(dir: &Path, this: &str) -> Result<FromShop, String> {
+    let Some(s) = crate::shop::read(dir)? else { return Ok(FromShop::NotInShop) };
+    if let Some(m) = s.trial() {
+        return Ok(FromShop::Trial(m));
+    }
+    let Some(v) = s.shop_version().map(String::from) else { return Ok(FromShop::NoVersion) };
+    let order = crate::shared::version_order(this, &v);
+    if order == Some(std::cmp::Ordering::Equal) {
+        return Ok(FromShop::UpToDate(v));
+    }
+    let folder = super::rollout::release_dir(dir, &v);
+    Ok(match super::rollout::pack_in(&folder, &v) {
+        Ok(_) => FromShop::Update { back: order == Some(std::cmp::Ordering::Greater), version: v, folder },
+        Err(why) => FromShop::Missing { version: v, why },
+    })
+}
+
+impl FromShop {
+    /// UP21: what it says, for agents and the Updates card.
+    pub fn said(&self, this: &str, admin: &str) -> String {
+        match self {
+            FromShop::NotInShop => format!("This PC runs {this}; its Library isn't a shop's."),
+            FromShop::Trial(m) => format!("This PC is trying {} on a copy of the shop (nothing it saves reaches the shop); it runs {this}.", m.version),
+            FromShop::NoVersion => format!("This PC runs {this}. The shop has no shop version yet: the admin PC ({admin}) rolls one out."),
+            FromShop::UpToDate(v) => format!("This PC runs the shop version, {v}."),
+            FromShop::Update { version, back: false, .. } => format!("This PC runs {this}; the shop is on {version}. {UPDATE_READY}: {version} installs from the shop folder when the program closes, never while it is open."),
+            FromShop::Update { version, back: true, .. } => format!("This PC runs {this}, newer than the shop version {version}: the shop is read-only on it. Restart to go back to {version}: it installs from the shop folder when the program closes."),
+            FromShop::Missing { version, why } => format!("This PC runs {this}; the shop is on {version}, but its packages aren't in the shop folder's Updates ({why}). The admin PC ({admin}) rolls it out again."),
+        }
+    }
+}
+
+/// UP21: the banner on a PC whose shop version is ready to install.
+pub const UPDATE_READY: &str = "Update ready, restart when you're done";
+
 /// UP13: the entries of the notes' "Changes machine programs" section, one
 /// per change: the list lines under that heading, up to the next heading.
 /// Empty when the section says "None" or the notes have no such section.
@@ -129,13 +186,38 @@ pub fn up_to_date(this: &str, newest: Option<&str>) -> String {
 /// the window (the banner's Update when I close).
 pub fn run(ctx: &super::Ctx) -> super::ops::Outcome {
     use crate::updates::{check, Found, CHECK_TIMEOUT};
-    use serde_json::json;
+    use serde_json::{json, Value};
     let this = &ctx.version;
-    let (msg, data) = match check(&ctx.library_dir, &crate::library::default_dir(), &ctx.releases, CHECK_TIMEOUT) {
-        Found::InShop(name) => (
-            format!("This PC runs {this}. It's in shop {name}, so it updates from the shop folder to the release the admin PC rolls out, never from GitHub."),
-            json!({"this_version": this, "shop": name, "checked": false, "newest": null, "offer": null}),
-        ),
+    // UP21: a PC in a shop says what it installs from the shop folder,
+    // whatever its copy's release source (on Linux, none).
+    let found = match shop_of(&ctx.library_dir, &crate::library::default_dir()) {
+        Ok(Some(s)) => Found::InShop(s.name),
+        _ => check(&ctx.library_dir, &crate::library::default_dir(), &ctx.releases, CHECK_TIMEOUT),
+    };
+    let (msg, data) = match found {
+        Found::InShop(name) => {
+            // UP21: what it installs from the shop folder.
+            let admin = crate::shop::read(&ctx.library_dir).ok().flatten().map(|s| s.admin.pc).unwrap_or_default();
+            let (said, shop_version, from) = match from_shop(&ctx.library_dir, this) {
+                Ok(f) => {
+                    let sv = match &f {
+                        FromShop::UpToDate(v) | FromShop::Update { version: v, .. } | FromShop::Missing { version: v, .. } => Some(v.clone()),
+                        FromShop::Trial(m) => m.shop_version.clone(),
+                        _ => None,
+                    };
+                    let from = match &f {
+                        FromShop::Update { version, folder, back } => json!({"version": version, "folder": folder.display().to_string(), "back": back, "installs": "when the program closes"}),
+                        _ => Value::Null,
+                    };
+                    (f.said(this, &admin), sv, from)
+                }
+                Err(e) => (e, None, Value::Null),
+            };
+            (
+                format!("This PC runs {this}. It's in shop {name}, so it updates from the shop folder to the release the admin PC rolls out, never from GitHub. {said}"),
+                json!({"this_version": this, "shop": name, "checked": false, "newest": null, "offer": null, "shop_version": shop_version, "from_shop": from}),
+            )
+        }
         Found::NotChecked(why) => (format!("This PC runs {this}. {why}"), json!({"this_version": this, "checked": false, "reason": why, "newest": null, "offer": null})),
         Found::Releases(list) => {
             let newest = newest(&list).map(|r| r.version.clone());

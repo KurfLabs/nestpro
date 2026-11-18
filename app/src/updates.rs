@@ -78,6 +78,9 @@ pub enum Source {
     /// No releases on this copy, and why (UP14: on Linux, that releases are
     /// for Windows).
     Off(&'static str),
+    /// A release folder (UP19, UP21): the shop folder's `Updates\<version>`
+    /// on a PC in a shop, or the release fetched for a trial on the admin PC.
+    Folder(PathBuf),
 }
 
 /// This copy's release source: the made-up list when one is given (it plays
@@ -102,7 +105,65 @@ pub fn release_list(src: &Source, deadline: Instant) -> Result<Vec<Release>, Str
         }
         Source::Github => github::release_list(deadline, &github::get).map_err(|e| format!("{COULDNT_CHECK} ({e}).")),
         Source::Off(why) => Err(why.to_string()),
+        Source::Folder(p) => Err(format!("{COULDNT_CHECK}: {} is a release folder, not a release list.", p.display())),
     }
+}
+
+/// UP15: on the admin PC in a shop, a person's click: the public releases,
+/// read now (off the window's thread), to find a release to try. A PC in a
+/// shop never reads them by itself (UP11).
+pub fn releases_in_background(src: Source) -> Receiver<Result<Vec<Release>, String>> {
+    let (tx, rx) = channel();
+    let tx2 = tx.clone();
+    if let Err(e) = spawn("release list", move || {
+        let _ = tx.send(release_list(&src, Instant::now() + CHECK_TIMEOUT));
+    }) {
+        let _ = tx2.send(Err(format!("{COULDNT_CHECK} ({e}).")));
+    }
+    rx
+}
+
+/// UP16, UP19: how long fetching a release's packages may take.
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// UP16, UP19: fetch release `version`'s packages (its index and full
+/// package) into the release folder `into` on this PC, for Try on this PC
+/// and Roll out. A folder that already holds them is used as it is. They
+/// are fetched into a folder of this PC's own beside it, then renamed into
+/// place, so a fetch that stops halfway never counts. A made-up list makes
+/// a made-up release (screenshots and tests).
+pub fn fetch_release(src: &Source, version: &str, into: &Path) -> Result<(), String> {
+    if crate::engine::rollout::pack_in(into, version).is_ok() {
+        return Ok(());
+    }
+    let part = into.with_file_name(format!(".{}.{}.part", into.file_name().map_or_else(|| "release".into(), |n| n.to_string_lossy().into_owned()), crate::shared::writer_tag()));
+    std::fs::create_dir_all(&part).map_err(|e| format!("{} can't be made ({e})", part.display()))?;
+    let got = match src {
+        Source::Fake(_) => fake_release(&part, version),
+        Source::Github => github::download_release(version, &part, Instant::now() + FETCH_TIMEOUT, &github::get, &github::get_bytes),
+        Source::Off(why) => Err(why.to_string()),
+        Source::Folder(p) => Err(format!("{} is a release folder already", p.display())),
+    }
+    .and_then(|()| crate::engine::rollout::pack_in(&part, version).map(|_| ()))
+    .and_then(|()| {
+        if into.exists() {
+            std::fs::remove_dir_all(into).map_err(|e| format!("{} can't be replaced ({e})", into.display()))?;
+        }
+        std::fs::rename(&part, into).map_err(|e| format!("{} can't be made ({e})", into.display()))
+    });
+    if got.is_err() {
+        let _ = std::fs::remove_dir_all(&part);
+    }
+    got.map_err(|e| format!("Version {version} couldn't be fetched ({e})."))
+}
+
+/// A made-up release folder (`--fake-releases`): an index and a package
+/// that are no program.
+fn fake_release(into: &Path, version: &str) -> Result<(), String> {
+    let pkg = format!("KurfLabs.nestpro-{version}-full.nupkg");
+    std::fs::write(into.join(&pkg), format!("made-up package {version}")).map_err(|e| e.to_string())?;
+    let idx = serde_json::json!({"Assets": [{"PackageId": "KurfLabs.nestpro", "Version": version, "Type": "Full", "FileName": pkg, "NotesMarkdown": ""}]});
+    std::fs::write(into.join(crate::engine::rollout::INDEX), idx.to_string()).map_err(|e| e.to_string())
 }
 
 /// UP11: what a check found.
@@ -126,13 +187,16 @@ pub enum NotStandalone {
     InShop(String),
     /// Its Library can't be reached, so it can't be told.
     Unknown(String),
+    /// A shop release that isn't the shop version any more, or a trial
+    /// that ended: why (UP21).
+    Moved(String),
 }
 
 impl From<NotStandalone> for Found {
     fn from(n: NotStandalone) -> Found {
         match n {
             NotStandalone::InShop(name) => Found::InShop(name),
-            NotStandalone::Unknown(e) => Found::NotChecked(e),
+            NotStandalone::Unknown(e) | NotStandalone::Moved(e) => Found::NotChecked(e),
         }
     }
 }
@@ -209,13 +273,49 @@ enum Stage {
     Ready(Chosen),
 }
 
-/// The release a person chose, and for which Library and source.
+/// Why a release installs when the program closes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Why {
+    /// A PC of its own chose a public release (UP14).
+    #[default]
+    Public,
+    /// The shop version, from the shop folder (UP21).
+    Shop,
+    /// The release the admin PC tries (UP16).
+    Trial,
+}
+
+/// The release chosen, and for which Library and source.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chosen {
     pub version: String,
     pub dir: PathBuf,
     pub own: PathBuf,
     pub src: Source,
+    pub why: Why,
+}
+
+impl Chosen {
+    /// UP14, UP21, UP16: whether the choice still stands, looked at before
+    /// a download and once the window has closed: a public release only
+    /// while this PC is outside a shop; the shop's only while it is still
+    /// the shop version; a trial's while this PC's Library is a trial of it.
+    pub fn stands(&self) -> Result<(), NotStandalone> {
+        match self.why {
+            Why::Public => standalone(&self.dir, &self.own),
+            Why::Shop => match crate::shop::read(&self.dir) {
+                Ok(Some(s)) if s.trial().is_none() && s.shop_version() == Some(self.version.as_str()) => Ok(()),
+                Ok(Some(s)) => Err(NotStandalone::Moved(format!("Version {} wasn't installed: the shop version is {} now.", self.version, s.shop_version().unwrap_or("none")))),
+                Ok(None) => Err(NotStandalone::Moved(format!("Version {} wasn't installed: this PC's Library isn't a shop's any more.", self.version))),
+                Err(e) => Err(NotStandalone::Unknown(format!("Not installed: {e}"))),
+            },
+            Why::Trial => match crate::shop::read(&self.dir) {
+                Ok(Some(s)) if s.trial().is_some_and(|m| m.version == self.version) => Ok(()),
+                Ok(_) => Err(NotStandalone::Moved(format!("Version {} wasn't installed: this PC stopped trying it.", self.version))),
+                Err(e) => Err(NotStandalone::Unknown(format!("Not installed: {e}"))),
+            },
+        }
+    }
 }
 
 /// UP14: the update a person chose, kept until the program closes. Each
@@ -295,12 +395,13 @@ pub fn download_in_background(h: &'static Handoff, c: Chosen) -> Receiver<Result
     let tx2 = tx.clone();
     let n = h.start(c.clone());
     let started = spawn("update download", move || {
-        let r = match standalone(&c.dir, &c.own) {
+        let r = match c.stands() {
             Err(NotStandalone::InShop(name)) => Err(format!("Not downloaded: this PC is in shop {name} now, and updates from the shop folder.")),
-            Err(NotStandalone::Unknown(e)) => Err(e),
+            Err(NotStandalone::Unknown(e) | NotStandalone::Moved(e)) => Err(e),
             Ok(()) => match &c.src {
                 Source::Fake(_) => Ok(()),
                 Source::Github => installer::download(&c.version).map_err(|e| format!("Couldn't download version {} ({e}).", c.version)),
+                Source::Folder(p) => installer::download_from(p, &c.version).map_err(|e| format!("Couldn't get version {} from {} ({e}).", c.version, p.display())),
                 Source::Off(why) => Err(why.to_string()),
             },
         };
@@ -319,7 +420,7 @@ pub fn download_in_background(h: &'static Handoff, c: Chosen) -> Receiver<Result
 /// it to `apply`. Ok(None): nothing to install (none chosen, or not ready in
 /// time: the next start offers it again).
 pub fn finish_on_close(h: &Handoff, limit: Duration, apply: impl FnOnce(&Chosen) -> Result<(), String>) -> Result<Option<String>, String> {
-    finish_on_close_with(h, limit, |c| standalone(&c.dir, &c.own), CHECK_TIMEOUT, apply)
+    finish_on_close_with(h, limit, Chosen::stands, CHECK_TIMEOUT, apply)
 }
 
 /// `finish_on_close`, with the shop lookup given (tests). The lookup has
@@ -343,6 +444,7 @@ pub fn finish_on_close_with(
         Ok(Ok(())) => {}
         Ok(Err(NotStandalone::InShop(name))) => return Err(format!("Version {} wasn't installed: this PC is in shop {name} now.", c.version)),
         Ok(Err(NotStandalone::Unknown(e))) => return Err(format!("Version {} wasn't installed: {e}", c.version)),
+        Ok(Err(NotStandalone::Moved(e))) => return Err(e),
         Err(_) => return Err(format!("Version {} wasn't installed: this PC's Library didn't answer in {} s, so it isn't known whether this PC is in a shop. It is offered again next time.", c.version, lookup_limit.as_secs())),
     }
     apply(&c)?;
@@ -356,6 +458,7 @@ pub fn finish_on_close_with(
 pub fn install_on_close() {
     let apply = |c: &Chosen| match c.src {
         Source::Github => installer::apply(&c.version),
+        Source::Folder(_) => installer::apply_fetched(&c.version),
         _ => Ok(()),
     };
     match finish_on_close(&HANDOFF, CLOSE_WAIT, apply) {
@@ -398,6 +501,62 @@ mod github {
             e => e.to_string(),
         })?;
         r.body_mut().with_config().limit(10 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())
+    }
+
+    /// GET `url` as bytes (a package), giving up at `deadline`.
+    #[cfg_attr(not(all(windows, target_env = "msvc")), allow(dead_code))]
+    pub fn get_bytes(url: &str, deadline: Instant) -> Result<Vec<u8>, String> {
+        let left = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()).ok_or("no answer in time")?;
+        #[cfg(windows)]
+        let provider = ureq::tls::TlsProvider::NativeTls;
+        #[cfg(not(windows))]
+        let provider = ureq::tls::TlsProvider::Rustls;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .tls_config(ureq::tls::TlsConfig::builder().provider(provider).build())
+            .timeout_global(Some(left))
+            .user_agent(concat!("nestpro/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into();
+        let mut r = agent.get(url).header("Accept", "application/octet-stream").call().map_err(|e| match e {
+            ureq::Error::Timeout(_) => "no answer in time".to_string(),
+            ureq::Error::StatusCode(c) => format!("GitHub answered {c}"),
+            e => e.to_string(),
+        })?;
+        r.body_mut().with_config().limit(2 * 1024 * 1024 * 1024).read_to_vec().map_err(|e| e.to_string())
+    }
+
+    /// UP16, UP19: the published release `version`'s index and full
+    /// package, written into the folder `into`.
+    #[allow(clippy::type_complexity)]
+    pub fn download_release(version: &str, into: &std::path::Path, deadline: Instant, get: &dyn Fn(&str, Instant) -> Result<String, String>, get_bytes: &dyn Fn(&str, Instant) -> Result<Vec<u8>, String>) -> Result<(), String> {
+        let list: Value = serde_json::from_str(&get(RELEASES, deadline)?).map_err(|e| format!("GitHub's release list can't be read: {e}"))?;
+        let tag = format!("v{version}");
+        let r = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|r| r["tag_name"].as_str() == Some(tag.as_str()) && !r["draft"].as_bool().unwrap_or(false) && !r["prerelease"].as_bool().unwrap_or(false))
+            .ok_or_else(|| format!("release {tag} isn't among the published releases"))?;
+        let asset = |name: &str| r["assets"].as_array().into_iter().flatten().find(|a| a["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name))).and_then(|a| a["browser_download_url"].as_str()).map(String::from);
+        let idx_url = asset(INDEX).ok_or_else(|| format!("release {tag} has no {INDEX}"))?;
+        let idx = get(&idx_url, deadline)?;
+        std::fs::write(into.join(crate::engine::rollout::INDEX), &idx).map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&idx).map_err(|e| format!("its index can't be read ({e})"))?;
+        let key = |o: &Value, k: &str| o.as_object().and_then(|m| m.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone())).unwrap_or(Value::Null);
+        let assets = key(&v, "Assets");
+        let full = assets
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|a| key(a, "Type").as_str().is_some_and(|t| t.eq_ignore_ascii_case("Full")) && key(a, "Version").as_str() == Some(version))
+            .and_then(|a| key(a, "FileName").as_str().map(String::from))
+            .ok_or_else(|| format!("release {tag}'s index lists no full package"))?;
+        if full.contains(['/', '\\', ':']) {
+            return Err(format!("release {tag}'s index names an odd package {full}"));
+        }
+        let url = asset(&full).ok_or_else(|| format!("release {tag} has no {full}"))?;
+        let bytes = get_bytes(&url, deadline)?;
+        std::fs::write(into.join(&full), bytes).map_err(|e| e.to_string())
     }
 
     /// Every plain release's versions and notes, from the index in each
@@ -462,6 +621,38 @@ mod installer {
         let asset = um.get_update_pending_restart().filter(|a| a.Version == version).ok_or_else(|| format!("version {version} isn't downloaded"))?;
         um.wait_exit_then_apply_updates(&asset, false, false, Vec::<String>::new()).map_err(|e| format!("version {version} wasn't installed: {e}"))
     }
+
+    /// The release fetched from a folder, kept for the install on close: the
+    /// installer only finds a downloaded release newer than this one by
+    /// itself, and going back to the shop version is older (UP21).
+    static FETCHED: std::sync::Mutex<Option<(std::path::PathBuf, velopack::VelopackAsset)>> = std::sync::Mutex::new(None);
+
+    fn folder_manager(folder: &std::path::Path) -> Result<UpdateManager, String> {
+        let opts = velopack::UpdateOptions { AllowVersionDowngrade: true, ..Default::default() };
+        UpdateManager::new(velopack::sources::FileSource::new(folder), Some(opts), None).map_err(|e| format!("this copy wasn't installed by Setup.exe: {e}"))
+    }
+
+    /// UP16, UP21: fetch release `version` from a release folder (the shop
+    /// folder's `Updates\<version>`, or the admin PC's trial release), newer
+    /// or older than this one.
+    pub fn download_from(folder: &std::path::Path, version: &str) -> Result<(), String> {
+        let um = folder_manager(folder)?;
+        let feed = um.get_release_feed().map_err(|e| e.to_string())?;
+        let asset = feed.Assets.into_iter().find(|a| a.Type.eq_ignore_ascii_case("Full") && a.Version == version).ok_or_else(|| format!("version {version} isn't in {}", folder.display()))?;
+        let older = crate::shared::version_order(version, &um.get_current_version_as_string()) == Some(std::cmp::Ordering::Less);
+        let info = UpdateInfo { TargetFullRelease: asset.clone(), BaseRelease: None, DeltasToTarget: vec![], IsDowngrade: older };
+        um.download_updates(&info, None).map_err(|e| e.to_string())?;
+        *FETCHED.lock().unwrap_or_else(|p| p.into_inner()) = Some((folder.to_path_buf(), asset));
+        Ok(())
+    }
+
+    /// UP21: hand the release fetched from a folder over to install once
+    /// the program has ended.
+    pub fn apply_fetched(version: &str) -> Result<(), String> {
+        let (folder, asset) = FETCHED.lock().unwrap_or_else(|p| p.into_inner()).take().filter(|(_, a)| a.Version == version).ok_or_else(|| format!("version {version} isn't downloaded"))?;
+        let um = folder_manager(&folder)?;
+        um.wait_exit_then_apply_updates(&asset, false, false, Vec::<String>::new()).map_err(|e| format!("version {version} wasn't installed: {e}"))
+    }
 }
 
 /// Builds without the installer: nothing to fetch or install.
@@ -472,6 +663,14 @@ mod installer {
     }
 
     pub fn apply(_version: &str) -> Result<(), String> {
+        Err(super::NO_INSTALLER.into())
+    }
+
+    pub fn download_from(_folder: &std::path::Path, _version: &str) -> Result<(), String> {
+        Err(if cfg!(windows) { super::NO_INSTALLER } else { super::LINUX }.into())
+    }
+
+    pub fn apply_fetched(_version: &str) -> Result<(), String> {
         Err(super::NO_INSTALLER.into())
     }
 }
@@ -576,7 +775,7 @@ mod tests {
     }
 
     fn chosen(d: &Path, l: &Path, v: &str) -> Chosen {
-        Chosen { version: v.into(), dir: l.to_path_buf(), own: d.join("own"), src: Source::Fake(d.join("releases.json")) }
+        Chosen { version: v.into(), dir: l.to_path_buf(), own: d.join("own"), src: Source::Fake(d.join("releases.json")), why: Why::Public }
     }
 
     /// S1: closing while the chosen release still downloads waits for it
