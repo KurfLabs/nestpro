@@ -3392,7 +3392,7 @@ fn an_agents_save_part_is_refused_when_the_library_part_was_saved_since() {
     let pf = window.load_product(first).unwrap();
     let mut p = pf.part.clone();
     p.w = 450.0;
-    window.save_product(&p, "Acme", pf.material, pf.thickness, SaveTo::Read(crate::library::Record { id: first, revision: pf.revision })).unwrap();
+    window.save_product(&p, "Acme", pf.material, pf.thickness, SaveTo::Read(crate::library::Record { id: first, revision: pf.revision, restore: 0 })).unwrap();
     let e = err(&mut s, "library", json!({"mode": "save-part", "folder": "Acme"}));
     assert!(e.contains("DEMO-P1") && e.contains("kim on PROG-1 at 2026-11-09 09:30") && e.contains("Nothing was saved"), "{e}");
     assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
@@ -5644,7 +5644,7 @@ fn files_with_only_a_material_number_open_with_the_same_material() {
     let pid = lib.read_index().unwrap().iter().find(|e| e.kind == crate::library::Kind::Product).unwrap().id;
     let pf = lib.load_product(pid).unwrap();
     assert_eq!((pf.material, pf.material_name.as_str()), (2, ""), "a library part read before names keeps its number");
-    lib.save_product(&pf.part, &pf.folder, pf.material, pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id: pid, revision: pf.revision })).unwrap();
+    lib.save_product(&pf.part, &pf.folder, pf.material, pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id: pid, revision: pf.revision, restore: 0 })).unwrap();
     let v: Value = serde_json::from_str(&std::fs::read_to_string(lib.path(crate::library::Kind::Product, pid)).unwrap()).unwrap();
     assert_eq!((v["material"].as_u64(), v["material_name"].as_str()), (Some(2), Some("Aluminium")));
 
@@ -8531,7 +8531,7 @@ fn a_library_part_from_a_job_whose_material_cant_be_told_keeps_its_number_and_na
     let pf = l.load_product(id).unwrap();
     assert!(!material::exists(pf.material), "unresolved when read back");
     // Saved again over itself, as read.
-    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
+    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision, restore: 0 }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
     assert_eq!(stored_material(&on_disk()), (Some(3), Some("DEMO Shared")));
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -8615,7 +8615,7 @@ fn a_joining_pcs_name_the_library_shows_now_still_leaves_a_renamed_number_unknow
     let list = call(&mut s2, "library", Some(jp), json!({"mode": "list"}));
     assert!(list["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "?"), "{list}");
     let pf = l.load_product(id).unwrap();
-    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
+    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision, restore: 0 }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
     assert_eq!(part_on_disk(), kept);
     // A remnant it stores, read back in a fresh session and saved again by
     // an unrelated stock change.
@@ -9118,4 +9118,4234 @@ fn every_operation_is_tested_like_an_agent_calls_it() {
         .filter(|n| !src.contains(&format!("call(&mut s, \"{n}\"")) && !src.contains(&format!("err(&mut s, \"{n}\"")) && !src.contains(&format!("s.call(\"{n}\"")))
         .collect();
     assert!(untested.is_empty(), "Operations with no test in engine/tests.rs — add one that runs each through call(&mut s, \"<op>\", …): {untested:?}");
+}
+
+// ---------------------------------------------------------------------------
+// The shop (spec #178): starting a shop in the Library's folder, the PCs in
+// it, and who is its admin PC (SH1–SH8).
+// ---------------------------------------------------------------------------
+
+/// Every file under `dir` and its bytes, by its path inside `dir`.
+fn files_under(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p);
+            } else {
+                out.insert(p.strip_prefix(dir).unwrap().display().to_string(), std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    out
+}
+
+/// A test Library with a saved job, a library part and stock in it, as a
+/// PC that has used it for a while has.
+fn used_library(d: &Path, who: Who, clock: &Clock) -> Session {
+    let mut ctx = stock_ctx(d);
+    ctx.who = who;
+    ctx.clock = clock.clone();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-001 frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2, "name": "DEMO-P1"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "folder": "Acme"}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 1500, "h": 750, "thickness": 3, "qty": 2}));
+    s
+}
+
+/// SH1, SH2: starting a shop on a Library that already holds jobs, library
+/// parts and stock adds the shop file and its Shop, Updates and Backups
+/// folders in that folder, and leaves every file already there as it was.
+#[test]
+fn starting_a_shop_on_a_used_library_adds_the_shop_and_moves_nothing() {
+    let d = dir("shop_start");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let before = files_under(&lib);
+    assert!(before.keys().any(|k| k.starts_with("Jobs")) && before.keys().any(|k| k.starts_with("Products")) && before.keys().any(|k| k.starts_with("Sheets")), "{:?}", before.keys());
+    let r = call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Acme") && m.contains(&lib.display().to_string()) && m.contains("PC-A"), "{m}");
+    let after = files_under(&lib);
+    for (k, bytes) in &before {
+        assert_eq!(after.get(k), Some(bytes), "{k} changed or went when the shop was started");
+    }
+    for f in ["Shop", "Updates", "Backups"] {
+        assert!(lib.join(f).is_dir(), "no {f} folder");
+    }
+    // Only the shop's own files are new: the shop file and this PC's record.
+    let new: Vec<&String> = after.keys().filter(|k| !before.contains_key(*k)).collect();
+    assert!(new.iter().all(|k| k.as_str() == crate::shop::FILE || k.starts_with("Shop")), "{new:?}");
+    // The shop says what it is.
+    let st = call(&mut s, "shop", None, json!({"mode": "status"}));
+    assert_eq!(st["data"]["name"], "Acme", "{st}");
+    assert_eq!(st["data"]["folder"], lib.display().to_string(), "{st}");
+    assert_eq!(st["data"]["admin_pc"], "PC-A", "{st}");
+    assert_eq!(st["data"]["shop_settings"], "only on the admin PC", "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH4, SH5: two sessions acting as two PCs, on two versions, both record
+/// themselves when they use the program, at the same time, and both show in
+/// `shop status` with who, their version and when they were last seen.
+#[test]
+fn two_pcs_using_the_shop_at_once_both_show_with_their_version_and_last_seen() {
+    let d = dir("shop_two_pcs");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut a = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    // PC-B, a version behind, and PC-A use the program at the same moment:
+    // each asks for the shop's status, as an agent does, again and again.
+    std::thread::scope(|t| {
+        for (who, version) in [(Who::new("kim", "PC-B").as_agent(), "0.1.0"), (Who::new("sam", "PC-A").as_agent(), "0.2.0")] {
+            let (lib, clock) = (&lib, &clock);
+            t.spawn(move || {
+                let mut ctx = stock_ctx_again(lib);
+                ctx.who = who;
+                ctx.clock = clock.clone();
+                ctx.version = version.into();
+                let mut s = Session::new(ctx);
+                for _ in 0..10 {
+                    let st = call(&mut s, "shop", None, json!({"mode": "status"}));
+                    assert_eq!(st["data"]["this_pc_recorded"], true, "{st}");
+                }
+            });
+        }
+    });
+    let mut ctx = stock_ctx_again(&lib);
+    ctx.who = Who::new("lee", "PC-C").as_agent();
+    ctx.clock = clock.clone();
+    ctx.version = "0.3.0".into();
+    let mut c = Session::new(ctx);
+    let st = call(&mut c, "shop", None, json!({}));
+    let pcs = st["data"]["pcs"].as_array().unwrap();
+    let row = |pc: &str| pcs.iter().find(|p| p["pc"] == pc).cloned().unwrap_or_else(|| panic!("{pc} isn't listed: {st}"));
+    assert_eq!(pcs.len(), 3, "{st}");
+    let (pa, pb, pc) = (row("PC-A"), row("PC-B"), row("PC-C"));
+    assert_eq!((pa["user"].as_str(), pa["version"].as_str(), pa["last_seen"].as_str(), pa["admin"].as_bool()), (Some("sam"), Some("0.2.0"), Some("2026-11-09 09:30"), Some(true)), "{pa}");
+    assert_eq!((pb["user"].as_str(), pb["version"].as_str(), pb["last_seen"].as_str(), pb["admin"].as_bool()), (Some("kim"), Some("0.1.0"), Some("2026-11-09 09:30"), Some(false)), "{pb}");
+    assert_eq!((pc["version"].as_str(), pc["this_pc"].as_bool()), (Some("0.3.0"), Some(true)), "{pc}");
+    // Each PC wrote only its own record; no lock or temporary file is left.
+    let left: Vec<String> = std::fs::read_dir(&lib).unwrap().chain(std::fs::read_dir(lib.join("Shop")).unwrap()).flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp") || n.ends_with(".lock")).collect();
+    assert!(left.is_empty(), "{left:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH7: an agent asking to change the admin PC is refused with the reason
+/// and nothing changes; a person on another PC changes it in the window,
+/// and the shop records who did it and when.
+#[test]
+fn only_a_person_changes_the_admin_pc_and_the_shop_records_who_and_when() {
+    let d = dir("shop_admin");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let file = std::fs::read(lib.join(crate::shop::FILE)).unwrap();
+    // An agent on PC-B asks.
+    s.ctx.who = Who::new("kim", "PC-B").as_agent();
+    let e = err(&mut s, "shop", json!({"mode": "admin"}));
+    assert!(e.contains("refused for agents") && e.contains("Make this PC the admin PC") && e.contains("Nothing was changed"), "{e}");
+    assert_eq!(std::fs::read(lib.join(crate::shop::FILE)).unwrap(), file, "a refused admin change changed the shop file");
+    // The engine refuses an agent too, whoever calls it.
+    let e = crate::engine::shop::make_admin(&lib, &Who::new("kim", "PC-B").as_agent(), &clock).unwrap_err();
+    assert!(e.contains("refused for agents"), "{e}");
+    // Kim does it in the window on PC-B, an hour later.
+    clock.advance(std::time::Duration::from_secs(3600));
+    crate::engine::shop::make_admin(&lib, &Who::new("kim", "PC-B"), &clock).unwrap();
+    let st = call(&mut s, "shop", None, json!({"mode": "status"}));
+    assert_eq!(st["data"]["admin_pc"], "PC-B", "{st}");
+    assert_eq!(st["data"]["admin_set_by"], "kim on PC-B", "{st}");
+    assert_eq!(st["data"]["admin_set_at"], "2026-11-09 10:20", "{st}");
+    assert_eq!(st["data"]["admin_was"], "PC-A", "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH8 (LB11): a shop folder that can't be reached says so and names it,
+/// for status and for starting a shop, a Windows share path included; no
+/// shop, Library or folder is made in its place.
+#[test]
+fn a_shop_folder_that_cant_be_reached_is_named_and_nothing_is_made() {
+    let d = dir("shop_unreachable");
+    let mut ctx = Ctx::builtin();
+    let share = d.join("srv").join("Nesting");
+    ctx.library_dir = share.clone();
+    let mut s = Session::new(ctx);
+    let e = err(&mut s, "shop", json!({"mode": "status"}));
+    assert!(e.contains(&share.display().to_string()) && e.contains("can't be reached"), "{e}");
+    let e = err(&mut s, "setup", json!({"start": share.to_str().unwrap(), "name": "Acme"}));
+    assert!(e.contains(&share.display().to_string()) && e.contains("can't be reached"), "{e}");
+    assert!(!d.join("srv").exists(), "something was made in place of the share");
+    // The shop's share as Windows names it, read on any system.
+    s.ctx.library_dir = PathBuf::from(r"\\srv\Nesting");
+    let e = err(&mut s, "shop", json!({}));
+    assert!(e.contains(r"The Library on \\srv\Nesting can't be reached"), "{e}");
+    let e = err(&mut s, "setup", json!({"start": r"\\srv\Nesting", "name": "Acme"}));
+    assert!(e.contains(r"\\srv\Nesting can't be reached"), "{e}");
+    assert!(!Path::new(r"\\srv\Nesting").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH1, SH8: what starting a shop refuses, each naming the folder and
+/// leaving it as it was: no name, a folder that holds no Library, a folder
+/// that is already a shop, and a folder this PC can't write to. A Library
+/// that isn't a shop says so.
+#[test]
+fn starting_a_shop_refuses_what_it_cant_start_and_changes_nothing() {
+    let d = dir("shop_refusals");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let st = call(&mut s, "shop", None, json!({}));
+    assert!(st["data"]["shop"].is_null() && st["message"].as_str().unwrap().contains("isn't a shop"), "{st}");
+    let before = files_under(&lib);
+    // No name.
+    let e = err(&mut s, "setup", json!({"start": lib.to_str().unwrap(), "name": "  "}));
+    assert!(e.contains("name"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    // A folder with other files in it, but no Library.
+    let other = d.join("Drawings");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("bracket.dxf"), "0\nEOF\n").unwrap();
+    let e = err(&mut s, "setup", json!({"start": other.to_str().unwrap(), "name": "Acme"}));
+    assert!(e.contains(&other.display().to_string()) && e.contains("holds no Library"), "{e}");
+    assert_eq!(std::fs::read_dir(&other).unwrap().count(), 1, "something was made in a folder with no Library");
+    // Started once; a second start (another PC, another name) is refused
+    // and the shop stays as it was.
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let shop = std::fs::read(lib.join(crate::shop::FILE)).unwrap();
+    s.ctx.who = Who::new("kim", "PC-B").as_agent();
+    let e = err(&mut s, "setup", json!({"start": lib.to_str().unwrap(), "name": "Other shop"}));
+    assert!(e.contains("already the shop folder of Acme") && e.contains("PC-A"), "{e}");
+    assert_eq!(std::fs::read(lib.join(crate::shop::FILE)).unwrap(), shop);
+    // A Library this PC can only read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let ro = d.join("ReadOnly");
+        crate::library::create(&ro).unwrap();
+        let ro_before = files_under(&ro);
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // (Someone allowed to write anyway, as root, can't play this PC.)
+        if std::fs::write(ro.join("probe"), "").is_err() {
+            let e = err(&mut s, "setup", json!({"start": ro.to_str().unwrap(), "name": "Acme"}));
+            assert!(e.contains(&ro.display().to_string()) && e.contains("can't write"), "{e}");
+            assert_eq!(files_under(&ro), ro_before, "a refused start left files behind");
+        }
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Updates on a PC of its own (spec #178, UP11–UP14), against a made-up
+// release list: tests never read GitHub.
+// ---------------------------------------------------------------------------
+
+/// A made-up release list in `d`.
+fn fake_releases(d: &Path, list: Value) -> crate::updates::Source {
+    let f = d.join("releases.json");
+    std::fs::write(&f, list.to_string()).unwrap();
+    crate::updates::Source::Fake(f)
+}
+
+/// UP12, UP13: a PC of its own on 0.4.0 is told of the newest newer release,
+/// with what it changes in machine programs; a pre-release is never offered.
+#[test]
+fn an_agent_sees_the_newest_release_for_a_pc_of_its_own() {
+    let d = dir("updates_offer");
+    let mut ctx = stock_ctx(&d);
+    ctx.version = "0.4.0".into();
+    let notes = "Since v0.4.0: 2 changes.\n\n## Changes machine programs\n\nTest-cut before rolling this release out: these change the code that writes machine programs.\n\n- Arc leads on round holes aim at the centre (#177): app/src/leads.rs\n\n## Changes\n\n- Arc leads on round holes aim at the centre (#177)\n- Settings → Shop (#200)\n";
+    ctx.releases = fake_releases(&d, json!([{"version": "0.4.1", "notes": ""}, {"version": "0.10.0", "notes": notes}, {"version": "0.11.0-rc1", "notes": ""}, {"version": "0.9.0", "notes": ""}]));
+    let mut s = Session::new(ctx);
+    let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["this_version"], "0.4.0", "{r}");
+    assert_eq!(r["data"]["newest"], "0.10.0", "{r}");
+    assert_eq!(r["data"]["offer"]["version"], "0.10.0", "{r}");
+    assert_eq!(r["data"]["offer"]["machine_changes"], json!(["Arc leads on round holes aim at the centre (#177): app/src/leads.rs"]), "{r}");
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("0.10.0") && m.contains("machine programs") && m.contains("A person installs it"), "{m}");
+    // Nothing changed: a check only reads.
+    assert_ne!(r["changed"], true, "{r}");
+    // Up to date.
+    s.ctx.version = "0.10.0".into();
+    let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["offer"], Value::Null, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("up to date"), "{r}");
+    assert_eq!(r["data"]["this_version"], "0.10.0", "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP11: no connection is said plainly, not as a refusal; a PC in a shop
+/// never reads the public releases (ADR 0006).
+#[test]
+fn an_agent_checking_updates_offline_or_in_a_shop() {
+    let d = dir("updates_offline");
+    let mut ctx = stock_ctx(&d);
+    ctx.version = "0.4.0".into();
+    ctx.releases = crate::updates::Source::Fake(d.join("offline"));
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["checked"], false, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("Couldn't check for updates"), "{r}");
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    s.ctx.releases = fake_releases(&d, json!([{"version": "0.5.0"}]));
+    let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["shop"], "Acme", "{r}");
+    assert_eq!(r["data"]["offer"], Value::Null, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("never from GitHub"), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A session as `who` (an agent) in the shop folder `lib`, on `clock`.
+fn shop_session(lib: &Path, who: Who, clock: &Clock) -> Session {
+    let mut ctx = stock_ctx_again(lib);
+    ctx.who = who;
+    ctx.clock = clock.clone();
+    Session::new(ctx)
+}
+
+/// SH2: a setup that loses the Library's write lock (it stalled, and another
+/// PC took the lock over and started the shop with the folders this one
+/// made) is refused and leaves those folders and the other PC's shop as they
+/// are: it never takes away what another PC may be using.
+#[test]
+fn a_setup_that_loses_the_lock_leaves_the_folders_the_other_pc_started_the_shop_with() {
+    let d = dir("shop_lost_lock");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let other = lib.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "shop folders made" {
+            // PC-B takes the lock over and starts its shop meanwhile.
+            std::fs::write(other.join(crate::shared::LOCK_FILE), r#"{"user":"kim","pc":"PC-B","process":1,"since":0,"token":"PC-B-token"}"#).unwrap();
+            std::fs::write(other.join(crate::shop::FILE), "PC-B's shop").unwrap();
+        }
+    });
+    let e = s.call("setup", None, &json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    crate::shared::hooks::clear();
+    let e = e.err().expect("a setup that lost the lock was not refused");
+    assert!(e.contains("No shop was started"), "{e}");
+    for f in ["Shop", "Updates", "Backups"] {
+        assert!(lib.join(f).is_dir(), "the setup that lost the lock took {f} away");
+    }
+    assert_eq!(std::fs::read_to_string(lib.join(crate::shop::FILE)).unwrap(), "PC-B's shop");
+    assert!(std::fs::read_to_string(lib.join(crate::shared::LOCK_FILE)).unwrap().contains("PC-B-token"), "PC-B's lock was taken away");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH2, SH8: a Library that goes away while a shop is being started (the
+/// share drops after the lock was taken, before or after the folders were
+/// made) is never made again: setup is refused, naming it, and no empty
+/// folder appears in its place.
+#[test]
+fn a_library_that_goes_while_a_shop_is_started_is_never_made_again() {
+    for step in ["shop locked", "shop folders made"] {
+        let d = dir(&format!("shop_gone_{}", step.replace(' ', "_")));
+        let clock = Clock::at(1_794_216_000);
+        let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+        let lib = s.ctx.library_dir.clone();
+        let (from, to) = (lib.clone(), d.join("moved"));
+        crate::shared::hooks::set(move |at| {
+            if at == step {
+                std::fs::rename(&from, &to).unwrap();
+            }
+        });
+        let r = s.call("setup", None, &json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+        crate::shared::hooks::clear();
+        let e = r.err().unwrap_or_else(|| panic!("{step}: setup went ahead in a Library that went away"));
+        assert!(e.contains(&lib.display().to_string()) && e.contains("can't be reached"), "{step}: {e}");
+        assert!(!lib.exists(), "{step}: the Library folder was made again in its place");
+        assert!(!d.join("moved").join(crate::shop::FILE).exists(), "{step}: a shop was started");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// SH7: the window asked "PC-B in place of PC-A", but PC-C was made the
+/// admin PC while the question was open: yes changes nothing and says who
+/// the admin PC is now.
+#[test]
+fn confirming_an_admin_change_after_another_pc_took_it_changes_nothing() {
+    let d = dir("shop_admin_race");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    clock.advance(std::time::Duration::from_secs(600));
+    crate::engine::shop::make_admin(&lib, &Who::new("lee", "PC-C"), &clock).unwrap();
+    let e = crate::engine::shop::replace_admin(&lib, &Who::new("kim", "PC-B"), &clock, "PC-A").unwrap_err();
+    assert!(e.contains("PC-C was made the admin PC of Acme by lee on PC-C") && e.contains("Nothing was changed"), "{e}");
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!(st["data"]["admin_pc"], "PC-C", "{st}");
+    // Asked again, about PC-C, it goes ahead.
+    crate::engine::shop::replace_admin(&lib, &Who::new("kim", "PC-B"), &clock, "PC-C").unwrap();
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!((st["data"]["admin_pc"].as_str(), st["data"]["admin_was"].as_str()), (Some("PC-B"), Some("PC-C")), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH4, SH6: a PC that can't add itself to the PCs list (its folder is
+/// read-only for this PC) still sees the shop, told why it isn't listed;
+/// a PCs list that can't be read is refused, naming its folder, never shown
+/// as an empty list.
+#[cfg(unix)]
+#[test]
+fn shop_status_shows_the_shop_when_this_pc_cant_be_added_and_never_an_empty_list_it_cant_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("shop_status_failures");
+    let clock = Clock::at(1_794_216_000);
+    let mut a = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let pcs = lib.join(crate::shop::PCS);
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // (Someone allowed to write anyway, as root, can't play this PC.)
+    if std::fs::write(pcs.join("probe"), "").is_err() {
+        let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+        let st = call(&mut b, "shop", None, json!({}));
+        assert_eq!(st["data"]["name"], "Acme", "{st}");
+        assert_eq!(st["data"]["this_pc_recorded"], false, "{st}");
+        assert!(st["message"].as_str().unwrap().contains("PC-B couldn't be added to the shop's PCs list"), "{st}");
+        assert!(st["data"]["pcs"].as_array().unwrap().iter().any(|p| p["pc"] == "PC-A"), "{st}");
+        std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let e = err(&mut b, "shop", json!({}));
+        assert!(e.contains(&pcs.display().to_string()) && e.contains("can't be read"), "{e}");
+    }
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH1, SH4: when the PC starting a shop can't be added to its PCs list,
+/// setup says so and the shop is started all the same; the PC adds itself
+/// at its next go.
+#[cfg(unix)]
+#[test]
+fn setup_says_when_the_admin_pc_cant_be_added_and_it_adds_itself_later() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("shop_admin_unrecorded");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let pcs = lib.join(crate::shop::PCS);
+    std::fs::create_dir(&pcs).unwrap();
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(pcs.join("probe"), "").is_err() {
+        let r = call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+        assert!(r["message"].as_str().unwrap().contains("PC-A couldn't be added to the shop's PCs list"), "{r}");
+        assert_eq!(r["data"]["this_pc_recorded"], false, "{r}");
+        assert!(lib.join(crate::shop::FILE).is_file(), "the shop wasn't started");
+        std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let st = call(&mut s, "shop", None, json!({}));
+        assert_eq!(st["data"]["this_pc_recorded"], true, "{st}");
+        assert!(st["data"]["pcs"].as_array().unwrap().iter().any(|p| p["pc"] == "PC-A"), "{st}");
+    }
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH4: two PCs whose long names start alike each keep their own record.
+#[test]
+fn two_pcs_whose_long_names_start_alike_each_keep_their_record() {
+    let d = dir("shop_long_names");
+    let clock = Clock::at(1_794_216_000);
+    let (one, two) = ("PROGRAMMING-STATION-IN-THE-NORTH-WORKSHOP-1", "PROGRAMMING-STATION-IN-THE-NORTH-WORKSHOP-2");
+    let mut a = used_library(&d, Who::new("sam", one).as_agent(), &clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let mut b = shop_session(&lib, Who::new("kim", two).as_agent(), &clock);
+    call(&mut b, "shop", None, json!({}));
+    let st = call(&mut a, "shop", None, json!({}));
+    let pcs: Vec<&str> = st["data"]["pcs"].as_array().unwrap().iter().map(|p| p["pc"].as_str().unwrap()).collect();
+    assert_eq!(pcs, vec![one, two], "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH5: a shop whose PCs list folder is missing (starting the shop made it,
+/// so someone took it away or it can't be seen) says so, naming it, never
+/// "no PCs".
+#[test]
+fn a_missing_pcs_list_folder_is_named_never_shown_as_no_pcs() {
+    let d = dir("shop_pcs_missing");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let pcs = lib.join(crate::shop::PCS);
+    std::fs::remove_dir_all(&pcs).unwrap();
+    let e = crate::engine::shop::status(&lib).err().expect("a missing PCs list was shown as a list");
+    assert!(e.contains(&pcs.display().to_string()) && e.contains("missing"), "{e}");
+    // An agent whose PC can't add itself (so the folder isn't made again)
+    // is told the same.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&lib, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(lib.join("probe"), "").is_err() {
+            let e = err(&mut s, "shop", json!({}));
+            assert!(e.contains(&pcs.display().to_string()) && e.contains("missing"), "{e}");
+        }
+        std::fs::set_permissions(&lib, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH2 (LB2): the shop's writer puts nothing in the shop folder, and takes
+/// nothing out of it, once the write lock isn't its own: no temporary file
+/// is made when the lock was already lost, and one made before it was lost
+/// is left where it is.
+#[test]
+fn the_shop_writer_touches_nothing_once_the_lock_is_lost() {
+    let d = dir("shop_writer_lease");
+    let lib = d.join("Nesting");
+    crate::library::create(&lib).unwrap();
+    let tmps = |lib: &Path| std::fs::read_dir(lib).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+    let foreign = r#"{"user":"kim","pc":"PC-B","process":1,"since":0,"token":"PC-B-token"}"#;
+    let target = lib.join(crate::shop::FILE);
+    // Lost before the write.
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        std::fs::write(lib.join(crate::shared::LOCK_FILE), foreign).unwrap();
+        assert!(crate::shared::write_existing(&target, b"mine", &lock).is_err());
+        assert_eq!(tmps(&lib), 0, "a temporary file was made without the lock");
+        assert!(!target.exists());
+    }
+    std::fs::remove_file(lib.join(crate::shared::LOCK_FILE)).unwrap();
+    // Lost after the temporary file was made, before it was renamed.
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        // Taken over just after the check made before staging (the first
+        // read of the lock), so the temporary file is made with the lock,
+        // and the rename then finds it lost.
+        let l = lib.join(crate::shared::LOCK_FILE);
+        let mut reads = 0;
+        crate::shared::hooks::set(move |step| {
+            if step == "lock read" {
+                reads += 1;
+                if reads == 1 {
+                    std::fs::write(&l, foreign).unwrap();
+                }
+            }
+        });
+        let r = crate::shared::write_existing(&target, b"mine", &lock);
+        crate::shared::hooks::clear();
+        assert!(r.is_err());
+        assert_eq!(tmps(&lib), 1, "the temporary file was removed without the lock");
+        assert!(!target.exists());
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH6: a shop started by another PC just after this PC looked (and found
+/// none) is shown, but this PC isn't counted as added.
+#[test]
+fn a_shop_started_while_this_pc_looked_doesnt_count_it_as_added() {
+    let d = dir("shop_started_meanwhile");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("kim", "PC-B").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let (l, c) = (lib.clone(), clock.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "pc recorded" {
+            crate::engine::shop::start(&l, "Acme", &Who::new("sam", "PC-A"), &c, "0.1.0").unwrap();
+        }
+    });
+    let st = s.call("shop", None, &json!({})).map(|r| r.json);
+    crate::shared::hooks::clear();
+    let st = st.unwrap();
+    assert_eq!(st["data"]["name"], "Acme", "{st}");
+    assert_eq!(st["data"]["this_pc_recorded"], false, "{st}");
+    assert!(st["message"].as_str().unwrap().contains("PC-B wasn't added"), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Older never overwrites newer (spec #178, UP5–UP10): two sessions play two
+// PCs on two versions of the program, in one shop.
+// ---------------------------------------------------------------------------
+
+/// A session on PC `pc`, running version `version`, on the Library `lib`.
+fn pc_on(lib: &Path, pc: &str, version: &str, clock: &Clock) -> Session {
+    let mut ctx = stock_ctx_again(lib);
+    ctx.who = Who::new("sam", pc).as_agent();
+    ctx.clock = clock.clone();
+    ctx.version = version.into();
+    Session::new(ctx)
+}
+
+/// A shop `Acme` started in a new Library under `d`, its shop version set
+/// to `shop_version` as rolling a release out sets it.
+fn shop_on(d: &Path, shop_version: &str, clock: &Clock) -> PathBuf {
+    let lib = stock_ctx(d).library_dir;
+    let mut a = pc_on(&lib, "PC-A", shop_version, clock);
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let f = lib.join(crate::shop::FILE);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+    v[crate::shop::SHOP_VERSION] = json!(shop_version);
+    std::fs::write(&f, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    lib
+}
+
+/// The program version a file records (UP5).
+fn recorded(p: &Path) -> Option<String> {
+    crate::shared::recorded_version(&std::fs::read(p).unwrap())
+}
+
+const UPDATE: &str = "Made by version 0.5.0. Update this PC: the shop is on 0.5.0.";
+
+/// UP5, UP7, UP8, UP9: a job saved on PC-A (0.5.0, the shop's version) opens
+/// read-only on PC-B (still 0.4.0): it can be read, but every change is
+/// refused with the message, and its file is never written. PC-A goes on
+/// saving it.
+#[test]
+fn a_job_saved_by_a_newer_version_opens_read_only_on_an_older_pc_and_is_never_saved_over() {
+    let d = dir("version_job");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = d.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap();
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(job), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2, "name": "DEMO-P1"}));
+    call(&mut a, "nest", None, json!({"stock": "off"}));
+    assert_eq!(recorded(&jp).as_deref(), Some("0.5.0"), "the job file doesn't record who wrote it");
+    let bytes = std::fs::read(&jp).unwrap();
+    // PC-B reads it: it opens, read-only.
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    let info = call(&mut b, "info", Some(job), json!({}));
+    assert_eq!(info["read_only"], format!("This job is read-only on this PC. {UPDATE}"), "{info}");
+    assert!(info["data"].to_string().contains("DEMO-P1"), "{info}");
+    // Every change is refused with the message, an undo and a forced new
+    // job over it too, and the file stays as PC-A saved it.
+    for (op, args) in [("add-shape", json!({"shape": "rectangle", "w": 50, "h": 50, "name": "DEMO-P2"})), ("rename", json!({"name": "DEMO-002"})), ("undo", json!({})), ("nest", json!({"stock": "off"}))] {
+        let e = b.call(op, Some(job), &args).err().unwrap_or_else(|| panic!("{op} wasn't refused"));
+        assert_eq!(e, format!("The job file DEMO-001.snjob is read-only on this PC. {UPDATE} Nothing was saved."), "{op}");
+    }
+    let e = b.call("new", Some(job), &json!({"force": true})).err().expect("a forced new job went over it");
+    assert!(e.contains(UPDATE), "{e}");
+    assert_eq!(std::fs::read(&jp).unwrap(), bytes, "the older PC wrote over the newer job");
+    // Making a program from it is reading: it works.
+    call(&mut b, "verify", Some(job), json!({}));
+    // PC-A, on the newer version, saves it as before; an equal version is
+    // never newer.
+    call(&mut a, "rename", Some(job), json!({"name": "DEMO-001 frames"}));
+    let mut a2 = pc_on(&lib, "PC-C", "0.5.0", &clock);
+    let r = call(&mut a2, "rename", Some(job), json!({"name": "DEMO-001"}));
+    assert!(r.get("read_only").is_none(), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP8: outside a shop the message names only the file's version.
+#[test]
+fn outside_a_shop_the_message_names_only_the_files_version() {
+    let d = dir("version_no_shop");
+    let clock = Clock::at(1_794_216_000);
+    let lib = stock_ctx(&d).library_dir;
+    let jp = d.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap();
+    call(&mut pc_on(&lib, "PC-A", "0.10.0", &clock), "new", Some(job), json!({"w": 2000, "h": 1000}));
+    // 0.10.0 is newer than 0.9.0: compared as numbers, not as text.
+    let mut b = pc_on(&lib, "PC-B", "0.9.0", &clock);
+    let info = call(&mut b, "info", Some(job), json!({}));
+    assert_eq!(info["read_only"], "This job is read-only on this PC. Made by version 0.10.0. Update this PC to 0.10.0 or later.", "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP5: a job file saved before versions were recorded opens and saves as
+/// before, and records the version once saved again. One whose version
+/// isn't numbers counts as newer (UP6). A newer file that is also in a
+/// newer layout is refused by the layout check, which stays.
+#[test]
+fn files_from_before_versions_save_as_before_and_awkward_versions_are_never_saved_over() {
+    let d = dir("version_old_files");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = d.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap();
+    let mut a = pc_on(&lib, "PC-A", "0.4.0", &clock);
+    call(&mut a, "new", Some(job), json!({"w": 2000, "h": 1000}));
+    let set = |field: Option<Value>, layout: u64| {
+        let mut v: Value = serde_json::from_slice(&std::fs::read(&jp).unwrap()).unwrap();
+        match field {
+            Some(f) => v["program_version"] = f,
+            None => {
+                v.as_object_mut().unwrap().remove("program_version");
+            }
+        }
+        v["version"] = json!(layout);
+        std::fs::write(&jp, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    };
+    // From before this rule: no version.
+    set(None, 1);
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    let r = call(&mut b, "rename", Some(job), json!({"name": "DEMO-001 old"}));
+    assert!(r.get("read_only").is_none(), "{r}");
+    assert_eq!(recorded(&jp).as_deref(), Some("0.4.0"));
+    // A version that isn't numbers can't be told older.
+    set(Some(json!("next")), 1);
+    let e = b.call("rename", Some(job), &json!({"name": "DEMO-001 x"})).err().expect("saved over a version it can't read");
+    assert!(e.contains("Made by version next, which this PC can't read. Update this PC."), "{e}");
+    // Newer and in a newer layout: the layout check refuses it, as before.
+    set(Some(json!("0.6.0")), u64::from(crate::jobfile::VERSION) + 1);
+    let before = std::fs::read(&jp).unwrap();
+    let e = b.call("info", Some(job), &json!({})).err().expect("a newer layout opened");
+    assert!(e.contains("made by a newer version (layout"), "{e}");
+    assert_eq!(std::fs::read(&jp).unwrap(), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP5, UP7, UP9: a library part saved by the newer PC is used by the older
+/// one as it is, and saving it back is refused with the message; a part
+/// saved by a newer version inside a list an older one wrote is refused
+/// too, while another part still saves.
+#[test]
+fn a_library_part_saved_by_a_newer_version_is_never_saved_over_by_an_older_pc() {
+    let d = dir("version_part");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(d.join("a.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    let ids = call(&mut a, "library", None, json!({"mode": "save-part", "folder": "Acme"}))["data"]["ids"][0].as_u64().unwrap();
+    let lib_at = crate::library::Library::at(&lib, &Who::new("sam", "PC-A"), &clock);
+    let part = lib_at.path(crate::library::Kind::Product, ids);
+    assert_eq!(recorded(&part).as_deref(), Some("0.5.0"));
+    assert_eq!(recorded(&lib.join(crate::library::INDEX)).as_deref(), Some("0.5.0"), "the Library's list doesn't record who wrote it");
+    let (part_bytes, index) = (std::fs::read(&part).unwrap(), std::fs::read(lib.join(crate::library::INDEX)).unwrap());
+    // PC-B adds it to a job: it is used as it is, read-only.
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(d.join("b.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    let r = call(&mut b, "library", None, json!({"mode": "add", "name": "DEMO-P1"}));
+    assert!(r["message"].as_str().unwrap().contains(&format!("It is read-only on this PC: {UPDATE}")), "{r}");
+    let e = err(&mut b, "library", json!({"mode": "save-part"}));
+    assert_eq!(e, format!("Library part SHP{ids:06} is read-only on this PC. {UPDATE} Nothing was saved."));
+    // A new part of its own: the list a newer version wrote is refused too.
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 50, "h": 50, "name": "DEMO-P2"}));
+    let e = err(&mut b, "library", json!({"mode": "save-part", "parts": "2"}));
+    assert_eq!(e, format!("The Library's list of jobs and parts is read-only on this PC. {UPDATE} Nothing was saved."));
+    // Deleting it is refused alike.
+    let e = err(&mut b, "library", json!({"mode": "delete", "kind": "part", "name": "DEMO-P1"}));
+    assert!(e.contains(UPDATE) && e.contains("Nothing was deleted"), "{e}");
+    assert_eq!((std::fs::read(&part).unwrap(), std::fs::read(lib.join(crate::library::INDEX)).unwrap()), (part_bytes.clone(), index), "the older PC changed the Library");
+    // The list as an older version wrote it, with the newer part in it: the
+    // part is still refused, and another part saves.
+    let mut v: Value = serde_json::from_slice(&std::fs::read(lib.join(crate::library::INDEX)).unwrap()).unwrap();
+    v["program_version"] = json!("0.4.0");
+    std::fs::write(lib.join(crate::library::INDEX), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let e = err(&mut b, "library", json!({"mode": "save-part", "parts": "1"}));
+    assert!(e.starts_with(&format!("Library part SHP{ids:06} is read-only")), "{e}");
+    call(&mut b, "library", None, json!({"mode": "save-part", "parts": "2"}));
+    assert_eq!(std::fs::read(&part).unwrap(), part_bytes);
+    assert_eq!(recorded(&lib.join(crate::library::INDEX)).as_deref(), Some("0.4.0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP7, UP9: a Library job saved by the newer PC isn't opened into an older
+/// PC's job file (saved there it would lose what the newer version knows),
+/// and the older PC's own job isn't saved into a Library whose list a newer
+/// version wrote: nothing is taken from stock.
+#[test]
+fn a_library_job_saved_by_a_newer_version_is_never_opened_or_saved_over_by_an_older_pc() {
+    let d = dir("version_library_job");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut old = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    // Stock made while the whole shop was on 0.4.0.
+    call(&mut old, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(d.join("a.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    let id = call(&mut a, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    call(&mut old, "new", Some(d.join("b.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let b_bytes = std::fs::read(d.join("b.snjob")).unwrap();
+    let e = err(&mut old, "library", json!({"mode": "open", "id": id}));
+    assert!(e.starts_with(&format!("Library job JOB{id:06} is read-only on this PC. {UPDATE}")) && e.contains("wasn't opened into this job file"), "{e}");
+    assert_eq!(std::fs::read(d.join("b.snjob")).unwrap(), b_bytes, "the job file was changed");
+    // Its own job, nested from stock, saved into the Library: refused before
+    // any sheet is taken.
+    call(&mut old, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P9"}));
+    call(&mut old, "nest", None, json!({}));
+    let stock = std::fs::read(crate::stock::Stock::file(&lib)).unwrap();
+    let e = err(&mut old, "library", json!({"mode": "save-job"}));
+    assert!(e.contains(UPDATE), "{e}");
+    assert_eq!(std::fs::read(crate::stock::Stock::file(&lib)).unwrap(), stock, "a refused save took sheets from stock");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP5, UP7: the sheet stock changed on the newer PC is refused on the older
+/// one, with the message, and left as it was; the newer PC goes on.
+#[test]
+fn stock_changed_by_a_newer_version_is_never_changed_by_an_older_pc() {
+    let d = dir("version_stock");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    let file = crate::stock::Stock::file(&lib);
+    assert_eq!(recorded(&file).as_deref(), Some("0.4.0"));
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "stock", None, json!({"mode": "create", "ref": "S2", "w": 1500, "h": 750, "thickness": 3, "qty": 2}));
+    assert_eq!(recorded(&file).as_deref(), Some("0.5.0"));
+    let bytes = std::fs::read(&file).unwrap();
+    let e = err(&mut b, "stock", json!({"mode": "create", "ref": "S3", "w": 1000, "h": 500, "thickness": 3, "qty": 1}));
+    assert_eq!(e, format!("The sheet stock is read-only on this PC. {UPDATE} Nothing was saved."));
+    let e = err(&mut b, "stock", json!({"mode": "remove", "ref": "S1", "qty": 1}));
+    assert!(e.contains(UPDATE), "{e}");
+    assert_eq!(std::fs::read(&file).unwrap(), bytes, "the older PC changed the stock");
+    // Reading it still works.
+    call(&mut b, "stock", None, json!({"mode": "list"}));
+    call(&mut a, "stock", None, json!({"mode": "remove", "ref": "S1", "qty": 1}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP5, UP7: the material list changed on the newer PC is refused on the
+/// older one, with the message, and left as it was.
+#[test]
+fn the_material_list_changed_by_a_newer_version_is_never_changed_by_an_older_pc() {
+    let d = dir("version_materials");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless steel"}));
+    let file = crate::materials::Home::Library(lib.clone()).file();
+    assert_eq!(recorded(&file).as_deref(), Some("0.5.0"));
+    let bytes = std::fs::read(&file).unwrap();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    let e = err(&mut b, "material", json!({"mode": "add", "name": "DEMO 304", "standard": "stainless steel"}));
+    assert_eq!(e, format!("The material list is read-only on this PC. {UPDATE} Nothing was saved."));
+    assert_eq!(std::fs::read(&file).unwrap(), bytes, "the older PC changed the material list");
+    let list = call(&mut b, "material", None, json!({"mode": "list"}));
+    assert!(list.to_string().contains("DEMO 316"), "{list}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP5, UP7: the shop file records who wrote it; a PC on an older version
+/// never writes over it (here: making itself the admin PC, in the window).
+#[test]
+fn the_shop_file_written_by_a_newer_version_is_never_written_by_an_older_pc() {
+    let d = dir("version_shop_file");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let f = lib.join(crate::shop::FILE);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+    assert_eq!(v["program_version"], "0.5.0");
+    // As rolling out would write it: by 0.5.0, with the shop version.
+    v["program_version"] = json!("0.5.0");
+    std::fs::write(&f, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let bytes = std::fs::read(&f).unwrap();
+    let e = crate::engine::shop::make_admin_on(&lib, &Who::new("kim", "PC-B"), &clock, "0.4.0").unwrap_err();
+    assert_eq!(e, format!("The shop file is read-only on this PC. {UPDATE} Nothing was saved."));
+    assert_eq!(std::fs::read(&f).unwrap(), bytes);
+    // On the shop's version it goes ahead, and the shop version it holds stays.
+    crate::engine::shop::make_admin_on(&lib, &Who::new("kim", "PC-B"), &clock, "0.5.0").unwrap();
+    let v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+    assert_eq!((v["admin"]["pc"].as_str(), v["shop_version"].as_str(), v["program_version"].as_str()), (Some("PC-B"), Some("0.5.0"), Some("0.5.0")), "{v}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap().matches("program_version").count(), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP7 under the write lock (LB1): PC-A (0.5.0) and PC-B (0.4.0) change the
+/// stock at the same moment. PC-B's changes count only until PC-A's first
+/// one lands; after that each is refused with the message, and nothing PC-A
+/// stored is ever lost. PC-B keeps trying until it is refused.
+#[test]
+fn two_pcs_on_two_versions_changing_the_stock_at_once_never_lose_the_newer_ones_work() {
+    let d = dir("version_stock_race");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let go = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let runs: Vec<Vec<(String, Result<(), String>)>> = std::thread::scope(|t| {
+        let hs: Vec<_> = [("PC-A", "0.5.0"), ("PC-B", "0.4.0")]
+            .into_iter()
+            .map(|(pc, v)| {
+                let (lib, clock, go) = (&lib, &clock, go.clone());
+                t.spawn(move || {
+                    let mut s = pc_on(lib, pc, v, clock);
+                    go.wait();
+                    let started = std::time::Instant::now();
+                    let mut done: Vec<(String, Result<(), String>)> = vec![];
+                    for k in 1.. {
+                        let r = format!("{pc}-{k}");
+                        let out = s.call("stock", None, &json!({"mode": "create", "ref": r, "w": 1000, "h": 500, "thickness": 3, "qty": 1})).map(|_| ());
+                        let refused = out.is_err();
+                        done.push((r, out));
+                        // PC-A stores six; PC-B goes on until it is refused.
+                        if (pc == "PC-A" && k == 6) || (pc == "PC-B" && (refused || started.elapsed().as_secs() > 60)) {
+                            break;
+                        }
+                    }
+                    done
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let st = crate::stock::Stock::load(&lib).unwrap();
+    for (r, out) in &runs[0] {
+        assert!(out.is_ok() && st.get(r).is_some(), "PC-A's {r}: {out:?}");
+    }
+    let mut refused = false;
+    for (r, out) in &runs[1] {
+        match out {
+            Ok(()) => {
+                assert!(!refused, "PC-B's {r} was stored after the stock was already refused to it");
+                assert!(st.get(r).is_some(), "PC-B's {r} was lost");
+            }
+            Err(e) => {
+                assert!(e.contains(UPDATE), "{e}");
+                assert!(st.get(r).is_none());
+                refused = true;
+            }
+        }
+    }
+    assert!(refused, "PC-B was never refused after PC-A changed the stock");
+    assert_eq!(recorded(&crate::stock::Stock::file(&lib)).as_deref(), Some("0.5.0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// While this thread's next file write waits just before it lands (under
+/// the save's write lock), `other` runs on another thread; it is given
+/// half a second, then this write goes on. With the lock held from the
+/// version check through the write, `other`'s save waits for it and comes
+/// after; without it, `other` lands first and this write replaces it.
+fn while_writing<F: FnOnce() + Send + 'static>(other: F) -> std::thread::JoinHandle<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<std::thread::JoinHandle<()>>();
+    let mut other = Some(other);
+    crate::shared::hooks::set(move |step| {
+        if step == "lock checked" {
+            if let Some(f) = other.take() {
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+                let h = std::thread::spawn(move || {
+                    f();
+                    let _ = done_tx.send(());
+                });
+                let _ = done_rx.recv_timeout(std::time::Duration::from_millis(500));
+                let _ = tx.send(h);
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        if let Ok(h) = rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            h.join().unwrap();
+        }
+    })
+}
+
+/// S1 (UP7): a job file in the Library folder, saved on PC-B (0.4.0) while
+/// PC-A (0.5.0) saves it at the same moment: PC-B's version check and write
+/// are one hold of the Library's write lock, so PC-A's save comes after it
+/// and is never replaced by the older one.
+#[test]
+fn an_older_pcs_job_save_never_lands_over_a_newer_save_made_at_the_same_moment() {
+    let d = dir("version_job_race");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = lib.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap().to_string();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(&job), json!({"w": 2000, "h": 1000}));
+    let (lib2, clock2, job2) = (lib.clone(), clock.clone(), job.clone());
+    let a = while_writing(move || {
+        let mut a = pc_on(&lib2, "PC-A", "0.5.0", &clock2);
+        a.call("rename", Some(&job2), &json!({"name": "DEMO-001 by A"})).unwrap();
+    });
+    let r = b.call("rename", Some(&job), &json!({"name": "DEMO-001 by B"}));
+    crate::shared::hooks::clear();
+    a.join().unwrap();
+    r.unwrap();
+    let j = jobfile::load(&jp).unwrap();
+    assert_eq!((j.name.as_str(), j.program_version.as_deref()), ("DEMO-001 by A", Some("0.5.0")), "the older PC's save landed over the newer one");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S2 (UP7): PC-B (0.4.0) saves its job into the Library while PC-A (0.5.0)
+/// saves the same job file: PC-B's job file is checked and locked before
+/// the record is stored and its sheets booked, so its call either does all
+/// of it or none of it; here it does all, and PC-A's save follows.
+#[test]
+fn an_older_pc_never_stores_or_books_for_a_job_file_it_then_cant_save() {
+    let d = dir("version_job_book_race");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = d.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap().to_string();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    call(&mut b, "new", Some(&job), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    let (lib2, clock2, job2) = (lib.clone(), clock.clone(), job.clone());
+    let a = while_writing(move || {
+        let mut a = pc_on(&lib2, "PC-A", "0.5.0", &clock2);
+        a.call("rename", Some(&job2), &json!({"name": "DEMO-001 by A"})).unwrap();
+    });
+    let r = b.call("library", Some(&job), &json!({"mode": "save-job"}));
+    crate::shared::hooks::clear();
+    a.join().unwrap();
+    let r = r.expect("the save-job was refused after it had stored the record");
+    let id = r.json["data"]["id"].as_u64().unwrap();
+    assert!(crate::library::Library::at(&lib, &Who::new("sam", "PC-B"), &clock).entries().iter().any(|e| e.id == id));
+    assert_eq!(jobfile::load(&jp).unwrap().name, "DEMO-001 by A", "PC-A's save after it was lost");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S5 (UP7): `save-part` of two parts, the second a newer version's, saves
+/// neither: every part and the list are checked before the first is saved.
+#[test]
+fn save_part_saves_none_when_one_of_the_parts_is_a_newer_versions() {
+    let d = dir("version_save_part_batch");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(d.join("a.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P2"}));
+    call(&mut a, "library", None, json!({"mode": "save-part"}));
+    // The list as an older version wrote it: only the part is newer.
+    let index = lib.join(crate::library::INDEX);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
+    v["program_version"] = json!("0.4.0");
+    std::fs::write(&index, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(d.join("b.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "name": "DEMO-P1"}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P2"}));
+    let e = err(&mut b, "library", json!({"mode": "save-part"}));
+    assert!(e.contains(UPDATE) && e.contains("Nothing was saved"), "{e}");
+    let names: Vec<String> = crate::library::Library::at(&lib, &Who::new("sam", "PC-B"), &clock).entries().into_iter().map(|e| e.name).collect();
+    assert_eq!(names, vec!["DEMO-P2".to_string()], "a part was saved before the batch was refused");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S6 (UP7): `stock-book mode=book` into a stock a newer version changed is
+/// refused, and the job file stays unbooked.
+#[test]
+fn booking_into_a_stock_a_newer_version_changed_is_refused_and_the_job_stays_unbooked() {
+    let d = dir("version_stock_book");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    call(&mut pc_on(&lib, "PC-A", "0.5.0", &clock), "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    let jp = d.join("DEMO-001.snjob");
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let e = err(&mut b, "stock-book", json!({"mode": "book"}));
+    assert_eq!(e, format!("The sheet stock is read-only on this PC. {UPDATE} Nothing was saved."));
+    assert!(!jobfile::load(&jp).unwrap().booked, "the job was saved as booked though nothing was booked");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S7 (UP5): the stamp is part of the job agents see (`JobFile`), from the
+/// same read as the job.
+#[test]
+fn a_job_file_carries_the_version_that_wrote_it() {
+    let d = dir("version_jobfile_field");
+    let clock = Clock::at(1_794_216_000);
+    let lib = stock_ctx(&d).library_dir;
+    let jp = d.join("DEMO-001.snjob");
+    call(&mut pc_on(&lib, "PC-A", "0.5.0", &clock), "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    let (j, written) = jobfile::load_versioned(&jp).unwrap();
+    assert_eq!((j.program_version.as_deref(), written.as_deref()), (Some("0.5.0"), Some("0.5.0")));
+    assert!(std::fs::read_to_string(&jp).unwrap().starts_with("{\n  \"program_version\": \"0.5.0\","));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S8 (UP7): a picture or drawing is never written over the open job file,
+/// a job file, or the Library's own files, even while the job is read-only.
+#[test]
+fn render_and_part_drawings_never_write_over_job_or_library_files() {
+    let d = dir("version_protected_out");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = d.join("DEMO-001.snjob");
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    call(&mut a, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "info", Some(jp.to_str().unwrap()), json!({}));
+    let before = files_under(&d);
+    let stock = crate::stock::Stock::file(&lib);
+    let index = lib.join(crate::library::INDEX);
+    let shop = lib.join(crate::shop::FILE);
+    let relative = lib.join("Sheets").join("..").join(crate::library::INDEX);
+    for out in [&jp, &stock, &index, &shop, &relative] {
+        let e = b.call("render", Some(jp.to_str().unwrap()), &json!({"part": 1, "out": out.to_str().unwrap()})).err().unwrap_or_else(|| panic!("render wrote over {}", out.display()));
+        assert!(e.contains("Nothing was written"), "{e}");
+        let e = b.call("export-part-dxf", Some(jp.to_str().unwrap()), &json!({"part": 1, "out": out.to_str().unwrap()})).err().unwrap_or_else(|| panic!("export-part-dxf wrote over {}", out.display()));
+        assert!(e.contains("Nothing was written"), "{e}");
+    }
+    assert_eq!(files_under(&d), before, "a protected file was written");
+    // A picture of its own still works.
+    call(&mut b, "render", Some(jp.to_str().unwrap()), json!({"part": 1, "out": d.join("DEMO-001.png").to_str().unwrap()}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S9 (UP9): an older session that reads a job a newer version saved since
+/// leaves that version's undo copy alone.
+#[test]
+fn an_older_session_reading_a_newer_job_leaves_its_undo_copy_alone() {
+    let d = dir("version_undo_copy");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = d.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(job), json!({"w": 2000, "h": 1000}));
+    call(&mut b, "info", Some(job), json!({}));
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    call(&mut a, "rename", Some(job), json!({"name": "DEMO-001 by A"}));
+    let undo = backup_path(&jp);
+    let copy = std::fs::read(&undo).expect("PC-A's change left no undo copy");
+    let r = call(&mut b, "info", Some(job), json!({}));
+    assert!(r["read_only"].is_string(), "{r}");
+    assert_eq!(std::fs::read(&undo).ok(), Some(copy), "the older session removed the newer PC's undo copy");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S10 (UP7): a forced XML import writes none of its job files when one of
+/// them is a newer version's, and says so with the shop's version.
+#[test]
+fn a_forced_xml_import_writes_nothing_when_one_job_file_is_a_newer_versions() {
+    let d = dir("version_xml_import");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    std::fs::write(d.join("brk.dxf"), crate::dxf::SAMPLE_DXF).unwrap();
+    let xml = d.join("order-77.xml");
+    std::fs::write(&xml, r#"<?xml version="1.0"?><Import>
+  <Product Reference="DEMO-12" Material="Mild steel" Thickness="3" Quantity="4" Fich="brk.dxf"/>
+  <Product Reference="DEMO-5" Material="AISI304" Thickness="1,5" Quantity="2" Fich="brk.dxf"/>
+</Import>"#).unwrap();
+    let out = d.join("jobs");
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    let files: Vec<String> = call(&mut a, "import-xml", None, json!({"path": xml.to_str().unwrap(), "dir": out.to_str().unwrap()}))["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
+    assert_eq!(files.len(), 2);
+    // The first job file is gone; the second is the newer PC's.
+    std::fs::remove_file(&files[0]).unwrap();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    let e = err(&mut b, "import-xml", json!({"path": xml.to_str().unwrap(), "dir": out.to_str().unwrap(), "force": true}));
+    assert!(e.contains(UPDATE), "{e}");
+    assert!(!Path::new(&files[0]).exists(), "a job file was written before the import was refused");
+    assert_eq!(recorded(Path::new(&files[1])).as_deref(), Some("0.5.0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S11 (UP7): a Library record that can't be read just now is never deleted
+/// unchecked: nothing is deleted, and no mark is left.
+#[cfg(unix)]
+#[test]
+fn a_record_that_cant_be_read_is_never_deleted_unchecked() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("version_delete_unreadable");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(d.join("b.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    let id = call(&mut b, "library", None, json!({"mode": "save-part"}))["data"]["ids"][0].as_u64().unwrap();
+    let part = crate::library::Library::at(&lib, &Who::new("sam", "PC-B"), &clock).path(crate::library::Kind::Product, id);
+    std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // (Someone allowed to read anyway, as root, can't play this PC.)
+    if std::fs::read(&part).is_err() {
+        let e = err(&mut b, "library", json!({"mode": "delete", "kind": "part", "id": id}));
+        assert!(e.contains("can't be read") && e.contains("Nothing was deleted"), "{e}");
+        assert!(part.exists(), "the record was deleted");
+        let mut mark = part.clone().into_os_string();
+        mark.push(".deleted");
+        assert!(!Path::new(&mark).exists(), "a deleted mark was left");
+    }
+    std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S2 (UP7): a booked job's `library` call checks the stock before it
+/// stores anything: with the stock a newer version's, `save-part` is
+/// refused and the Library's parts and list stay as they were.
+#[test]
+fn a_booked_jobs_library_call_checks_the_stock_before_it_stores_anything() {
+    let d = dir("version_booked_save_part");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    call(&mut b, "new", Some(d.join("b.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    call(&mut b, "stock-book", None, json!({"mode": "book"}));
+    call(&mut pc_on(&lib, "PC-A", "0.5.0", &clock), "stock", None, json!({"mode": "create", "ref": "S2", "w": 1500, "h": 750, "thickness": 3, "qty": 2}));
+    let before = files_under(&lib);
+    let e = err(&mut b, "library", json!({"mode": "save-part"}));
+    assert_eq!(e, format!("The sheet stock is read-only on this PC. {UPDATE} Nothing was saved."));
+    assert_eq!(files_under(&lib), before, "the Library changed for a call that was refused");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N2 (UP7): a picture is written beside a Library job, as `render` does by
+/// default, and a drawing anywhere in the Library's folders; only the
+/// Library's records themselves are refused.
+#[test]
+fn pictures_and_drawings_beside_a_library_job_are_written_and_only_records_are_refused() {
+    let d = dir("version_out_beside_record");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(d.join("a.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    let id = call(&mut a, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    let record = crate::library::Library::at(&lib, &Who::new("sam", "PC-A"), &clock).path(crate::library::Kind::Job, id);
+    let job = record.to_str().unwrap();
+    let r = call(&mut a, "render", Some(job), json!({"part": 1}));
+    let png = PathBuf::from(r["files"][0].as_str().unwrap());
+    assert_eq!(png.parent(), record.parent(), "{r}");
+    assert!(png.is_file(), "{r}");
+    let dxf = record.with_file_name("DEMO-P1.dxf");
+    call(&mut a, "export-part-dxf", Some(job), json!({"part": 1, "out": dxf.to_str().unwrap()}));
+    assert!(dxf.is_file());
+    let bytes = std::fs::read(&record).unwrap();
+    let e = a.call("render", Some(job), &json!({"part": 1, "out": job})).err().expect("render wrote over the job record");
+    assert!(e.contains("Nothing was written"), "{e}");
+    assert_eq!(std::fs::read(&record).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Backups (spec #178, BK1–BK7): the day's backup, Back up now, Keep and the
+// second place, in a shop and on a PC of its own.
+// ---------------------------------------------------------------------------
+
+/// A shop Acme in a used test Library, started by PC-A (its admin PC).
+fn backup_shop(d: &Path, clock: &Clock) -> (Session, PathBuf) {
+    let mut s = used_library(d, Who::new("sam", "PC-A").as_agent(), clock);
+    let lib = s.ctx.library_dir.clone();
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    (s, lib)
+}
+
+/// The names in a zip, and the bytes of each file in it.
+fn zip_files(zip: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    use std::io::Read as _;
+    let mut a = zip::ZipArchive::new(std::fs::File::open(zip).unwrap()).unwrap();
+    let mut out = std::collections::BTreeMap::new();
+    for i in 0..a.len() {
+        let mut f = a.by_index(i).unwrap();
+        let mut b = vec![];
+        f.read_to_end(&mut b).unwrap();
+        out.insert(f.name().to_string(), b);
+    }
+    out
+}
+
+/// The Library's backups' file names in a folder, oldest first.
+fn backup_names(lib: &Path, dir: &Path) -> Vec<String> {
+    let mut n: Vec<String> = crate::backup::backups_in(lib, dir).unwrap().into_iter().map(|e| e.name).collect();
+    n.reverse();
+    n
+}
+
+/// A made-up backup id, given to a test Library before its first backup.
+const TEST_ID: &str = "0123456789abcdef0123456789abcdef";
+
+fn give_id(lib: &Path) {
+    std::fs::write(lib.join(crate::backup::ID_FILE), TEST_ID).unwrap();
+}
+
+/// A whole zip marked as a backup of the Library with `id`.
+fn marked_zip(path: &Path, id: &str) {
+    use std::io::Write as _;
+    let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    z.start_file("index.json", zip::write::SimpleFileOptions::default()).unwrap();
+    z.write_all(b"{}").unwrap();
+    z.set_comment(format!("nestpro-backup id={id}")).unwrap();
+    z.finish().unwrap();
+}
+
+/// "Backup <label> 01234567 <day k days before the clock> 0900 PC-A.zip": a
+/// name of the Library with TEST_ID.
+fn old_backup(clock: &Clock, label: &str, days_ago: i64) -> String {
+    let t = (clock.now() as i64 - days_ago * 86400) as u64;
+    format!("Backup {label} 01234567 {} 0900 PC-A.zip", &clock.stamp(t)[..10])
+}
+
+/// The file name of a published backup in an agent's result.
+fn file_of(r: &Value) -> String {
+    r["data"]["file"].as_str().unwrap().rsplit(['/', '\\']).next().unwrap().to_string()
+}
+
+/// BK2: two PCs opening the program at the same moment on the same day:
+/// exactly one takes the day's backup and the other sees it's done. Later
+/// that day nobody takes another; the next day the first PC to open does.
+#[test]
+fn the_first_pc_to_open_the_program_today_takes_the_backup_and_the_next_skips_it() {
+    use crate::backup::Daily;
+    let d = dir("backup_daily");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let (_s, lib) = backup_shop(&d, &clock);
+    let own = crate::backup::Settings::default();
+    let go = std::sync::Barrier::new(2);
+    let got: Vec<Daily> = std::thread::scope(|t| {
+        let runs: Vec<_> = [Who::new("sam", "PC-A"), Who::new("kim", "PC-B")]
+            .into_iter()
+            .map(|who| {
+                let (lib, clock, own, go) = (&lib, &clock, &own, &go);
+                t.spawn(move || {
+                    go.wait();
+                    super::shop::daily_backup(lib, own, &who, clock).unwrap()
+                })
+            })
+            .collect();
+        runs.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    let taken: Vec<_> = got.iter().filter_map(|g| if let Daily::Taken(d) = g { Some(d) } else { None }).collect();
+    assert_eq!(taken.len(), 1, "two PCs opening at once took {} backups", taken.len());
+    let backups = lib.join("Backups");
+    assert_eq!(backup_names(&lib, &backups), vec![taken[0].entry.name.clone()]);
+    let id = crate::backup::library_id(&lib).unwrap().unwrap();
+    assert!(taken[0].entry.name.starts_with(&format!("Backup Acme {} 2026-11-09 0920 PC-", &id[..8])), "{}", taken[0].entry.name);
+    // Later the same day, a third PC: done already.
+    clock.advance(std::time::Duration::from_secs(6 * 3600));
+    assert!(matches!(super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock).unwrap(), Daily::AlreadyToday { .. }));
+    assert_eq!(backup_names(&lib, &backups).len(), 1);
+    // The next morning PC-C is first.
+    clock.advance(std::time::Duration::from_secs(18 * 3600));
+    match super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock).unwrap() {
+        Daily::Taken(b) => assert_eq!(b.entry.name, format!("Backup Acme {} 2026-11-10 0920 PC-C.zip", &id[..8])),
+        other => panic!("the next day's backup wasn't taken: {other:?}"),
+    }
+    assert_eq!(backup_names(&lib, &backups).len(), 2);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK1, BK7: `shop mode=backup` takes one now and says where it went. The
+/// zip holds every Library file (names with spaces and accents too), the
+/// shop file and the PCs' records, byte for byte, and nothing of Updates or
+/// Backups. Taking it changes no file in the Library; the only file it adds
+/// is the Library's backup id.
+#[test]
+fn back_up_now_zips_the_library_and_the_shop_file_but_not_updates_or_backups() {
+    let d = dir("backup_now");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    std::fs::write(lib.join("Updates").join("nestpro-0.2.0-full.nupkg"), b"a release").unwrap();
+    std::fs::write(lib.join("Backups").join("Read me.txt"), b"kept by the shop").unwrap();
+    std::fs::create_dir_all(lib.join("Drawings").join("Größe 2 mm")).unwrap();
+    std::fs::write(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf"), b"0\nEOF\n").unwrap();
+    std::fs::create_dir_all(lib.join("Empty folder")).unwrap();
+    let before = files_under(&lib);
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let zip = PathBuf::from(r["data"]["file"].as_str().unwrap());
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains(&zip.display().to_string()), "doesn't say where it went: {m}");
+    assert_eq!(zip.parent().unwrap(), lib.join("Backups"));
+    assert_eq!(r["data"]["pc"], "PC-A", "{r}");
+    let inside = zip_files(&zip);
+    for (k, bytes) in &before {
+        let name = k.replace('\\', "/");
+        if name.starts_with("Updates/") || name.starts_with("Backups/") {
+            assert!(!inside.contains_key(&name), "{name} is in the backup");
+        } else {
+            assert_eq!(inside.get(&name), Some(bytes), "{name} isn't in the backup as it is in the Library");
+        }
+    }
+    assert!(inside.contains_key(crate::shop::FILE) && inside.keys().any(|k| k.starts_with("Shop/PC-A")), "no shop file or PC record: {:?}", inside.keys());
+    assert!(inside.contains_key("Drawings/Größe 2 mm/Flansch ø40.dxf"));
+    assert!(inside.contains_key("Empty folder/"), "an empty folder isn't kept: {:?}", inside.keys());
+    assert!(inside.contains_key(crate::backup::ID_FILE), "the backup id isn't kept with the Library");
+    assert!(!inside.keys().any(|k| k.starts_with("Updates") || k.starts_with("Backups") || k.starts_with("library.lock")), "{:?}", inside.keys());
+    // The Library is as it was, but for the backup id it was given.
+    let after = files_under(&lib);
+    assert_eq!(after.keys().filter(|k| !before.contains_key(*k) && !k.starts_with("Backups")).collect::<Vec<_>>(), vec![crate::backup::ID_FILE]);
+    for (k, bytes) in &before {
+        assert_eq!(after.get(k), Some(bytes), "{k} changed");
+    }
+    // Back up now again the same day: a second one, never over the first.
+    let r2 = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_ne!(r2["data"]["file"], r["data"]["file"]);
+    assert_eq!(backup_names(&lib, &lib.join("Backups")).len(), 2);
+    assert_eq!(std::fs::read(lib.join("Backups").join("Read me.txt")).unwrap(), b"kept by the shop");
+    // Status shows the last one, which PC, Keep and no second place.
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!(st["data"]["backups"]["count"], 2, "{st}");
+    assert_eq!(st["data"]["backups"]["last"]["pc"], "PC-A", "{st}");
+    assert_eq!(st["data"]["backups"]["last"]["when"], "2026-11-09 09:20", "{st}");
+    assert_eq!(st["data"]["backups"]["keep_days"], 30, "{st}");
+    assert!(st["data"]["backups"]["second_place"].is_null(), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK4: after a backup, those past Keep are removed, but only this
+/// Library's own whole backups, never the newest, and none dated ahead of
+/// today (a clock that went backwards). Keep 1 keeps today's only. A file
+/// merely named like one of its backups (review S1) is never removed.
+#[test]
+fn backups_past_keep_are_removed_and_nothing_else_is() {
+    let d = dir("backup_keep");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let backups = lib.join("Backups");
+    let others = ["Read me.txt", "Backup copy.zip", "Backup 2026-01-01 0900 PC-A.zip", "Backup Acme 01234567 2026-01-01 0900 PC-A.zip.bak"];
+    for o in others {
+        std::fs::write(backups.join(o), b"the shop's own").unwrap();
+    }
+    // Named like this Library's, but not a backup: an unrelated zip, and an
+    // empty file.
+    let lookalike = old_backup(&clock, "Acme", 40).replace("0900", "0800");
+    std::fs::write(backups.join(&lookalike), b"PK\x05\x06 not a backup").unwrap();
+    let empty = old_backup(&clock, "Acme", 41);
+    std::fs::write(backups.join(&empty), b"").unwrap();
+    std::fs::create_dir(backups.join(old_backup(&clock, "Acme", 50))).unwrap();
+    // A backup a day for 35 days, and one from before a holiday.
+    for k in (1..=35).chain([45]) {
+        marked_zip(&backups.join(old_backup(&clock, "Acme", k)), TEST_ID);
+    }
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let now = file_of(&r);
+    // 30 days kept, today's included: those 30 days old or more go.
+    let mut kept: Vec<String> = (1..=29).rev().map(|k| old_backup(&clock, "Acme", k)).collect();
+    kept.push(now.clone());
+    assert_eq!(backup_names(&lib, &backups), kept);
+    assert_eq!(r["data"]["removed"].as_array().unwrap().len(), 7, "{r}");
+    for o in others {
+        assert_eq!(std::fs::read(backups.join(o)).unwrap(), b"the shop's own", "{o} was touched");
+    }
+    assert!(backups.join(&lookalike).exists() && backups.join(&empty).exists(), "a file only named like a backup was removed");
+    assert!(backups.join(old_backup(&clock, "Acme", 50)).is_dir());
+    // A clock that went backwards: backups dated after today stay.
+    let mut shop = crate::shop::read(&lib).unwrap().unwrap();
+    shop.backups.keep_days = 1;
+    let lock = crate::shared::WriteLock::take(&lib).unwrap();
+    crate::shop::write(&lib, &shop, &lock, crate::updates::VERSION).unwrap();
+    drop(lock);
+    let ahead = old_backup(&clock, "Acme", -3);
+    marked_zip(&backups.join(&ahead), TEST_ID);
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let latest = file_of(&r);
+    let left = backup_names(&lib, &backups);
+    assert!(left.contains(&ahead) && left.contains(&latest) && left.contains(&now), "{left:?}");
+    assert!(!left.contains(&old_backup(&clock, "Acme", 1)) && !left.contains(&old_backup(&clock, "Acme", 29)), "{left:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S1: a file named like today's backup that isn't a whole backup
+/// of this Library (empty, or another Library's) never counts as the day's.
+#[test]
+fn a_file_only_named_like_todays_backup_doesnt_count() {
+    use crate::backup::Daily;
+    let d = dir("backup_lookalike");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let backups = lib.join("Backups");
+    std::fs::write(backups.join(old_backup(&clock, "Acme", 0)), b"").unwrap();
+    marked_zip(&backups.join(old_backup(&clock, "Acme", 0).replace("0900", "0905")), "fedcba9876543210fedcba9876543210");
+    let got = super::shop::daily_backup(&lib, &Default::default(), &Who::new("sam", "PC-A"), &clock).unwrap();
+    assert!(matches!(got, Daily::Taken(_)), "a file only named like today's backup stopped it: {got:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S1: two PCs of their own sharing one second place on the NAS,
+/// with Libraries of the same name: each counts, copies and removes only
+/// its own backups there, and never the other's `.part` file.
+#[test]
+fn two_libraries_sharing_a_second_place_never_touch_each_others_backups() {
+    let d = dir("backup_two_libraries");
+    let clock = Clock::at(1_794_216_000);
+    let nas = d.join("NAS");
+    std::fs::create_dir(&nas).unwrap();
+    let mut pcs: Vec<Session> = ["a", "b"]
+        .iter()
+        .map(|pc| {
+            std::fs::create_dir_all(d.join(pc)).unwrap();
+            let mut s = Session::new(stock_ctx(&d.join(pc)));
+            s.ctx.clock = clock.clone();
+            s.ctx.cfg.backups = crate::backup::Settings { keep_days: 1, second_place: nas.display().to_string() };
+            s
+        })
+        .collect();
+    let a = call(&mut pcs[0], "shop", None, json!({"mode": "backup"}));
+    assert!(nas.join(file_of(&a)).exists(), "{a}");
+    // PC-A's copy of its next backup is under way when PC-B backs up.
+    let a_lib = pcs[0].ctx.library_dir.clone();
+    let a_id = crate::backup::library_id(&a_lib).unwrap().unwrap();
+    let a_part = nas.join(format!("Backup library {} 2026-11-10 0920 PC-A.zip.PC-A-1-1.part", &a_id[..8]));
+    std::fs::write(&a_part, b"PK copying").unwrap();
+    for _ in 0..3 {
+        clock.advance(std::time::Duration::from_secs(86400));
+        call(&mut pcs[1], "shop", None, json!({"mode": "backup"}));
+    }
+    assert!(nas.join(file_of(&a)).exists(), "PC-B removed PC-A's backup from the NAS");
+    assert!(a_part.exists(), "PC-B removed PC-A's copy under way");
+    let b_lib = pcs[1].ctx.library_dir.clone();
+    assert_eq!(backup_names(&a_lib, &nas), vec![file_of(&a)]);
+    assert_eq!(backup_names(&b_lib, &nas).len(), 1, "PC-B keeps 1 day of its own");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK4: Keep 0 counts as 1 day, so the newest backup is never removed,
+/// whatever the clock says; Settings refuse 0.
+#[test]
+fn keep_is_at_least_one_day_and_the_newest_backup_always_stays() {
+    let d = dir("backup_keep0");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = Session::new(stock_ctx(&d));
+    s.ctx.clock = clock.clone();
+    s.ctx.cfg.backups.keep_days = 0;
+    let lib = s.ctx.library_dir.clone();
+    let first = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    // A year later, Keep 0: the old one goes, the new one stays.
+    clock.advance(std::time::Duration::from_secs(365 * 86400));
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(r["data"]["removed"].as_array().unwrap().len(), 1, "{r}");
+    let backups = d.join("Backups");
+    assert_eq!(backup_names(&lib, &backups).len(), 1);
+    assert!(!Path::new(first["data"]["file"].as_str().unwrap()).exists());
+    // Then the clock goes back two years: the backup there stays.
+    s.ctx.clock = Clock::at(clock.now() - 2 * 365 * 86400);
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(backup_names(&lib, &backups).len(), 2, "the newest backup was removed by a clock that went back");
+    let mut own = s.ctx.cfg.backups.clone();
+    let e = super::shop::set_backup_settings(&lib, &mut own, &s.ctx.who, &crate::backup::Settings { keep_days: 0, second_place: String::new() }, crate::updates::VERSION).unwrap_err();
+    assert!(e.contains("1 to 3650"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK5: with a second place set, each backup is copied there too, and its
+/// own old backups go past Keep. A second place that's missing or can't be
+/// written is reported, and the backup is taken anyway; nothing is made in
+/// its place.
+#[test]
+fn the_second_place_gets_a_copy_and_one_that_cant_be_reached_is_reported() {
+    let d = dir("backup_second");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let nas = d.join("NAS backups");
+    std::fs::create_dir(&nas).unwrap();
+    marked_zip(&nas.join(old_backup(&clock, "Acme", 40)), TEST_ID);
+    std::fs::write(nas.join("Other things.zip"), b"not ours").unwrap();
+    let mut own = crate::backup::Settings::default();
+    let set = |place: &Path, who: &Who, own: &mut crate::backup::Settings| super::shop::set_backup_settings(&lib, own, who, &crate::backup::Settings { keep_days: 1, second_place: place.display().to_string() }, crate::updates::VERSION);
+    // Only the admin PC changes shop settings (SH3).
+    let e = set(&nas, &Who::new("kim", "PC-B"), &mut own).unwrap_err();
+    assert!(e.contains("only on the admin PC") && e.contains("PC-A"), "{e}");
+    // Never inside the Library.
+    let e = set(&lib.join("Jobs"), &Who::new("sam", "PC-A"), &mut own).unwrap_err();
+    assert!(e.contains("in the Library"), "{e}");
+    assert!(set(&nas, &Who::new("sam", "PC-A"), &mut own).unwrap(), "the shop's settings, not this PC's");
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let zip = PathBuf::from(r["data"]["file"].as_str().unwrap());
+    let copy = nas.join(zip.file_name().unwrap());
+    assert_eq!(r["data"]["second_place"]["copied_to"], copy.display().to_string(), "{r}");
+    assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&zip).unwrap());
+    assert!(!nas.join(old_backup(&clock, "Acme", 40)).exists(), "the second place's old backup wasn't removed");
+    assert_eq!(std::fs::read(nas.join("Other things.zip")).unwrap(), b"not ours");
+    // The NAS is gone: said, never fatal, nothing made in its place.
+    std::fs::rename(&nas, d.join("NAS unplugged")).unwrap();
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("can't be reached") && m.contains(&nas.display().to_string()), "{m}");
+    assert!(r["data"]["second_place"]["problem"].is_string() && Path::new(r["data"]["file"].as_str().unwrap()).exists(), "{r}");
+    assert!(!nas.exists(), "a second place that can't be reached was made");
+    // A second place this PC can only read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::rename(d.join("NAS unplugged"), &nas).unwrap();
+        std::fs::set_permissions(&nas, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(nas.join("probe"), "").is_err() {
+            let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+            let m = r["message"].as_str().unwrap();
+            assert!(m.contains("couldn't be copied") && Path::new(r["data"]["file"].as_str().unwrap()).exists(), "{m}");
+        }
+        std::fs::set_permissions(&nas, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S3: a file of the same name already in the second place is never
+/// replaced: it's reported, and the backup stands in Backups.
+#[test]
+fn a_file_of_the_same_name_in_the_second_place_is_never_replaced() {
+    let d = dir("backup_second_clash");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = Session::new(stock_ctx(&d));
+    s.ctx.clock = clock.clone();
+    let nas = d.join("NAS");
+    std::fs::create_dir(&nas).unwrap();
+    s.ctx.cfg.backups.second_place = nas.display().to_string();
+    let lib = s.ctx.library_dir.clone();
+    give_id(&lib);
+    // The name this PC's backup will have, taken in the NAS by another file.
+    let name = old_backup(&clock, "library", 0).replace("0900", "0920").replace("PC-A", &crate::shared::file_safe(&s.ctx.who.pc));
+    std::fs::write(nas.join(&name), b"someone else's file").unwrap();
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(file_of(&r), name, "{r}");
+    let e = r["data"]["second_place"]["problem"].as_str().unwrap_or_default();
+    assert!(e.contains("already holds another file"), "{r}");
+    assert_eq!(std::fs::read(nas.join(&name)).unwrap(), b"someone else's file", "the second place's file was replaced");
+    assert!(std::fs::read_dir(&nas).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".part")), "a .part was left");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK5, review S12: when the PC that took today's backup stopped before
+/// copying it to the second place (or the place was down), the next PC to
+/// open the program copies it.
+#[test]
+fn a_backup_missing_from_the_second_place_is_copied_by_the_next_pc() {
+    use crate::backup::Daily;
+    let d = dir("backup_second_retry");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    let nas = d.join("NAS");
+    let mut own = crate::backup::Settings::default();
+    super::shop::set_backup_settings(&lib, &mut own, &Who::new("sam", "PC-A"), &crate::backup::Settings { keep_days: 30, second_place: nas.display().to_string() }, crate::updates::VERSION).unwrap();
+    // The NAS is down when PC-A takes the day's backup.
+    let Daily::Taken(b) = super::shop::daily_backup(&lib, &own, &Who::new("sam", "PC-A"), &clock).unwrap() else { panic!() };
+    assert!(matches!(b.second, Some(Err(_))), "{:?}", b.second);
+    std::fs::create_dir(&nas).unwrap();
+    clock.advance(std::time::Duration::from_secs(3600));
+    match super::shop::daily_backup(&lib, &own, &Who::new("kim", "PC-B"), &clock).unwrap() {
+        Daily::AlreadyToday { entry, second: Some(Ok(p)) } => {
+            assert_eq!(entry.name, b.entry.name);
+            assert_eq!(std::fs::read(&p).unwrap(), std::fs::read(&b.entry.path).unwrap());
+        }
+        other => panic!("today's backup wasn't copied to the second place: {other:?}"),
+    }
+    // And the next PC finds it there: nothing more to do.
+    assert!(matches!(super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock).unwrap(), Daily::AlreadyToday { second: Some(Ok(_)), .. }));
+    assert_eq!(std::fs::read_dir(&nas).unwrap().count(), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK3: a backup that stops halfway (a full disk) leaves no backup and no
+/// half-written file, and changes nothing in the Library; the day's backup
+/// is taken at the next opening. A PC that crashed mid-backup, leaving its
+/// lock and its half-written zip, doesn't stop the next PC: the lock is
+/// taken over (LB2) and the half zip is cleared, never counted as the day's.
+/// Review S6: clearing many half zips on a slow share renews the lock, so
+/// the backup still goes through.
+#[test]
+fn a_backup_that_stops_halfway_leaves_nothing_and_the_next_pc_takes_it() {
+    use crate::backup::Daily;
+    let d = dir("backup_halfway");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let own = crate::backup::Settings::default();
+    let backups = lib.join("Backups");
+    let before = files_under(&lib);
+    crate::backup::STOP_AFTER.with(|c| c.set(Some(2)));
+    let e = super::shop::daily_backup(&lib, &own, &Who::new("sam", "PC-A"), &clock).unwrap_err();
+    crate::backup::STOP_AFTER.with(|c| c.set(None));
+    assert!(e.contains("No backup was taken") && e.contains("halfway"), "{e}");
+    assert_eq!(files_under(&lib), before, "a backup that stopped left files or changed the Library");
+    // PC-B crashed while zipping: its lock and its half zips are left.
+    std::fs::write(lib.join(crate::shared::LOCK_FILE), r#"{"user":"kim","pc":"PC-B","process":7,"since":0,"token":"PC-B-7-0"}"#).unwrap();
+    let halves: Vec<PathBuf> = (0..6).map(|i| backups.join(format!("{}.PC-B-7-{i}.part", old_backup(&clock, "Acme", 0)))).collect();
+    for h in &halves {
+        std::fs::write(h, b"PK half").unwrap();
+    }
+    // Another Library's half zip in the same folder stays.
+    let theirs = backups.join("Backup Acme 99999999 2026-11-09 0920 PC-B.zip.PC-B-7-9.part");
+    std::fs::write(&theirs, b"PK theirs").unwrap();
+    // PC-C opens: it takes the abandoned lock over (after 3 s here), with
+    // 30 s to write, then takes the day's backup under it. The share is
+    // slow: each half zip takes 9 s to clear (played as gone by, not slept,
+    // so a loaded machine's own delays don't count against it): 54 s in all,
+    // past the 30 s, so only renewing as it goes keeps the lock.
+    let hold = std::time::Duration::from_secs(30);
+    let lock = crate::shared::WriteLock::take_holding(&lib, std::time::Duration::from_secs(3), hold, std::time::Duration::from_secs(30)).unwrap();
+    crate::shared::hooks::set(move |s| {
+        if s == "backup: part cleared" {
+            crate::shared::play_time(hold * 3 / 10);
+        }
+    });
+    let got = super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock);
+    crate::shared::hooks::clear();
+    drop(lock);
+    let Daily::Taken(b) = got.unwrap() else { panic!("a crashed PC's half zip counted as the day's backup") };
+    assert_eq!(backup_names(&lib, &backups), vec![b.entry.name.clone()]);
+    assert!(halves.iter().all(|h| !h.exists()), "a half-written zip was left");
+    assert!(theirs.exists(), "another Library's half zip was removed");
+    assert!(!zip_files(&b.entry.path).keys().any(|k| k.starts_with("library.lock")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S4: a file or folder that can't be read, or a file that changes
+/// while it's zipped, stops the backup: nothing is published and no old
+/// backup is removed.
+#[test]
+fn a_file_that_cant_be_read_or_changes_stops_the_backup() {
+    let d = dir("backup_unreadable");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let backups = lib.join("Backups");
+    let mut shop = crate::shop::read(&lib).unwrap().unwrap();
+    shop.backups.keep_days = 1;
+    let lock = crate::shared::WriteLock::take(&lib).unwrap();
+    crate::shop::write(&lib, &shop, &lock, crate::updates::VERSION).unwrap();
+    drop(lock);
+    let old = old_backup(&clock, "Acme", 5);
+    marked_zip(&backups.join(&old), TEST_ID);
+    let stopped = |s: &mut Session, what: &str| {
+        let e = err(s, "shop", json!({"mode": "backup"}));
+        assert!(e.contains("No backup was taken") && e.contains(what), "{e}");
+        assert_eq!(backup_names(&lib, &backups), vec![old.clone()], "a backup was published, or the old one removed");
+    };
+    // A file that changes while it's read, every time.
+    let grows = lib.join("Drawings growing.dxf");
+    std::fs::write(&grows, b"0\n").unwrap();
+    {
+        let grows = grows.clone();
+        crate::shared::hooks::set(move |s| {
+            if s == "backup: file read" {
+                use std::io::Write as _;
+                let mut f = std::fs::OpenOptions::new().append(true).open(&grows).unwrap();
+                f.write_all(b"SECTION\n").unwrap();
+            }
+        });
+    }
+    stopped(&mut s, "changed while it was backed up");
+    crate::shared::hooks::clear();
+    std::fs::remove_file(&grows).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // (Someone allowed to read anyway, as root, can't play this.)
+        let locked = lib.join("Locked drawing.dxf");
+        std::fs::write(&locked, b"0\nEOF\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&locked).is_err() {
+            stopped(&mut s, "Locked drawing.dxf");
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_file(&locked).unwrap();
+        let folder = lib.join("Locked folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("part.dxf"), b"0\nEOF\n").unwrap();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&folder).is_err() {
+            stopped(&mut s, "Locked folder");
+        }
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // Readable again: it goes through.
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(backup_names(&lib, &backups).len(), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S2: a Backups folder that is a link to somewhere else is refused
+/// before anything is looked at or changed there.
+#[cfg(unix)]
+#[test]
+fn a_backups_folder_that_links_elsewhere_is_refused() {
+    let d = dir("backup_linked");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let elsewhere = d.join("Other Library backups");
+    std::fs::create_dir(&elsewhere).unwrap();
+    for k in [40, 41] {
+        marked_zip(&elsewhere.join(old_backup(&clock, "Acme", k)), TEST_ID);
+    }
+    let held = files_under(&elsewhere);
+    std::fs::remove_dir(lib.join("Backups")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, lib.join("Backups")).unwrap();
+    let e = err(&mut s, "shop", json!({"mode": "backup"}));
+    assert!(e.contains("is a link to another folder") && e.contains("Backups"), "{e}");
+    let e = super::shop::daily_backup(&lib, &Default::default(), &Who::new("sam", "PC-A"), &clock).unwrap_err();
+    assert!(e.contains("is a link"), "{e}");
+    assert_eq!(files_under(&elsewhere), held, "something was changed through the link");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK6: a PC of its own backs its Library up into a Backups folder beside
+/// it (never inside it), with Keep from its own settings. An empty Library
+/// is backed up too; one that can't be reached is refused, naming it, and
+/// nothing is made. Review S5: a Library named Backups is refused.
+#[test]
+fn a_pc_of_its_own_backs_up_beside_its_library() {
+    let d = dir("backup_own");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = Session::new(stock_ctx(&d));
+    s.ctx.clock = clock.clone();
+    let lib = s.ctx.library_dir.clone();
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let zip = PathBuf::from(r["data"]["file"].as_str().unwrap());
+    assert_eq!(zip.parent().unwrap(), d.join("Backups"), "{r}");
+    assert!(!lib.join("Backups").exists(), "made a Backups folder inside the Library");
+    let inside = zip_files(&zip);
+    assert_eq!(inside.keys().filter(|k| !k.ends_with('/')).count(), files_under(&lib).len(), "{:?}", inside.keys());
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!(st["data"]["backups"]["folder"], d.join("Backups").display().to_string(), "{st}");
+    assert_eq!(st["data"]["backups"]["count"], 1, "{st}");
+    // Its own settings, not a shop's.
+    let mut own = s.ctx.cfg.backups.clone();
+    assert!(!super::shop::set_backup_settings(&lib, &mut own, &s.ctx.who, &crate::backup::Settings { keep_days: 7, second_place: String::new() }, crate::updates::VERSION).unwrap());
+    assert_eq!(own.keep_days, 7);
+    // A Library named Backups would back up into itself.
+    let named = d.join("Other").join("Backups");
+    crate::library::create(&named).unwrap();
+    s.ctx.library_dir = named.clone();
+    let e = err(&mut s, "shop", json!({"mode": "backup"}));
+    assert!(e.contains("the Library itself"), "{e}");
+    let wrote: Vec<String> = files_under(&named).into_keys().filter(|k| k.ends_with(".zip") || k.ends_with(".part") || k == crate::backup::ID_FILE).collect();
+    assert!(wrote.is_empty(), "a refused backup wrote {wrote:?}");
+    // The Library is gone (a drive unplugged): said, nothing made.
+    s.ctx.library_dir = lib.clone();
+    std::fs::rename(&lib, d.join("moved")).unwrap();
+    let e = err(&mut s, "shop", json!({"mode": "backup"}));
+    assert!(e.contains(&lib.display().to_string()), "{e}");
+    assert!(!lib.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S7: a backup follows the settings as they are once it holds the
+/// write lock: the admin PC set a second place while this PC waited.
+#[test]
+fn a_backup_follows_the_settings_saved_while_it_waited_for_the_lock() {
+    let d = dir("backup_waited");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    let nas = d.join("NAS");
+    std::fs::create_dir(&nas).unwrap();
+    let lock = crate::shared::WriteLock::take(&lib).unwrap();
+    let (busy, waiting) = std::sync::mpsc::channel::<()>();
+    let pc_b = {
+        let (lib, clock) = (lib.clone(), clock.clone());
+        std::thread::spawn(move || {
+            let mut busy = Some(busy);
+            crate::shared::hooks::set(move |s| {
+                if s == "lock busy"
+                    && let Some(b) = busy.take()
+                {
+                    let _ = b.send(());
+                }
+            });
+            super::shop::backup_now(&lib, &Default::default(), &Who::new("kim", "PC-B"), &clock)
+        })
+    };
+    waiting.recv().unwrap();
+    // While PC-B waits, the admin PC sets the second place.
+    let mut shop = crate::shop::read(&lib).unwrap().unwrap();
+    shop.backups.second_place = nas.display().to_string();
+    crate::shop::write(&lib, &shop, &lock, crate::updates::VERSION).unwrap();
+    drop(lock);
+    let b = pc_b.join().unwrap().unwrap();
+    assert!(matches!(&b.second, Some(Ok(p)) if p.starts_with(&nas)), "the backup used the settings from before it waited: {:?}", b.second);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S13: an agent's backup writes nothing else in the shop (no PC
+/// record): recording the PC is for opening the program and `shop` status.
+#[test]
+fn an_agents_backup_writes_no_pc_record() {
+    let d = dir("backup_agent_record");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let before: Vec<String> = files_under(&lib.join("Shop")).into_keys().collect();
+    call(&mut b, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(files_under(&lib.join("Shop")).into_keys().collect::<Vec<_>>(), before, "the backup wrote a PC record");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review round 2 (S7): when the next PC copies today's backup to the second
+/// place, it tidies that place by Keep as it is once it holds the lock: the
+/// admin PC raised Keep while the copy was under way, so nothing goes.
+#[test]
+fn a_second_place_retry_tidies_by_keep_as_it_is_under_the_lock() {
+    use crate::backup::Daily;
+    let d = dir("backup_second_keep_now");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let nas = d.join("NAS");
+    let set_keep = |lib: &Path, keep: u32, place: &Path| {
+        let lock = crate::shared::WriteLock::take(lib).unwrap();
+        let mut shop = crate::shop::read(lib).unwrap().unwrap();
+        shop.backups = crate::backup::Settings { keep_days: keep, second_place: place.display().to_string() };
+        crate::shop::write(lib, &shop, &lock, crate::updates::VERSION).unwrap();
+    };
+    set_keep(&lib, 1, &nas);
+    let own = crate::backup::Settings::default();
+    // The NAS is down when PC-A takes the day's backup.
+    let Daily::Taken(b) = super::shop::daily_backup(&lib, &own, &Who::new("sam", "PC-A"), &clock).unwrap() else { panic!() };
+    assert!(matches!(b.second, Some(Err(_))));
+    std::fs::create_dir(&nas).unwrap();
+    let old: Vec<String> = (2..=4).map(|k| old_backup(&clock, "Acme", k)).collect();
+    for o in &old {
+        marked_zip(&nas.join(o), TEST_ID);
+    }
+    // PC-B copies it; meanwhile the admin PC raises Keep to 30 days.
+    {
+        let (lib, nas) = (lib.clone(), nas.clone());
+        crate::shared::hooks::set(move |s| {
+            if s == "backup: copied to second place" {
+                set_keep(&lib, 30, &nas);
+            }
+        });
+    }
+    let got = super::shop::daily_backup(&lib, &own, &Who::new("kim", "PC-B"), &clock);
+    crate::shared::hooks::clear();
+    assert!(matches!(got.unwrap(), Daily::AlreadyToday { second: Some(Ok(_)), .. }));
+    for o in &old {
+        assert!(nas.join(o).exists(), "{o} was removed by Keep from before the lock");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP7 with BK1: a backup only reads the Library, so one whose files a
+/// newer version wrote is backed up as it is on an older PC, byte for byte;
+/// its own writes (the backup id, the zip) never go over a Library file.
+/// Saving Keep or the second place into a shop file a newer version wrote
+/// is refused like any other save over it.
+#[test]
+fn a_library_a_newer_version_wrote_is_backed_up_as_it_is() {
+    let d = dir("backup_newer_files");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    // A newer version saved the shop file and the Library's list.
+    for f in [crate::shop::FILE, crate::library::INDEX] {
+        let t = std::fs::read_to_string(lib.join(f)).unwrap();
+        let mut v: serde_json::Map<String, Value> = serde_json::from_str(&t).unwrap();
+        v.insert(crate::shared::VERSION_FIELD.into(), json!("9.0.0"));
+        std::fs::write(lib.join(f), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    }
+    let before = files_under(&lib);
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let inside = zip_files(Path::new(r["data"]["file"].as_str().unwrap()));
+    for f in [crate::shop::FILE, crate::library::INDEX] {
+        assert_eq!(inside.get(f), before.get(f), "{f} isn't in the backup as it is");
+    }
+    let after = files_under(&lib);
+    for (k, bytes) in &before {
+        assert_eq!(after.get(k), Some(bytes), "{k} changed");
+    }
+    let mut own = crate::backup::Settings::default();
+    let e = super::shop::set_backup_settings(&lib, &mut own, &Who::new("sam", "PC-A"), &crate::backup::Settings { keep_days: 7, second_place: String::new() }, "0.1.0").unwrap_err();
+    assert!(e.contains("read-only") && e.contains("9.0.0"), "{e}");
+    assert_eq!(std::fs::read(lib.join(crate::shop::FILE)).unwrap(), before[crate::shop::FILE]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Joining a shop (spec #178, ticket #182: SH10–SH15): the checks before yes,
+// this PC's Library setting, and what is left as it was.
+// ---------------------------------------------------------------------------
+
+/// A session as `who` on a PC whose Library folder is `lib`, made empty:
+/// a PC that can be reached and is in no shop.
+fn pc_session(lib: &Path, who: Who, clock: &Clock) -> Session {
+    std::fs::create_dir_all(lib).unwrap();
+    shop_session(lib, who, clock)
+}
+
+/// A shop Acme started by PC-A in `d/library`, a used Library.
+fn acme_shop(d: &Path, clock: &Clock) -> (Session, PathBuf) {
+    let mut a = used_library(d, Who::new("sam", "PC-A").as_agent(), clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    (a, lib)
+}
+
+/// The shop version in the shop file, as rolling out will set it (ADR 0006).
+fn set_shop_version(lib: &Path, v: &str) {
+    let f = lib.join(crate::shop::FILE);
+    let mut s: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+    s["shop_version"] = json!(v);
+    std::fs::write(&f, serde_json::to_vec_pretty(&s).unwrap()).unwrap();
+}
+
+/// What each check of a join said, by its key.
+fn checks_of(r: &Value) -> Vec<(String, bool)> {
+    r["data"]["checks"].as_array().unwrap().iter().map(|c| (c["check"].as_str().unwrap().to_string(), c["ok"].as_bool().unwrap())).collect()
+}
+
+/// This PC's Library folder setting, as saved in its settings folder.
+fn saved_library_setting(s: &Session) -> Option<String> {
+    crate::settings::AppSettings::read_from(&s.ctx.pc_dir.join(crate::settings::FILE_NAME)).map(|c| c.library_dir)
+}
+
+/// SH10, SH11: PC-B, with a Library of its own on it, joins shop Acme: every
+/// check passes and is said, PC-B is in the shop's PCs list, its Library
+/// folder setting is the shop folder, and its own Library is left exactly as
+/// it was. The shop folder gets nothing but PC-B's record.
+#[test]
+fn joining_a_shop_from_a_second_pc_lists_it_and_leaves_its_own_library_unchanged() {
+    let d = dir("join_second_pc");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let (mut a, shop) = acme_shop(&d, &clock);
+    let pc_b = d.join("pc-b");
+    std::fs::create_dir_all(&pc_b).unwrap();
+    let mut b = used_library(&pc_b, Who::new("kim", "PC-B").as_agent(), &clock);
+    let own = b.ctx.library_dir.clone();
+    let own_before = files_under(&own);
+    let shop_before = files_under(&shop);
+    clock.advance(std::time::Duration::from_secs(600));
+    let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap()}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.starts_with(&format!("Joined shop Acme in {} (admin PC PC-A)", shop.display())), "{m}");
+    for line in ["[ok] ", "can be reached", "It holds a Library.", "shop Acme (admin PC PC-A)", "make, change and remove files", "write lock works"] {
+        assert!(m.contains(line), "no {line:?} in {m}");
+    }
+    assert_eq!(checks_of(&r), [("reachable", true), ("library", true), ("shop", true), ("write", true), ("lock", true), ("version", true)].map(|(k, ok)| (k.to_string(), ok)), "{r}");
+    // No shop version yet: nothing compared, and that is said.
+    assert!(r["data"]["shop_version"].is_null() && r["data"]["update"].is_null() && m.contains("[!!] The shop has no shop version yet, so no version was compared"), "{r}");
+    assert_eq!(r["data"]["already_in_shop"], false, "{r}");
+    // This PC works in the shop from now on, and its setting says so.
+    assert_eq!(b.ctx.library_dir, shop);
+    assert_eq!(saved_library_setting(&b), Some(shop.display().to_string()));
+    // PC-A sees PC-B in the shop.
+    let st = call(&mut a, "shop", None, json!({}));
+    let pb = st["data"]["pcs"].as_array().unwrap().iter().find(|p| p["pc"] == "PC-B").cloned().unwrap_or_else(|| panic!("PC-B isn't listed: {st}"));
+    assert_eq!((pb["user"].as_str(), pb["last_seen"].as_str()), (Some("kim"), Some("2026-11-09 09:30")), "{pb}");
+    // PC-B's own Library: not a byte changed, nothing added or taken away.
+    assert_eq!(files_under(&own), own_before, "joining a shop changed this PC's own Library");
+    // The shop folder: only PC-B's record is new; no lock or check file left.
+    let after = files_under(&shop);
+    let new: Vec<&String> = after.keys().filter(|k| !shop_before.contains_key(*k)).collect();
+    assert!(new.len() == 1 && new[0].starts_with("Shop"), "{new:?}");
+    for (k, v) in &shop_before {
+        if !k.starts_with("Shop") {
+            assert_eq!(after.get(k), Some(v), "{k} changed in the shop folder");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH10 (MA28): a PC's own materials join the shop's list when it joins.
+#[test]
+fn joining_a_shop_brings_this_pcs_materials_into_the_shops_list() {
+    let d = dir("join_materials");
+    let clock = Clock::at(1_794_216_000);
+    let (mut a, shop) = acme_shop(&d, &clock);
+    let mut pc = pc_without_library(&d);
+    pc.ctx.who = Who::new("kim", "PC-B").as_agent();
+    call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+    let r = call(&mut pc, "setup", None, json!({"join": shop.to_str().unwrap()}));
+    assert_eq!(r["materials_joined"], "This PC's materials joined the Library's material list: added DEMO 316.", "{r}");
+    assert!(material_names(&mut a).contains(&"DEMO 316".to_string()), "{:?}", material_names(&mut a));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH11: what a join refuses, each saying what to fix and listing the
+/// checks made, with nothing changed: this PC's setting and Library stay,
+/// and nothing is made in the folder.
+#[test]
+fn joining_refuses_a_folder_it_cant_use_and_makes_nothing_there() {
+    let d = dir("join_refusals");
+    let clock = Clock::at(1_794_216_000);
+    let pc_b = d.join("pc-b");
+    std::fs::create_dir_all(&pc_b).unwrap();
+    let mut b = used_library(&pc_b, Who::new("kim", "PC-B").as_agent(), &clock);
+    let own = b.ctx.library_dir.clone();
+    let unchanged = |b: &Session| {
+        assert_eq!(b.ctx.library_dir, own, "the session left its Library");
+        assert_eq!(saved_library_setting(b), None, "this PC's settings were written");
+    };
+    // A folder that doesn't exist (the share is down, or a typing slip).
+    let gone = d.join("srv").join("Nesting");
+    let e = err(&mut b, "setup", json!({"join": gone.to_str().unwrap()}));
+    assert!(e.starts_with("Not joined:") && e.contains(&format!("{} can't be reached", gone.display())) && e.contains("Check the folder's name") && e.contains("[no]"), "{e}");
+    assert!(!d.join("srv").exists(), "something was made in place of the share");
+    unchanged(&b);
+    // A folder with other files, but no Library.
+    let other = d.join("Drawings");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("bracket.dxf"), "0\nEOF\n").unwrap();
+    let e = err(&mut b, "setup", json!({"join": other.to_str().unwrap()}));
+    assert!(e.contains("holds no Library") && e.contains("[ok]") && e.contains("[no]"), "{e}");
+    assert_eq!(files_under(&other).len(), 1);
+    unchanged(&b);
+    // A Library that isn't a shop: start the shop there first.
+    let plain = d.join("Plain");
+    crate::library::create(&plain).unwrap();
+    let before = files_under(&plain);
+    let e = err(&mut b, "setup", json!({"join": plain.to_str().unwrap()}));
+    assert!(e.contains("holds a Library but no shop") && e.contains("setup --start"), "{e}");
+    assert_eq!(files_under(&plain), before);
+    unchanged(&b);
+    // Nothing given, or both start= and join=.
+    let e = err(&mut b, "setup", json!({"join": "  "}));
+    assert!(e.contains("Give the shop folder"), "{e}");
+    let e = err(&mut b, "setup", json!({"join": plain.to_str().unwrap(), "start": plain.to_str().unwrap(), "name": "Acme"}));
+    assert!(e.contains("not both"), "{e}");
+    unchanged(&b);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH11: a shop folder this PC can only read is refused at the write lock,
+/// saying the shop's group needs Modify rights; nothing is made there.
+#[cfg(unix)]
+#[test]
+fn joining_a_shop_folder_this_pc_cant_write_to_is_refused_and_nothing_is_made() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("join_read_only");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    let mut b = pc_session(&d.join("pc-b-none"), Who::new("kim", "PC-B").as_agent(), &clock);
+    let before = files_under(&shop);
+    std::fs::set_permissions(&shop, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // (Someone allowed to write anyway, as root, can't play this PC.)
+    if std::fs::write(shop.join("probe"), "").is_err() {
+        let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
+        assert!(e.starts_with("Not joined:") && e.contains("write lock") && e.contains("Modify rights") && e.contains("Nothing was changed"), "{e}");
+        assert!(e.contains("[ok] It holds a Library.") && e.contains("[no] This PC can't take"), "{e}");
+        assert_eq!(saved_library_setting(&b), None);
+    }
+    std::fs::set_permissions(&shop, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(files_under(&shop), before, "a refused join left something in the shop folder");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH12: the shop version against this PC's: an older PC may join and is
+/// told to update; a newer one is told the admin PC decides; the same says
+/// so; versions are compared as numbers (0.10.0 is newer than 0.9.0).
+#[test]
+fn joining_compares_this_pcs_version_with_the_shops() {
+    let d = dir("join_versions");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    set_shop_version(&shop, "0.9.0");
+    for (mine, said, update) in [
+        ("0.4.0", "This PC runs 0.4.0, older than the shop version 0.9.0. It may join.", Some("Update this PC: the shop is on 0.9.0.")),
+        ("0.9.0", "This PC runs the shop version, 0.9.0.", None),
+        ("0.10.0", "This PC runs 0.10.0, newer than the shop version 0.9.0. The admin PC decides", None),
+    ] {
+        let mut b = pc_session(&d.join(format!("pc-{mine}")), Who::new("kim", "PC-B").as_agent(), &clock);
+        b.ctx.version = mine.into();
+        let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap()}));
+        let m = r["message"].as_str().unwrap();
+        assert!(m.contains(said), "{mine}: {m}");
+        assert_eq!(r["data"]["update"].as_str(), update, "{mine}: {r}");
+        assert_eq!((r["data"]["shop_version"].as_str(), r["data"]["this_pc_version"].as_str()), (Some("0.9.0"), Some(mine)), "{r}");
+        assert!(checks_of(&r).contains(&("version".to_string(), true)), "{r}");
+        if let Some(u) = update {
+            assert!(m.starts_with("Joined shop Acme") && m.contains(u), "{m}");
+        }
+    }
+    assert_eq!(crate::shared::version_order("0.9", "0.9.0"), Some(std::cmp::Ordering::Equal));
+    assert_eq!(crate::shared::version_order("0.10.0-rc1", "0.9.0"), Some(std::cmp::Ordering::Greater));
+    // A version that can't be read is not compared, and that is said.
+    set_shop_version(&shop, "next");
+    let mut b = pc_session(&d.join("pc-odd"), Who::new("kim", "PC-B").as_agent(), &clock);
+    let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap()}));
+    assert!(r["message"].as_str().unwrap().contains("The shop version next and this PC's 0.") && r["data"]["update"].is_null(), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH13, SH14: a PC already in the shop, joining it again with the folder
+/// typed with a separator at its end and doubled ones, is told so: its
+/// setting stays, its record is brought up to date. A PC in another shop
+/// leaves it, told which, and how to join it again.
+#[test]
+fn a_pc_already_in_the_shop_or_in_another_is_told_so() {
+    let d = dir("join_again");
+    let clock = Clock::at(1_794_216_000);
+    let (mut a, shop) = acme_shop(&d, &clock);
+    let typed = format!("{}//", shop.display()).replacen('/', "//", 1);
+    let r = call(&mut a, "setup", None, json!({"join": typed}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.starts_with(&format!("This PC is already in shop Acme ({})", shop.display())), "{m}");
+    assert_eq!((r["data"]["already_in_shop"].as_bool(), r["data"]["folder"].as_str()), (Some(true), Some(shop.to_str().unwrap())), "{r}");
+    assert_eq!(saved_library_setting(&a), None, "the setting was written for a PC already in the shop");
+    assert_eq!(a.ctx.library_dir, shop);
+    // PC-B is in shop Other, its own folder. Joining Acme is refused until
+    // leaving Other is asked for, with nothing written anywhere first.
+    let pc_b = d.join("pc-b");
+    std::fs::create_dir_all(&pc_b).unwrap();
+    let mut b = used_library(&pc_b, Who::new("kim", "PC-B").as_agent(), &clock);
+    let other = b.ctx.library_dir.clone();
+    call(&mut b, "setup", None, json!({"start": other.to_str().unwrap(), "name": "Other"}));
+    let (acme_before, other_before) = (files_under(&shop), files_under(&other));
+    let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
+    assert!(e.contains(&format!("This PC is in shop Other ({})", other.display())) && e.contains("leave=true") && e.contains("--leave") && e.contains("[no]"), "{e}");
+    assert_eq!((files_under(&shop), files_under(&other)), (acme_before, other_before), "a join that wasn't asked to leave wrote something");
+    assert_eq!(b.ctx.library_dir, other);
+    let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap(), "leave": true}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains(&format!("It left shop Other ({})", other.display())) && m.contains(&format!("setup --join {} --leave", other.display())), "{m}");
+    assert_eq!(r["data"]["left_shop"]["name"], "Other", "{r}");
+    assert_eq!(b.ctx.library_dir, shop);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH11 (LB1): two PCs joining the shop at the same moment both get in,
+/// one after the other under the write lock; neither leaves a lock or a
+/// check file behind.
+#[test]
+fn two_pcs_joining_at_once_both_get_in() {
+    let d = dir("join_two_at_once");
+    let clock = Clock::at(1_794_216_000);
+    let (mut a, shop) = acme_shop(&d, &clock);
+    let go = std::sync::Arc::new(std::sync::Barrier::new(2));
+    std::thread::scope(|t| {
+        for pc in ["PC-B", "PC-C"] {
+            let (shop, clock, go, d) = (&shop, &clock, go.clone(), &d);
+            t.spawn(move || {
+                let mut s = pc_session(&d.join(pc), Who::new("kim", pc).as_agent(), clock);
+                go.wait();
+                let r = call(&mut s, "setup", None, json!({"join": shop.to_str().unwrap()}));
+                assert_eq!(r["data"]["this_pc_recorded"], true, "{r}");
+                assert_eq!(&s.ctx.library_dir, shop);
+            });
+        }
+    });
+    let st = call(&mut a, "shop", None, json!({}));
+    let pcs: Vec<&str> = st["data"]["pcs"].as_array().unwrap().iter().map(|p| p["pc"].as_str().unwrap()).collect();
+    assert_eq!(pcs, ["PC-A", "PC-B", "PC-C"], "{st}");
+    let left: Vec<String> = std::fs::read_dir(&shop).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp") || n.ends_with(".lock")).collect();
+    assert!(left.is_empty(), "{left:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH15: `nestpro setup --join` exits non-zero on a refusal, and 2 when the
+/// arguments are wrong; the refusal it prints lists each check (above).
+#[test]
+fn the_command_line_join_exits_non_zero_on_a_refusal() {
+    let d = dir("join_cli");
+    let gone = d.join("srv").join("Nesting");
+    let argv = |rest: &[&str]| ["nestpro", "setup"].iter().chain(rest).map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(crate::cli::main(argv(&["--join", gone.to_str().unwrap(), "--text"])), 1);
+    assert_eq!(crate::cli::main(argv(&["--join"])), 2);
+    assert!(!d.join("srv").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+
+// ---------------------------------------------------------------------------
+// Joining a shop, review round 1 (ticket #182): what a join leaves behind,
+// writes first, saves, and keeps open.
+// ---------------------------------------------------------------------------
+
+/// SH11: a share that lets this PC make files but not remove them. The check
+/// file is made, then the folder becomes read-only for this PC (`at`: before
+/// the check file is renamed into place, or once it is there): the join is
+/// refused, and the refusal names exactly what it couldn't remove (the check
+/// file or its temporary copy, and the write lock), which are there.
+#[cfg(unix)]
+#[test]
+fn a_refused_join_names_what_it_couldnt_remove() {
+    use std::os::unix::fs::PermissionsExt;
+    for at in ["lock checked", "join check file written"] {
+        let d = dir(&format!("join_left_{}", at.replace(' ', "_")));
+        let clock = Clock::at(1_794_216_000);
+        let (_a, shop) = acme_shop(&d, &clock);
+        // (Someone allowed to write anyway, as root, can't play this PC.)
+        let ro = d.join("read-only");
+        std::fs::create_dir_all(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let root = std::fs::write(ro.join("probe"), "").is_ok();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if root {
+            let _ = std::fs::remove_dir_all(&d);
+            return;
+        }
+        let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+        let ro = shop.clone();
+        crate::shared::hooks::set(move |step| {
+            if step == at {
+                std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+            }
+        });
+        let r = b.call("setup", None, &json!({"join": shop.to_str().unwrap()}));
+        crate::shared::hooks::clear();
+        std::fs::set_permissions(&shop, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let e = r.err().unwrap_or_else(|| panic!("{at}: a join that couldn't write was not refused"));
+        assert!(e.starts_with("Not joined:") && e.contains("couldn't remove what it made") && !e.contains("nothing was made"), "{at}: {e}");
+        let left: Vec<String> = std::fs::read_dir(&shop).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("join-check-") || n == crate::shared::LOCK_FILE).collect();
+        assert!(left.iter().any(|n| n == crate::shared::LOCK_FILE) && left.iter().any(|n| n.starts_with("join-check-")), "{at}: {left:?}");
+        for n in &left {
+            assert!(e.contains(&shop.join(n).display().to_string()), "{at}: {n} isn't named in: {e}");
+        }
+        assert_eq!(saved_library_setting(&b), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// SH9 (SH11): a shop whose Shop folder this PC can't write to is refused
+/// at the check, naming that folder (its record would go there); one where
+/// only this PC's record can't be written is joined, saying so, with Add this
+/// PC to try again.
+#[cfg(unix)]
+#[test]
+fn joining_checks_the_shop_folder_where_this_pcs_record_goes() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("join_shop_folder");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    let pcs = shop.join(crate::shop::PCS);
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(pcs.join("probe"), "").is_err() {
+        let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+        let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
+        assert!(e.contains(&format!("This PC can't write in {}", pcs.display())) && e.contains("nothing was made"), "{e}");
+        assert_eq!(saved_library_setting(&b), None);
+    }
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // This PC's record can't be written (something else has its name).
+    std::fs::create_dir_all(crate::shop::record_file(&shop, "PC-C").join("in-the-way")).unwrap();
+    let mut c = pc_session(&d.join("pc-c"), Who::new("lee", "PC-C").as_agent(), &clock);
+    let r = call(&mut c, "setup", None, json!({"join": shop.to_str().unwrap()}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.starts_with("Joined shop Acme") && m.contains("[!!] PC-C couldn't be added to the shop's PCs list") && m.contains("Add this PC"), "{m}");
+    assert_eq!((r["data"]["this_pc_recorded"].as_bool(), c.ctx.library_dir == shop), (Some(false), true), "{r}");
+    assert!(checks_of(&r).contains(&("pc".to_string(), true)), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH10: when this PC's materials can't join the shop's list (its Sheets
+/// folder is read-only for this PC), the join says so and when they will.
+#[cfg(unix)]
+#[test]
+fn a_material_list_that_cant_be_joined_is_said() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("join_materials_fail");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    let sheets = shop.join(crate::stock::FOLDER);
+    std::fs::set_permissions(&sheets, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(sheets.join("probe"), "").is_err() {
+        let mut pc = pc_without_library(&d);
+        pc.ctx.who = Who::new("kim", "PC-B").as_agent();
+        call(&mut pc, "material", None, json!({"mode": "add", "name": "DEMO 316", "standard": "stainless"}));
+        let r = call(&mut pc, "setup", None, json!({"join": shop.to_str().unwrap()}));
+        let n = r["materials_not_joined"].as_str().unwrap_or_else(|| panic!("no materials_not_joined: {r}"));
+        assert!(n.contains("couldn't join the shop's material list") && n.contains("next time the list is read"), "{n}");
+        assert!(r["materials_joined"].is_null(), "{r}");
+    }
+    std::fs::set_permissions(&sheets, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH10: when this PC's settings can't be saved, the join is refused and
+/// this PC is taken off the shop's PCs list again: the shop never lists a
+/// PC that isn't in it.
+#[test]
+fn a_join_whose_settings_cant_be_saved_takes_this_pc_off_the_list() {
+    let d = dir("join_settings_fail");
+    let clock = Clock::at(1_794_216_000);
+    let (mut a, shop) = acme_shop(&d, &clock);
+    let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+    // Its settings folder is a file: nothing can be saved in it.
+    b.ctx.pc_dir = d.join("settings-is-a-file");
+    std::fs::write(&b.ctx.pc_dir, "").unwrap();
+    let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
+    assert!(e.starts_with("Not joined shop Acme") && e.contains("can't be saved") && e.contains("PC-B was taken off its PCs list again"), "{e}");
+    assert_eq!(b.ctx.library_dir, d.join("pc-b"));
+    let st = call(&mut a, "shop", None, json!({}));
+    let pcs: Vec<&str> = st["data"]["pcs"].as_array().unwrap().iter().map(|p| p["pc"].as_str().unwrap()).collect();
+    assert_eq!(pcs, ["PC-A"], "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH10: joining closes the job open in the session, its undo steps and
+/// its stock booking: they are the old Library's, and a save afterwards
+/// never goes into the shop's Library as that job.
+#[test]
+fn joining_closes_the_job_open_in_the_session() {
+    let d = dir("join_closes_job");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    let pc_b = d.join("pc-b");
+    std::fs::create_dir_all(&pc_b).unwrap();
+    let mut b = used_library(&pc_b, Who::new("kim", "PC-B").as_agent(), &clock);
+    assert!(b.path.is_some() && b.job.is_some());
+    let shop_before = files_under(&shop);
+    let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap()}));
+    assert!(r["message"].as_str().unwrap().contains("was closed: it belongs to the Library this PC left") && r["data"]["closed_job"].is_string(), "{r}");
+    assert!(b.job.is_none() && b.path.is_none());
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("No job open"), "{e}");
+    let jobs = |m: &std::collections::BTreeMap<String, Vec<u8>>| m.keys().filter(|k| k.starts_with("Jobs")).cloned().collect::<Vec<_>>();
+    assert_eq!(jobs(&files_under(&shop)), jobs(&shop_before), "a job went into the shop's Library");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH11: a refused join writes nothing in this PC's own Library first, not
+/// even the material list a Library with none yet would take.
+#[test]
+fn a_refused_join_writes_nothing_in_this_pcs_own_library() {
+    let d = dir("join_reads_only");
+    let own = d.join("own");
+    crate::library::create(&own).unwrap();
+    let before = files_under(&own);
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = own.clone();
+    ctx.pc_dir = d.join("settings");
+    let mut s = Session::new(ctx);
+    let e = err(&mut s, "setup", json!({"join": d.join("srv").join("Nesting").to_str().unwrap()}));
+    assert!(e.contains("can't be reached"), "{e}");
+    assert_eq!(files_under(&own), before, "setup wrote in this PC's own Library");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH10: a folder given as `.` is checked, named and saved as its full path.
+#[test]
+fn a_relative_folder_is_joined_by_its_full_path() {
+    let d = dir("join_relative");
+    let mut s = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &Clock::at(1_794_216_000));
+    let here = std::env::current_dir().unwrap();
+    let e = err(&mut s, "setup", json!({"join": "."}));
+    assert!(e.contains(&format!("{} ", here.display())) && !e.contains(" . "), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH12: the shop version is read again under the write lock: a version
+/// rolled out while this PC waited for the lock is the one compared.
+#[test]
+fn joining_compares_the_shop_version_read_under_the_lock() {
+    let d = dir("join_version_locked");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    set_shop_version(&shop, "0.1.0");
+    let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+    b.ctx.version = "0.4.0".into();
+    let s2 = shop.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "join locked" {
+            set_shop_version(&s2, "0.9.0");
+        }
+    });
+    let r = b.call("setup", None, &json!({"join": shop.to_str().unwrap()}));
+    crate::shared::hooks::clear();
+    let r = r.unwrap().json;
+    assert_eq!((r["data"]["shop_version"].as_str(), r["data"]["update"].as_str()), (Some("0.9.0"), Some("Update this PC: the shop is on 0.9.0.")), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+
+// ---------------------------------------------------------------------------
+// Joining a shop, review round 2 (ticket #182).
+// ---------------------------------------------------------------------------
+
+/// SH11: a `Shop` that isn't a folder this PC can read (a file of that
+/// name) fails the check, naming it; nothing is made.
+#[test]
+fn a_shop_folder_that_isnt_a_folder_fails_the_check() {
+    let d = dir("join_shop_not_folder");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    let pcs = shop.join(crate::shop::PCS);
+    std::fs::remove_dir_all(&pcs).unwrap();
+    std::fs::write(&pcs, "not a folder").unwrap();
+    let before = files_under(&shop);
+    let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+    let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
+    assert!(e.contains(&format!("{} isn't a folder this PC can read", pcs.display())) && e.contains("[no]"), "{e}");
+    assert_eq!(files_under(&shop), before);
+    assert_eq!(saved_library_setting(&b), None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH15: `--text` prints why this PC's materials couldn't join the shop's
+/// list, and what joining it did, beside the message.
+#[test]
+fn the_text_answer_says_what_happened_to_the_materials() {
+    let lines = crate::cli::text_lines(&json!({"message": "Joined shop Acme.", "materials_not_joined": "This PC's materials couldn't join the shop's material list just now (denied).", "data": null}));
+    assert_eq!(lines, ["Joined shop Acme.", "This PC's materials couldn't join the shop's material list just now (denied)."]);
+    let lines = crate::cli::text_lines(&json!({"message": "Joined shop Acme.", "materials_joined": "This PC's materials joined the Library's material list: added DEMO 316.", "data": null}));
+    assert_eq!(lines[1], "This PC's materials joined the Library's material list: added DEMO 316.");
+}
+
+/// SH14: a PC whose own shop folder can't be reached can't tell whether it
+/// is in a shop: joining another is refused unless leave=true, naming that
+/// folder, and nothing is written; with it, the PC joins and says where its
+/// Library was. A PC that never had a Library (its own default place, never
+/// made) is in no shop and isn't asked.
+#[test]
+fn a_pc_whose_shop_cant_be_reached_joins_another_only_when_asked() {
+    let d = dir("join_current_offline");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    let gone = d.join("srv").join("Other");
+    let mut b = shop_session(&gone, Who::new("kim", "PC-B").as_agent(), &clock);
+    let before = files_under(&shop);
+    let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
+    assert!(e.contains(&format!("This PC's Library folder {} can't be reached, so whether it is in another shop can't be told", gone.display())) && e.contains("leave=true"), "{e}");
+    assert_eq!((files_under(&shop), saved_library_setting(&b), b.ctx.library_dir.clone()), (before, None, gone.clone()));
+    let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap(), "leave": true}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.starts_with("Joined shop Acme") && m.contains(&format!("Its Library was {}, which couldn't be reached", gone.display())), "{m}");
+    assert!(r["data"]["left_shop"]["name"].is_null() && r["data"]["left_shop"]["folder"] == gone.display().to_string(), "{r}");
+    // A PC that never had a Library joins without being asked.
+    let mut c = pc_without_library(&d);
+    c.ctx.who = Who::new("lee", "PC-C").as_agent();
+    call(&mut c, "setup", None, json!({"join": shop.to_str().unwrap()}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Restore (spec #178, BK8–BK13): the admin PC puts a backup back; agents and
+// other PCs are refused; other sessions' old jobs never save over it.
+// ---------------------------------------------------------------------------
+
+/// The names of the Library's records as an agent lists them.
+fn record_names(s: &mut Session) -> Vec<String> {
+    let mut n: Vec<String> = call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| format!("{} {}", e["kind"].as_str().unwrap(), e["name"].as_str().unwrap())).collect();
+    n.sort();
+    n
+}
+
+/// The sheet stock's references as an agent lists them.
+fn stock_refs(s: &mut Session) -> Vec<String> {
+    let mut n: Vec<String> = call(s, "stock", None, json!({"mode": "list", "show_zero": true}))["data"]["sheets"].as_array().unwrap().iter().map(|e| e["ref"].as_str().unwrap().to_string()).collect();
+    n.sort();
+    n
+}
+
+/// Every file under the Library but what a restore keeps as it is (BK10).
+fn library_files(lib: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let kept = ["Updates", "Backups", "Shop", "Holds", "shop.json", "backup-id.txt", "library.lock"];
+    files_under(lib).into_iter().filter(|(k, _)| !kept.iter().any(|x| k.split(['/', '\\']).next() == Some(x))).collect()
+}
+
+/// A zip in the shop's Backups marked as this Library's backup of the day
+/// before `clock`'s, holding `files` (names as given, `/` ending a folder),
+/// made by hand: what another tool, or a damaged or made-up backup, holds.
+fn crafted_backup(lib: &Path, clock: &Clock, files: &[(&str, &[u8])]) -> String {
+    use std::io::Write as _;
+    let id = crate::backup::library_id(lib).unwrap().expect("the Library has no backup id yet");
+    let day = &clock.stamp(clock.now() - 86400)[..10];
+    let name = format!("Backup Acme {} {day} 0800 PC-A.zip", &id[..8]);
+    let mut z = zip::ZipWriter::new(std::fs::File::create(lib.join("Backups").join(&name)).unwrap());
+    for (n, b) in files {
+        if n.ends_with('/') {
+            z.add_directory(*n, zip::write::SimpleFileOptions::default()).unwrap();
+        } else {
+            z.start_file(*n, zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(b).unwrap();
+        }
+    }
+    z.set_comment(format!("nestpro-backup id={id}")).unwrap();
+    z.finish().unwrap();
+    name
+}
+
+/// What the admin PC's person does: restore the backup named `name`.
+fn restore_as(lib: &Path, pc: &str, name: &str, clock: &Clock) -> Result<super::shop::RestoreDone, String> {
+    super::shop::restore(lib, name, &Who::new("sam", pc), clock, crate::updates::VERSION)
+}
+
+/// AC 1 (BK8–BK12): restoring a backup brings back its jobs, library parts,
+/// stock and other files (names with spaces and accents too), takes out
+/// what was made since, and keeps the Library as it was first in a "before
+/// restore" backup of its own, which counts as one of its backups. What the
+/// shop is now stays: its file (with the restore recorded), each PC's
+/// record, Updates, the other backups and the backup id. Agents read it all
+/// through `Session::call`; the restore itself is the person's, on the
+/// admin PC.
+#[test]
+fn restoring_a_backup_brings_back_its_jobs_and_stock_and_keeps_what_was_there() {
+    let d = dir("restore_brings_back");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let (mut s, lib) = backup_shop(&d, &clock);
+    std::fs::create_dir_all(lib.join("Drawings").join("Größe 2 mm")).unwrap();
+    std::fs::write(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf"), b"0\nEOF\n").unwrap();
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let chosen = file_of(&r);
+    let then = library_files(&lib);
+    let id_before = std::fs::read(lib.join(crate::backup::ID_FILE)).unwrap();
+    assert_eq!(record_names(&mut s), ["job DEMO-001 frames", "product DEMO-P1"]);
+    assert_eq!(stock_refs(&mut s), ["S1"]);
+    // The next day: a new job, new stock, a drawing changed, a file added;
+    // and what the shop is now: PC-B joins, a release is rolled out.
+    clock.advance(std::time::Duration::from_secs(86400));
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let jp = d.join("DEMO-002 brackets.snjob");
+    call(&mut b, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 4, "name": "DEMO-P2"}));
+    let new_id = call(&mut b, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S2", "w": 1000, "h": 500, "thickness": 3, "qty": 5}));
+    call(&mut b, "shop", None, json!({}));
+    std::fs::write(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf"), b"0\nSECTION\n0\nEOF\n").unwrap();
+    std::fs::write(lib.join("Notes from today.txt"), b"made after the backup").unwrap();
+    std::fs::write(lib.join("Updates").join("nestpro-0.2.0-full.nupkg"), b"a release").unwrap();
+    let now = library_files(&lib);
+    assert_eq!(record_names(&mut s), ["job DEMO-001 frames", "job DEMO-002 brackets", "product DEMO-P1"]);
+    let shop_name = crate::shop::read(&lib).unwrap().unwrap().name;
+
+    // An agent can't: refused with the reason, nothing changed.
+    let e = err(&mut s, "shop", json!({"mode": "restore"}));
+    assert!(e.contains("refused for agents") && e.contains("admin PC") && e.contains("Nothing was changed"), "{e}");
+    assert_eq!(library_files(&lib), now);
+
+    // The person on the admin PC restores it.
+    clock.advance(std::time::Duration::from_secs(3600));
+    let done = restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    assert_eq!(done.done.from.name, chosen);
+    assert!(done.second.is_none(), "no second place is set");
+    // Its jobs, library parts, stock and files are back, byte for byte;
+    // what was made since is gone.
+    assert_eq!(record_names(&mut s), ["job DEMO-001 frames", "product DEMO-P1"]);
+    assert_eq!(stock_refs(&mut s), ["S1"]);
+    let after = library_files(&lib);
+    for (k, v) in &then {
+        assert_eq!(after.get(k), Some(v), "{k} isn't as it was in the backup");
+    }
+    let extra: Vec<&String> = after.keys().filter(|k| !then.contains_key(*k)).collect();
+    assert!(extra.iter().all(|k| k.ends_with(".deleted")), "files that aren't in the backup: {extra:?}");
+    assert!(!lib.join("Notes from today.txt").exists());
+    assert_eq!(std::fs::read(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf")).unwrap(), b"0\nEOF\n");
+    // What the shop is now is kept.
+    assert_eq!(std::fs::read(lib.join(crate::backup::ID_FILE)).unwrap(), id_before, "the backup id changed");
+    assert_eq!(std::fs::read(lib.join("Updates").join("nestpro-0.2.0-full.nupkg")).unwrap(), b"a release");
+    let st = call(&mut s, "shop", None, json!({}));
+    let pcs: Vec<&str> = st["data"]["pcs"].as_array().unwrap().iter().map(|p| p["pc"].as_str().unwrap()).collect();
+    assert_eq!(pcs, ["PC-A", "PC-B"], "{st}");
+    assert_eq!(st["data"]["name"], shop_name.as_str());
+    let lr = &st["data"]["last_restore"];
+    assert_eq!(lr["backup"], chosen.as_str(), "{st}");
+    assert_eq!(lr["restored_to"], "2026-11-09 09:20", "{st}");
+    assert_eq!(lr["by"], "sam on PC-A", "{st}");
+    assert_eq!(lr["finished"], true, "{st}");
+    assert_eq!(lr["notice"], "The shop was restored to 9 Nov 09:20. Reopen your job", "{st}");
+    // The Library as it was is in the "before restore" backup, which is one
+    // of its backups (Keep counts it), and holds the job and stock made since.
+    let before = &done.done.before;
+    assert!(before.name.ends_with(" PC-A before restore.zip") && before.before_restore, "{}", before.name);
+    assert_eq!(lr["before_restore_backup"], before.name.as_str());
+    assert_eq!(backup_names(&lib, &lib.join("Backups")), vec![chosen.clone(), before.name.clone()]);
+    let kept = zip_files(&before.path);
+    for (k, v) in &now {
+        assert_eq!(kept.get(&k.replace('\\', "/")), Some(v), "{k} isn't in the before restore backup as it was");
+    }
+    // The job made since keeps its number taken (LB16): a job saved now gets
+    // another, never the one PC-B's job file still points at.
+    let jp3 = d.join("DEMO-003 hinges.snjob");
+    call(&mut s, "new", Some(jp3.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 150, "h": 150, "qty": 1, "name": "DEMO-P3"}));
+    let third = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    assert_ne!(third, new_id, "a job saved after the restore took the number of a job it took out");
+    // Nothing is left of the restore's own working folder.
+    let left: Vec<String> = std::fs::read_dir(lib.join("Backups")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| !n.ends_with(".zip")).collect();
+    assert!(left.is_empty(), "{left:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// AC 2 (BK8): a restore from another PC, even a person's and even when
+/// shop settings are changed from any PC, or from an agent on the admin PC,
+/// is refused with the reason. Nothing changes and no backup is taken.
+#[test]
+fn restore_is_refused_on_other_pcs_and_for_agents() {
+    let d = dir("restore_refused");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    // Shop settings from any PC: restoring still isn't.
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        let mut f = crate::shop::read(&lib).unwrap().unwrap();
+        f.settings_by = crate::shop::SettingsBy::AnyPc;
+        crate::shop::write(&lib, &f, &lock, crate::updates::VERSION).unwrap();
+    }
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-B", &chosen, &clock).err().unwrap();
+    assert!(e.contains("only on the admin PC (PC-A)") && e.contains("Nothing was restored"), "{e}");
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let e = err(&mut b, "shop", json!({"mode": "restore"}));
+    assert!(e.contains("refused for agents"), "{e}");
+    // An agent on the admin PC itself, through the engine too.
+    let e = super::shop::restore(&lib, &chosen, &Who::new("sam", "PC-A").as_agent(), &clock, crate::updates::VERSION).err().unwrap();
+    assert_eq!(e, super::shop::AGENT_RESTORE);
+    assert_eq!(files_under(&lib), before, "a refused restore changed the shop folder");
+    // A Library that is no shop has no admin PC: nothing is restored there.
+    let own = d.join("own");
+    std::fs::create_dir_all(&own).unwrap();
+    crate::library::create(&own.join("Library")).unwrap();
+    let e = restore_as(&own.join("Library"), "PC-A", &chosen, &clock).err().unwrap();
+    assert!(e.contains("isn't a shop"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// AC 3 (BK12, BK13, LB7): another session sees the restore, and a job it
+/// had open from before can't save over the Library silently: the save is
+/// refused saying someone saved it since, even after a third PC has saved
+/// that job again after the restore (its revision never repeats one the old
+/// job file read). A job made after the backup, still open on that PC,
+/// saves again under its own number, never over another job.
+#[test]
+fn another_session_sees_the_restore_and_its_old_job_cant_overwrite() {
+    let d = dir("restore_old_job");
+    let clock = Clock::at(1_794_216_000);
+    let (mut a, lib) = backup_shop(&d, &clock);
+    let job_id = call(&mut a, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().find(|e| e["kind"] == "job").unwrap()["id"].as_u64().unwrap();
+    let chosen = file_of(&call(&mut a, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(3600));
+    // After the backup, PC-A saves the job again; PC-B then opens it, and
+    // makes a job of its own.
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 1, "name": "DEMO-PA"}));
+    call(&mut a, "library", None, json!({"mode": "save-job"}));
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let bp = d.join("PC-B frames.snjob");
+    call(&mut b, "new", Some(bp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "library", None, json!({"mode": "open", "id": job_id}));
+    let mut b2 = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let bp2 = d.join("PC-B new.snjob");
+    call(&mut b2, "new", Some(bp2.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b2, "add-shape", None, json!({"shape": "rectangle", "w": 120, "h": 80, "qty": 2, "name": "DEMO-PB"}));
+    let made_since = call(&mut b2, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    // The admin PC restores the backup; PC-C opens the job and saves it.
+    clock.advance(std::time::Duration::from_secs(600));
+    restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    let st = call(&mut b, "shop", None, json!({}));
+    assert_eq!(st["data"]["last_restore"]["notice"], "The shop was restored to 9 Nov 09:20. Reopen your job", "{st}");
+    let mut c = shop_session(&lib, Who::new("lee", "PC-C").as_agent(), &clock);
+    let cp = d.join("PC-C frames.snjob");
+    call(&mut c, "new", Some(cp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut c, "library", None, json!({"mode": "open", "id": job_id}));
+    call(&mut c, "library", None, json!({"mode": "save-job"}));
+    let record = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, job_id);
+    let theirs = std::fs::read(&record).unwrap();
+    // PC-B's job file from before the restore: refused, nothing changed.
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 90, "h": 90, "qty": 1, "name": "DEMO-PX"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("since this job file read it"), "{e}");
+    assert_eq!(std::fs::read(&record).unwrap(), theirs, "the old job file saved over the restored job");
+    // PC-B's job made since the backup was taken out by the restore: its
+    // save is refused too (review S1), and its number stays free.
+    let e = err(&mut b2, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("taken out of the Library by a restore") && e.contains("copy=true"), "{e}");
+    let gone = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, made_since);
+    assert!(!gone.exists(), "the job the restore took out was put back");
+    assert_eq!(std::fs::read(&record).unwrap(), theirs);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK12 (review S1): a job saved after the backup, with a sheet booked from
+/// stock, is taken out by the restore, which puts the sheet back in stock.
+/// The PC that still has it open can't save it back under its number
+/// through an agent: refused like a job saved since, nothing written and
+/// nothing taken from stock. Saved as a copy, its sheets are taken afresh
+/// from the stock as restored, never trusted from before the restore.
+#[test]
+fn a_job_a_restore_took_out_is_not_saved_back_and_its_copy_books_afresh() {
+    let d = dir("restore_gone_job");
+    let clock = Clock::at(1_794_216_000);
+    let (mut a, lib) = backup_shop(&d, &clock);
+    let chosen = file_of(&call(&mut a, "shop", None, json!({"mode": "backup"})));
+    let sheets = || crate::stock::Stock::load(&lib).unwrap().get("S1").map_or(0, |i| i.qty);
+    assert_eq!(sheets(), 2);
+    clock.advance(std::time::Duration::from_secs(3600));
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let bp = d.join("PC-B brackets.snjob");
+    call(&mut b, "new", Some(bp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 4, "name": "DEMO-PB"}));
+    call(&mut b, "nest", None, json!({}));
+    let id = call(&mut b, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    let took = 2 - sheets();
+    assert!(took > 0, "the job took no sheet from stock");
+    clock.advance(std::time::Duration::from_secs(600));
+    restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    assert_eq!(sheets(), 2, "the restore put the stock back");
+    let record = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, id);
+    assert!(!record.exists());
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 90, "h": 90, "qty": 1, "name": "DEMO-PX"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("PC-B brackets") && e.contains("was taken out of the Library by a restore of the shop from a backup (sam on PC-A at ") && e.contains("Nothing was saved and nothing taken from stock") && e.contains("copy=true"), "{e}");
+    assert!(!record.exists(), "the job the restore took out was put back");
+    assert_eq!(sheets(), 2);
+    // As a copy: a new job, its sheets taken from the stock as restored.
+    let copy = call(&mut b, "library", None, json!({"mode": "save-job", "copy": true}));
+    let copy_id = copy["data"]["id"].as_u64().unwrap();
+    assert_ne!(copy_id, id);
+    let held: i32 = jobfile::load(&bp).unwrap().held.values().sum();
+    assert!(held > 0, "{copy}");
+    assert_eq!(sheets(), 2 - held, "{copy}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK11, UP7: a backup holding a file a newer version wrote can't be
+/// restored on this PC (it couldn't read it), and nothing is changed: no
+/// "before restore" backup either.
+#[test]
+fn a_backup_a_newer_version_wrote_is_refused() {
+    let d = dir("restore_newer");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let name = crafted_backup(&lib, &clock, &[("index.json", br#"{"program_version": "9.0.0", "format": "nestpro-library", "version": 1, "entries": []}"#)]);
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap();
+    assert!(e.contains("9.0.0") && e.contains("Update this PC") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK11: a backup with a name that would go outside the shop folder, or a
+/// link, is refused before anything changes, and nothing is written
+/// outside the shop folder.
+#[test]
+fn a_backup_with_names_outside_the_shop_folder_is_refused() {
+    let d = dir("restore_outside");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let before = files_under(&lib);
+    for bad in ["../outside.txt", "Jobs/../../outside.txt", "/tmp/outside.txt", "\\outside.txt", "C:\\outside.txt", "C:outside.txt", "..\\outside.txt", "Jobs\\..\\..\\outside.txt", "\\\\srv\\Nesting\\outside.txt"] {
+        let name = crafted_backup(&lib, &clock, &[("index.json", b"{}"), (bad, b"x")]);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap();
+        assert!(e.contains("outside the shop folder") && e.contains("Nothing was restored"), "{bad}: {e}");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+        assert_eq!(files_under(&lib), before, "{bad}");
+    }
+    assert!(!d.join("outside.txt").exists() && !lib.parent().unwrap().join("outside.txt").exists());
+    // A link in the zip.
+    let id = crate::backup::library_id(&lib).unwrap().unwrap();
+    let name = format!("Backup Acme {} 2026-11-08 0800 PC-A.zip", &id[..8]);
+    {
+        let mut z = zip::ZipWriter::new(std::fs::File::create(lib.join("Backups").join(&name)).unwrap());
+        z.add_symlink("Jobs", "/etc", zip::write::SimpleFileOptions::default()).unwrap();
+        z.set_comment(format!("nestpro-backup id={id}")).unwrap();
+        z.finish().unwrap();
+    }
+    let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap();
+    assert!(e.contains("link") && e.contains("Nothing was restored"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK11: a backup made by another tool on Windows (`\` between folders),
+/// with names with spaces and accents, is put back in its folders.
+#[test]
+fn a_backup_with_windows_paths_and_accents_is_put_back_in_its_folders() {
+    let d = dir("restore_windows_paths");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("Drawings\\Größe 2 mm\\", b""), ("Drawings\\Größe 2 mm\\Flansch ø40.dxf", b"0\nEOF\n"), ("Kunden Ä/Notiz é.txt", b"hello")]);
+    restore_as(&lib, "PC-A", &name, &clock).unwrap();
+    assert_eq!(std::fs::read(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf")).unwrap(), b"0\nEOF\n");
+    assert_eq!(std::fs::read(lib.join("Kunden Ä").join("Notiz é.txt")).unwrap(), b"hello");
+    assert!(!lib.join("Sheets").exists(), "the stock isn't in this backup, but stayed");
+    let records: Vec<String> = files_under(&lib).into_keys().filter(|k| k.ends_with(".snjob") || k.starts_with("Products")).collect();
+    assert!(records.iter().all(|k| k.ends_with(".deleted")), "records that aren't in the backup stayed: {records:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK9: when the "before restore" backup can't be taken, nothing is
+/// restored and the Library is as it was.
+#[test]
+fn a_restore_whose_before_restore_backup_fails_restores_nothing() {
+    let d = dir("restore_before_fails");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(3600));
+    std::fs::write(lib.join("Notes from today.txt"), b"made after the backup").unwrap();
+    let before = files_under(&lib);
+    crate::backup::STOP_AFTER.with(|x| x.set(Some(1)));
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err().unwrap();
+    crate::backup::STOP_AFTER.with(|x| x.set(None));
+    assert!(e.contains("Nothing was restored") && e.contains("backed up first") && e.contains("The Library is as it was"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    assert!(crate::shop::read(&lib).unwrap().unwrap().restored.is_none(), "a restore that didn't happen was recorded");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK11, BK12: a restore that stops halfway says what state the Library is
+/// in, other PCs are told it stopped halfway, and restoring the "before
+/// restore" backup puts the Library back as it was.
+#[test]
+fn a_restore_that_stops_halfway_says_so_and_its_before_backup_puts_it_back() {
+    let d = dir("restore_halfway");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(3600));
+    let jp = d.join("DEMO-002 brackets.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 4, "name": "DEMO-P2"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    let was = library_files(&lib);
+    crate::backup::RESTORE_STOP_AFTER.with(|x| x.set(Some(1)));
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err().unwrap();
+    crate::backup::RESTORE_STOP_AFTER.with(|x| x.set(None));
+    assert!(e.contains("stopped halfway") && e.contains("before restore.zip") && e.contains("restore it to put the Library back"), "{e}");
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!(st["data"]["last_restore"]["finished"], false, "{st}");
+    assert!(st["data"]["last_restore"]["notice"].as_str().unwrap().contains("stopped halfway"), "{st}");
+    let before = st["data"]["last_restore"]["before_restore_backup"].as_str().unwrap().to_string();
+    clock.advance(std::time::Duration::from_secs(60));
+    restore_as(&lib, "PC-A", &before, &clock).unwrap();
+    assert_eq!(library_files(&lib).into_iter().filter(|(k, _)| !k.ends_with(".deleted")).collect::<std::collections::BTreeMap<_, _>>(), was, "the before restore backup didn't put the Library back as it was");
+    assert_eq!(record_names(&mut s), ["job DEMO-001 frames", "job DEMO-002 brackets", "product DEMO-P1"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK1, BK4, BK9: the "before restore" backup is one of the Library's
+/// backups: Keep counts it and never removes it the day it's made; the
+/// day's backup isn't taken again on that day.
+#[test]
+fn the_before_restore_backup_counts_and_stays_its_first_day() {
+    let d = dir("restore_keep");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        let mut f = crate::shop::read(&lib).unwrap().unwrap();
+        f.backups.keep_days = 1;
+        crate::shop::write(&lib, &f, &lock, crate::updates::VERSION).unwrap();
+    }
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(600));
+    let done = restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    // Back up now the same day, Keep 1: both of today's stay.
+    let third = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    assert_eq!(backup_names(&lib, &lib.join("Backups")), vec![chosen, done.done.before.name.clone(), third]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Review round 1 of the restore (PR #205): each finding's test fails
+// without its fix.
+
+/// A test shop with one backup of today, and the backup's file name.
+fn restore_shop(tag: &str, clock: &Clock) -> (PathBuf, Session, PathBuf, String) {
+    let d = dir(tag);
+    let (mut s, lib) = backup_shop(&d, clock);
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    (d, s, lib, chosen)
+}
+
+/// Make the Library's lock another PC's, as a PC that took it over would.
+fn steal_lock(lib: &Path) {
+    std::fs::write(lib.join(crate::shared::LOCK_FILE), r#"{"user":"lee","pc":"PC-Z","process":1,"since":0,"token":"PC-Z-1-0"}"#).unwrap();
+}
+
+/// S1: a "before restore" backup whose payload is damaged after it was
+/// written (its directory still opens, with as many files) is caught: every
+/// entry is read through its check sum before anything is changed.
+#[test]
+fn a_damaged_before_restore_backup_restores_nothing() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r1_damaged", &clock);
+    std::fs::write(lib.join("Notes from today.txt"), b"made after the backup").unwrap();
+    let before = library_files(&lib);
+    let backups = lib.join("Backups");
+    crate::shared::hooks::set(move |step| {
+        if step != "restore: before restore taken" {
+            return;
+        }
+        let zip = std::fs::read_dir(&backups).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with("before restore.zip")).unwrap();
+        let (at, len) = {
+            let mut z = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+            let e = z.by_name("index.json").unwrap();
+            (e.data_start().unwrap(), e.compressed_size())
+        };
+        let mut b = std::fs::read(&zip).unwrap();
+        for k in 0..len.min(8) {
+            b[(at + k) as usize] ^= 0x5a;
+        }
+        std::fs::write(&zip, b).unwrap();
+    });
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("restored over a damaged before restore backup");
+    assert!(e.contains("Nothing was restored") && e.contains("can't be trusted"), "{e}");
+    assert_eq!(library_files(&lib), before);
+    assert!(crate::shop::read(&lib).unwrap().unwrap().restored.is_none());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S1: a Library holding a file a newer version wrote isn't restored: the
+/// "before restore" backup couldn't be put back on this PC.
+#[test]
+fn a_library_holding_newer_files_is_not_restored_on_an_older_pc() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r1_newer_live", &clock);
+    let t = std::fs::read_to_string(lib.join(crate::library::INDEX)).unwrap();
+    let mut v: serde_json::Map<String, Value> = serde_json::from_str(&t).unwrap();
+    v.insert(crate::shared::VERSION_FIELD.into(), json!("9.0.0"));
+    std::fs::write(lib.join(crate::library::INDEX), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err().expect("restored over newer files");
+    assert!(e.contains("Update this PC first") && e.contains("index.json") && e.contains("9.0.0") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before, "a refused restore changed something (a before restore backup?)");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S2: names Windows would read as another (trailing dots or spaces, short
+/// names), device names (superscript digits too) and two names differing
+/// only in capitals are refused before anything changes.
+#[test]
+fn a_backup_with_names_windows_reads_as_others_is_refused() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_alias", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let before = files_under(&lib);
+    let cases: &[&[(&str, &[u8])]] = &[
+        &[("Shop./PC-Z.json", b"{}")],
+        &[("Shop /PC-Z.json", b"{}")],
+        &[("SHOP~1/PC-Z.json", b"{}")],
+        &[("shop.json.", b"{}")],
+        &[("Jobs/COM\u{b9}.dxf", b"x")],
+        &[("Jobs/LPT\u{b2}", b"x")],
+        &[("Drawings/a.dxf", b"1"), ("drawings/A.DXF", b"2")],
+    ];
+    for files in cases {
+        let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
+        all.extend_from_slice(files);
+        let name = crafted_backup(&lib, &clock, &all);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap_or_else(|| panic!("{files:?} was restored"));
+        assert!(e.contains("Nothing was restored"), "{files:?}: {e}");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+        assert_eq!(files_under(&lib), before, "{files:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S2, S3: a place the backup goes that is a link in the Library (a folder
+/// that leads outside, or a file link) is refused before anything changes,
+/// and what it links to is left as it is.
+#[cfg(unix)]
+#[test]
+fn a_restore_never_goes_through_or_replaces_a_link() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_links", &clock);
+    let outside = d.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), b"not the Library's").unwrap();
+    std::os::unix::fs::symlink(&outside, lib.join("Drawings")).unwrap();
+    std::os::unix::fs::symlink(outside.join("keep.txt"), lib.join("Note.txt")).unwrap();
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    for files in [vec![("Drawings/x.dxf", b"0\nEOF\n" as &[u8])], vec![("Note.txt", b"from the backup" as &[u8])]] {
+        let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
+        all.extend(files.clone());
+        let name = crafted_backup(&lib, &clock, &all);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap_or_else(|| panic!("{files:?} was restored through a link"));
+        assert!(e.contains("is a link") && e.contains("Nothing was restored"), "{e}");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+    }
+    assert_eq!(std::fs::read(outside.join("keep.txt")).unwrap(), b"not the Library's");
+    assert!(!outside.join("x.dxf").exists());
+    assert!(std::fs::symlink_metadata(lib.join("Note.txt")).unwrap().file_type().is_symlink());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S3: a folder where the backup has a file is taken out file by file, and
+/// the files in it aren't visited again (it's a file now). One holding a
+/// link no backup holds is refused, and the link stays.
+#[test]
+fn a_folder_the_backup_has_a_file_in_place_of() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_dir_to_file", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    std::fs::create_dir_all(lib.join("Notes").join("Old")).unwrap();
+    for f in ["a.txt", "b.txt"] {
+        std::fs::write(lib.join("Notes").join(f), f).unwrap();
+    }
+    std::fs::write(lib.join("Notes").join("Old").join("c.txt"), b"c").unwrap();
+    #[cfg(unix)]
+    {
+        std::fs::create_dir_all(lib.join("Links")).unwrap();
+        std::os::unix::fs::symlink(d.join("nowhere"), lib.join("Links").join("away")).unwrap();
+        let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("Links", b"a file now")]);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().expect("a folder holding a link was replaced");
+        assert!(e.contains("Nothing was restored") && e.contains("no backup holds"), "{e}");
+        assert!(std::fs::symlink_metadata(lib.join("Links").join("away")).is_ok(), "the link was removed");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+        std::fs::remove_file(lib.join("Links").join("away")).unwrap();
+        std::fs::remove_dir(lib.join("Links")).unwrap();
+    }
+    clock.advance(std::time::Duration::from_secs(60));
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("Notes", b"a file now")]);
+    let done = restore_as(&lib, "PC-A", &name, &clock).unwrap();
+    assert_eq!(std::fs::read(lib.join("Notes")).unwrap(), b"a file now");
+    let kept = zip_files(&done.done.before.path);
+    assert_eq!(kept.get("Notes/Old/c.txt").map(Vec::as_slice), Some(&b"c"[..]), "{:?}", kept.keys());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S4: a restore that loses the write lock while it takes a folder out
+/// stops at once: nothing more is removed after the lock isn't its own.
+#[test]
+fn a_restore_that_loses_the_lock_stops_removing_at_once() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_fence", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    std::fs::create_dir_all(lib.join("Old")).unwrap();
+    for f in ["1.txt", "2.txt", "3.txt"] {
+        std::fs::write(lib.join("Old").join(f), f).unwrap();
+    }
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("Old", b"a file now")]);
+    let first = std::rc::Rc::new(std::cell::Cell::new(true));
+    let (l2, f2) = (lib.clone(), first.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: removing" && f2.replace(false) {
+            steal_lock(&l2);
+        }
+    });
+    let e = restore_as(&lib, "PC-A", &name, &clock).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("a restore that lost its lock went on");
+    assert!(e.contains("stopped halfway") && e.contains("took over"), "{e}");
+    let left = std::fs::read_dir(lib.join("Old")).unwrap().count();
+    assert_eq!(left, 2, "files were removed after the lock was lost");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S5: a job read before a restore asks before saving even when the
+/// restored job has the very revision it read.
+#[test]
+fn a_job_read_before_a_restore_asks_even_at_the_same_revision() {
+    let clock = Clock::at(1_794_216_000);
+    let d = dir("restore_r1_same_revision");
+    let (mut a, lib) = backup_shop(&d, &clock);
+    let job_id = call(&mut a, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().find(|e| e["kind"] == "job").unwrap()["id"].as_u64().unwrap();
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let bp = d.join("PC-B frames.snjob");
+    call(&mut b, "new", Some(bp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "library", None, json!({"mode": "open", "id": job_id}));
+    let chosen = file_of(&call(&mut a, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(60));
+    restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    let record = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, job_id);
+    let restored = std::fs::read(&record).unwrap();
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 90, "h": 90, "qty": 1, "name": "DEMO-PX"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("since this job file read it"), "{e}");
+    assert_eq!(std::fs::read(&record).unwrap(), restored);
+    // Read again after the restore, it saves.
+    let mut c = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let cp = d.join("PC-B again.snjob");
+    call(&mut c, "new", Some(cp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut c, "library", None, json!({"mode": "open", "id": job_id}));
+    call(&mut c, "library", None, json!({"mode": "save-job"}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S6: with Keep 1 day, restoring yesterday's only backup works: the
+/// "before restore" backup removes none past Keep.
+#[test]
+fn restoring_yesterdays_only_backup_with_keep_one_day() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r1_keep1", &clock);
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        let mut f = crate::shop::read(&lib).unwrap().unwrap();
+        f.backups.keep_days = 1;
+        crate::shop::write(&lib, &f, &lock, crate::updates::VERSION).unwrap();
+    }
+    clock.advance(std::time::Duration::from_secs(86400 + 60));
+    let done = restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    assert_eq!(backup_names(&lib, &lib.join("Backups")), vec![chosen, done.done.before.name.clone()]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S7: a backup whose shop file a newer version wrote is refused, though
+/// the shop file is never taken from a backup.
+#[test]
+fn a_backup_whose_shop_file_a_newer_version_wrote_is_refused() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_newer_shop", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("shop.json", br#"{"program_version": "9.0.0", "name": "Acme"}"#)]);
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &name, &clock).err().expect("restored a backup with a newer shop file");
+    assert!(e.contains("shop.json") && e.contains("9.0.0") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S8: a zip naming one file twice (its reader keeps only one) is refused.
+#[test]
+fn a_backup_naming_a_file_twice_is_refused() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_twice", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("DUPA.txt", b"first"), ("DUPB.txt", b"second")]);
+    let p = lib.join("Backups").join(&name);
+    let mut b = std::fs::read(&p).unwrap();
+    for i in 0..b.len() - 8 {
+        if &b[i..i + 8] == b"DUPB.txt" {
+            b[i + 3] = b'A';
+        }
+    }
+    std::fs::write(&p, b).unwrap();
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &name, &clock).err().expect("restored a zip naming a file twice");
+    assert!(e.contains("more than once") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S9: reading a big backup over a slow share renews the lock as it goes,
+/// so the restore keeps its lease: every read of an entry takes 40% of the
+/// lock's 30 s time to write, played on the lock's own clock (no real
+/// sleeps, so a loaded machine changes nothing), and the restore of 7
+/// entries, each read twice, still goes through. Without renewing while it
+/// reads, the third read runs the time out.
+#[test]
+fn reading_a_big_backup_keeps_the_lock() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_lease", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let files: Vec<(String, Vec<u8>)> = (0..6).map(|i| (format!("Notes/{i}.json"), b"{}".to_vec())).collect();
+    let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
+    all.extend(files.iter().map(|(n, b)| (n.as_str(), b.as_slice())));
+    let name = crafted_backup(&lib, &clock, &all);
+    let reads = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let r2 = reads.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: entry read" {
+            r2.set(r2.get() + 1);
+            crate::shared::play_time(crate::shared::HOLD_FOR * 4 / 10);
+        }
+    });
+    let r = restore_as(&lib, "PC-A", &name, &clock);
+    crate::shared::hooks::clear();
+    r.unwrap();
+    // The chosen backup and the "before restore" one were both read
+    // through: far more than the lock's time to write, played.
+    assert!(reads.get() >= 14, "only {} reads were played", reads.get());
+    assert!(lib.join("Notes").join("5.json").is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S10: the number of a record the restore takes out is kept taken before
+/// it is taken out, and a deleted record's mark that is there now stays.
+#[test]
+fn the_numbers_of_records_a_restore_takes_out_are_kept_first() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, mut s, lib, chosen) = restore_shop("restore_r1_marks", &clock);
+    let jp = d.join("DEMO-002 brackets.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 4, "name": "DEMO-P2"}));
+    let new_id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    let rec = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, new_id);
+    let mark = PathBuf::from(format!("{}.deleted", rec.display()));
+    // A mark that's there now, of a record the backup holds.
+    let old_mark = lib.join("Jobs").join("0").join("1.snjob.deleted");
+    std::fs::write(&old_mark, b"").unwrap();
+    let marked_first = std::rc::Rc::new(std::cell::Cell::new(None));
+    let (m2, r2, seen) = (mark.clone(), rec.clone(), marked_first.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: removing" && r2.exists() && seen.get().is_none() {
+            seen.set(Some(m2.exists()));
+        }
+    });
+    let r = restore_as(&lib, "PC-A", &chosen, &clock);
+    crate::shared::hooks::clear();
+    r.unwrap();
+    assert_eq!(marked_first.get(), Some(true), "a record was taken out before its number was kept taken");
+    assert!(mark.exists() && !rec.exists());
+    assert!(old_mark.exists(), "a deleted record's mark was removed");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S11: while a restore puts files back, other PCs are told it's running
+/// (not that it stopped); once it stops halfway they're told so, with the
+/// backup that holds the Library as it was; the Backups card says the same
+/// from the shop file.
+#[test]
+fn other_pcs_tell_a_running_restore_from_one_that_stopped() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r1_running", &clock);
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (l2, c2, s2) = (lib.clone(), clock.clone(), seen.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: file put back" && s2.borrow().is_none() {
+            let (l3, c3) = (l2.clone(), c2.clone());
+            let got = std::thread::spawn(move || {
+                let r = crate::shop::read(&l3).unwrap().unwrap().restored.unwrap();
+                let st = super::shop::restore_state(&l3, &r);
+                (st, super::shop::restore_notice(&r, st, &c3))
+            })
+            .join()
+            .unwrap();
+            *s2.borrow_mut() = Some(got);
+        }
+    });
+    crate::backup::RESTORE_STOP_AFTER.with(|x| x.set(Some(2)));
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err();
+    crate::backup::RESTORE_STOP_AFTER.with(|x| x.set(None));
+    crate::shared::hooks::clear();
+    assert!(e.is_some_and(|e| e.contains("stopped halfway")));
+    let (st, note) = seen.borrow().clone().expect("never looked mid-restore");
+    assert_eq!(st, super::shop::RestoreState::Running, "{note}");
+    assert!(note.contains("is being restored") && note.contains("PC-A"), "{note}");
+    let r = crate::shop::read(&lib).unwrap().unwrap().restored.unwrap();
+    let st = super::shop::restore_state(&lib, &r);
+    assert_eq!(st, super::shop::RestoreState::Stopped);
+    let note = super::shop::restore_notice(&r, st, &clock);
+    assert!(note.contains("stopped halfway") && note.contains(&r.before), "{note}");
+    let (warn, line) = crate::settings_ui::restore_line(&r, st, &clock);
+    assert!(warn && line.contains("stopped halfway") && line.contains("before restore"), "{line}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S13: agents' `shop` takes no backup name: restoring is refused whatever
+/// it names.
+#[test]
+fn agents_shop_takes_no_backup_name() {
+    let op = super::ops::find("shop").unwrap();
+    assert!(op.args.iter().all(|a| a.name != "backup"), "shop still takes a backup name");
+    let clock = Clock::at(1_794_216_000);
+    let (d, mut s, _lib, _) = restore_shop("restore_r1_no_arg", &clock);
+    let e = err(&mut s, "shop", json!({"mode": "restore"}));
+    assert!(e.contains("refused for agents"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Review round 2 of the restore (PR #205).
+
+/// S1 rest: a Library holding a name a restore would refuse (here a short
+/// name like `Notes~1.txt`) isn't restored: its "before restore" backup
+/// couldn't be put back. Said up front, naming it; nothing changes.
+#[test]
+fn a_library_holding_a_name_a_restore_refuses_is_not_restored() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r2_names", &clock);
+    std::fs::write(lib.join("Notes~1.txt"), b"a short name").unwrap();
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err().expect("restored a Library whose before restore backup couldn't be put back");
+    assert!(e.contains("Notes~1.txt") && e.contains("Rename it") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S10 rest: a backup that would replace a folder of records with a file,
+/// or a record with a folder, is refused before anything changes: their
+/// numbers must stay taken.
+#[test]
+fn a_backup_changing_the_shape_of_records_is_refused() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r2_shape", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let job = files_under(&lib).into_keys().find(|k| k.ends_with(".snjob")).unwrap().replace('\\', "/");
+    let job_dir = job.rsplit_once('/').unwrap().0.to_string();
+    let before = files_under(&lib);
+    let as_folder = format!("{job}/");
+    for files in [vec![(job_dir.as_str(), b"a file now" as &[u8])], vec![(as_folder.as_str(), b"" as &[u8])]] {
+        let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
+        all.extend(files.clone());
+        let name = crafted_backup(&lib, &clock, &all);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap_or_else(|| panic!("{files:?} was restored over records"));
+        assert!(e.contains("record") && e.contains("Nothing was restored"), "{e}");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+        assert_eq!(files_under(&lib), before, "{files:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S5 rest: a job another PC reads while the restore is recorded but before
+/// its files are in place (same revision as the backup's) gets no
+/// generation the finished restore has: saving it afterwards asks.
+#[test]
+fn a_job_read_while_a_restore_runs_asks_before_saving() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, mut s, lib, chosen) = restore_shop("restore_r2_running_read", &clock);
+    let job_id = call(&mut s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().find(|e| e["kind"] == "job").unwrap()["id"].as_u64().unwrap();
+    let read = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (l2, c2, r2) = (lib.clone(), clock.clone(), read.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: recorded" && r2.borrow().is_none() {
+            let pc_b = crate::library::Library::at(&l2, &Who::new("kim", "PC-B"), &c2);
+            *r2.borrow_mut() = Some(pc_b.load_job(job_id).unwrap());
+        }
+    });
+    clock.advance(std::time::Duration::from_secs(60));
+    let r = restore_as(&lib, "PC-A", &chosen, &clock);
+    crate::shared::hooks::clear();
+    r.unwrap();
+    let job = read.borrow_mut().take().expect("never read mid-restore");
+    let record = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, job_id);
+    let restored = std::fs::read(&record).unwrap();
+    let pc_b = crate::library::Library::at(&lib, &Who::new("kim", "PC-B"), &clock);
+    let got = pc_b.save_job(&job, crate::library::SaveTo::Read(job.library.unwrap()));
+    assert!(matches!(got, Err(crate::library::Refused::Changed(_))), "saved without asking: {got:?}");
+    assert_eq!(std::fs::read(&record).unwrap(), restored);
+    // A shop never restored: saves are as they were (generation 0).
+    assert_eq!(crate::shop::restore_generation(&d.join("library-none")), 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Trying a release and rolling it out (spec #178, UP15–UP22): the admin PC
+// rolls a made-up release out from a made-up release folder; the other PCs
+// install it from the shop folder, never from GitHub.
+// ---------------------------------------------------------------------------
+
+/// Shop Acme in a used test Library, PC-A its admin PC, with `version`
+/// rolled out by sam on PC-A.
+fn rolled_out_shop(d: &Path, version: &str) -> PathBuf {
+    let clock = Clock::at(1_794_216_000);
+    let mut a = used_library(d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    crate::engine::rollout::rollout(&lib, &crate::engine::rollout::fake_release(d, version), &Who::new("sam", "PC-A"), version).unwrap();
+    lib
+}
+
+/// A session on `version`, as `who`, in the Library `lib`.
+fn pc_running(lib: &Path, who: Who, version: &str) -> Session {
+    let mut s = shop_session(lib, who, &Clock::at(1_794_216_600));
+    s.ctx.version = version.into();
+    s
+}
+
+/// UP19, UP21, UP22: rolling a made-up release out copies it into
+/// Updates, keeps the previous one and sets the shop version; another PC
+/// (a second session, at the same time) is then offered the shop version
+/// from Updates, never the newer public release.
+#[test]
+fn a_release_rolled_out_reaches_another_pc_from_the_shop_folder_not_github() {
+    let d = dir("rollout_other_pc");
+    let lib = rolled_out_shop(&d, "0.4.0");
+    let rel = crate::engine::rollout::fake_release(&d, "0.5.0");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.4.0");
+    // GitHub would offer 0.9.0, if a PC in a shop ever read it.
+    b.ctx.releases = fake_releases(&d, json!([{"version": "0.9.0", "notes": ""}]));
+    let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["shop_version"], "0.4.0", "{r}");
+    assert_eq!(r["data"]["from_shop"], Value::Null, "up to date: nothing to install {r}");
+    // The admin PC rolls 0.5.0 out while PC-B keeps looking: PC-B sees the
+    // shop version before or after, never a release half in Updates.
+    std::thread::scope(|t| {
+        let (lib, rel) = (&lib, &rel);
+        t.spawn(move || crate::engine::rollout::rollout(lib, rel, &Who::new("sam", "PC-A"), "0.5.0").unwrap());
+        for _ in 0..20 {
+            let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+            match r["data"]["shop_version"].as_str() {
+                Some("0.4.0") => assert_eq!(r["data"]["from_shop"], Value::Null, "{r}"),
+                Some("0.5.0") => assert_eq!(r["data"]["from_shop"]["version"], "0.5.0", "{r}"),
+                v => panic!("shop version {v:?}: {r}"),
+            }
+        }
+    });
+    let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+    let f = &r["data"]["from_shop"];
+    assert_eq!(f["version"], "0.5.0", "{r}");
+    assert_eq!(f["folder"], lib.join("Updates").join("0.5.0").display().to_string(), "{r}");
+    assert_eq!(f["back"], false, "{r}");
+    assert_eq!(r["data"]["offer"], Value::Null, "a public release was offered in a shop: {r}");
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Update ready, restart when you're done") && m.contains("never from GitHub") && !m.contains("0.9.0"), "{m}");
+    // The shop keeps 0.5.0 and the one before; the PCs list marks PC-B.
+    let st = call(&mut b, "shop", None, json!({}));
+    assert_eq!(st["data"]["shop_version"], "0.5.0", "{st}");
+    assert_eq!(st["data"]["previous_shop_version"], "0.4.0", "{st}");
+    assert_eq!(st["data"]["releases_in_updates"], json!(["0.4.0", "0.5.0"]), "{st}");
+    let pcb = st["data"]["pcs"].as_array().unwrap().iter().find(|p| p["pc"] == "PC-B").cloned().unwrap();
+    assert_eq!((pcb["behind"].as_bool(), pcb["ahead"].as_bool()), (Some(true), Some(false)), "{pcb}");
+    // PC-A recorded itself on this program's own version when it started
+    // the shop, older than 0.5.0 too.
+    assert!(st["message"].as_str().unwrap().contains("Shop version 0.5.0; behind it: PC-A, PC-B."), "{st}");
+    // What PC-B chose to install stands only while 0.5.0 is the shop
+    // version: once the shop moves on, nothing installs on close.
+    let c = crate::updates::Chosen { version: "0.5.0".into(), dir: lib.clone(), own: d.join("own"), src: crate::updates::Source::Folder(lib.join("Updates").join("0.5.0")), why: crate::updates::Why::Shop };
+    assert_eq!(c.stands(), Ok(()));
+    let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+    let n = h.start(c.clone());
+    h.done(n, true);
+    let mut applied = None;
+    let r = crate::updates::finish_on_close(h, std::time::Duration::from_secs(1), |c| {
+        applied = Some(c.src.clone());
+        Ok(())
+    });
+    assert_eq!(r, Ok(Some("0.5.0".into())));
+    assert_eq!(applied, Some(crate::updates::Source::Folder(lib.join("Updates").join("0.5.0"))));
+    crate::engine::rollout::rollout(&lib, &crate::engine::rollout::fake_release(&d, "0.6.0"), &Who::new("sam", "PC-A"), "0.6.0").unwrap();
+    assert!(matches!(c.stands(), Err(crate::updates::NotStandalone::Moved(e)) if e.contains("0.6.0")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP19: an agent asking to roll out is refused with the reason, and
+/// nothing changes; reading the shop version and the PCs' versions is
+/// allowed.
+#[test]
+fn an_agent_asking_to_roll_out_is_refused_with_the_reason() {
+    let d = dir("rollout_agent");
+    let lib = rolled_out_shop(&d, "0.4.0");
+    let before = files_under(&lib);
+    let mut a = pc_running(&lib, Who::new("sam", "PC-A").as_agent(), "0.5.0");
+    let e = err(&mut a, "shop", json!({"mode": "rollout"}));
+    assert_eq!(e, crate::engine::rollout::AGENT_ROLLOUT);
+    assert_eq!(files_under(&lib), before, "a refused roll out changed the shop folder");
+    let st = call(&mut a, "shop", None, json!({}));
+    assert_eq!(st["data"]["shop_version"], "0.4.0", "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+fn moved_machines(dir: &Path, lock: &crate::shared::WriteLock) -> Result<(), String> {
+    crate::shared::write_existing(&dir.join("machines-moved.txt"), b"moved", lock)
+}
+
+/// A made-up one-time change of release 0.5.0 (UP18).
+const MOVE_MACHINES: &[crate::engine::rollout::OneTimeChange] = &[crate::engine::rollout::OneTimeChange { name: "machines-into-shop", release: "0.5.0", what: "Moves the machines into the shop", run: moved_machines }];
+
+/// UP16, UP18, UP21: a session in a trial works on the trial copy: its
+/// saves, stock changes and the release's one-time changes land in the
+/// copy, and the shop folder stays byte-for-byte as it was. The same PC on
+/// the shop itself, newer than the shop version, saves nothing there. When
+/// the shop rolls a release out meanwhile, the trial is over.
+#[test]
+fn a_trial_works_on_a_copy_and_never_changes_the_shop_folder() {
+    use crate::engine::rollout::{self, TrialNow};
+    let d = dir("rollout_trial");
+    let lib = rolled_out_shop(&d, "0.4.0");
+    let sam = Who::new("sam", "PC-A");
+    // Only the admin PC tries a release, and only one newer than the shop's.
+    assert!(rollout::start_trial(&lib, &d.join("Trials"), "0.5.0", &Who::new("kim", "PC-B"), &Clock::at(1_794_216_600), "0.4.0", &Default::default()).unwrap_err().contains("admin PC (PC-A)"));
+    assert!(rollout::start_trial(&lib, &d.join("Trials"), "0.4.0", &sam, &Clock::at(1_794_216_600), "0.4.0", &Default::default()).unwrap_err().contains("isn't newer"));
+    let t = rollout::start_trial(&lib, &d.join("Trials"), "0.5.0", &sam, &Clock::at(1_794_216_600), "0.4.0", &Default::default()).unwrap();
+    assert!(t.copy.starts_with(d.join("Trials")) && t.backup.starts_with(lib.join("Backups")), "{t:?}");
+    let shop_now = files_under(&lib);
+    // The copy is the shop's Library, marked as a trial.
+    assert!(t.copy.join("Jobs").is_dir() && t.copy.join("Sheets").is_dir(), "{:?}", files_under(&t.copy).keys());
+    assert_eq!(rollout::trial_now(&t.copy, "0.4.0"), TrialNow::Trying { mark: t.mark.clone(), installed: false });
+    // After the restart this PC runs 0.5.0: the release's one-time changes
+    // run on the copy, once.
+    assert_eq!(rollout::trial_changes_with(&t.copy, "0.5.0", MOVE_MACHINES).unwrap(), ["Moves the machines into the shop"]);
+    assert!(rollout::trial_changes_with(&t.copy, "0.5.0", MOVE_MACHINES).unwrap().is_empty());
+    assert!(t.copy.join("machines-moved.txt").is_file());
+    // Work in the trial: a job saved to the Library, stock, the PCs list.
+    let mut s = pc_running(&t.copy, sam.clone().as_agent(), "0.5.0");
+    call(&mut s, "new", Some(d.join("DEMO-002 trial.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1, "name": "DEMO-P2"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S2", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    call(&mut s, "shop", None, json!({}));
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(files_under(&lib), shop_now, "the trial changed the shop folder");
+    // S2: nothing the trial writes may land in the real shop folder: a job
+    // file, a program, a picture.
+    let in_shop = lib.join("DEMO-009 in the shop.snjob");
+    let e = s.call("new", Some(in_shop.to_str().unwrap()), &json!({"w": 2000, "h": 1000, "thickness": 3})).map(|r| r.json.to_string()).unwrap_err();
+    assert!(e.contains("this PC is trying a release on a copy of the shop"), "{e}");
+    call(&mut s, "nest", None, json!({}));
+    let e = err(&mut s, "export", json!({"dir": lib.join("Programs").to_str().unwrap()}));
+    assert!(e.contains("this PC is trying a release on a copy of the shop"), "{e}");
+    let e = err(&mut s, "render", json!({"out": lib.join("sheet.png").to_str().unwrap()}));
+    assert!(e.contains("this PC is trying a release on a copy of the shop"), "{e}");
+    assert_eq!(files_under(&lib), shop_now, "the trial changed the shop folder");
+    // The same PC on the shop itself (not a trial), newer than the shop
+    // version: the shop folder is read-only on it (UP21); a job file
+    // elsewhere (the desktop) is its own and saves.
+    let mut on_shop = pc_running(&lib, sam.clone().as_agent(), "0.5.0");
+    let job3 = d.join("DEMO-003.snjob");
+    call(&mut on_shop, "new", Some(job3.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let e = err(&mut on_shop, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0."), "{e}");
+    let e = on_shop.call("new", Some(lib.join("DEMO-004.snjob").to_str().unwrap()), &json!({"w": 2000, "h": 1000, "thickness": 3})).map(|r| r.json.to_string()).unwrap_err();
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    let e = err(&mut on_shop, "stock", json!({"mode": "create", "ref": "S3", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    // S9: it starts no backup in the shop either; its own record is kept,
+    // so the PCs list shows it ahead.
+    let e = err(&mut on_shop, "shop", json!({"mode": "backup"}));
+    assert!(e.contains("Restart to go back to 0.4.0") && e.contains("No backup was taken"), "{e}");
+    let st = call(&mut on_shop, "shop", None, json!({}));
+    assert_eq!(st["data"]["this_pc_recorded"], true, "{st}");
+    let me = st["data"]["pcs"].as_array().unwrap().iter().find(|p| p["pc"] == "PC-A").cloned().unwrap();
+    assert_eq!((me["version"].as_str(), me["ahead"].as_bool()), (Some("0.5.0"), Some(true)), "{me}");
+    let r = call(&mut on_shop, "shop", None, json!({"mode": "updates"}));
+    assert_eq!((r["data"]["from_shop"]["version"].as_str(), r["data"]["from_shop"]["back"].as_bool()), (Some("0.4.0"), Some(true)), "{r}");
+    // Rolling 0.5.0 out makes the change on the shop itself, and ends the
+    // trial (the shop moved on).
+    let out = rollout::rollout_with(&lib, &rollout::fake_release(&d, "0.5.0"), &sam, "0.5.0", MOVE_MACHINES).unwrap();
+    assert_eq!(out.changes, ["Moves the machines into the shop"]);
+    assert!(lib.join("machines-moved.txt").is_file());
+    assert!(matches!(rollout::trial_now(&t.copy, "0.5.0"), TrialNow::Over { said, .. } if said.contains("rolled out 0.5.0")));
+    // Now on the shop version, the same PC saves in the shop again.
+    call(&mut on_shop, "library", None, json!({"mode": "save-job"}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Rolling the shop back (spec #178, ticket #186: UP23–UP26): the admin PC
+// makes the previous release kept in Updates the shop version again.
+// ---------------------------------------------------------------------------
+
+/// The shop of `rolled_out_shop` with `later` rolled out after `first`.
+fn shop_rolled_to(d: &Path, first: &str, later: &str) -> PathBuf {
+    let lib = rolled_out_shop(d, first);
+    crate::engine::rollout::rollout(&lib, &crate::engine::rollout::fake_release(d, later), &Who::new("sam", "PC-A"), later).unwrap();
+    lib
+}
+
+/// UP23: with no layout change, roll back makes the previous release the
+/// shop version again; another PC on the release left is offered it from
+/// Updates (going back), and one on it is up to date.
+#[test]
+fn rolling_back_makes_the_previous_release_the_shop_version_and_other_pcs_are_offered_it() {
+    let d = dir("rollback_plain");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let back = crate::engine::rollout::rollback(&lib, &Who::new("sam", "PC-A"), "0.5.0").unwrap();
+    assert_eq!((back.from.as_str(), back.to.as_str()), ("0.5.0", "0.4.0"));
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["shop_version"], "0.4.0", "{r}");
+    let f = &r["data"]["from_shop"];
+    assert_eq!((f["version"].as_str(), f["back"].as_bool()), (Some("0.4.0"), Some(true)), "{r}");
+    assert_eq!(f["folder"], lib.join("Updates").join("0.4.0").display().to_string(), "{r}");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let r = call(&mut c, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["from_shop"], Value::Null, "the shop version's PC was offered something: {r}");
+    // Both releases stay in Updates (0.5.0 can be rolled out again); there
+    // is nothing further back to go to.
+    let st = call(&mut c, "shop", None, json!({}));
+    assert_eq!(st["data"]["releases_in_updates"], json!(["0.4.0", "0.5.0"]), "{st}");
+    assert_eq!(st["data"]["previous_shop_version"], Value::Null, "{st}");
+    assert_eq!(st["data"]["rolled_back_from"], json!(["0.5.0"]), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// sam on PC-A, the admin PC: a person in the window.
+fn admin() -> Who {
+    Who::new("sam", "PC-A")
+}
+
+/// Roll out `version` from a made-up release folder, as PC-A running it.
+fn roll_out(lib: &Path, d: &Path, version: &str) {
+    crate::engine::rollout::rollout(lib, &crate::engine::rollout::fake_release(d, version), &admin(), version).unwrap();
+}
+
+/// A job `name` saved by a PC on `version` into the Library: its job file
+/// in the folder `d` and its Library record. Gives the job file.
+fn job_saved_on(lib: &Path, d: &Path, version: &str, name: &str) -> PathBuf {
+    let jp = d.join(format!("{name}.snjob"));
+    let mut s = pc_running(lib, Who::new("kim", "PC-B").as_agent(), version);
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1, "name": "DEMO-P1"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(crate::shared::recorded_version(&std::fs::read(&jp).unwrap()).as_deref(), Some(version));
+    jp
+}
+
+/// The job file `jp` opens on a PC running `version` and saves there: not
+/// read-only, a change saved to the file and to the Library.
+fn opens_and_saves(lib: &Path, jp: &Path, version: &str, new_name: &str) {
+    let mut s = pc_running(lib, Who::new("lee", "PC-C").as_agent(), version);
+    let job = jp.to_str().unwrap();
+    let info = call(&mut s, "info", Some(job), json!({}));
+    assert!(info.get("read_only").is_none(), "read-only on {version}: {info}");
+    call(&mut s, "rename", Some(job), json!({"name": new_name}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(crate::shared::recorded_version(&std::fs::read(jp).unwrap()).as_deref(), Some(version));
+}
+
+/// UP25: after a roll back, a job the release left saved opens and saves
+/// normally on the shop version, and so does the stock it last wrote.
+#[test]
+fn after_a_roll_back_a_job_saved_by_the_release_left_saves_on_the_shop_version() {
+    let d = dir("rollback_job");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S5", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    // Before the roll back the job is newer than 0.4.0: read-only there.
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let info = call(&mut c, "info", Some(jp.to_str().unwrap()), json!({}));
+    assert!(info["read_only"].is_string(), "{info}");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    opens_and_saves(&lib, &jp, "0.4.0", "DEMO-001 on 0.4.0");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    call(&mut c, "stock", None, json!({"mode": "create", "ref": "S2", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    // The shop file too: a PC on the shop version changes it again.
+    let mut sam = crate::backup::Settings::default();
+    crate::engine::shop::set_backup_settings(&lib, &mut sam, &admin(), &crate::backup::Settings { keep_days: 20, second_place: String::new() }, "0.4.0").unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP25: rolled back from 0.5.0, then 0.6.0 rolled out and rolled back
+/// too: a job 0.5.0 saved last still saves on the shop version, and the
+/// list keeps both releases.
+#[test]
+fn rolling_back_twice_keeps_every_release_rolled_back_from() {
+    let d = dir("rollback_twice");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let j5 = job_saved_on(&lib, &lib, "0.5.0", "DEMO-005");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    roll_out(&lib, &d, "0.6.0");
+    let j6 = job_saved_on(&lib, &lib, "0.6.0", "DEMO-006");
+    let back = crate::engine::rollout::rollback(&lib, &admin(), "0.6.0").unwrap();
+    assert_eq!((back.from.as_str(), back.to.as_str()), ("0.6.0", "0.4.0"));
+    opens_and_saves(&lib, &j5, "0.4.0", "DEMO-005 again");
+    opens_and_saves(&lib, &j6, "0.4.0", "DEMO-006 again");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let st = call(&mut c, "shop", None, json!({}));
+    assert_eq!(st["data"]["rolled_back_from"], json!(["0.5.0", "0.6.0"]), "{st}");
+    // There is nothing further back: roll back again is refused.
+    let e = crate::engine::rollout::rollback(&lib, &admin(), "0.4.0").unwrap_err();
+    assert_eq!(e, "The shop keeps no release before 0.4.0 to go back to. Restore a backup instead. Nothing was changed.");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP21, UP26: a PC still on the release left (not in a trial) finds the
+/// shop read-only with "Restart to go back to 0.4.0" until it has
+/// installed it; on the release kept, it saves again.
+#[test]
+fn a_pc_still_on_the_release_left_opens_the_shop_read_only_with_the_restart_message() {
+    let d = dir("rollback_left");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    // A job kept in the shop folder, and one on the desktop.
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    let own = job_saved_on(&lib, &d, "0.5.0", "DEMO-002");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let job = jp.to_str().unwrap();
+    let info = call(&mut b, "info", Some(job), json!({}));
+    assert_eq!(info["read_only"], "This job is read-only on this PC. This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0.", "{info}");
+    let e = b.call("rename", Some(job), &json!({"name": "DEMO-001 x"})).err().expect("a PC on the release left saved into the shop");
+    assert!(e.contains("Restart to go back to 0.4.0") && e.contains("Nothing was saved"), "{e}");
+    // Its own job file outside the shop folder saves; the Library doesn't.
+    call(&mut b, "rename", Some(own.to_str().unwrap()), json!({"name": "DEMO-002 x"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    let e = err(&mut b, "stock", json!({"mode": "create", "ref": "S3", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+    assert!(r["message"].as_str().unwrap().contains("Restart to go back to 0.4.0"), "{r}");
+    // Once it runs 0.4.0 again (installed when its program closed).
+    opens_and_saves(&lib, &jp, "0.4.0", "DEMO-001 back");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP21 (review S5): a PC on the release the shop rolled back from changes
+/// no folder in the shop: making or renaming a job or part folder and
+/// moving a saved job are refused with the restart message, and the folder
+/// trees stay as they were. On the shop version it changes them.
+#[test]
+fn a_pc_on_the_release_left_changes_no_library_folder() {
+    let d = dir("rollback_folders");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    let mut a = pc_running(&lib, admin().as_agent(), "0.5.0");
+    call(&mut a, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    call(&mut a, "part-folders", None, json!({"mode": "new", "name": "Brackets"}));
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let trees = || [crate::library::Kind::Job, crate::library::Kind::Product].map(|k| std::fs::read(lib.join(crate::folders::file_name(k))).unwrap());
+    let before = trees();
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    for (op, args) in [
+        ("job-folders", json!({"mode": "new", "name": "Beta"})),
+        ("job-folders", json!({"mode": "rename", "folder": "Acme", "name": "Acme 2"})),
+        ("job-folders", json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme"})),
+        ("part-folders", json!({"mode": "new", "name": "Beta"})),
+        ("part-folders", json!({"mode": "rename", "folder": "Brackets", "name": "Brackets 2"})),
+    ] {
+        let e = err(&mut b, op, args.clone());
+        assert!(e.contains("Restart to go back to 0.4.0"), "{op} {args}: {e}");
+    }
+    assert_eq!(trees(), before, "a PC on the release left changed the Library's folders");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    call(&mut c, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme"}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP7, UP21 (review S9): `program out=` is never written over a job file
+/// or a Library record (the stock, the list), as `render` and
+/// `export-part-dxf` aren't; a PC on the release the shop rolled back from
+/// writes no program into the shop folder, and writes one elsewhere.
+#[test]
+fn a_program_is_never_written_over_the_librarys_files_nor_into_a_read_only_shop() {
+    let d = dir("program_out");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let jp = job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    let mut s = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.5.0");
+    let job = jp.to_str().unwrap();
+    call(&mut s, "nest", Some(job), json!({}));
+    for out in [crate::stock::Stock::file(&lib), jp.clone(), lib.join("index.json")] {
+        let before = std::fs::read(&out).unwrap();
+        let e = s.call("program", Some(job), &json!({"sheet": 1, "out": out.to_str().unwrap()})).err().expect("a program was written over a Library file");
+        assert!(e.contains("Pick another out") && e.contains("Nothing was written"), "{e}");
+        assert_eq!(std::fs::read(&out).unwrap(), before, "{}", out.display());
+    }
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let into_shop = lib.join("DEMO-001 sheet 1.cnc");
+    let e = b.call("program", Some(job), &json!({"sheet": 1, "out": into_shop.to_str().unwrap()})).err().expect("a PC on the release left wrote into the shop");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    assert!(!into_shop.exists());
+    let own = d.join("DEMO-001 sheet 1.cnc");
+    call(&mut b, "program", Some(job), json!({"sheet": 1, "out": own.to_str().unwrap()}));
+    assert!(own.is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP27 (review S11): the shop file can't be read (damaged) while the
+/// Library's records can. Its shop version isn't known, so a PC on the
+/// release the shop rolled back from saves nothing in the shop: not a job
+/// over its record, not the stock, not a folder, not a program, each
+/// refused naming the shop file. Its own job file outside the shop saves.
+/// Readable again, the restart message is back.
+#[test]
+fn a_shop_file_that_cant_be_read_lets_nothing_be_written_in_the_shop() {
+    let d = dir("shop_file_unreadable");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let jp = job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let shop = lib.join(crate::shop::FILE);
+    let good = std::fs::read(&shop).unwrap();
+    std::fs::write(&shop, b"{ damaged").unwrap();
+    let before = files_under(&lib);
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let job = jp.to_str().unwrap();
+    call(&mut b, "rename", Some(job), json!({"name": "DEMO-001 x"}));
+    call(&mut b, "nest", Some(job), json!({}));
+    let cant = format!("The shop file {} can't be read", shop.display());
+    for (op, args) in [
+        ("library", json!({"mode": "save-job"})),
+        ("stock", json!({"mode": "create", "ref": "S3", "w": 1500, "h": 750, "thickness": 3, "qty": 1})),
+        ("job-folders", json!({"mode": "new", "name": "Beta"})),
+        ("program", json!({"sheet": 1, "out": lib.join("DEMO-001.cnc").to_str().unwrap()})),
+    ] {
+        let e = b.call(op, Some(job), &args).err().unwrap_or_else(|| panic!("{op} {args} wrote in the shop"));
+        assert!(e.contains(&cant) && e.contains("Nothing was saved"), "{op} {args}: {e}");
+    }
+    assert_eq!(files_under(&lib), before, "something was written in the shop");
+    std::fs::write(&shop, &good).unwrap();
+    let e = b.call("library", Some(job), &json!({"mode": "save-job"})).err().expect("saved into the shop");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP25: 0.5.0 rolled out again after the shop rolled back from it: a
+/// session on 0.5.0 works normally, and a PC still on 0.4.0 is behind again
+/// (what 0.5.0 saves is read-only there).
+#[test]
+fn rolling_out_the_release_left_again_works_normally_on_it() {
+    let d = dir("rollback_again");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    opens_and_saves(&lib, &jp, "0.4.0", "DEMO-001 on 0.4.0");
+    // The packages kept in Updates roll it out again.
+    let kept = crate::engine::rollout::release_dir(&lib, "0.5.0");
+    crate::engine::rollout::rollout(&lib, &kept, &admin(), "0.5.0").unwrap();
+    let mut a = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let r = call(&mut a, "shop", None, json!({"mode": "updates"}));
+    assert_eq!((r["data"]["shop_version"].as_str(), &r["data"]["from_shop"]), (Some("0.5.0"), &Value::Null), "{r}");
+    opens_and_saves(&lib, &jp, "0.5.0", "DEMO-001 on 0.5.0");
+    call(&mut a, "stock", None, json!({"mode": "create", "ref": "S4", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let info = call(&mut c, "info", Some(jp.to_str().unwrap()), json!({}));
+    assert_eq!(info["read_only"], "This job is read-only on this PC. Made by version 0.5.0. Update this PC: the shop is on 0.5.0.", "{info}");
+    // And it can be rolled back again, to 0.4.0.
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap().to, "0.4.0");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The shop file's layouts set by hand: the release kept for roll back
+/// wrote jobs in an older layout than the shop version does.
+fn kept_release_wrote_older_jobs(lib: &Path) {
+    edit_shop_file(lib, |v| {
+        let jobs = v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["jobs"].as_u64().unwrap();
+        v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["jobs"] = json!(jobs - 1);
+    });
+}
+
+/// The shop file of `lib`, changed by hand.
+fn edit_shop_file(lib: &Path, f: impl FnOnce(&mut Value)) {
+    let p = lib.join(crate::shop::FILE);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    f(&mut v);
+    std::fs::write(&p, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+}
+
+/// UP24: roll back after the shop's files were saved in a layout the
+/// release kept can't read is refused, with the message, and changes
+/// nothing: the warning is refused alike.
+#[test]
+fn rolling_back_after_a_newer_layout_was_written_is_refused_and_changes_nothing() {
+    let d = dir("rollback_layout");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    kept_release_wrote_older_jobs(&lib);
+    let before = files_under(&lib);
+    let want = "Jobs were saved in a layout 0.4.0 can't read. Restore a backup instead. Nothing was changed.";
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap_err(), want);
+    assert_eq!(crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err(), want);
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    // A kind the release kept reads in no layout it can read: refused.
+    edit_shop_file(&lib, |v| v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["stock"] = json!(0));
+    assert_eq!(crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err(), "Jobs and the sheet stock were saved in a layout 0.4.0 can't read. Restore a backup instead. Nothing was changed.");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP23: an agent asking to roll back is refused with the reason, and
+/// nothing changes; the agent still reads what roll back would go to.
+#[test]
+fn an_agent_asking_to_roll_back_is_refused_with_the_reason() {
+    let d = dir("rollback_agent");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let before = files_under(&lib);
+    let mut a = pc_running(&lib, Who::new("sam", "PC-A").as_agent(), "0.5.0");
+    assert_eq!(err(&mut a, "shop", json!({"mode": "rollback"})), crate::engine::rollout::AGENT_ROLLBACK);
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    // The engine refuses an agent whatever is asked.
+    assert_eq!(crate::engine::rollout::rollback(&lib, &admin().as_agent(), "0.5.0").unwrap_err(), crate::engine::rollout::AGENT_ROLLBACK);
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin().as_agent(), "0.5.0").unwrap_err(), crate::engine::rollout::AGENT_ROLLBACK);
+    let st = call(&mut a, "shop", None, json!({}));
+    assert_eq!((st["data"]["shop_version"].as_str(), st["data"]["previous_shop_version"].as_str()), (Some("0.5.0"), Some("0.4.0")), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP23: what else roll back refuses, each changing nothing: no release
+/// kept, the release kept's packages missing or partial, another PC than
+/// the admin PC, a PC on a third version, and a one-time change the
+/// release kept doesn't know.
+#[test]
+fn roll_back_refuses_without_a_whole_release_kept_or_from_the_wrong_pc() {
+    use crate::engine::rollout::{self, OneTimeChange};
+    let d = dir("rollback_refused");
+    // Only one release rolled out: nothing kept.
+    let lone = rolled_out_shop(&d.join("lone"), "0.4.0");
+    assert!(rollout::rollback(&lone, &admin(), "0.4.0").unwrap_err().contains("keeps no release before 0.4.0"));
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let before = files_under(&lib);
+    let e = rollout::rollback(&lib, &Who::new("kim", "PC-B"), "0.5.0").unwrap_err();
+    assert_eq!(e, "Rolling back is done on the admin PC (PC-A). Nothing was rolled back.");
+    let e = rollout::rollback(&lib, &admin(), "0.6.0").unwrap_err();
+    assert!(e.contains("This PC runs 0.6.0") && e.contains("Nothing was rolled back"), "{e}");
+    // A one-time change of 0.5.0 made on the shop: 0.4.0 doesn't know it.
+    fn nothing(_: &Path, _: &crate::shared::WriteLock) -> Result<(), String> {
+        Ok(())
+    }
+    const MOVED: &[OneTimeChange] = &[OneTimeChange { name: "machines-into-shop", release: "0.5.0", what: "Moves the machines into the shop", run: nothing }];
+    let f = lib.join(crate::shop::FILE);
+    let shop_file = std::fs::read(&f).unwrap();
+    let mut v: Value = serde_json::from_slice(&shop_file).unwrap();
+    v[crate::shop::CHANGES_MADE] = json!(["machines-into-shop"]);
+    std::fs::write(&f, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let e = rollout::rollback_with(&lib, &admin(), "0.5.0", MOVED, None).unwrap_err();
+    assert_eq!(e, "0.5.0 changed the shop's files in a way 0.4.0 doesn't know about (Moves the machines into the shop). Restore a backup instead. Nothing was changed.");
+    std::fs::write(&f, &shop_file).unwrap();
+    // The release kept's package is missing, then only its index.
+    let kept = rollout::release_dir(&lib, "0.4.0");
+    let pkg = kept.join("KurfLabs.nestpro-0.4.0-full.nupkg");
+    let bytes = std::fs::read(&pkg).unwrap();
+    std::fs::remove_file(&pkg).unwrap();
+    let e = rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err();
+    assert!(e.starts_with("0.4.0's packages aren't whole in the shop folder's Updates") && e.contains(&kept.display().to_string()) && e.ends_with("Nothing was changed."), "{e}");
+    // Partial: a copy that stopped halfway (its size and checksum differ).
+    std::fs::write(&pkg, &bytes[..bytes.len() / 2]).unwrap();
+    let e = rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err();
+    assert!(e.contains("aren't whole") && e.contains("incomplete or damaged"), "{e}");
+    std::fs::write(&pkg, &bytes).unwrap();
+    let idx = std::fs::read(kept.join(rollout::INDEX)).unwrap();
+    std::fs::remove_file(kept.join(rollout::INDEX)).unwrap();
+    assert!(rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err().contains("aren't whole"));
+    std::fs::write(kept.join(rollout::INDEX), &idx).unwrap();
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    // Whole again: it goes through, on the admin PC running the release
+    // kept too (its shop file is then written by 0.4.0, over 0.5.0's).
+    rollout::rollback(&lib, &admin(), "0.4.0").unwrap();
+    assert_eq!(crate::shop::read(&lib).unwrap().unwrap().shop_version(), Some("0.4.0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP23, UP17: the admin PC rolls back while it is trying a release (not
+/// restarted yet, so it runs the shop version): the trial copy is never
+/// written, and the trial is over (the shop moved on). From the trial copy
+/// itself, roll back is refused.
+#[test]
+fn a_roll_back_during_a_trial_never_touches_the_copy_and_ends_the_trial() {
+    use crate::engine::rollout::{self, TrialNow};
+    let d = dir("rollback_trial");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let t = rollout::start_trial(&lib, &d.join("Trials"), "0.6.0", &admin(), &Clock::at(1_794_216_600), "0.5.0", &Default::default()).unwrap();
+    let copy = files_under(&t.copy);
+    assert!(rollout::rollback(&t.copy, &admin(), "0.5.0").unwrap_err().contains("is a trial copy, not the shop. Stop trying first."));
+    // Running the tried release, the admin PC can't roll back.
+    assert!(rollout::rollback(&lib, &admin(), "0.6.0").unwrap_err().contains("This PC runs 0.6.0"));
+    rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    assert_eq!(files_under(&t.copy), copy, "the roll back changed the trial copy");
+    assert!(matches!(rollout::trial_now(&t.copy, "0.5.0"), TrialNow::Over { said, .. } if said.contains("rolled back to 0.4.0")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP23, LB1: the admin PC rolls back while another PC saves into the
+/// shop at the same moment: both go through the write lock, the roll back
+/// lands, and the other PC's save is either before it (on 0.5.0) or
+/// refused after it (it runs 0.5.0, newer than the shop version), never
+/// half.
+#[test]
+fn a_roll_back_while_another_pc_saves_lands_whole() {
+    let d = dir("rollback_two_pcs");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    std::thread::scope(|t| {
+        let l = &lib;
+        t.spawn(move || crate::engine::rollout::rollback(l, &admin(), "0.5.0").unwrap());
+        let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+        for i in 0..10 {
+            let r = b.call("stock", None, &json!({"mode": "create", "ref": format!("R{i}"), "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+            if let Err(e) = r {
+                assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+            }
+        }
+    });
+    let s = crate::shop::read(&lib).unwrap().unwrap();
+    assert_eq!((s.shop_version(), s.rolled_back_from()), (Some("0.4.0"), vec!["0.5.0".to_string()]));
+    // The stock it saved on 0.5.0 before the roll back saves on 0.4.0.
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    call(&mut c, "stock", None, json!({"mode": "create", "ref": "S-after", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP24 (review S7): the warning before Roll back: what may be lost, every
+/// kind of shop record roll back makes saveable again named, each PC that
+/// finds the shop read-only until it goes back (this PC named), each PC
+/// that installs it, and that the release left stays in Updates.
+#[test]
+fn the_roll_back_warning_names_what_may_be_lost_and_the_pcs() {
+    let d = dir("rollback_warning");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let c = Clock::at(1_794_216_600);
+    for (who, v) in [(admin(), "0.5.0"), (Who::new("kim", "PC-B"), "0.5.0"), (Who::new("lee", "PC-C"), "0.4.0"), (Who::new("max", "PC-D"), "0.3.2")] {
+        crate::engine::shop::record_pc(&lib, &who, &c, v).unwrap();
+    }
+    let ask = crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap();
+    assert_eq!(
+        ask.lines,
+        [
+            "Jobs, library parts, the Library's list, the sheet stock, the material list and the shop file saved since 0.5.0 was rolled out may lose what only 0.5.0 knew about them when saved again.",
+            "PC-A (this PC) is on 0.5.0: it opens the shop read-only until it goes back to 0.4.0 (when its program closes).",
+            "PC-B is on 0.5.0: it opens the shop read-only until it goes back to 0.4.0 (when its program closes).",
+            "PC-D is on 0.3.2: it installs 0.4.0 from the shop folder when its program closes.",
+            "0.5.0 stays in the shop folder's Updates, so it can be rolled out again.",
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP26 (review S1): the shop is rolled back while an agent's change waits
+/// for the write lock: the shop version is read again under the lock, so a
+/// session on the release left writes nothing into the shop: an XML import
+/// into the shop folder, and a change to the shop's material list.
+#[test]
+fn a_roll_back_landing_while_an_agents_change_waits_leaves_the_shop_untouched() {
+    let d = dir("rollback_while_waiting");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    std::fs::write(d.join("brk.dxf"), crate::dxf::SAMPLE_DXF).unwrap();
+    let xml = d.join("order-77.xml");
+    std::fs::write(&xml, r#"<?xml version="1.0"?><Import>
+  <Product Reference="DEMO-12" Material="Mild steel" Thickness="3" Quantity="4" Fich="brk.dxf"/>
+</Import>"#).unwrap();
+    let out = lib.join("Imported");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let l2 = lib.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "xml import: checked" {
+            crate::engine::rollout::rollback(&l2, &admin(), "0.5.0").unwrap();
+        }
+    });
+    let e = b.call("import-xml", None, &json!({"path": xml.to_str().unwrap(), "dir": out.to_str().unwrap()})).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("the import wrote into the shop after it was rolled back");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    assert_eq!(std::fs::read_dir(&out).map(|r| r.count()).unwrap_or(0), 0, "a job file was written");
+    // The material list, as the shop's admin rolls back from 0.6.0.
+    roll_out(&lib, &d, "0.6.0");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.6.0");
+    let list = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list).ok();
+    let l3 = lib.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "materials: before lock" {
+            crate::engine::rollout::rollback(&l3, &admin(), "0.6.0").unwrap();
+        }
+    });
+    let e = c.call("material", None, &json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"})).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("the material list was changed after the shop was rolled back");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    assert_eq!(std::fs::read(&list).ok(), before, "the material list was written");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP25 (review S2): what a release the shop rolled back from wrote counts
+/// as the shop version's only inside the shop folder. A job file the
+/// release left saves on the desktop after the roll back stays its own: a
+/// PC on the shop version opens it read-only and never saves over it, while
+/// a job in the shop folder that release wrote saves on the shop version.
+#[test]
+fn files_outside_the_shop_folder_keep_the_ordinary_version_check_after_a_roll_back() {
+    let d = dir("rollback_desktop");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let in_shop = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    // PC-B, still on 0.5.0, saves a job of its own on its desktop.
+    let desk = d.join("desktop");
+    std::fs::create_dir_all(&desk).unwrap();
+    let mine = desk.join("DEMO-002.snjob");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    call(&mut b, "new", Some(mine.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let bytes = std::fs::read(&mine).unwrap();
+    // PC-C, on the shop version, reads it but never saves over it.
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let info = call(&mut c, "info", Some(mine.to_str().unwrap()), json!({}));
+    assert_eq!(info["read_only"], "This job is read-only on this PC. Made by version 0.5.0. Update this PC to 0.5.0 or later.", "{info}");
+    let e = c.call("rename", Some(mine.to_str().unwrap()), &json!({"name": "DEMO-002 x"})).err().expect("a job file outside the shop was saved over by an older PC");
+    assert!(e.contains("Made by version 0.5.0"), "{e}");
+    assert_eq!(std::fs::read(&mine).unwrap(), bytes);
+    // The job in the shop folder 0.5.0 wrote saves on 0.4.0.
+    opens_and_saves(&lib, &in_shop, "0.4.0", "DEMO-001 on 0.4.0");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// What a close installs (review S3), as `finish_on_close` hands it to the
+/// installer: the release, from where, and whether it was fetched then.
+fn close_installs(h: &'static crate::updates::Handoff, this: &str) -> (Result<Option<String>, String>, Vec<(String, crate::updates::Source, crate::updates::Why)>, Vec<String>) {
+    let mut fetched = vec![];
+    let mut applied = vec![];
+    let r = crate::updates::finish_on_close_as(h, this, std::time::Duration::from_secs(1), |c| {
+        fetched.push(c.version.clone());
+        Ok(())
+    }, |c| {
+        applied.push((c.version.clone(), c.src.clone(), c.why));
+        Ok(())
+    });
+    (r, applied, fetched)
+}
+
+/// UP21, UP26 (review S3): a PC on the release left that closes before its
+/// next look at the shop still goes back: at close it reads the shop version
+/// (within the time limit), fetches it from the shop folder's Updates and
+/// installs it. Nothing was queued before.
+#[test]
+fn closing_right_after_a_roll_back_installs_the_shop_version() {
+    let d = dir("rollback_close");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+    h.set_place(&lib, &d.join("own"));
+    // On the shop version: nothing to install.
+    assert_eq!(close_installs(h, "0.5.0").0, Ok(None));
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let (r, applied, fetched) = close_installs(h, "0.5.0");
+    assert_eq!(r, Ok(Some("0.4.0".into())));
+    assert_eq!(fetched, ["0.4.0"]);
+    assert_eq!(applied, [("0.4.0".to_string(), crate::updates::Source::Folder(lib.join("Updates").join("0.4.0")), crate::updates::Why::Shop)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP17, UP26 (review S3): the admin PC queued the release it tries; the
+/// shop is rolled back before the program closes: the trial is over, so
+/// the tried release doesn't install; the shop version does.
+#[test]
+fn a_trial_queued_before_a_roll_back_never_installs_after_it() {
+    use crate::updates::{Chosen, Source, Why};
+    let d = dir("rollback_close_trial");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let t = crate::engine::rollout::start_trial(&lib, &d.join("Trials"), "0.6.0", &admin(), &Clock::at(1_794_216_600), "0.5.0", &Default::default()).unwrap();
+    let rel = crate::engine::rollout::fake_release(&d, "0.6.0");
+    let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+    h.set_place(&t.copy, &d.join("own"));
+    let trial = Chosen { version: "0.6.0".into(), dir: t.copy.clone(), own: d.join("own"), src: Source::Folder(rel), why: Why::Trial };
+    let n = h.start(trial.clone());
+    h.done(n, true);
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    assert!(trial.stands().is_err(), "the trial still stood after the shop rolled back");
+    let (r, applied, _) = close_installs(h, "0.5.0");
+    assert_eq!(r, Ok(Some("0.4.0".into())));
+    assert_eq!(applied, [("0.4.0".to_string(), Source::Folder(lib.join("Updates").join("0.4.0")), Why::Shop)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP24 (review S5): roll back goes only to a release that recorded its
+/// own file layouts when it was rolled out: only releases that know about
+/// roll back (and so save what a release left wrote) record them. A
+/// release kept that was rolled out by an older program, which recorded
+/// only the shop's layouts, is refused, changing nothing.
+#[test]
+fn roll_back_goes_only_to_a_release_that_recorded_its_own_layouts() {
+    let d = dir("rollback_unaware");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    // As a release from before roll back rolled 0.4.0 out: no record of
+    // 0.4.0's own layouts (the shop's `layouts` stay).
+    edit_shop_file(&lib, |v| {
+        v[crate::shop::RELEASE_LAYOUTS].as_object_mut().unwrap().remove("0.4.0");
+    });
+    let before = files_under(&lib);
+    let e = crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err();
+    assert_eq!(e, "0.4.0 didn't record the file layouts it saves in when it was rolled out: it is from before roll back, and can't save what 0.5.0 wrote. Restore a backup instead. Nothing was changed.");
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap_err(), e);
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP24 (review S6): the layouts the shop's files are recorded in must be
+/// there, readable and whole (every kind of file the program guards):
+/// missing, damaged or partial records refuse roll back, never pass it.
+#[test]
+fn roll_back_refuses_layout_records_that_are_missing_damaged_or_partial() {
+    let d = dir("rollback_layout_records");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let shop_file = std::fs::read(lib.join(crate::shop::FILE)).unwrap();
+    let cases: [(&str, fn(&mut Value)); 6] = [
+        ("shop's layouts missing", |v| {
+            v.as_object_mut().unwrap().remove(crate::shop::LAYOUTS);
+        }),
+        ("shop's layouts damaged", |v| v[crate::shop::LAYOUTS] = json!("jobs 2")),
+        ("shop's layouts partial", |v| {
+            v[crate::shop::LAYOUTS].as_object_mut().unwrap().remove("stock");
+        }),
+        ("release's layouts damaged", |v| v[crate::shop::RELEASE_LAYOUTS]["0.4.0"] = json!([1, 2])),
+        ("release's layouts partial", |v| {
+            v[crate::shop::RELEASE_LAYOUTS]["0.4.0"].as_object_mut().unwrap().remove("materials");
+        }),
+        ("release records damaged", |v| v[crate::shop::RELEASE_LAYOUTS] = json!(7)),
+    ];
+    for (what, f) in cases {
+        std::fs::write(lib.join(crate::shop::FILE), &shop_file).unwrap();
+        edit_shop_file(&lib, f);
+        let before = files_under(&lib);
+        let e = crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").expect_err(what);
+        assert!(e.contains("Restore a backup instead") && e.ends_with("Nothing was changed."), "{what}: {e}");
+        assert_eq!(files_under(&lib), before, "{what}: a refused roll back changed the shop folder");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S10: an MCP session started before Try on this PC follows this PC's
+/// settings to the trial copy before its next call: the job it had open is
+/// closed (a change to it is refused, saying why), and nothing it does
+/// afterwards writes jobs or stock in the live Library.
+#[test]
+fn a_session_started_before_a_trial_follows_this_pcs_library() {
+    let d = dir("session_follows_trial");
+    let pc = d.join("pc");
+    let ctx = stock_ctx(&d);
+    let live = ctx.library_dir.clone();
+    let trial = pc.join("Trials").join("Acme trying 9.0.0");
+    crate::library::create(&trial).unwrap();
+    let settings = |lib: &Path| {
+        let cfg = crate::settings::AppSettings { library_dir: lib.display().to_string(), ..Default::default() };
+        cfg.save_to(&pc.join(crate::settings::FILE_NAME)).unwrap();
+    };
+    settings(&live);
+    let mut ctx = ctx;
+    ctx.pc_dir = pc.clone();
+    ctx.cfg.library_dir = live.display().to_string();
+    let mut s = Session::new(ctx);
+    s.follow = true;
+    let job = d.join("jobs").join("DEMO-001.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    let live_stock = std::fs::read(crate::stock::Stock::file(&live)).unwrap();
+    // The window: Try on this PC points this PC's Library at the trial copy.
+    settings(&trial);
+    let e = s.call("edit-part", None, &json!({"part": 1, "qty": 2})).map(|r| r.json.to_string()).unwrap_err();
+    assert!(e.contains("This PC's Library changed") && e.contains("was closed") && e.contains("Nothing was changed"), "{e}");
+    assert_eq!(s.ctx.library_dir, trial);
+    let r = call(&mut s, "stock", None, json!({"mode": "create", "ref": "T1", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    assert!(r.get("library_changed").is_none(), "said twice: {r}");
+    assert_eq!(std::fs::read(crate::stock::Stock::file(&live)).unwrap(), live_stock, "the session wrote the live stock after the switch");
+    assert!(crate::stock::Stock::load(&trial).unwrap().get("T1").is_some());
+    // Stop trying: back to the live Library, said on the next call.
+    settings(&live);
+    let r = call(&mut s, "stock", None, json!({"mode": "list"}));
+    assert!(r["library_changed"].as_str().is_some_and(|t| t.contains(&live.display().to_string())), "{r}");
+    assert_eq!(s.ctx.library_dir, live);
+    let _ = std::fs::remove_dir_all(&d);
 }

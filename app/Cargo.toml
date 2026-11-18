@@ -20,11 +20,24 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 tiny-skia = "0.11.4"
 geo = { version = "0.33", default-features = false }
+# The Library's daily backups (backup.rs): deflate in pure Rust only, the
+# version the installer crate already brings in.
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Checking a release's package against its index before it becomes the shop
+# version (engine/rollout.rs): the versions the installer crate already brings in.
+sha1 = "0.11.0"
+sha2 = "0.11.1"
 
 # HTTPS for ERP/MES integrations (integrations/http.rs): Windows' own TLS
 # (schannel, uses the Windows certificate store) there; rustls elsewhere.
 [target.'cfg(windows)'.dependencies]
 ureq = { version = "3.5.1", default-features = false, features = ["native-tls"] }
+# The installer and updates (updates.rs, docs/releases.md): Windows builds with
+# the MSVC toolchain, as CI and the release workflow make them. Its TLS needs a
+# C compiler, which the Linux type-check for windows-gnu (tools/check.sh) lacks.
+# The release workflow packs with the `vpk` tool of the same version.
+[target.'cfg(all(windows, target_env = "msvc"))'.dependencies]
+velopack = "=1.2.161"
 [target.'cfg(not(windows))'.dependencies]
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 

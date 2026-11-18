@@ -334,6 +334,14 @@ struct Holder {
     /// with this PC's clock).
     since: u64,
     token: String,
+    /// How many times the holder renewed it (BK3): each renewal changes the
+    /// file, so a waiting PC sees it in use and never takes it over.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    renewed: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// The name a lock file (or a mark) goes by in the name of the mark that
@@ -376,11 +384,39 @@ fn holder_label(text: Option<&Vec<u8>>) -> String {
     text.and_then(|t| serde_json::from_slice::<Holder>(t).ok()).map_or_else(|| "another PC".to_string(), |h| format!("{} on {}", h.user, h.pc))
 }
 
+/// Test seam: time a test plays as gone by on this thread on top of the real
+/// time (a share that answers slowly), so tests of a writer's time neither
+/// sleep nor hang on how loaded the machine is. Always none outside tests.
+fn played() -> Duration {
+    #[cfg(test)]
+    return PLAYED.with(|p| p.get());
+    #[cfg(not(test))]
+    Duration::ZERO
+}
+
+#[cfg(test)]
+thread_local! {
+    static PLAYED: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+
+/// Play `d` as gone by for the writer's time of this thread's locks (tests).
+#[cfg(test)]
+pub(crate) fn play_time(d: Duration) {
+    PLAYED.with(|p| p.set(p.get() + d));
+}
+
+/// How long since `since` (and `wall`), by this PC's steady clock and its
+/// wall clock, the longer, with the time a test played since `played0`.
+fn gone(since: Instant, wall: SystemTime, played0: Duration) -> Duration {
+    let real = since.elapsed().max(wall.elapsed().unwrap_or_default());
+    real + played().saturating_sub(played0)
+}
+
 /// Still inside this writer's time: held for less than `hold_for` since
 /// `since`, by this PC's steady clock and its wall clock both (the steady
 /// one doesn't count time asleep on every system) (LB2).
-fn within(since: Instant, wall: SystemTime, hold_for: Duration) -> Result<(), String> {
-    if since.elapsed() < hold_for && wall.elapsed().map_or(true, |d| d < hold_for) {
+fn within(since: Instant, wall: SystemTime, played0: Duration, hold_for: Duration) -> Result<(), String> {
+    if gone(since, wall, played0) < hold_for {
         Ok(())
     } else {
         Err(format!("this PC took longer than {} to write to the Library, so another PC may take its write lock over. Nothing was saved — save again", shown(hold_for)))
@@ -393,7 +429,7 @@ fn within(since: Instant, wall: SystemTime, hold_for: Duration) -> Result<(), St
 fn claim() -> (String, String) {
     let who = Who::this_pc();
     let token = format!("{}-{}", writer_tag(), SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()));
-    let me = Holder { user: who.user, pc: who.pc, process: std::process::id(), since: now_secs(), token: token.clone() };
+    let me = Holder { user: who.user, pc: who.pc, process: std::process::id(), since: now_secs(), token: token.clone(), renewed: 0 };
     let text = serde_json::to_string(&me).unwrap_or_default();
     (token, text)
 }
@@ -406,6 +442,8 @@ struct Lease {
     /// When it was taken (just before asking for it), by both clocks.
     since: Instant,
     wall: SystemTime,
+    /// The time a test had played on this thread at `since` (tests).
+    played0: Duration,
     /// How long after `since` it may still replace files (LB2).
     hold_for: Duration,
 }
@@ -431,6 +469,13 @@ impl WriteLock {
     /// of `abandoned_after`, as HOLD_FOR is of ABANDONED_AFTER.
     pub fn take_with(dir: &Path, abandoned_after: Duration, longest_wait: Duration) -> Result<WriteLock, String> {
         Self::take_for(dir, abandoned_after, abandoned_after / 3, longest_wait)
+    }
+
+    /// `take` with its own times to be abandoned after and to write in
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn take_holding(dir: &Path, abandoned_after: Duration, hold_for: Duration, longest_wait: Duration) -> Result<WriteLock, String> {
+        Self::take_for(dir, abandoned_after, hold_for, longest_wait)
     }
 
     fn take_for(dir: &Path, abandoned_after: Duration, hold_for: Duration, longest_wait: Duration) -> Result<WriteLock, String> {
@@ -466,7 +511,7 @@ impl WriteLock {
                         let _ = std::fs::remove_file(&file);
                         return Err(format!("can't lock the Library at {}: {e}", dir.display()));
                     }
-                    return Ok(Lease { file, token, since, wall, hold_for }.held());
+                    return Ok(Lease { file, token, since, wall, played0: played(), hold_for }.held());
                 }
                 // Windows reports a lock file being deleted by its holder as
                 // access denied: busy, like one that's there.
@@ -503,19 +548,72 @@ impl WriteLock {
     /// own lock, and nobody has begun to take it over. Checked just before
     /// every file is replaced.
     pub fn still_held(&self) -> Result<(), String> {
-        let l = &self.0;
-        within(l.since, l.wall, l.hold_for)?;
-        let now = std::fs::read(&l.file).ok();
-        let ours = now.as_deref().and_then(|t| serde_json::from_slice::<Holder>(t).ok()).is_some_and(|h| h.token == l.token);
-        let taking_over = now.as_deref().is_some_and(|t| mark_path(&l.file, t).exists());
-        pause("lock read");
-        if !ours || taking_over {
-            return Err("another PC took over the Library's write lock while this PC was writing. Nothing was saved — save again".into());
-        }
-        // Reading the lock can be slow on a share: still inside the time
-        // after it, so only the change itself is left to send (LB2).
-        within(l.since, l.wall, l.hold_for)
+        held_by(&self.lease())
     }
+
+    /// The token this writer's lock carries (BK12: a restore records it, so
+    /// PCs can tell it's still running).
+    pub fn token(&self) -> String {
+        self.0.token.clone()
+    }
+
+    /// This writer's lease as it is now: renewed through another handle on
+    /// the same lock (one taken inside another, on this thread) too, so a
+    /// long job renewing it inside keeps the outer handle's time (BK11).
+    fn lease(&self) -> Lease {
+        let l = &self.0;
+        HELD.with(|h| h.borrow().iter().find(|(x, _)| x.file == l.file && x.token == l.token).map(|(x, _)| x.clone())).unwrap_or_else(|| l.clone())
+    }
+
+    /// Renew the lock for a long job (a backup, BK3): rewrite the lock file,
+    /// same token, so a PC waiting for it sees it change and starts its
+    /// abandon time again, and this writer's own time to write starts again.
+    /// Only while it's still this writer's (`still_held`); otherwise nothing
+    /// is changed and the job must stop.
+    pub fn renew(&mut self) -> Result<(), String> {
+        self.still_held()?;
+        let l = &self.0;
+        let mut h: Holder = std::fs::read(&l.file).ok().and_then(|t| serde_json::from_slice(&t).ok()).ok_or("the Library's write lock can't be read")?;
+        h.since = now_secs();
+        h.renewed += 1;
+        let text = serde_json::to_vec(&h).map_err(|e| e.to_string())?;
+        let (since, wall, played0) = (Instant::now(), SystemTime::now(), played());
+        replace_in(&l.file, &text, || self.still_held(), false)?;
+        let (file, token) = (l.file.clone(), l.token.clone());
+        HELD.with(|held| {
+            for (x, _) in held.borrow_mut().iter_mut().filter(|(x, _)| x.file == file && x.token == token) {
+                (x.since, x.wall, x.played0) = (since, wall, played0);
+            }
+        });
+        (self.0.since, self.0.wall, self.0.played0) = (since, wall, played0);
+        Ok(())
+    }
+
+    /// `renew` once a third of this writer's time has gone, so a long job
+    /// that checks often keeps the lock without ever running out of time.
+    pub fn renew_if_due(&mut self) -> Result<(), String> {
+        let l = self.lease();
+        if gone(l.since, l.wall, l.played0) >= l.hold_for / 3 {
+            self.renew()
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// `still_held` for the lease `l` (LB2).
+fn held_by(l: &Lease) -> Result<(), String> {
+    within(l.since, l.wall, l.played0, l.hold_for)?;
+    let now = std::fs::read(&l.file).ok();
+    let ours = now.as_deref().and_then(|t| serde_json::from_slice::<Holder>(t).ok()).is_some_and(|h| h.token == l.token);
+    let taking_over = now.as_deref().is_some_and(|t| mark_path(&l.file, t).exists());
+    pause("lock read");
+    if !ours || taking_over {
+        return Err("another PC took over the Library's write lock while this PC was writing. Nothing was saved — save again".into());
+    }
+    // Reading the lock can be slow on a share: still inside the time
+    // after it, so only the change itself is left to send (LB2).
+    within(l.since, l.wall, l.played0, l.hold_for)
 }
 
 impl Lease {
@@ -536,7 +634,7 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
     let (token, me) = claim();
     // This PC's time runs from making the mark: from then on others see it
     // and could judge it abandoned in turn.
-    let (since, wall) = (Instant::now(), SystemTime::now());
+    let (since, wall, played0) = (Instant::now(), SystemTime::now(), played());
     let mark = mark_path(file, chain.last()?);
     let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&mark).ok()?;
     let written = f.write_all(me.as_bytes()).and_then(|_| f.sync_all());
@@ -556,7 +654,7 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
         return None;
     }
     pause("take over: checked");
-    if replace(file, me.as_bytes(), || within(since, wall, hold_for)).is_err() {
+    if replace(file, me.as_bytes(), || within(since, wall, played0, hold_for)).is_err() {
         if root_moved_on() {
             let _ = std::fs::remove_file(&mark);
         }
@@ -566,11 +664,25 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
     for t in chain {
         let _ = std::fs::remove_file(mark_path(file, t));
     }
-    Some(Lease { file: file.to_path_buf(), token, since, wall, hold_for })
+    Some(Lease { file: file.to_path_buf(), token, since, wall, played0, hold_for })
+}
+
+impl WriteLock {
+    /// Let go of the lock and look that its file is gone (SH11): Err names
+    /// the lock file this writer made but couldn't remove (a share that lets
+    /// a PC make files but not remove them), so a refusal can say so.
+    pub fn release(self) -> Result<(), PathBuf> {
+        let (file, token) = (self.0.file.clone(), self.0.token.clone());
+        drop(self);
+        let still = std::fs::read(&file).ok().and_then(|t| serde_json::from_slice::<Holder>(&t).ok()).is_some_and(|h| h.token == token);
+        if still { Err(file) } else { Ok(()) }
+    }
 }
 
 impl Drop for WriteLock {
     fn drop(&mut self) {
+        // As renewed by any handle on it, before this one lets go of it.
+        let lease = self.lease();
         let last = HELD.with(|h| {
             let mut h = h.borrow_mut();
             match h.iter().position(|(l, _)| l.file == self.0.file && l.token == self.0.token) {
@@ -588,7 +700,7 @@ impl Drop for WriteLock {
         });
         // Removed only by its holder, and only inside its time (LB2): later,
         // it is left for another PC to take over.
-        if last && self.still_held().is_ok() {
+        if last && held_by(&lease).is_ok() {
             let _ = std::fs::remove_file(&self.0.file);
         }
     }
@@ -603,10 +715,56 @@ pub fn write_file(path: &Path, bytes: &[u8], lock: Option<&WriteLock>) -> Result
     replace(path, bytes, || lock.map_or(Ok(()), WriteLock::still_held))
 }
 
+/// `write_file` into a folder that must already be there: the folder and
+/// those above it are never made, so a write into a Library that went away
+/// (the share dropped) fails instead of making an empty folder in its place
+/// (LB11). The shop's files are written this way (SH2). Nothing is put in
+/// the folder or taken out of it unless the write lock is still this
+/// writer's: it is checked before the temporary file is made and before a
+/// failed one is cleared away (a temporary file left once the lock was lost
+/// is harmless: no one reads it).
+pub fn write_existing(path: &Path, bytes: &[u8], lock: &WriteLock) -> Result<(), String> {
+    replace_in(path, bytes, || lock.still_held(), false)
+}
+
+/// Which writer holds the Library's write lock in `dir` now (its token), and how long ago
+/// its lock file last changed (taken or renewed), by the file's time and
+/// this PC's clock. For what the window and agents show only (BK13): who
+/// may write is never judged so (LB2). None: nobody holds it.
+pub fn lock_holder(dir: &Path) -> Option<(String, Option<Duration>)> {
+    let file = dir.join(LOCK_FILE);
+    let h: Holder = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+    let age = std::fs::metadata(&file).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok().or(Some(Duration::ZERO)));
+    Some((h.token, age))
+}
+
+/// Move a whole file `from` (a file of this writer's own, on the same
+/// share) over `to`, only while the write lock is still this writer's,
+/// checked just before every try (LB2), trying again for a moment when
+/// Windows says the file is busy. A restore puts its files back so (BK11).
+pub(crate) fn move_over(from: &Path, to: &Path, lock: &WriteLock) -> Result<(), String> {
+    rename(from, to, &|| lock.still_held())
+}
+
 /// `write_file`, checking `fence` just before every try of the rename.
 fn replace(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>) -> Result<(), String> {
+    replace_in(path, bytes, fence, true)
+}
+
+/// `replace`, making the file's folder first only when `make_parent`.
+/// Without `make_parent` (`write_existing`), `fence` is also checked before
+/// the temporary file is made and before a failed one is removed.
+fn replace_in(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>, make_parent: bool) -> Result<(), String> {
     if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        if make_parent {
+            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        } else if !d.is_dir() {
+            return Err(format!("{} can't be reached", d.display()));
+        }
+    }
+    let strict = !make_parent;
+    if strict {
+        fence()?;
     }
     let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
     let tmp = path.with_file_name(format!("{name}.{}.tmp", writer_tag()));
@@ -617,7 +775,7 @@ fn replace(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>) ->
         f.sync_all()
     })();
     let done = written.map_err(|e| e.to_string()).and_then(|_| rename(&tmp, path, &fence));
-    if done.is_err() {
+    if done.is_err() && (!strict || fence().is_ok()) {
         let _ = std::fs::remove_file(&tmp);
     }
     done
@@ -638,6 +796,299 @@ fn rename(from: &Path, to: &Path, fence: &impl Fn() -> Result<(), String>) -> Re
             }
             r => return r.map_err(|e| e.to_string()),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Older never overwrites newer (spec #178, UP5–UP10): every Library file
+// records the program version that last wrote it, and a program never writes
+// over a file a newer one wrote.
+// ---------------------------------------------------------------------------
+
+/// UP5: the field a Library file records the program version that last
+/// wrote it in, first in the file. A file written before versions were
+/// recorded has none and counts as old.
+pub const VERSION_FIELD: &str = "program_version";
+
+/// UP6: a version as numbers ("0.10.0" → 0, 10, 0), anything after a `-` or
+/// `+` left out. None when it isn't numbers.
+fn version_numbers(v: &str) -> Option<Vec<u64>> {
+    let core = v.trim().split(['-', '+']).next()?;
+    core.split('.').map(|p| p.parse::<u64>().ok()).collect()
+}
+
+/// UP6: `a` is newer than `b`, part by part as numbers, a missing part
+/// counting as 0 (0.10.0 is newer than 0.9.0, and 0.5 is 0.5.0).
+fn is_newer(a: &[u64], b: &[u64]) -> bool {
+    let n = a.len().max(b.len());
+    let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
+    (0..n).map(|i| at(a, i).cmp(&at(b, i))).find(|o| o.is_ne()) == Some(std::cmp::Ordering::Greater)
+}
+
+/// UP6: how version `a` stands to `b` (0.10.0 is newer than 0.9.0), as
+/// joining a shop compares this PC's with the shop's (SH12); None when
+/// either isn't numbers.
+pub fn version_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let (a, b) = (version_numbers(a)?, version_numbers(b)?);
+    Some(if is_newer(&a, &b) {
+        std::cmp::Ordering::Greater
+    } else if is_newer(&b, &a) {
+        std::cmp::Ordering::Less
+    } else {
+        std::cmp::Ordering::Equal
+    })
+}
+
+/// The program versions a Library file is judged by (UP7): this program's,
+/// and, in a shop, the shop's version and the releases it has rolled back
+/// from. The window and the agents give the engine their own (a test plays
+/// a PC on another version).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Versions {
+    /// This program's version.
+    pub this: String,
+    /// The shop's version, when the Library is a shop that records one.
+    pub shop: Option<String>,
+    /// UP10, UP25: the releases the shop has rolled back from (the shop
+    /// file's list, kept by Roll back). What they wrote counts as the shop
+    /// version's, so it can be saved again.
+    pub rolled_back_from: Vec<String>,
+    /// UP21: the shop version, when this PC runs a release newer than it
+    /// and its Library isn't a trial copy: every file in the shop folder
+    /// (`shop_dir`) is read-only on this PC until it goes back to that
+    /// version (when its program closes), so nothing it saves there is
+    /// unreadable to the other PCs. Files elsewhere stay its own.
+    pub back_to: Option<String>,
+    /// The shop folder, in a shop: what `back_to` and `rolled_back_from`
+    /// cover (`at`).
+    pub shop_dir: Option<PathBuf>,
+    /// UP16: the real shop folder, when this PC's Library is a trial copy of
+    /// it: nothing the trial saves may land in it.
+    pub trial_of: Option<PathBuf>,
+    /// UP27: the Library folder whose shop file can't be read while the
+    /// folder can, and why ("The shop file … can't be read …"). What that
+    /// file records (the shop version, a trial's mark) isn't known, so
+    /// nothing is written in that folder, nor in any other shop folder.
+    pub unreadable: Option<(PathBuf, String)>,
+}
+
+/// A file a newer program wrote (UP7), and what to say about it (UP8).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Newer {
+    /// The version the file records.
+    pub written: String,
+    /// The shop's version, when it is the one to update to.
+    pub shop: Option<String>,
+    /// UP21: this PC runs a release newer than the shop version (this PC's
+    /// version, the shop's): read-only until it goes back.
+    pub back_to: Option<(String, String)>,
+}
+
+impl Versions {
+    /// This program's version alone, outside a shop.
+    pub fn this(v: &str) -> Versions {
+        Versions { this: v.to_string(), ..Default::default() }
+    }
+
+    /// UP6, UP7: the file recorded as written by `written` is newer than this
+    /// program, so it is read-only here. A file with no version is old
+    /// (UP5); one whose version isn't numbers counts as newer, as it can't be
+    /// told older. A file a release the shop rolled back from wrote counts
+    /// as the shop version's (UP10).
+    pub fn newer(&self, written: Option<&str>) -> Option<Newer> {
+        if let Some(n) = self.ahead() {
+            return Some(Newer { written: written.unwrap_or_default().trim().to_string(), ..n });
+        }
+        let w = written.map(str::trim).filter(|w| !w.is_empty())?;
+        let this = version_numbers(&self.this).unwrap_or_default();
+        let shop = self.shop.as_deref().and_then(version_numbers);
+        let Some(file) = version_numbers(w) else {
+            return Some(Newer { written: w.to_string(), shop: None, back_to: None });
+        };
+        // UP25: a release the shop rolled back from counts as the shop
+        // version, but never as newer than it is (once the shop rolls out a
+        // later release, what it wrote is simply older).
+        let counts_as = match &shop {
+            Some(s) if is_newer(&file, s) && self.rolled_back_from.iter().filter_map(|r| version_numbers(r)).any(|r| !is_newer(&r, &file) && !is_newer(&file, &r)) => s.clone(),
+            _ => file.clone(),
+        };
+        if !is_newer(&counts_as, &this) {
+            return None;
+        }
+        // UP8: the shop's version is named when updating to it is enough.
+        let shop = shop.filter(|s| !is_newer(&counts_as, s)).and(self.shop.clone());
+        Some(Newer { written: w.to_string(), shop, back_to: None })
+    }
+
+    /// UP21, UP25: these versions as they judge the file at `path`: a PC
+    /// newer than the shop version finds only the files in the shop folder
+    /// read-only, and only those count as the shop version's when a release
+    /// the shop rolled back from wrote them; files elsewhere are judged by
+    /// the version that wrote them.
+    pub fn at(&self, path: &Path) -> Versions {
+        let mut v = self.clone();
+        if !v.shop_dir.as_deref().is_some_and(|d| inside(path, d)) {
+            v.back_to = None;
+            // UP25: only the shop's files count as the shop version's.
+            v.rolled_back_from.clear();
+        }
+        v
+    }
+
+    /// UP21: this PC runs a release newer than the shop version, outside a
+    /// trial: every file of the shop is read-only here, whoever wrote it.
+    pub fn ahead(&self) -> Option<Newer> {
+        let s = self.back_to.as_ref()?;
+        Some(Newer { written: String::new(), shop: Some(s.clone()), back_to: Some((self.this.clone(), s.clone())) })
+    }
+}
+
+impl Newer {
+    /// UP8: "Made by version 0.5.0. Update this PC: the shop is on 0.5.0."
+    /// Outside a shop (or when the shop's version is older than the file's)
+    /// only the file's version is named.
+    pub fn message(&self) -> String {
+        if let Some((this, shop)) = &self.back_to {
+            return format!("This PC runs {this}, newer than the shop version {shop}. Restart to go back to {shop}.");
+        }
+        let w = &self.written;
+        if version_numbers(w).is_none() {
+            return format!("Made by version {w}, which this PC can't read. Update this PC.");
+        }
+        match &self.shop {
+            Some(s) => format!("Made by version {w}. Update this PC: the shop is on {s}."),
+            None => format!("Made by version {w}. Update this PC to {w} or later."),
+        }
+    }
+
+    /// UP7: a save over the file `what` names, refused.
+    pub fn refusal(&self, what: &str) -> String {
+        format!("{what} is read-only on this PC. {} Nothing was saved.", self.message())
+    }
+}
+
+/// UP27: may `what` be written at `path` while the Library's shop file
+/// can't be read? Not in the Library folder, nor in any folder holding a
+/// shop (a trial copy's real shop): what the shop file says decides that.
+/// Elsewhere it may.
+pub fn shop_file_read(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
+    let Some((lib, e)) = &versions.unreadable else { return Ok(()) };
+    let in_a_shop = || std::path::absolute(path).is_ok_and(|p| p.ancestors().skip(1).any(|d| d.join(crate::shop::FILE).is_file()));
+    if inside(path, lib) || in_a_shop() {
+        let e = e.trim_end();
+        let what = if what.is_empty() { "It" } else { what };
+        return Err(format!("{e}{} {what} is written only once it can be read. Nothing was saved.", if e.ends_with('.') { "" } else { "." }));
+    }
+    Ok(())
+}
+
+/// UP16, UP21, UP27: may `what` be written at `path` at all, whatever is
+/// there now: not inside the real shop folder from a trial copy, not in the
+/// shop folder from a PC newer than the shop version, and not while the
+/// shop file that says which of these hold can't be read.
+pub fn may_write_in(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
+    shop_file_read(path, versions, what)?;
+    if let Some(shop) = versions.trial_of.as_deref() {
+        trial_may_write(path, shop, what)?;
+    }
+    match versions.at(path).ahead() {
+        Some(n) => Err(n.refusal(what)),
+        None => Ok(()),
+    }
+}
+
+/// UP16: may a PC whose Library is a trial copy of the shop in `shop`
+/// write `what` at `path`? Never inside the real shop folder.
+pub fn trial_may_write(path: &Path, shop: &Path, what: &str) -> Result<(), String> {
+    if inside(path, shop) {
+        return Err(format!("{what} would go in the shop folder {}, and this PC is trying a release on a copy of the shop: nothing it saves reaches the shop. Save it elsewhere, or Stop trying first. Nothing was saved.", shop.display()));
+    }
+    Ok(())
+}
+
+/// `path` is `dir` or inside it, as the file system names them (links and
+/// `..` resolved for the part of `path` that is there; without case on
+/// Windows).
+pub fn inside(path: &Path, dir: &Path) -> bool {
+    fn real(p: &Path) -> PathBuf {
+        let p = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+        let mut rest = vec![];
+        let mut at = p.as_path();
+        loop {
+            if let Ok(c) = std::fs::canonicalize(at) {
+                return rest.iter().rev().fold(c, |acc: PathBuf, n: &&std::ffi::OsStr| acc.join(n));
+            }
+            match (at.parent(), at.file_name()) {
+                (Some(up), Some(n)) => {
+                    rest.push(n);
+                    at = up;
+                }
+                _ => return p.clone(),
+            }
+        }
+    }
+    let (p, d) = (real(path), real(dir));
+    if cfg!(windows) {
+        let low = |x: &Path| PathBuf::from(x.to_string_lossy().to_lowercase());
+        low(&p).starts_with(low(&d))
+    } else {
+        p.starts_with(&d)
+    }
+}
+
+/// UP5: the version a Library file's text records (None: written before
+/// versions were recorded, or not a file of this program's).
+pub fn recorded_version(bytes: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Recorded {
+        #[serde(default)]
+        program_version: Option<serde_json::Value>,
+    }
+    let r: Recorded = serde_json::from_slice(bytes).ok()?;
+    match r.program_version? {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Null => None,
+        v => Some(v.to_string()),
+    }
+}
+
+/// UP5: a file's `program_version` as read into a struct: a version that
+/// isn't text (a number) is kept as written, so it is never taken for none.
+pub fn version_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(v) => Some(v.to_string()),
+    })
+}
+
+/// UP5: `value` as a Library file's text, recording `version` as the
+/// program that wrote it, first, before the file's own fields.
+pub fn stamped<T: Serialize>(value: &T, version: &str) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct Stamped<'a, T> {
+        program_version: &'a str,
+        #[serde(flatten)]
+        value: &'a T,
+    }
+    serde_json::to_string_pretty(&Stamped { program_version: version, value }).map_err(|e| e.to_string())
+}
+
+/// UP7: may this program write over `path`? Not when the file there was
+/// last written by a newer program: refused, naming it (`what`) and saying
+/// to update this PC (UP8). A file that isn't there yet may be written; one
+/// that can't be read just now is refused, as it can't be told older.
+pub fn may_write_over(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
+    // UP16: a trial never writes in the real shop folder. UP21: a PC newer
+    // than the shop version writes nothing in the shop, not even a new
+    // file; elsewhere it saves as usual. UP27: neither is told while the
+    // shop file can't be read.
+    may_write_in(path, versions, what)?;
+    let versions = &versions.at(path);
+    match std::fs::read(path) {
+        Ok(b) => versions.newer(recorded_version(&b).as_deref()).map_or(Ok(()), |n| Err(n.refusal(what))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{what} can't be read before saving over it ({e}). Nothing was saved.")),
     }
 }
 
@@ -935,5 +1386,198 @@ mod shared_tests {
             assert!(left.is_empty(), "takeover marks left behind: {left:?}");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// BK3: a long job that renews the lock keeps it far past the abandon
+    /// time: a PC waiting for it never takes it over, and gets it as soon as
+    /// the job lets go. The job can still write all the while.
+    #[test]
+    fn a_renewed_lock_is_never_taken_over_while_its_job_runs() {
+        let dir = scratch("renew");
+        // A waiting PC takes a lock over once it has stayed unchanged 6 s.
+        // The job renews every 2 s (a third of its time to write, here as
+        // long as the abandon time), so a slow, loaded machine whose share
+        // stalls for up to 4 s still keeps it; it runs one and a half times
+        // the abandon time.
+        let short = Duration::from_secs(6);
+        let mut lock = WriteLock::take_holding(&dir, short, short, Duration::from_secs(30)).unwrap();
+        let let_go = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
+        let waiter = {
+            let (dir, let_go) = (dir.clone(), let_go.clone());
+            std::thread::spawn(move || {
+                let got = WriteLock::take_with(&dir, short, Duration::from_secs(30)).unwrap();
+                let at = Instant::now();
+                drop(got);
+                (at, *let_go.lock().unwrap())
+            })
+        };
+        let start = Instant::now();
+        while start.elapsed() < short * 3 / 2 {
+            std::thread::sleep(Duration::from_millis(100));
+            lock.renew_if_due().unwrap();
+        }
+        // Still this job's to write with, long after the abandon time.
+        lock.still_held().unwrap();
+        write_file(&dir.join("index.json"), b"{}", Some(&lock)).unwrap();
+        *let_go.lock().unwrap() = Some(Instant::now());
+        drop(lock);
+        let (got_at, let_go_at) = waiter.join().unwrap();
+        assert!(got_at >= let_go_at.unwrap(), "the waiting PC took the lock over while it was being renewed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    fn on(this: &str, shop: Option<&str>) -> Versions {
+        Versions { this: this.into(), shop: shop.map(String::from), ..Default::default() }
+    }
+
+    #[test]
+    fn versions_compare_as_numbers_not_text() {
+        // UP6: 0.10.0 is newer than 0.9.0, though "0.10.0" < "0.9.0" as text.
+        assert!(on("0.9.0", None).newer(Some("0.10.0")).is_some());
+        assert!(on("0.10.0", None).newer(Some("0.9.0")).is_none());
+        // The same version is never newer; nor an older one.
+        assert!(on("0.5.0", None).newer(Some("0.5.0")).is_none());
+        assert!(on("0.5.0", None).newer(Some("0.4.9")).is_none());
+        assert!(on("1.0.0", None).newer(Some("0.99.99")).is_none());
+        // A missing part counts as 0; a suffix after the numbers is left out.
+        assert!(on("0.5.0", None).newer(Some("0.5")).is_none());
+        assert!(on("0.5.0", None).newer(Some("0.5.0-rc1")).is_none());
+        assert!(on("0.5.0", None).newer(Some("0.5.1+build7")).is_some());
+    }
+
+    #[test]
+    fn a_file_with_no_version_is_old_and_one_that_cant_be_read_is_never_saved_over() {
+        // UP5: written before versions were recorded.
+        assert!(on("0.1.0", None).newer(None).is_none());
+        assert!(on("0.1.0", None).newer(Some("")).is_none());
+        // UP6: a version that isn't numbers can't be told older, so it counts
+        // as newer and is never written over.
+        let n = on("0.4.0", None).newer(Some("next")).expect("an unreadable version was taken as older");
+        assert_eq!(n.message(), "Made by version next, which this PC can't read. Update this PC.");
+        assert!(on("0.4.0", None).newer(Some("0..1")).is_some());
+    }
+
+    #[test]
+    fn the_message_names_the_shops_version_in_a_shop_and_only_the_files_outside() {
+        // UP8.
+        assert_eq!(on("0.4.0", Some("0.5.0")).newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC: the shop is on 0.5.0.");
+        assert_eq!(on("0.4.0", None).newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC to 0.5.0 or later.");
+        // A shop on a version older than the file's: updating to the shop's
+        // wouldn't be enough, so the file's is named.
+        assert_eq!(on("0.4.0", Some("0.4.0")).newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC to 0.5.0 or later.");
+        assert_eq!(on("0.4.0", Some("0.6.0")).newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC: the shop is on 0.6.0.");
+        let n = on("0.4.0", Some("0.5.0")).newer(Some("0.5.0")).unwrap();
+        assert_eq!(n.refusal("The sheet stock"), "The sheet stock is read-only on this PC. Made by version 0.5.0. Update this PC: the shop is on 0.5.0. Nothing was saved.");
+    }
+
+    #[test]
+    fn files_written_by_a_release_the_shop_rolled_back_from_count_as_the_shop_versions() {
+        // UP10: the seam roll back fills. The shop went back from 0.5.0 to
+        // 0.4.0: what 0.5.0 wrote is saved again on 0.4.0, but not on 0.3.0.
+        let v = Versions { this: "0.4.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], back_to: None, ..Default::default() };
+        assert!(v.newer(Some("0.5.0")).is_none());
+        assert!(v.newer(Some("0.6.0")).is_some(), "only the releases rolled back from count");
+        let old = Versions { this: "0.3.0".into(), ..v.clone() };
+        assert!(old.newer(Some("0.5.0")).is_some());
+        // Not in a shop that records a version, nothing counts as another's.
+        let none = Versions { shop: None, ..v };
+        assert!(none.newer(Some("0.5.0")).is_some());
+    }
+
+    /// UP25: a release rolled back from counts as the shop version only
+    /// while it is newer than the shop version: once a later release is
+    /// rolled out, what it wrote is older again, and a PC still on it saves
+    /// its own files. A PC older than the shop version is told to update to
+    /// the shop version, which is enough.
+    #[test]
+    fn a_release_rolled_back_from_never_counts_as_newer_than_it_is() {
+        let later = Versions { this: "0.5.0".into(), shop: Some("0.6.0".into()), rolled_back_from: vec!["0.5.0".into()], ..Default::default() };
+        assert!(later.newer(Some("0.5.0")).is_none(), "a PC on 0.5.0 couldn't save what it wrote itself");
+        let old = Versions { this: "0.3.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], ..Default::default() };
+        assert_eq!(old.newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC: the shop is on 0.4.0.");
+    }
+
+    /// UP25 (review S2): outside the shop folder a release rolled back from
+    /// is judged as itself.
+    #[test]
+    fn a_release_rolled_back_from_counts_as_the_shop_versions_only_in_the_shop_folder() {
+        let d = std::env::temp_dir().join("nestpro-version-scope");
+        let v = Versions { this: "0.4.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], shop_dir: Some(d.join("shop")), ..Default::default() };
+        assert!(v.at(&d.join("shop").join("Jobs").join("DEMO-001.snjob")).newer(Some("0.5.0")).is_none());
+        assert!(v.at(&d.join("desktop").join("DEMO-002.snjob")).newer(Some("0.5.0")).is_some());
+    }
+
+    /// UP21: a PC on a release newer than the shop version (outside a
+    /// trial) saves nothing in the shop, a new file neither, and says to
+    /// restart to go back to the shop version.
+    #[test]
+    fn a_pc_newer_than_the_shop_version_writes_nothing_and_says_to_go_back() {
+        let d = std::env::temp_dir().join(format!("nestpro_version_ahead_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("shop")).unwrap();
+        let v = Versions { this: "0.5.0".into(), shop: Some("0.4.0".into()), back_to: Some("0.4.0".into()), shop_dir: Some(d.join("shop")), ..Default::default() };
+        let n = v.newer(Some("0.4.0")).expect("a file of the shop version was writable on a newer PC");
+        assert_eq!(n.message(), "This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0.");
+        assert!(v.newer(None).is_some(), "an old file was writable on a newer PC");
+        let e = may_write_over(&d.join("shop").join("new.snjob"), &v, "The job file new.snjob").unwrap_err();
+        assert_eq!(e, "The job file new.snjob is read-only on this PC. This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0. Nothing was saved.");
+        // Outside the shop folder its files are its own (a job on the desktop).
+        may_write_over(&d.join("desktop").join("own.snjob"), &v, "The job file own.snjob").unwrap();
+        assert!(v.at(&d.join("own.snjob")).newer(Some("0.4.0")).is_none());
+        assert!(v.at(&d.join("shop").join("Jobs").join("x.json")).newer(Some("0.4.0")).is_some());
+        // Without the mark (a trial copy, or the same version) nothing changes.
+        assert!(Versions { back_to: None, ..v }.newer(Some("0.4.0")).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// UP16: a PC on a trial copy writes nothing inside the real shop
+    /// folder, a new file neither, whatever the versions; elsewhere it does.
+    #[test]
+    fn a_trial_writes_nothing_in_the_real_shop_folder() {
+        let d = std::env::temp_dir().join(format!("nestpro_version_trial_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("shop").join("Jobs")).unwrap();
+        let v = Versions { this: "0.5.0".into(), trial_of: Some(d.join("shop")), ..Default::default() };
+        let e = may_write_over(&d.join("shop").join("Jobs").join("..").join("a.snjob"), &v, "The job file a.snjob").unwrap_err();
+        assert!(e.contains("this PC is trying a release on a copy of the shop") && e.contains("Nothing was saved."), "{e}");
+        may_write_over(&d.join("copy").join("a.snjob"), &v, "The job file a.snjob").unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_file_records_the_version_that_wrote_it_first_and_keeps_its_own_fields() {
+        // UP5.
+        #[derive(Serialize)]
+        struct F {
+            format: &'static str,
+            n: f64,
+        }
+        let t = stamped(&F { format: "nestpro-demo", n: 0.1 }, "0.5.0").unwrap();
+        assert!(t.starts_with("{\n  \"program_version\": \"0.5.0\",\n  \"format\": \"nestpro-demo\""), "{t}");
+        assert_eq!(recorded_version(t.as_bytes()).as_deref(), Some("0.5.0"));
+        assert_eq!(recorded_version(br#"{"format":"nestpro-demo"}"#), None);
+        assert_eq!(recorded_version(br#"{"program_version":5}"#).as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn a_newer_file_is_never_written_over_and_a_missing_one_is_written() {
+        // UP7.
+        let d = std::env::temp_dir().join(format!("nestpro_version_guard_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("stock.json");
+        let v = on("0.4.0", None);
+        may_write_over(&f, &v, "The sheet stock").unwrap();
+        std::fs::write(&f, r#"{"program_version":"0.4.0"}"#).unwrap();
+        may_write_over(&f, &v, "The sheet stock").unwrap();
+        std::fs::write(&f, r#"{"program_version":"0.10.0"}"#).unwrap();
+        let e = may_write_over(&f, &v, "The sheet stock").unwrap_err();
+        assert_eq!(e, "The sheet stock is read-only on this PC. Made by version 0.10.0. Update this PC to 0.10.0 or later. Nothing was saved.");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

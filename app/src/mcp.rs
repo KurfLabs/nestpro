@@ -48,6 +48,8 @@ pub fn tools() -> Vec<Value> {
 
 pub fn serve() -> i32 {
     let mut session = Session::new(Ctx::load());
+    // S10: the window may switch this PC's Library while the server runs.
+    session.follow = true;
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     eprintln!("nestpro MCP server {} ready", env!("CARGO_PKG_VERSION"));

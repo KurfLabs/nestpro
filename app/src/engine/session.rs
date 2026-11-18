@@ -13,13 +13,22 @@ pub struct Session {
     pub ctx: Ctx,
     pub job: Option<JobFile>,
     pub path: Option<PathBuf>,
-    /// When the open job's file was last read or written by us.
-    stamp: Option<SystemTime>,
+    /// When the open job's file was last read or written by us, and its
+    /// size then: another PC's save within the same clock tick keeps the
+    /// time but almost never the size.
+    stamp: Option<(SystemTime, u64)>,
     undo: Vec<JobFile>,
     /// The material list this session read last (MA34): whether the open
     /// job's material was in it, whatever list another session in the same
     /// process installed since.
     seen: Option<std::sync::Arc<super::material::List>>,
+    /// Why the open job is read-only (UP9): a newer version saved its file
+    /// last. Operations that change it are refused; reading it works.
+    read_only: Option<crate::shared::Newer>,
+    /// S10: follow this PC's Library as its settings name it now (the MCP
+    /// server, which runs for a long time beside the window). Off for one
+    /// command and in tests that give their own Library.
+    pub follow: bool,
 }
 
 /// What a call gave back: the JSON answer and, for render, the PNG.
@@ -35,8 +44,8 @@ pub fn backup_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-fn mtime(p: &Path) -> Option<SystemTime> {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+fn mtime(p: &Path) -> Option<(SystemTime, u64)> {
+    std::fs::metadata(p).and_then(|m| Ok((m.modified()?, m.len()))).ok()
 }
 
 /// A job path as given, with the job extension added when it has none.
@@ -47,7 +56,41 @@ pub fn job_path(s: &str) -> PathBuf {
 
 impl Session {
     pub fn new(ctx: Ctx) -> Session {
-        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None }
+        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None, read_only: None, follow: false }
+    }
+
+    /// Close the open job: its undo steps and what was read of it go too.
+    /// Gives its file.
+    fn close_job(&mut self) -> Option<PathBuf> {
+        self.job = None;
+        self.undo.clear();
+        self.stamp = None;
+        self.read_only = None;
+        self.path.take()
+    }
+
+    /// S10: this PC's Library as its settings name it now. The window
+    /// changes it (Try on this PC, Stop trying, joining a shop) while an
+    /// agent's session runs: the session follows before anything it does,
+    /// so it never writes jobs or stock in the Library this PC left. Its
+    /// open job is closed then (as when joining, SH10): its undo steps and
+    /// stock booking are the old Library's. Gives what to say, and the job
+    /// closed.
+    fn follow_library(&mut self) -> Option<(String, Option<PathBuf>)> {
+        if !self.follow {
+            return None;
+        }
+        let cfg = crate::settings::AppSettings::read_from(&self.ctx.pc_dir.join(crate::settings::FILE_NAME))?;
+        let now = if cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&cfg.library_dir) };
+        if now == self.ctx.library_dir {
+            return None;
+        }
+        let old = std::mem::replace(&mut self.ctx.library_dir, now.clone());
+        self.ctx.cfg.library_dir = cfg.library_dir;
+        // What was seen of the old Library's holds on jobs (CU7).
+        self.ctx.watch = Default::default();
+        let closed = self.close_job();
+        Some((format!("This PC's Library changed from {} to {} in its settings (in the window: Try on this PC, Stop trying, or joining a shop). This session works in {} from now on.", old.display(), now.display(), now.display()), closed))
     }
 
     /// Open a job file (again, when it changed on disk).
@@ -56,10 +99,15 @@ impl Session {
         if same && self.job.is_some() && mtime(path) == self.stamp {
             return Ok(());
         }
-        let j = jobfile::load(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
-        if same && self.job.is_some() {
-            // Changed on disk by someone else (the window, another agent):
-            // undoing to a copy from before that would drop their change.
+        let (j, written) = jobfile::load_versioned(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+        // UP21: a job file outside the shop folder is never read-only for
+        // being in the shop.
+        self.read_only = self.ctx.versions().at(path).newer(written.as_deref());
+        // Changed on disk by someone else (the window, another agent):
+        // undoing to a copy from before that would drop their change. A job
+        // a newer version saved is only read here (UP9): its undo copy is
+        // that version's, and stays.
+        if same && self.job.is_some() && self.read_only.is_none() {
             let _ = std::fs::remove_file(backup_path(path));
         }
         self.undo.clear();
@@ -69,12 +117,27 @@ impl Session {
         Ok(())
     }
 
-    fn save(&mut self, before: Option<JobFile>) -> Result<(), String> {
+    /// The job file's save lock (`jobfile::save_lock`), taken once the file
+    /// is checked under it: not one a newer version saved (UP7). Held from
+    /// before anything the change books or stores until the file is written.
+    fn lock_job_file(&self) -> Result<Option<crate::shared::WriteLock>, String> {
+        let path = self.path.as_ref().ok_or("no job open")?;
+        let lock = jobfile::save_lock(&self.ctx.library_dir)?;
+        jobfile::may_save(path, &self.ctx.versions())?;
+        Ok(lock)
+    }
+
+    /// Save the open job (under `lock`, from `lock_job_file`), keeping the
+    /// file as it was beside it for undo. Checked first, so the undo copy
+    /// is never changed for a save that is refused (UP7).
+    fn save(&mut self, before: Option<JobFile>, lock: Option<&crate::shared::WriteLock>) -> Result<(), String> {
         let (Some(job), Some(path)) = (&self.job, &self.path) else { return Err("no job open".into()) };
+        let versions = self.ctx.versions();
+        jobfile::may_save(path, &versions)?;
         if path.exists() && before.is_some() {
             let _ = std::fs::copy(path, backup_path(path));
         }
-        jobfile::save(path, job)?;
+        jobfile::save_under(path, job, &versions, lock)?;
         self.stamp = mtime(path);
         if let Some(b) = before {
             self.undo.push(b);
@@ -88,9 +151,60 @@ impl Session {
     /// Run an operation. `job` names the job file (needed for `new`, and when
     /// no job is open yet).
     pub fn call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
-        // The material list may have changed on another PC since (MA14);
-        // the first time this PC points at a Library its own list joins it
-        // (MA28), and a job open in this PC's numbering takes the Library's.
+        // S10: first, the Library this PC works in now. A call that would
+        // have gone to the job it closed changes nothing, and says so.
+        let followed = self.follow_library();
+        if let Some((said, Some(closed))) = &followed {
+            let needs_job = ops::find(name).is_some_and(|o| !matches!(o.kind, Kind::Global | Kind::Create));
+            if job.is_none() && needs_job {
+                return Err(format!("{said} The job open in this session ({}) was closed: it belongs to the Library this PC left. Nothing was changed. Open it again (job=) to work on it.", closed.display()));
+            }
+        }
+        // SH11: setup looks at a folder before it changes anything, so it
+        // writes no Library's material list first; a join writes the shop's
+        // only once the shop passed its checks (below).
+        let mut joined = if name == "setup" { None } else { self.reload_materials() };
+        let library = self.ctx.library_dir.clone();
+        let mut r = self.run_call(name, job, args)?;
+        // SH10: joining a shop points this session's Library at it: this
+        // PC's materials join the shop's list now (MA28), not at the next
+        // call. When they can't, that is said; they join at the next read.
+        let mut not_joined = None;
+        if self.ctx.library_dir != library {
+            match self.reload_materials_checked() {
+                Ok(j) => joined = j.or(joined),
+                Err(e) => not_joined = Some(format!("This PC's materials couldn't join the shop's material list just now ({e}). They join the next time the list is read: at this session's next call, or when the program opens.")),
+            }
+        }
+        if let Some(o) = r.json.as_object_mut() {
+            if let Some((said, closed)) = followed {
+                o.insert("library_changed".into(), json!(said));
+                if let Some(p) = closed {
+                    o.insert("closed_job".into(), json!(p.display().to_string()));
+                }
+            }
+            if let Some(n) = joined {
+                o.insert("materials_joined".into(), json!(n.note()));
+            }
+            if let Some(e) = not_joined {
+                o.insert("materials_not_joined".into(), json!(e));
+            }
+        }
+        Ok(r)
+    }
+
+    /// `reload_materials`, saying why this PC's materials couldn't join the
+    /// Library's list when they couldn't (SH10).
+    fn reload_materials_checked(&mut self) -> Result<Option<crate::materials::JoinedNow>, String> {
+        let r = self.ctx.reload_materials_checked();
+        self.seen = Some(super::material::current());
+        r
+    }
+
+    /// The material list may have changed on another PC since (MA14); the
+    /// first time this PC points at a Library its own list joins it (MA28),
+    /// and a job open in this PC's numbering takes the Library's.
+    fn reload_materials(&mut self) -> Option<crate::materials::JoinedNow> {
         // MA34: whether the open job's material was in the list read before.
         let known = self.job.as_ref().map(|j| self.seen.as_ref().map_or_else(|| super::material::exists(j.spec.material), |l| l.get(j.spec.material).is_some()));
         let joined = self.ctx.reload_materials();
@@ -100,11 +214,7 @@ impl Session {
             // name the job came with; never by its number alone (MA34).
             j.spec.material = crate::materials::after_reload(joined.as_ref(), j.spec.material, &j.material_name, known);
         }
-        let mut r = self.run_call(name, job, args)?;
-        if let (Some(n), Some(o)) = (joined, r.json.as_object_mut()) {
-            o.insert("materials_joined".into(), json!(n.note()));
-        }
-        Ok(r)
+        joined
     }
 
     fn run_call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
@@ -112,6 +222,22 @@ impl Session {
         let args = if args.is_null() { json!({}) } else { args.clone() };
         ops::check_args(op, &args)?;
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };
+        if name == "setup" {
+            // SH10: a PC that joined a shop works in the shop folder from now on.
+            let st = super::shop::setup_in(&self.ctx, &ops::Args(&args))?;
+            let mut outcome = st.outcome;
+            if let Some(d) = st.library {
+                self.ctx.cfg.library_dir = d.display().to_string();
+                self.ctx.library_dir = d;
+                // SH10: the open job, its undo steps and its stock booking
+                // are the old Library's: never saved into the shop's.
+                if let Some(p) = self.close_job() {
+                    outcome.message.push_str(&format!("\nThe job open in this session ({}) was closed: it belongs to the Library this PC left. Open it again to work on it.", p.display()));
+                    outcome.data["closed_job"] = json!(p.display().to_string());
+                }
+            }
+            return Ok(done(outcome));
+        }
         match op.kind {
             Kind::Global => {
                 // The open job as its file is now (the window or another
@@ -126,6 +252,9 @@ impl Session {
                 if p.exists() && !force {
                     return Err(format!("{} already exists — pick another name, or force=true to overwrite it.", p.display()));
                 }
+                // UP7: force never writes over a job a newer version saved.
+                let file = p.file_name().map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+                crate::shared::may_write_over(&p, &self.ctx.versions(), &format!("The job file {file}"))?;
                 let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "New job".into());
                 let mut a = args.clone();
                 if let Some(m) = a.as_object_mut() {
@@ -135,10 +264,12 @@ impl Session {
                 if let Some(d) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
                     std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
                 }
+                let lock = jobfile::save_lock(&self.ctx.library_dir)?;
                 self.job = Some(j);
                 self.path = Some(p.clone());
+                self.read_only = None;
                 self.undo.clear();
-                self.save(None)?;
+                self.save(None, lock.as_ref())?;
                 return Ok(done(Outcome {
                     message,
                     data: Value::Null,
@@ -155,11 +286,47 @@ impl Session {
                 None => return Err("No job open — give the job file (job).".into()),
             },
         }
+        // UP9: a job a newer version saved is read-only here: nothing that
+        // changes it runs (nor books stock for it), and its file stays as it
+        // is. Listing the Library changes nothing, so it still answers.
+        if let Some(n) = &self.read_only {
+            let listing = op.name == "library" && ops::Args(&args).str("mode").as_deref() == Some("list");
+            if op.kind == Kind::Write && !listing {
+                let file = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+                return Err(n.refusal(&format!("The job file {file}")));
+            }
+        }
         match op.name {
             "undo" => return self.undo_step().map(done),
             "render" => return self.render(&args),
             _ => {}
         }
+        // UP7: a change is never made to a job file a newer version saved,
+        // nor anything booked or stored for it. Operations that store in the
+        // Library or the stock themselves (library, stock-book) are short:
+        // they run under the job file's save lock, checked first. Others
+        // (a nest can take a while) are checked now, and again under the
+        // lock before anything is booked or written.
+        let listing = op.name == "library" && ops::Args(&args).str("mode").as_deref() == Some("list");
+        let early = match op.kind {
+            Kind::Write if listing => None,
+            Kind::Write if matches!(op.name, "library" | "stock-book") => {
+                let lock = self.lock_job_file()?;
+                // A booked job's change is booked after the call (below): a
+                // stock a newer version changed is refused now, under the
+                // lock, before the call stores anything in the Library.
+                if op.name == "library" && self.job.as_ref().is_some_and(|j| j.booked) {
+                    crate::shared::may_write_over(&crate::stock::Stock::file(&self.ctx.library_dir), &self.ctx.versions(), "The sheet stock")?;
+                }
+                Some(lock)
+            }
+            Kind::Write => {
+                let path = self.path.as_ref().ok_or("no job open")?;
+                jobfile::may_save(path, &self.ctx.versions())?;
+                None
+            }
+            _ => None,
+        };
         let job = self.job.as_mut().unwrap();
         let before = job.clone();
         let mut out = match ops::run(job, &self.ctx, name, &args) {
@@ -171,9 +338,26 @@ impl Session {
                 return Err(e);
             }
         };
+        let lock = match early {
+            Some(l) => l,
+            None if out.changed && op.kind == Kind::Write => match self.lock_job_file() {
+                Ok(l) => l,
+                Err(e) => {
+                    self.job = Some(before);
+                    return Err(e);
+                }
+            },
+            None => None,
+        };
+        let job = self.job.as_mut().unwrap();
         // A booked job keeps the stock in step with every change (as the
-        // window does on every save).
+        // window does on every save); not with a stock a newer version
+        // changed (UP7): the change is refused and the job left as it was.
         if out.changed && op.kind == Kind::Write && job.booked && op.name != "stock-book" {
+            if let Err(e) = crate::shared::may_write_over(&crate::stock::Stock::file(&self.ctx.library_dir), &self.ctx.versions(), "The sheet stock") {
+                *job = before;
+                return Err(e);
+            }
             let note = job.book_stock(&self.ctx, true);
             if !note.is_empty() {
                 out.message = format!("{} Stock: {note}.", out.message);
@@ -185,8 +369,9 @@ impl Session {
         // none of them (a save or stock-book would take them again).
         let into_library = name == "library" && out.changed && ops::Args(&args).str("mode").as_deref() == Some("save-job");
         if out.changed && op.kind == Kind::Write {
-            self.save(Some(before))?;
+            self.save(Some(before), lock.as_ref())?;
         }
+        drop(lock);
         if into_library {
             self.undo.clear();
             if let Some(p) = &self.path {
@@ -203,22 +388,28 @@ impl Session {
         if let Some(p) = &self.path {
             reply.json["job"] = json!(p.display().to_string());
         }
+        if let Some(n) = &self.read_only {
+            reply.json["read_only"] = json!(format!("This job is read-only on this PC. {}", n.message()));
+        }
         Ok(reply)
     }
 
     fn undo_step(&mut self) -> Result<Outcome, String> {
         let path = self.path.clone().ok_or("no job open")?;
+        // UP7: checked under the save lock before the stock is touched.
+        let lock = self.lock_job_file()?;
         let prev = match self.undo.pop() {
             Some(j) => j,
             // Across runs: the copy kept beside the file.
             None => jobfile::load(&backup_path(&path)).map_err(|_| "Nothing to undo.".to_string())?,
         };
         let note = self.restock_for_undo(prev)?;
-        jobfile::save(&path, self.job.as_ref().unwrap())?;
+        let versions = self.ctx.versions();
+        jobfile::save_under(&path, self.job.as_ref().unwrap(), &versions, lock.as_ref())?;
         // The copy beside the file moves one step back too, so a later run
         // can undo once more.
         match self.undo.last() {
-            Some(older) => jobfile::save(&backup_path(&path), older)?,
+            Some(older) => jobfile::save_under(&backup_path(&path), older, &versions, lock.as_ref())?,
             None => {
                 let _ = std::fs::remove_file(backup_path(&path));
             }
@@ -284,6 +475,7 @@ impl Session {
             (render::sheet_scene(job, k, width, path)?, format!("sheet {}", k + 1), dir.join(format!("{stem}-sheet{}.png", k + 1)))
         };
         let out = a.str("out").map(PathBuf::from).unwrap_or(default_out);
+        ops::refuse_protected(&self.ctx, &out)?;
         let png = render::write(&scene, &out)?;
         let image = match png {
             Some(p) => Some(p),

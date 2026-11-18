@@ -7485,6 +7485,342 @@
   "group": "grain",
   "value": "GRAIN arrow along X above the part, G badge",
   "source": "GR6"
+ },
+ {
+  "name": "release notes",
+  "group": "releases",
+  "value": "changes since the previous v*.*.* tag, first-parent; 'Changes machine programs' = changes touching AGENTS.md's machine-program risky paths",
+  "source": "UP1; own design"
+ },
+ {
+  "name": "installer start-up hook",
+  "group": "releases",
+  "value": "first in main, Windows (MSVC) builds only; no auto-apply of a downloaded update at start-up",
+  "source": "UP2; own design"
+ },
+ {
+  "name": "version shown",
+  "group": "releases",
+  "value": "Settings → About: the package version; elsewhere than Windows, that installers and updates are for Windows",
+  "source": "UP3; own design"
+ },
+ {
+  "name": "release tag",
+  "group": "releases",
+  "value": "v + package version, MAJOR.MINOR.PATCH only, on main; any other tag refused before building",
+  "source": "UP4; own design"
+ },
+ {
+  "name": "update check (PC of its own)",
+  "group": "releases",
+  "value": "GitHub Releases at start and once a day, background, 30 s for the whole check (shop lookup included), no request after it; never in a shop; an unreadable release index fails the check; no connection = 'Couldn't check for updates' on the card only",
+  "source": "UP11; own design"
+ },
+ {
+  "name": "release offered",
+  "group": "releases",
+  "value": "newest plain MAJOR.MINOR.PATCH newer than this version, numeric compare; no pre-releases; nothing in a shop",
+  "source": "UP12; own design"
+ },
+ {
+  "name": "update banner",
+  "group": "releases",
+  "value": "'Version X is out': What's new, Update when I close, Later; 'Changes machine programs' entries first",
+  "source": "UP13; own design"
+ },
+ {
+  "name": "update when I close",
+  "group": "releases",
+  "value": "download in background, install after the window closes (waits up to 90 s for a running download), no restart; withdrawn when the Library changes or becomes a shop's; offer, download and close look at the shop the same way (no own Library folder yet = a PC of its own); Windows installer builds only (Linux: releases are for Windows)",
+  "source": "UP14; own design"
+ },
+ {
+  "name": "start a shop",
+  "group": "shop",
+  "value": "Settings → Shop → Start a shop here, or setup start= name=; refused (nothing made) for no name, unreachable, no Library, already a shop, not writable",
+  "source": "SH1; own design"
+ },
+ {
+  "name": "shop folder",
+  "group": "shop",
+  "value": "the Library folder in place: adds shop.json + Shop, Updates, Backups; nothing else changed or moved; under the write lock",
+  "source": "SH2; own design"
+ },
+ {
+  "name": "shop file",
+  "group": "shop",
+  "value": "name, admin PC (who, when, the one before), shop settings changed only on the admin PC (new shop) or from any PC, who started it; later versions' fields kept",
+  "source": "SH3; own design"
+ },
+ {
+  "name": "PCs list",
+  "group": "shop",
+  "value": "Shop\\<PC>-<key of the whole name>.json per PC: PC, Windows user, version, last seen; written by that PC on opening the program, under the write lock; a PC that can't add itself is told so and can Add this PC",
+  "source": "SH4; own design"
+ },
+ {
+  "name": "Settings → Shop",
+  "group": "shop",
+  "value": "first page; two cards (This shop, PCs in this shop), one line each, details on hover; read on opening and Try again",
+  "source": "SH5; own design"
+ },
+ {
+  "name": "shop for agents",
+  "group": "shop",
+  "value": "shop mode=status: name, folder, admin PC, shop settings, PCs with version and last seen; setup start= name=",
+  "source": "SH6; own design"
+ },
+ {
+  "name": "change the admin PC",
+  "group": "shop",
+  "value": "Make this PC the admin PC, after a warning, records who and when; refused for agents with the reason",
+  "source": "SH7; own design"
+ },
+ {
+  "name": "shop folder unreachable",
+  "group": "shop",
+  "value": "said, naming the folder (LB11); never taken for no shop; nothing made",
+  "source": "SH8; own design"
+ },
+ {
+  "name": "first-run screen",
+  "group": "shop",
+  "value": "shown only on a PC with no settings file, an empty settings folder and no Library in the default place: Start a shop, Join a shop, Just this PC, one line each; nothing saves the settings until one is done",
+  "source": "SH9; own design"
+ },
+ {
+  "name": "join a shop",
+  "group": "shop",
+  "value": "settings saved first (active job cleared), then the switch; a failed save refuses and takes the PC record back; old stock sheets, bookings, remnants and undo steps forgotten, an agent's open job closed; an MCP session follows this PC's Library setting before each call (switches, closes its job, refuses a call meant for it); own Library untouched; materials join (MA28) or say why not; record failure: joined, Add this PC; relative folder saved as full path",
+  "source": "SH10; own design"
+ },
+ {
+  "name": "checks before joining",
+  "group": "shop",
+  "value": "reachable, holds a Library, holds a shop file, not in another shop (or leave), write lock taken; under it the shop file read again, a check file made and removed in the shop folder and its Shop folder, lock still held; nothing written before; a refusal names anything it couldn't remove",
+  "source": "SH11; own design"
+ },
+ {
+  "name": "shop version on joining",
+  "group": "shop",
+  "value": "the shop version read under the lock, compared as numbers (UP6); older may join, told to update; newer told the admin PC decides; none or not comparable: said, nothing compared",
+  "source": "SH12; own design"
+ },
+ {
+  "name": "shop folder name",
+  "group": "shop",
+  "value": "tidied (quotes, spaces, doubled or end separators); on Windows a mapped drive letter becomes the \\\\server\\share path behind it, said; a letter that can't be looked up is kept, said",
+  "source": "SH13; own design"
+ },
+ {
+  "name": "already in a shop",
+  "group": "shop",
+  "value": "the same folder: told so, setting kept; another shop's folder, or a Library folder that can't be reached: refused unless leave=true (window: asks, naming it), then left, named, record kept there",
+  "source": "SH14; own design"
+ },
+ {
+  "name": "join for agents",
+  "group": "shop",
+  "value": "setup join= [leave=true]: each check [ok]/[!!]/[no] in the message and data.checks, with recorded, closed job and materials; refusal an error with the checks; CLI exits 1 (2 for wrong arguments)",
+  "source": "SH15; own design"
+ },
+ {
+  "name": "first-run start and this PC",
+  "group": "shop",
+  "value": "Start a shop: folder + name; a folder with no Library asked about (the folder checked only), made only while it is there; Just this PC: Library in Documents\\Sheet Nesting\\Library; Join a shop… on every Settings → Shop page",
+  "source": "SH16; own design"
+ },
+ {
+  "name": "file version",
+  "group": "versions",
+  "value": "every Library file (job, library part, the Library's list, sheet stock, material list, shop file) records program_version, the version that last wrote it; none = written before, counts as old",
+  "source": "UP5; own design"
+ },
+ {
+  "name": "version order",
+  "group": "versions",
+  "value": "compared as numbers, part by part (0.10.0 newer than 0.9.0; a missing part is 0; text after - or + left out); a version that isn't numbers counts as newer",
+  "source": "UP6; own design"
+ },
+ {
+  "name": "older never overwrites newer",
+  "group": "versions",
+  "value": "a save, stock change, material change, list update, delete or shop-file change over a file a newer version wrote is refused, checked and written under one hold of the write lock, before anything is booked, stored or copied for undo: 'X is read-only on this PC. <message> Nothing was saved.'; render and part drawings never write over job or Library files",
+  "source": "UP7; own design"
+ },
+ {
+  "name": "update message",
+  "group": "versions",
+  "value": "in a shop with a shop version at least the file's: 'Made by version 0.5.0. Update this PC: the shop is on 0.5.0.'; otherwise only the file's: 'Made by version 0.5.0. Update this PC to 0.5.0 or later.'",
+  "source": "UP8; own design"
+ },
+ {
+  "name": "read-only job",
+  "group": "versions",
+  "value": "a job or library part a newer version saved opens read-only: window banner, Save and Save to library refused; agents: read operations answer with read_only, changes refused, library open of a newer job refused",
+  "source": "UP9; own design"
+ },
+ {
+  "name": "rolled back from",
+  "group": "versions",
+  "value": "files written by a release the shop rolled back from count as the shop version's (the list is kept by roll back, UP25); the newer-layout check stays",
+  "source": "UP10; own design"
+ },
+ {
+  "name": "backup zip",
+  "group": "shop",
+  "value": "the whole Library folder (shop file and PC records too), not Updates, Backups or the lock; named Backup <name> <id8> <day> <hhmm> <PC>.zip; marked with the Library's backup id (backup-id.txt); only marked whole zips count",
+  "source": "BK1; own design"
+ },
+ {
+  "name": "day's backup",
+  "group": "shop",
+  "value": "first PC to open the program each day; others see today's and skip, looked at again under the lock",
+  "source": "BK2; own design"
+ },
+ {
+  "name": "backup whole or not at all",
+  "group": "shop",
+  "value": "under the write lock, renewed while it works; new .part published only when whole, never over a file; any read error or a file that changed stops it, nothing published or removed; this Library's abandoned .part cleared under the lock",
+  "source": "BK3; own design"
+ },
+ {
+  "name": "backup keep",
+  "group": "shop",
+  "value": "30 days by default (1–3650); removed: Keep days old or more, except the newest Keep backups; only this Library's marked zips, lock checked before each",
+  "source": "BK4; own design"
+ },
+ {
+  "name": "backup second place",
+  "group": "shop",
+  "value": "each backup copied there too, never over a file; today's copied by the next PC when missing; only this Library's old ones and stale .part removed; unreachable or read-only is said, never fatal, never made",
+  "source": "BK5; own design"
+ },
+ {
+  "name": "own PC backups",
+  "group": "shop",
+  "value": "a Library that is no shop: Backups folder beside it in its real parent, its own Keep and second place; none at a share's top, for a Library named Backups, or through a linked Backups folder",
+  "source": "BK6; own design"
+ },
+ {
+  "name": "backups card",
+  "group": "shop",
+  "value": "Settings → Shop → Backups: last backup, folder, Keep, second place, Back up now; settings saved in the background, read under the lock by each backup; agents shop mode=backup",
+  "source": "BK7; own design"
+ },
+ {
+  "name": "restore on the admin PC",
+  "group": "shop",
+  "value": "Restore… on Settings → Shop → Backups, admin PC only (whatever SH3 says), in a shop; lists backups by date, asks once more; other PCs and agents refused with the reason; closing waits for a running restore, backup, roll out or roll back (Restoring — the program closes when it's done), and so does an update on close",
+  "source": "BK8; own design"
+ },
+ {
+  "name": "before restore backup",
+  "group": "shop",
+  "value": "the Library as it is now zipped first under the lock (… before restore.zip), no Keep pruning, read through by the restore's own reader and checked against the files and folders zipped; failing that nothing is restored; a Library with files a newer version wrote, or names a restore refuses, isn't restored; one of the Library's backups, kept its first day",
+  "source": "BK9; own design"
+ },
+ {
+  "name": "what a restore puts back",
+  "group": "shop",
+  "value": "the Library made to match the backup; kept as they are: Updates, Backups, Shop, Holds, the shop file, the backup id, lock files, links; records taken out keep their numbers (.deleted written first, existing marks stay)",
+  "source": "BK10; own design"
+ },
+ {
+  "name": "restore unpacking",
+  "group": "shop",
+  "value": "read and version-checked under the renewed lock (shop file included), unpacked from the same handle; refused: names outside the shop folder, trailing dot/space, short names, device names, capitals twins, a name twice, links, damaged files, newer files, links or aliases where it goes; every change fenced by the lock; a failure says what state the Library is in",
+  "source": "BK11; own design"
+ },
+ {
+  "name": "restore record",
+  "group": "shop",
+  "value": "shop file: backup, its day, before restore backup, PC, when, finished, lock token, generation, revision floor; the generation is published once every file is in place; reads carry it (none while a restore is unfinished), an older one is saved since (asks) whatever the revision",
+  "source": "BK12; own design"
+ },
+ {
+  "name": "restore notice",
+  "group": "shop",
+  "value": "next quick check, from one shop file read: restored / being restored / stopped halfway; open jobs wait while it runs; baseline taken when the window first shows the Library; open jobs reload or ask; old job saves ask; Backups card shows the last restore; agents shop last_restore (running too)",
+  "source": "BK13; own design"
+ },
+ {
+  "name": "shop updates card",
+  "group": "shop",
+  "value": "Settings → Shop → Updates in a shop: shop version, this PC's version and what it installs; admin PC only: Check GitHub (a person's click), What's new, Try on this PC, Roll out to the shop, Stop trying",
+  "source": "UP15; own design"
+ },
+ {
+  "name": "try on this PC",
+  "group": "shop",
+  "value": "admin PC, a release newer than the shop version; needs a shop version to go back to (a new shop first rolls out this PC's release) whose package is whole; the window's shop writers finish first (a backup under way stops it, holds let go now); settings saved before the switch, else nothing changes; fresh backup unpacked into this PC's app data (%LOCALAPPDATA%\\nestpro\\Trials; ~/.config/nestpro/Trials elsewhere), never inside the shop folder (resolved and refused before anything is made; old Documents trials still end normally), as this PC's Library (own backup id, no second place); installs on close; nothing written into the real shop folder (saves, job files, programs, pictures)",
+  "source": "UP16; own design"
+ },
+ {
+  "name": "stop trying",
+  "group": "shop",
+  "value": "refused while a job from the trial is open (Close your jobs from the trial first); open jobs forget the trial's stock links and undo; back to the shop folder at once (saved first), shop version installs on close (shop folder read-only until then); copy kept; a trial whose shop version changed meanwhile ends when the program opens, before the active job is reopened; an unreachable shop keeps the copy",
+  "source": "UP17; own design"
+ },
+ {
+  "name": "one-time changes",
+  "group": "shop",
+  "value": "tied to a release; run on the trial copy once that release opens it, on the shop only at roll out on the admin PC under the lock; recorded by name in the shop file, never twice; each safe to run again after a stop before its record; a failure stops the roll out",
+  "source": "UP18; own design"
+ },
+ {
+  "name": "roll out",
+  "group": "shop",
+  "value": "person on the admin PC only (agents refused), not while a trial job is open; the release this PC runs, newer than the shop version (same version: package-only repair when damaged); package checked by size (required) and SHA-256/SHA-1, the admin PC offering the repair of a damaged shop-version package; staged in Updates before the lock, published under it; one-time changes, shop version + previous + layouts; only folders this program made are taken out, an unmarked release folder never replaced; no job opens while it runs; closing waits while it writes (Rolling out — the program closes when it's done)",
+  "source": "UP19; own design"
+ },
+ {
+  "name": "roll out warning",
+  "group": "shop",
+  "value": "PCs behind (each opens new jobs read-only until it updates), newer file layout than the shop's last roll out, PCs ahead; Roll out or Cancel",
+  "source": "UP20; own design"
+ },
+ {
+  "name": "updates from the shop folder",
+  "group": "shop",
+  "value": "shop version read at start, each quick check, and every 5 minutes on its own (off the window's thread, whatever auto-refresh says); a different version fetched from Updates\\<version>, never the internet; banner Update ready, restart when you're done; installs when the window has closed, only if still the shop version; a PC newer than the shop version finds the shop folder read-only (files elsewhere are its own), starts no backup, holds no job, keeps its own PC record",
+  "source": "UP21; own design"
+ },
+ {
+  "name": "PCs against the shop version",
+  "group": "shop",
+  "value": "PCs list marks behind and ahead; agents' shop gives shop_version, previous_shop_version, releases_in_updates and behind/ahead per PC",
+  "source": "UP22; own design"
+ },
+ {
+  "name": "roll back",
+  "group": "shop",
+  "value": "person on the admin PC only (agents refused); to the release kept beside the shop version, its package whole in Updates (size and checksum); this PC on the shop version or the one kept; not a trial copy; Yes rolls back only the from/to the warning showed, else asks again; shop file: shop version = the one kept, none kept before it, its layouts; both releases stay in Updates; every PC goes back when its program closes; closing waits while it writes (Rolling back — the program closes when it's done)",
+  "source": "UP23; own design"
+ },
+ {
+  "name": "roll back refused for layouts",
+  "group": "shop",
+  "value": "only to a release that recorded its own file layouts when rolled out (roll-back-aware releases); refused when a kind of file is recorded in a newer layout than it writes: Jobs were saved in a layout 0.4.0 can't read. Restore a backup instead.; a missing, damaged or partial layout record refused alike; a one-time change it doesn't know refused; else a warning naming jobs, library parts, the Library's list, the sheet stock, the material list and the shop file, and the PCs read-only until they go back",
+  "source": "UP24; own design"
+ },
+ {
+  "name": "releases rolled back from",
+  "group": "shop",
+  "value": "roll back adds the release left to the shop file's list (once each); files in the shop folder last written by any count as the shop version's, never as newer than they are; files elsewhere keep the ordinary check; agents' shop gives rolled_back_from",
+  "source": "UP25; own design"
+ },
+ {
+  "name": "PC on the release left",
+  "group": "shop",
+  "value": "a PC still running the release rolled back from (not in a trial) finds the shop read-only: Restart to go back to 0.4.0; saves read the shop version again under the write lock; at close the shop is looked at once more (30 s): the shop version installs (fetched then if needed), an ended trial doesn't; no answer installs nothing",
+  "source": "UP26; own design"
+ },
+ {
+  "name": "Shop file that can't be read",
+  "group": "shop",
+  "value": "a shop file that can't be read while the Library folder can decides nothing: no save, folder change, program, picture, backup or hold in the Library folder or any shop folder (The shop file <path> can't be read … Nothing was saved); files elsewhere save as usual",
+  "source": "UP27; own design"
  }
 ]
 }

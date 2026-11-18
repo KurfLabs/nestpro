@@ -466,6 +466,7 @@ pub fn release(lib: &Library, jobs: &[u64]) -> Result<(), String> {
         }
         lib.watch.forget(job);
         lib.watch.done_with(job);
+        shared::pause("hold let go");
     }
     Ok(())
 }
