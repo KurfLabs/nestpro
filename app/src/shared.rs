@@ -870,7 +870,8 @@ pub struct Versions {
     /// version (when its program closes), so nothing it saves there is
     /// unreadable to the other PCs. Files elsewhere stay its own.
     pub back_to: Option<String>,
-    /// The shop folder `back_to` covers.
+    /// The shop folder, in a shop: what `back_to` and `rolled_back_from`
+    /// cover (`at`).
     pub shop_dir: Option<PathBuf>,
     /// UP16: the real shop folder, when this PC's Library is a trial copy of
     /// it: nothing the trial saves may land in it.
@@ -925,13 +926,17 @@ impl Versions {
         Some(Newer { written: w.to_string(), shop, back_to: None })
     }
 
-    /// UP21: these versions as they judge the file at `path`: a PC newer
-    /// than the shop version finds only the files in the shop folder
-    /// read-only, not those elsewhere.
+    /// UP21, UP25: these versions as they judge the file at `path`: a PC
+    /// newer than the shop version finds only the files in the shop folder
+    /// read-only, and only those count as the shop version's when a release
+    /// the shop rolled back from wrote them; files elsewhere are judged by
+    /// the version that wrote them.
     pub fn at(&self, path: &Path) -> Versions {
         let mut v = self.clone();
         if !v.shop_dir.as_deref().is_some_and(|d| inside(path, d)) {
             v.back_to = None;
+            // UP25: only the shop's files count as the shop version's.
+            v.rolled_back_from.clear();
         }
         v
     }
@@ -1475,6 +1480,16 @@ mod version_tests {
         assert!(later.newer(Some("0.5.0")).is_none(), "a PC on 0.5.0 couldn't save what it wrote itself");
         let old = Versions { this: "0.3.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], ..Default::default() };
         assert_eq!(old.newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC: the shop is on 0.4.0.");
+    }
+
+    /// UP25 (review S2): outside the shop folder a release rolled back from
+    /// is judged as itself.
+    #[test]
+    fn a_release_rolled_back_from_counts_as_the_shop_versions_only_in_the_shop_folder() {
+        let d = std::env::temp_dir().join("nestpro-version-scope");
+        let v = Versions { this: "0.4.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], shop_dir: Some(d.join("shop")), ..Default::default() };
+        assert!(v.at(&d.join("shop").join("Jobs").join("DEMO-001.snjob")).newer(Some("0.5.0")).is_none());
+        assert!(v.at(&d.join("desktop").join("DEMO-002.snjob")).newer(Some("0.5.0")).is_some());
     }
 
     /// UP21: a PC on a release newer than the shop version (outside a

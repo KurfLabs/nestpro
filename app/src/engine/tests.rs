@@ -12616,7 +12616,7 @@ fn opens_and_saves(lib: &Path, jp: &Path, version: &str, new_name: &str) {
 fn after_a_roll_back_a_job_saved_by_the_release_left_saves_on_the_shop_version() {
     let d = dir("rollback_job");
     let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
-    let jp = job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
     let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
     call(&mut b, "stock", None, json!({"mode": "create", "ref": "S5", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
     // Before the roll back the job is newer than 0.4.0: read-only there.
@@ -12640,10 +12640,10 @@ fn after_a_roll_back_a_job_saved_by_the_release_left_saves_on_the_shop_version()
 fn rolling_back_twice_keeps_every_release_rolled_back_from() {
     let d = dir("rollback_twice");
     let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
-    let j5 = job_saved_on(&lib, &d, "0.5.0", "DEMO-005");
+    let j5 = job_saved_on(&lib, &lib, "0.5.0", "DEMO-005");
     crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
     roll_out(&lib, &d, "0.6.0");
-    let j6 = job_saved_on(&lib, &d, "0.6.0", "DEMO-006");
+    let j6 = job_saved_on(&lib, &lib, "0.6.0", "DEMO-006");
     let back = crate::engine::rollout::rollback(&lib, &admin(), "0.6.0").unwrap();
     assert_eq!((back.from.as_str(), back.to.as_str()), ("0.6.0", "0.4.0"));
     opens_and_saves(&lib, &j5, "0.4.0", "DEMO-005 again");
@@ -12694,7 +12694,7 @@ fn a_pc_still_on_the_release_left_opens_the_shop_read_only_with_the_restart_mess
 fn rolling_out_the_release_left_again_works_normally_on_it() {
     let d = dir("rollback_again");
     let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
-    let jp = job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
     crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
     opens_and_saves(&lib, &jp, "0.4.0", "DEMO-001 on 0.4.0");
     // The packages kept in Updates roll it out again.
@@ -12935,5 +12935,35 @@ fn a_roll_back_landing_while_an_agents_change_waits_leaves_the_shop_untouched() 
     let e = e.expect("the material list was changed after the shop was rolled back");
     assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
     assert_eq!(std::fs::read(&list).ok(), before, "the material list was written");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP25 (review S2): what a release the shop rolled back from wrote counts
+/// as the shop version's only inside the shop folder. A job file the
+/// release left saves on the desktop after the roll back stays its own: a
+/// PC on the shop version opens it read-only and never saves over it, while
+/// a job in the shop folder that release wrote saves on the shop version.
+#[test]
+fn files_outside_the_shop_folder_keep_the_ordinary_version_check_after_a_roll_back() {
+    let d = dir("rollback_desktop");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let in_shop = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    // PC-B, still on 0.5.0, saves a job of its own on its desktop.
+    let desk = d.join("desktop");
+    std::fs::create_dir_all(&desk).unwrap();
+    let mine = desk.join("DEMO-002.snjob");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    call(&mut b, "new", Some(mine.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let bytes = std::fs::read(&mine).unwrap();
+    // PC-C, on the shop version, reads it but never saves over it.
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let info = call(&mut c, "info", Some(mine.to_str().unwrap()), json!({}));
+    assert_eq!(info["read_only"], "This job is read-only on this PC. Made by version 0.5.0. Update this PC to 0.5.0 or later.", "{info}");
+    let e = c.call("rename", Some(mine.to_str().unwrap()), &json!({"name": "DEMO-002 x"})).err().expect("a job file outside the shop was saved over by an older PC");
+    assert!(e.contains("Made by version 0.5.0"), "{e}");
+    assert_eq!(std::fs::read(&mine).unwrap(), bytes);
+    // The job in the shop folder 0.5.0 wrote saves on 0.4.0.
+    opens_and_saves(&lib, &in_shop, "0.4.0", "DEMO-001 on 0.4.0");
     let _ = std::fs::remove_dir_all(&d);
 }

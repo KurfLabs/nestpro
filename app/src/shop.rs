@@ -289,7 +289,7 @@ pub fn versions(dir: &Path, this: &str) -> shared::Versions {
     let shop = s.as_ref().and_then(|s| s.shop_version().map(String::from));
     let trial_of = s.as_ref().and_then(|s| s.trial()).map(|m| PathBuf::from(m.shop_folder));
     let back_to = shop.clone().filter(|v| trial_of.is_none() && shared::version_order(this, v) == Some(std::cmp::Ordering::Greater));
-    let shop_dir = back_to.as_ref().map(|_| dir.to_path_buf());
+    let shop_dir = shop.as_ref().map(|_| dir.to_path_buf());
     let rolled_back_from = s.as_ref().map(ShopFile::rolled_back_from).unwrap_or_default();
     shared::Versions { this: this.to_string(), shop, rolled_back_from, back_to, shop_dir, trial_of }
 }
