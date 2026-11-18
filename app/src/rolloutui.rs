@@ -564,11 +564,13 @@ impl App {
     }
 
     /// UP23: Yes on the warning: roll back, in the background.
-    fn roll_back(&mut self, shop: PathBuf, to: String) {
+    fn roll_back(&mut self, shop: PathBuf, ask: rollout::RollBackAsk) {
         let who = self.who.clone();
         let (tx, rx) = std::sync::mpsc::channel();
+        let to = ask.to.clone();
+        // S4: only the roll back the person confirmed (from and to).
         std::thread::spawn(move || {
-            let _ = tx.send(rollout::rollback(&shop, &who, updates::VERSION).map(Step::RolledBack));
+            let _ = tx.send(rollout::rollback_as_asked(&shop, &who, updates::VERSION, &ask).map(Step::RolledBack));
         });
         self.rollout.busy = Some((format!("Rolling back to {to}…"), rx));
     }
@@ -845,7 +847,7 @@ impl App {
             });
         if yes {
             self.rollout.back = None;
-            self.roll_back(shop, a.to);
+            self.roll_back(shop, a);
         } else if no || !open {
             self.rollout.back = None;
         }
@@ -1261,6 +1263,37 @@ mod tests {
         assert!(r.since.is_none() && r.note.as_ref().is_some_and(|n| n.1.contains("No backup was taken")), "{:?}", r.note);
         drop(r);
         assert!(std::fs::read_dir(lib.join("Backups")).unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// UP24 (review S4): the warning asked "0.1.0 back to 0.0.9"; the shop
+    /// moved on (0.2.0 rolled out) before Yes. Yes refuses, changing
+    /// nothing, and asks again: it never rolls back what wasn't confirmed.
+    #[test]
+    fn yes_on_a_roll_back_warning_the_shop_moved_on_from_changes_nothing() {
+        let d = tmp("rollback_moved");
+        let older = "0.0.9";
+        let lib = acme(&d, Some(older));
+        rollout::rollout(&lib, &rollout::fake_release(&d, updates::VERSION), &sam(), updates::VERSION).unwrap();
+        let mut a = admin_app(&d, &lib);
+        let ask = rollout::rollback_ask(&lib, &sam(), updates::VERSION).unwrap();
+        assert_eq!((ask.from.as_str(), ask.to.as_str()), (updates::VERSION, older));
+        // Meanwhile 0.2.0 is rolled out (from another window of the admin
+        // PC running it).
+        let next = "9.9.9";
+        rollout::rollout(&lib, &rollout::fake_release(&d, next), &sam(), next).unwrap();
+        let before = std::fs::read(crate::shop::file(&lib)).unwrap();
+        a.roll_back(lib.clone(), ask);
+        let until = Instant::now() + Duration::from_secs(60);
+        while a.rollout.busy.is_some() {
+            a.poll_busy();
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(std::fs::read(crate::shop::file(&lib)).unwrap(), before, "the shop file changed");
+        assert_eq!(crate::shop::read(&lib).unwrap().unwrap().shop_version(), Some(next));
+        let note = a.rollout.note.clone().unwrap_or_default().1;
+        assert!(note.contains(&format!("the shop version is {next} now")) && note.contains("Nothing was rolled back") && note.contains("ask again"), "{note}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

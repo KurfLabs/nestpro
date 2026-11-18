@@ -681,7 +681,15 @@ pub fn rollback_ask_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeCh
 /// UP23, UP25: roll the shop in `dir` back to the release kept beside the
 /// shop version, by a person on the admin PC running `this`.
 pub fn rollback(dir: &Path, who: &Who, this: &str) -> Result<RolledBack, String> {
-    rollback_with(dir, who, this, CHANGES)
+    rollback_with(dir, who, this, CHANGES, None)
+}
+
+/// UP24 (S4): Yes on the warning: the roll back `ask` showed, from its
+/// release to its release, and only that. Looked at under the lock: when
+/// the shop version or the release kept changed since the warning, nothing
+/// changes and the person is asked again.
+pub fn rollback_as_asked(dir: &Path, who: &Who, this: &str, ask: &RollBackAsk) -> Result<RolledBack, String> {
+    rollback_with(dir, who, this, CHANGES, Some((&ask.from, &ask.to)))
 }
 
 /// `rollback`, with the one-time changes given (tests).
@@ -692,7 +700,7 @@ pub fn rollback(dir: &Path, who: &Who, this: &str) -> Result<RolledBack, String>
 /// that release writes, and adds the release left to the releases rolled
 /// back from (UP25). `Updates` keeps both releases. Every PC then installs
 /// the shop version when its program closes, going back (UP21).
-pub fn rollback_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeChange]) -> Result<RolledBack, String> {
+pub fn rollback_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeChange], asked: Option<(&str, &str)>) -> Result<RolledBack, String> {
     if who.agent {
         return Err(AGENT_ROLLBACK.into());
     }
@@ -703,6 +711,9 @@ pub fn rollback_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeChange
     shared::pause("rollback: locked");
     let mut s = shop::read(dir)?.ok_or_else(not_shop)?;
     let (from, to) = may_roll_back(dir, &s, who, this, changes)?;
+    if let Some((f, t)) = asked.filter(|(f, t)| *f != from || *t != to) {
+        return Err(format!("The shop changed since you were asked to roll back from {f} to {t}: the shop version is {from} now, and the release kept for roll back {to}. Nothing was rolled back: ask again to see what rolling back would do now."));
+    }
     let mut list = s.rolled_back_from();
     if !list.iter().any(|v| shared::version_order(v, &from) == Some(Ordering::Equal)) {
         list.push(from.clone());
@@ -715,7 +726,7 @@ pub fn rollback_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeChange
     s.other.insert(shop::ROLLED_BACK_FROM.into(), json!(list));
     // Judged as the shop will be: what the release left wrote counts as
     // the shop version's.
-    let judged = Versions { this: this.to_string(), shop: Some(to.clone()), rolled_back_from: list, ..Default::default() };
+    let judged = Versions { this: this.to_string(), shop: Some(to.clone()), rolled_back_from: list, shop_dir: Some(dir.to_path_buf()), ..Default::default() };
     shop::write_judged(dir, &s, &lock, this, &judged).map_err(|e| format!("Not rolled back: the shop file couldn't be written ({e}). The shop version is still {from}."))?;
     Ok(RolledBack { from, to })
 }

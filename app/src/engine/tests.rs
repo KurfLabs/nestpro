@@ -12795,7 +12795,7 @@ fn roll_back_refuses_without_a_whole_release_kept_or_from_the_wrong_pc() {
     let mut v: Value = serde_json::from_slice(&shop_file).unwrap();
     v[crate::shop::CHANGES_MADE] = json!(["machines-into-shop"]);
     std::fs::write(&f, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
-    let e = rollout::rollback_with(&lib, &admin(), "0.5.0", MOVED).unwrap_err();
+    let e = rollout::rollback_with(&lib, &admin(), "0.5.0", MOVED, None).unwrap_err();
     assert_eq!(e, "0.5.0 changed the shop's files in a way 0.4.0 doesn't know about (Moves the machines into the shop). Restore a backup instead. Nothing was changed.");
     std::fs::write(&f, &shop_file).unwrap();
     // The release kept's package is missing, then only its index.
@@ -12815,8 +12815,10 @@ fn roll_back_refuses_without_a_whole_release_kept_or_from_the_wrong_pc() {
     assert!(rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err().contains("aren't whole"));
     std::fs::write(kept.join(rollout::INDEX), &idx).unwrap();
     assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
-    // Whole again: it goes through.
-    rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    // Whole again: it goes through, on the admin PC running the release
+    // kept too (its shop file is then written by 0.4.0, over 0.5.0's).
+    rollout::rollback(&lib, &admin(), "0.4.0").unwrap();
+    assert_eq!(crate::shop::read(&lib).unwrap().unwrap().shop_version(), Some("0.4.0"));
     let _ = std::fs::remove_dir_all(&d);
 }
 
