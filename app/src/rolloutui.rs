@@ -60,6 +60,11 @@ pub struct RolloutUi {
     /// check doesn't read it whole again.
     pub repair: Option<String>,
     pub repair_seen: Option<(String, u64, Option<std::time::SystemTime>)>,
+    /// S8: when the shop version is looked at next on its own timer (this
+    /// window's clock; 0: not set yet), and that look, running in the
+    /// background: the Library it is for, and its answer.
+    pub next_look: u64,
+    pub shop_look: Option<(PathBuf, Receiver<Result<FromShop, String>>)>,
 }
 
 /// A step done in the background.
@@ -86,11 +91,20 @@ pub struct WarnAsk {
     pub lines: Vec<String>,
 }
 
+/// S8: how often an open program looks at the shop version by itself,
+/// whatever the auto-refresh setting: one small read of the shop file, off
+/// the window's thread, so a roll out made after it opened says "Update
+/// ready" without waiting for the close.
+pub const SHOP_LOOK_EVERY: u64 = 5 * 60;
+
 /// N1: why no job opens while a roll out runs.
 pub const ROLLING: &str = "Rolling out — wait until it's done.";
 
 /// Decision on #185: why Roll out waits while jobs from the trial are open.
 pub const CLOSE_TRIAL_JOBS: &str = "Close your jobs from the trial first: saved after the roll out, they would go into the shop.";
+
+/// S3: why Stop trying waits while jobs from the trial are open.
+pub const CLOSE_TRIAL_JOBS_STOP: &str = "Close your jobs from the trial first: saved after Stop trying, they would go into the shop with the trial's sheets.";
 
 /// UP16, S4: Try on this PC's steps, off the window's thread. A shop with no
 /// shop version yet first gets the release this PC runs as its shop version
@@ -98,6 +112,8 @@ pub const CLOSE_TRIAL_JOBS: &str = "Close your jobs from the trial first: saved 
 /// go back to; then the tried release is fetched, and the copy made.
 #[allow(clippy::too_many_arguments)]
 pub fn trial_steps(src: &Source, shop: &Path, releases: &Path, root: &Path, version: &str, who: &crate::shared::Who, clock: &crate::shared::Clock, own: &crate::backup::Settings) -> Result<rollout::Trial, String> {
+    // S4: where the copy goes is checked before anything is fetched or made.
+    rollout::trial_place_ok(shop, root)?;
     let s = crate::shop::read(shop)?.ok_or_else(|| format!("{} isn't a shop. Nothing was tried.", shop.display()))?;
     if s.shop_version().is_none() {
         let mine = releases.join(updates::VERSION);
@@ -107,6 +123,20 @@ pub fn trial_steps(src: &Source, shop: &Path, releases: &Path, root: &Path, vers
     }
     updates::fetch_release(src, version, &releases.join(version))?;
     rollout::start_trial(shop, root, version, who, clock, updates::VERSION, own)
+}
+
+/// UP16 (S4): this PC's trial copies: `%LOCALAPPDATA%\nestpro\Trials` on
+/// Windows (app data that stays on this PC), beside the settings elsewhere
+/// (`~/.config/nestpro/Trials`). Never in `Documents\Sheet Nesting`, which
+/// can be the shop folder itself. Trials begun in the old place
+/// (`Documents\Sheet Nesting\Trials`) are still read and ended as usual:
+/// this PC's settings name the copy it works on.
+pub fn trials_root() -> PathBuf {
+    let local = if cfg!(windows) && !cfg!(test) { std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) } else { None };
+    match local {
+        Some(l) => PathBuf::from(l).join("nestpro").join("Trials"),
+        None => crate::settings::AppSettings::file().parent().map(|p| p.join("Trials")).unwrap_or_default(),
+    }
 }
 
 impl App {
@@ -122,7 +152,8 @@ impl App {
         crate::settings::AppSettings::file().parent().map(|p| p.join("Releases")).unwrap_or_default()
     }
 
-    /// Where trial copies go on this PC (UP16): `Documents\Sheet Nesting\Trials`.
+    /// Where trial copies go on this PC (UP16, S4): its own app data, never
+    /// a Library folder (`trials_root`).
     fn trials_dir(&self) -> PathBuf {
         if let Some(l) = &self.rollout.local {
             return l.join("Trials");
@@ -130,7 +161,7 @@ impl App {
         if self.shot_mode_now() {
             return crate::settings_ui::shop_demo_dir().and_then(|d| d.parent().map(|p| p.join("Trials"))).unwrap_or_default();
         }
-        crate::library::documents_dir().join("Trials")
+        trials_root()
     }
 
     /// Where a release this PC fetches is downloaded from: a made-up one in
@@ -182,6 +213,9 @@ impl App {
             self.cfg_saved = next.clone();
         }
         self.cfg = next;
+        // S3: the open jobs' stock links and undo steps are the old
+        // Library's (as when joining a shop).
+        self.forget_old_library_stock();
         self.library_folder_changed();
         self.setui.shop = None;
         self.drop_fetch();
@@ -235,6 +269,7 @@ impl App {
             r.look = true;
             r.trial_looked = false;
             r.releases = None;
+            r.shop_look = None;
         }
         if !self.rollout.trial_looked {
             self.rollout.trial_looked = true;
@@ -242,7 +277,9 @@ impl App {
         }
         if std::mem::take(&mut self.rollout.look) {
             self.look_at_shop(&dir);
+            self.rollout.next_look = self.clock.now() + SHOP_LOOK_EVERY;
         }
+        self.shop_look_timer(&dir);
         self.poll_shop_fetch();
         if let Some(rx) = &self.rollout.checking {
             match rx.try_recv() {
@@ -258,14 +295,62 @@ impl App {
             }
         }
         self.poll_busy();
-        if self.rollout.checking.is_some() || self.rollout.busy.is_some() || matches!(self.rollout.fetch, Fetch::Running(..)) {
+        if self.rollout.checking.is_some() || self.rollout.busy.is_some() || self.rollout.shop_look.is_some() || matches!(self.rollout.fetch, Fetch::Running(..)) {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
+
+    /// S8: the shop version on its own timer (`SHOP_LOOK_EVERY`), read in
+    /// the background; what it finds is taken in as the look at the quick
+    /// check's is. Not in screenshots.
+    fn shop_look_timer(&mut self, dir: &Path) {
+        if let Some((d, rx)) = &self.rollout.shop_look {
+            match rx.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Ok(from) if d == dir => {
+                    let dir = d.clone();
+                    self.rollout.shop_look = None;
+                    self.took_shop_look(&dir, from, false);
+                }
+                // For a Library this window left, or the look stopped.
+                _ => self.rollout.shop_look = None,
+            }
+        }
+        let now = self.clock.now();
+        if self.shot.is_some() {
+            return;
+        }
+        if self.rollout.next_look == 0 {
+            self.rollout.next_look = now + SHOP_LOOK_EVERY;
+            return;
+        }
+        if now < self.rollout.next_look || self.rollout.shop_look.is_some() {
+            return;
+        }
+        self.rollout.next_look = now + SHOP_LOOK_EVERY;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d = dir.to_path_buf();
+        if std::thread::Builder::new()
+            .name("shop version look".into())
+            .spawn(move || {
+                let _ = tx.send(crate::engine::updates::from_shop(&d, updates::VERSION));
+            })
+            .is_ok()
+        {
+            self.rollout.shop_look = Some((dir.to_path_buf(), rx));
         }
     }
 
     /// UP21: what this PC installs from its shop, and fetching it.
     fn look_at_shop(&mut self, dir: &Path) {
         let from = crate::engine::updates::from_shop(dir, updates::VERSION);
+        self.took_shop_look(dir, from, true);
+    }
+
+    /// UP21: take in what a look at the shop found. `package`: on the admin
+    /// PC, check the shop version's package too (S8: not on the timer's
+    /// looks, which read only the shop file).
+    fn took_shop_look(&mut self, dir: &Path, from: Result<FromShop, String>, package: bool) {
         match &from {
             Ok(FromShop::Update { version, folder, .. }) => {
                 let (v, f) = (version.clone(), folder.clone());
@@ -286,7 +371,9 @@ impl App {
                 if self.rollout.fetch_why == Why::Shop {
                     self.drop_fetch();
                 }
-                self.look_at_package(dir, &v);
+                if package {
+                    self.look_at_package(dir, &v);
+                }
             }
             // Up to date, no shop version, missing packages or no shop:
             // a shop release chosen before is withdrawn.
@@ -487,7 +574,10 @@ impl App {
         let (shop, releases, root, who, clock, own) = (self.real_shop(), self.releases_dir(), self.trials_dir(), self.who.clone(), self.clock.clone(), self.cfg.backups.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         let v = version.clone();
+        // S2: it backs the shop up: closing the program waits for it.
+        let working = self.handoff.begin(updates::Work::Backup);
         std::thread::spawn(move || {
+            let _working = working;
             let _ = tx.send(trial_steps(&src, &shop, &releases, &root, &v, &who, &clock, &own).map(Step::Trial));
         });
         self.rollout.note = None;
@@ -496,9 +586,18 @@ impl App {
 
     /// UP17: Stop trying: back to the shop folder at once (read-only until
     /// the shop version is back, UP21), the shop version installing when the
-    /// program closes.
-    fn stop_trying(&mut self) {
+    /// program closes. S3: not while a job from the trial is open (saved
+    /// afterwards it would book the trial's sheets in the shop's stock); the
+    /// other open jobs forget the trial's stock links and undo steps.
+    pub fn stop_trying(&mut self) {
         let Some(m) = self.trial_mark() else { return };
+        if self.trial_jobs_open() {
+            let said = format!("{CLOSE_TRIAL_JOBS_STOP} Still trying {}.", m.version);
+            // Said on the status line too: Stop trying is on the banner.
+            self.status = said.clone();
+            self.rollout.note = Some((false, said));
+            return;
+        }
         if let Err(e) = self.switch_library(Path::new(&m.shop_folder)) {
             self.rollout.note = Some((false, format!("Still trying {}: {e}", m.version)));
             return;
@@ -544,7 +643,10 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let v = w.version.clone();
         self.rollout.rolling = true;
+        // S2: closing the program waits for it.
+        let working = self.handoff.begin(updates::Work::RollOut);
         std::thread::spawn(move || {
+            let _working = working;
             let _ = tx.send(rollout::rollout(&w.shop, &w.release, &who, &w.version).map(Step::RolledOut));
         });
         self.rollout.busy = Some((format!("Rolling out {v}…"), rx));
@@ -568,8 +670,11 @@ impl App {
         let who = self.who.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let to = ask.to.clone();
+        // S2: closing the program waits for it.
+        let working = self.handoff.begin(updates::Work::RollBack);
         // S4: only the roll back the person confirmed (from and to).
         std::thread::spawn(move || {
+            let _working = working;
             let _ = tx.send(rollout::rollback_as_asked(&shop, &who, updates::VERSION, &ask).map(Step::RolledBack));
         });
         self.rollout.busy = Some((format!("Rolling back to {to}…"), rx));
@@ -945,7 +1050,7 @@ impl App {
                     }
                 }
             }
-            "trial" => {
+            "trial" | "trial-stop" => {
                 self.who = sam.clone();
                 let _ = crate::engine::shop::record_pc(&dir, &sam, &Clock::at(now), older);
                 let _ = crate::engine::shop::record_pc(&dir, &Who::new("kim", "PC-B"), &Clock::at(now - 1200), older);
@@ -957,6 +1062,12 @@ impl App {
                         self.rollout.from = Some(Ok(FromShop::Trial(t.mark.clone())));
                         self.choose_from(&next, rel, Why::Trial);
                         self.rollout.note = Some((true, format!("This PC works on a copy of the shop now, made from a fresh backup. Nothing you save here reaches the shop. Version {next} installs when the program closes.")));
+                        // S3: Stop trying with a job from the trial open.
+                        if what == "trial-stop" {
+                            self.rollout.show_card = true;
+                            self.job_lib_id = Some(1);
+                            self.stop_trying();
+                        }
                     }
                     Err(e) => self.rollout.note = Some((false, e)),
                 }
@@ -1157,6 +1268,121 @@ mod tests {
         a.export();
         assert!(a.status.contains("this PC is trying a release on a copy of the shop"), "{}", a.status);
         assert!(!lib.join("Programs").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S3: Stop trying waits while a job from the trial is open, as Roll out
+    /// does; once they are closed, the jobs still open forget the trial's
+    /// stock (sheets taken, remnants stored) and their undo steps, so a
+    /// later save never gives the shop's stock sheets booked only on the
+    /// trial copy.
+    #[test]
+    fn stop_trying_waits_for_trial_jobs_and_forgets_the_trials_stock() {
+        let d = tmp("stop_trying");
+        let lib = acme(&d, Some(updates::VERSION));
+        let mut a = admin_app(&d, &lib);
+        let t = try_now(&a, &lib, "9.0.0");
+        a.trial_begun(t);
+        let copy = a.library_dir();
+        assert_ne!(copy, lib);
+        a.job_lib_id = Some(1);
+        a.stop_trying();
+        assert_eq!(a.library_dir(), copy, "Stop trying left with a job from the trial open");
+        assert!(a.rollout.note.as_ref().is_some_and(|n| !n.0 && n.1.starts_with("Close your jobs from the trial first")), "{:?}", a.rollout.note);
+        a.job_lib_id = None;
+        // A job (its file outside the copy) that took a sheet from the
+        // trial's stock and stored a remnant there.
+        if a.result.formats.is_empty() {
+            a.result.formats.push(crate::nest::SheetFormat::rect(2000.0, 1000.0));
+        }
+        for f in &mut a.result.formats {
+            f.stock_ref = "S1".into();
+            f.made = vec!["R1".into()];
+        }
+        a.held.insert("S1".into(), 1);
+        let snap = a.snapshot();
+        a.undo.push(snap);
+        a.stop_trying();
+        assert_eq!(a.library_dir(), lib, "{:?}", a.rollout.note);
+        assert!(a.held.is_empty() && a.result.formats.iter().all(|f| f.stock_ref.is_empty() && f.made.is_empty()), "a job kept the trial's stock");
+        assert!(a.undo.is_empty() && a.redo.is_empty(), "undo could bring the trial's stock back");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S2: Roll out and Roll back hold the close while they write the shop
+    /// folder: closing then waits ("Rolling out — the program closes when
+    /// it's done"), and the update hand-off too.
+    #[test]
+    fn closing_waits_while_a_roll_out_or_roll_back_writes_the_shop() {
+        let d = tmp("close_rolling");
+        let lib = acme(&d, Some("0.0.9"));
+        let mut a = admin_app(&d, &lib);
+        let answer = |a: &mut App| a.rollout.busy.take().map(|(_, rx)| rx.recv_timeout(Duration::from_secs(120)).expect("no answer"));
+        a.prepare_rollout();
+        let Some(Ok(Step::Ready(w))) = answer(&mut a) else { panic!("{:?}", a.rollout.note) };
+        // Another writer holds the shop's lock: the roll out waits for it.
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        a.roll_out(w);
+        assert_eq!(a.handoff.working(), Some(updates::Work::RollOut), "closing wouldn't wait for the roll out");
+        drop(lock);
+        assert!(matches!(answer(&mut a), Some(Ok(Step::RolledOut(_)))));
+        a.handoff.wait_for_work();
+        assert_eq!(a.handoff.working(), None);
+        a.prepare_rollback();
+        let Some(Ok(Step::BackReady(shop, ask))) = answer(&mut a) else { panic!("{:?}", a.rollout.note) };
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        a.roll_back(shop, ask);
+        assert_eq!(a.handoff.working(), Some(updates::Work::RollBack), "closing wouldn't wait for the roll back");
+        drop(lock);
+        let r = answer(&mut a);
+        assert!(matches!(r, Some(Ok(Step::RolledBack(_)))), "{:?}", r.map(|r| r.err()));
+        a.handoff.wait_for_work();
+        assert_eq!(a.handoff.working(), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S8: a PC left open with auto-refresh off (the default) finds a roll
+    /// out made after it opened on the shop version's own timer, and gets
+    /// its "Update ready" before it closes.
+    #[test]
+    fn a_roll_out_after_the_program_opened_is_found_without_auto_refresh() {
+        let d = tmp("s8_timer");
+        let lib = acme(&d, Some(updates::VERSION));
+        let mut a = admin_app(&d, &lib);
+        a.who = Who::new("kim", "PC-B");
+        a.clock = Clock::at(1_794_220_000);
+        a.cfg.refresh_minutes = 0;
+        let ctx = egui::Context::default();
+        a.shop_update_tick(&ctx);
+        assert!(matches!(a.rollout.from, Some(Ok(FromShop::UpToDate(_)))), "{:?}", a.rollout.from);
+        rollout::rollout(&lib, &rollout::fake_release(&d, "9.0.0"), &sam(), "9.0.0").unwrap();
+        a.clock.advance(Duration::from_secs(60));
+        a.refresh_tick(false);
+        a.shop_update_tick(&ctx);
+        assert!(matches!(a.rollout.from, Some(Ok(FromShop::UpToDate(_)))), "looked before its time");
+        a.clock.advance(Duration::from_secs(SHOP_LOOK_EVERY));
+        let until = Instant::now() + Duration::from_secs(60);
+        while !matches!(a.rollout.fetch, Fetch::Ready(_)) {
+            a.shop_update_tick(&ctx);
+            assert!(Instant::now() < until, "never found the roll out: {:?}", a.rollout.from);
+            std::thread::yield_now();
+        }
+        assert!(matches!(&a.rollout.from, Some(Ok(FromShop::Update { version, .. })) if version == "9.0.0"), "{:?}", a.rollout.from);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S4: Try on this PC refuses a trial folder inside the shop before it
+    /// fetches, rolls out or backs up anything.
+    #[test]
+    fn a_trial_folder_inside_the_shop_is_refused_before_anything_is_made() {
+        let d = tmp("trial_place");
+        let lib = acme(&d, None);
+        let a = admin_app(&d, &lib);
+        let e = trial_steps(&src(&a), &lib, &a.releases_dir(), &lib.join("Trials"), "9.0.0", &a.who, &a.clock, &a.cfg.backups).unwrap_err();
+        assert!(e.contains("inside the shop folder"), "{e}");
+        assert_eq!(crate::shop::read(&lib).unwrap().unwrap().shop_version(), None, "the shop version was rolled out for a refused trial");
+        assert!(!a.releases_dir().exists() && !lib.join("Trials").exists());
+        assert!(!crate::shared::inside(&trials_root(), &crate::library::documents_dir()), "{}", trials_root().display());
         let _ = std::fs::remove_dir_all(&d);
     }
 

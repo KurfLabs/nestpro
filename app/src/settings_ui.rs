@@ -2557,7 +2557,10 @@ impl App {
             r.since = Some(self.clock.now());
         }
         let (dir, who, clock, own) = (self.library_dir(), self.who.clone(), self.clock.clone(), self.cfg.backups.clone());
+        // S2: closing the program waits for it.
+        let working = self.handoff.begin(crate::updates::Work::Backup);
         std::thread::spawn(move || {
+            let _working = working;
             use crate::backup::Daily;
             let got = match why {
                 crate::backup::Why::Daily => crate::engine::shop::daily_backup(&dir, &own, &who, &clock),
@@ -2682,7 +2685,10 @@ impl App {
             r.restoring = Some(self.clock.now());
         }
         let (dir, who, clock, name) = (self.library_dir(), self.who.clone(), self.clock.clone(), name.to_string());
+        // S2: closing the program waits for it.
+        let working = self.handoff.begin(crate::updates::Work::Restore);
         std::thread::spawn(move || {
+            let _working = working;
             let got = crate::engine::shop::restore(&dir, &name, &who, &clock, crate::updates::VERSION);
             if let Ok(mut r) = run.lock() {
                 r.restoring = None;

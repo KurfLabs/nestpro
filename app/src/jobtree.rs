@@ -329,12 +329,39 @@ impl App {
         }
     }
 
-    /// Closing the window: ask first when a job has unsaved changes.
+    /// Closing the window: ask first when a job has unsaved changes. S2:
+    /// while a backup or a restore of the Library runs, closing waits for it
+    /// (the program closes when it's done), so its files are never left
+    /// halfway.
     pub fn quit_guard(&mut self, ctx: &egui::Context) {
-        if self.shot.is_some() || self.quit_confirmed {
+        if self.shot.is_some() && self.quit_wait.is_none() {
             return;
         }
-        if ctx.input(|i| i.viewport().close_requested()) {
+        let closing = ctx.input(|i| i.viewport().close_requested());
+        if closing && let Some(w) = self.handoff.working() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.quit_wait = Some(w);
+        }
+        if self.quit_wait.is_some() {
+            match self.handoff.working() {
+                Some(w) => {
+                    self.quit_wait = Some(w);
+                    self.closing_window(ctx, w);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                }
+                None => {
+                    // Done: the close goes on (asking about unsaved jobs, as
+                    // any close does).
+                    self.quit_wait = None;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            return;
+        }
+        if self.quit_confirmed {
+            return;
+        }
+        if closing {
             let unsaved: Vec<usize> = (0..self.jobs.len()).filter(|&i| self.job_unsaved(i)).collect();
             let names: Vec<String> = unsaved.iter().map(|&i| self.jobs[i].name.clone()).collect();
             if !names.is_empty() {
@@ -362,6 +389,24 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
+        });
+    }
+
+    /// S2: "Restoring — the program closes when it's done", while closing
+    /// waits for a backup or a restore.
+    fn closing_window(&mut self, ctx: &egui::Context, w: crate::updates::Work) {
+        egui::Window::new("Closing").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new(w.closing_text()).strong());
+            });
+            ui.label("Stopping it halfway would leave the Library's files half done.");
+            ui.add_space(8.0);
+            if ui.button("Keep the program open").clicked() {
+                self.quit_wait = None;
+                self.quit_confirmed = false;
+            }
         });
     }
 
@@ -419,6 +464,57 @@ pub fn civil_date(t: u64) -> String {
 #[cfg(test)]
 mod jobtree_tests {
     use super::*;
+
+    /// One frame of the close guard; `close`: the window's close button
+    /// was pressed. Gives the commands it sent the window.
+    fn close_frame(ctx: &egui::Context, a: &mut crate::App, close: bool) -> Vec<egui::ViewportCommand> {
+        let mut raw = egui::RawInput::default();
+        if close {
+            raw.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        }
+        let mut out = ctx.run_ui(raw, |ui| a.quit_guard(ui.ctx()));
+        out.textures_delta.clear();
+        out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
+    }
+
+    /// S2: closing while a restore runs waits: the window stays, saying
+    /// "Restoring — the program closes when it's done", and closes by
+    /// itself once the restore has ended.
+    #[test]
+    fn closing_while_a_restore_runs_waits_until_it_is_done() {
+        use crate::updates::{Handoff, Work};
+        use egui::ViewportCommand::{CancelClose, Close};
+        let mut a = crate::App::new(None);
+        a.shot = None;
+        a.handoff = Box::leak(Box::new(Handoff::new()));
+        for j in 0..a.jobs.len() {
+            a.mark_job_saved(j);
+        }
+        let ctx = egui::Context::default();
+        let restore = a.handoff.begin(Work::Restore);
+        let c = close_frame(&ctx, &mut a, true);
+        assert!(c.contains(&CancelClose), "the window closed halfway through a restore: {c:?}");
+        assert_eq!(a.quit_wait, Some(Work::Restore));
+        assert_eq!(Work::Restore.closing_text(), "Restoring — the program closes when it's done.");
+        let c = close_frame(&ctx, &mut a, false);
+        assert!(!c.contains(&Close), "closed while the restore still runs");
+        drop(restore);
+        let c = close_frame(&ctx, &mut a, false);
+        assert!(c.contains(&Close), "never closed once the restore ended: {c:?}");
+        assert_eq!(a.quit_wait, None);
+        let c = close_frame(&ctx, &mut a, true);
+        assert!(!c.contains(&CancelClose), "the close after the restore was stopped: {c:?}");
+        // A backup, a roll out and a roll back are waited for the same way.
+        for (w, text) in [(Work::Backup, "Backing up the shop"), (Work::RollOut, "Rolling out"), (Work::RollBack, "Rolling back")] {
+            let running = a.handoff.begin(w);
+            let c = close_frame(&ctx, &mut a, true);
+            assert!(c.contains(&CancelClose) && a.quit_wait == Some(w), "{w:?}: {c:?}");
+            assert_eq!(w.closing_text(), format!("{text} — the program closes when it's done."));
+            drop(running);
+            let c = close_frame(&ctx, &mut a, false);
+            assert!(c.contains(&Close) && a.quit_wait.is_none(), "{w:?}: {c:?}");
+        }
+    }
 
     #[test]
     fn folder_names_are_unique_without_case() {

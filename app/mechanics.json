@@ -7496,7 +7496,7 @@
  {
   "name": "update when I close",
   "group": "releases",
-  "value": "download in background, install after the window closes (waits up to 90 s for a running download), no restart; withdrawn when the Library changes or becomes a shop's; Windows installer builds only (Linux: releases are for Windows)",
+  "value": "download in background, install after the window closes (waits up to 90 s for a running download), no restart; withdrawn when the Library changes or becomes a shop's; offer, download and close look at the shop the same way (no own Library folder yet = a PC of its own); Windows installer builds only (Linux: releases are for Windows)",
   "source": "UP14; own design"
  },
  {
@@ -7556,7 +7556,7 @@
  {
   "name": "join a shop",
   "group": "shop",
-  "value": "settings saved first (active job cleared), then the switch; a failed save refuses and takes the PC record back; old stock sheets, bookings, remnants and undo steps forgotten, an agent's open job closed; own Library untouched; materials join (MA28) or say why not; record failure: joined, Add this PC; relative folder saved as full path",
+  "value": "settings saved first (active job cleared), then the switch; a failed save refuses and takes the PC record back; old stock sheets, bookings, remnants and undo steps forgotten, an agent's open job closed; an MCP session follows this PC's Library setting before each call (switches, closes its job, refuses a call meant for it); own Library untouched; materials join (MA28) or say why not; record failure: joined, Add this PC; relative folder saved as full path",
   "source": "SH10; own design"
  },
  {
@@ -7676,7 +7676,7 @@
  {
   "name": "restore on the admin PC",
   "group": "shop",
-  "value": "Restore… on Settings → Shop → Backups, admin PC only (whatever SH3 says), in a shop; lists backups by date, asks once more; other PCs and agents refused with the reason",
+  "value": "Restore… on Settings → Shop → Backups, admin PC only (whatever SH3 says), in a shop; lists backups by date, asks once more; other PCs and agents refused with the reason; closing waits for a running restore, backup, roll out or roll back (Restoring — the program closes when it's done), and so does an update on close",
   "source": "BK8; own design"
  },
  {
@@ -7718,13 +7718,13 @@
  {
   "name": "try on this PC",
   "group": "shop",
-  "value": "admin PC, a release newer than the shop version; needs a shop version to go back to (a new shop first rolls out this PC's release) whose package is whole; the window's shop writers finish first (a backup under way stops it, holds let go now); settings saved before the switch, else nothing changes; fresh backup unpacked into Documents\\Sheet Nesting\\Trials as this PC's Library (own backup id, no second place); installs on close; nothing written into the real shop folder (saves, job files, programs, pictures)",
+  "value": "admin PC, a release newer than the shop version; needs a shop version to go back to (a new shop first rolls out this PC's release) whose package is whole; the window's shop writers finish first (a backup under way stops it, holds let go now); settings saved before the switch, else nothing changes; fresh backup unpacked into this PC's app data (%LOCALAPPDATA%\\nestpro\\Trials; ~/.config/nestpro/Trials elsewhere), never inside the shop folder (resolved and refused before anything is made; old Documents trials still end normally), as this PC's Library (own backup id, no second place); installs on close; nothing written into the real shop folder (saves, job files, programs, pictures)",
   "source": "UP16; own design"
  },
  {
   "name": "stop trying",
   "group": "shop",
-  "value": "back to the shop folder at once (saved first), shop version installs on close (shop folder read-only until then); copy kept; a trial whose shop version changed meanwhile ends when the program opens, before the active job is reopened; an unreachable shop keeps the copy",
+  "value": "refused while a job from the trial is open (Close your jobs from the trial first); open jobs forget the trial's stock links and undo; back to the shop folder at once (saved first), shop version installs on close (shop folder read-only until then); copy kept; a trial whose shop version changed meanwhile ends when the program opens, before the active job is reopened; an unreachable shop keeps the copy",
   "source": "UP17; own design"
  },
  {
@@ -7736,7 +7736,7 @@
  {
   "name": "roll out",
   "group": "shop",
-  "value": "person on the admin PC only (agents refused), not while a trial job is open; the release this PC runs, newer than the shop version (same version: package-only repair when damaged); package checked by size (required) and SHA-256/SHA-1, the admin PC offering the repair of a damaged shop-version package; staged in Updates before the lock, published under it; one-time changes, shop version + previous + layouts; only folders this program made are taken out, an unmarked release folder never replaced; no job opens while it runs",
+  "value": "person on the admin PC only (agents refused), not while a trial job is open; the release this PC runs, newer than the shop version (same version: package-only repair when damaged); package checked by size (required) and SHA-256/SHA-1, the admin PC offering the repair of a damaged shop-version package; staged in Updates before the lock, published under it; one-time changes, shop version + previous + layouts; only folders this program made are taken out, an unmarked release folder never replaced; no job opens while it runs; closing waits while it writes (Rolling out — the program closes when it's done)",
   "source": "UP19; own design"
  },
  {
@@ -7748,7 +7748,7 @@
  {
   "name": "updates from the shop folder",
   "group": "shop",
-  "value": "shop version read at start and each quick check; a different version fetched from Updates\\<version>, never the internet; banner Update ready, restart when you're done; installs when the window has closed, only if still the shop version; a PC newer than the shop version finds the shop folder read-only (files elsewhere are its own), starts no backup, holds no job, keeps its own PC record",
+  "value": "shop version read at start, each quick check, and every 5 minutes on its own (off the window's thread, whatever auto-refresh says); a different version fetched from Updates\\<version>, never the internet; banner Update ready, restart when you're done; installs when the window has closed, only if still the shop version; a PC newer than the shop version finds the shop folder read-only (files elsewhere are its own), starts no backup, holds no job, keeps its own PC record",
   "source": "UP21; own design"
  },
  {
@@ -7760,7 +7760,7 @@
  {
   "name": "roll back",
   "group": "shop",
-  "value": "person on the admin PC only (agents refused); to the release kept beside the shop version, its package whole in Updates (size and checksum); this PC on the shop version or the one kept; not a trial copy; Yes rolls back only the from/to the warning showed, else asks again; shop file: shop version = the one kept, none kept before it, its layouts; both releases stay in Updates; every PC goes back when its program closes",
+  "value": "person on the admin PC only (agents refused); to the release kept beside the shop version, its package whole in Updates (size and checksum); this PC on the shop version or the one kept; not a trial copy; Yes rolls back only the from/to the warning showed, else asks again; shop file: shop version = the one kept, none kept before it, its layouts; both releases stay in Updates; every PC goes back when its program closes; closing waits while it writes (Rolling back — the program closes when it's done)",
   "source": "UP23; own design"
  },
  {

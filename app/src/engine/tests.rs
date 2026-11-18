@@ -13091,3 +13091,46 @@ fn roll_back_refuses_layout_records_that_are_missing_damaged_or_partial() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// S10: an MCP session started before Try on this PC follows this PC's
+/// settings to the trial copy before its next call: the job it had open is
+/// closed (a change to it is refused, saying why), and nothing it does
+/// afterwards writes jobs or stock in the live Library.
+#[test]
+fn a_session_started_before_a_trial_follows_this_pcs_library() {
+    let d = dir("session_follows_trial");
+    let pc = d.join("pc");
+    let ctx = stock_ctx(&d);
+    let live = ctx.library_dir.clone();
+    let trial = pc.join("Trials").join("Acme trying 9.0.0");
+    crate::library::create(&trial).unwrap();
+    let settings = |lib: &Path| {
+        let cfg = crate::settings::AppSettings { library_dir: lib.display().to_string(), ..Default::default() };
+        cfg.save_to(&pc.join(crate::settings::FILE_NAME)).unwrap();
+    };
+    settings(&live);
+    let mut ctx = ctx;
+    ctx.pc_dir = pc.clone();
+    ctx.cfg.library_dir = live.display().to_string();
+    let mut s = Session::new(ctx);
+    s.follow = true;
+    let job = d.join("jobs").join("DEMO-001.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    let live_stock = std::fs::read(crate::stock::Stock::file(&live)).unwrap();
+    // The window: Try on this PC points this PC's Library at the trial copy.
+    settings(&trial);
+    let e = s.call("edit-part", None, &json!({"part": 1, "qty": 2})).map(|r| r.json.to_string()).unwrap_err();
+    assert!(e.contains("This PC's Library changed") && e.contains("was closed") && e.contains("Nothing was changed"), "{e}");
+    assert_eq!(s.ctx.library_dir, trial);
+    let r = call(&mut s, "stock", None, json!({"mode": "create", "ref": "T1", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    assert!(r.get("library_changed").is_none(), "said twice: {r}");
+    assert_eq!(std::fs::read(crate::stock::Stock::file(&live)).unwrap(), live_stock, "the session wrote the live stock after the switch");
+    assert!(crate::stock::Stock::load(&trial).unwrap().get("T1").is_some());
+    // Stop trying: back to the live Library, said on the next call.
+    settings(&live);
+    let r = call(&mut s, "stock", None, json!({"mode": "list"}));
+    assert!(r["library_changed"].as_str().is_some_and(|t| t.contains(&live.display().to_string())), "{r}");
+    assert_eq!(s.ctx.library_dir, live);
+    let _ = std::fs::remove_dir_all(&d);
+}

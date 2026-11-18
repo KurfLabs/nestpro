@@ -300,6 +300,8 @@ pub struct App {
     /// whether the person chose to close anyway (jobtree.rs `quit_guard`).
     pub quit_ask: Option<Vec<String>>,
     pub quit_confirmed: bool,
+    /// S2: closing waits for this backup or restore of the Library to end.
+    pub quit_wait: Option<updates::Work>,
     /// The Library folder being typed in its box (settings), until the
     /// typing is done.
     pub lib_dir_edit: Option<String>,
@@ -677,6 +679,7 @@ impl App {
             pending: None,
             quit_ask: None,
             quit_confirmed: false,
+            quit_wait: None,
             lib_dir_edit: None,
             lib_new_ask: None,
             firstrun: None,
@@ -3488,9 +3491,10 @@ fn main() -> eframe::Result {
             // --settings=shop-admin: with the admin PC question open (SH7).
             if let Some(what) = settings_ui::shop_demo_arg() {
                 app.demo_shop(&what);
-                // --rollout-demo=warning|ready|trial|rollback|rollback-refused
+                // --rollout-demo=warning|ready|trial|trial-stop|rollback|rollback-refused
                 // (with --fake-releases): updates in that shop (UP16, UP20,
-                // UP21, UP23, UP24).
+                // UP21, UP23, UP24; trial-stop: Stop trying refused while a
+                // job from the trial is open, S3).
                 if let Some(w) = std::env::args().find_map(|a| a.strip_prefix("--rollout-demo=").map(str::to_string)) {
                     app.demo_rollout(&w);
                 }
@@ -3506,6 +3510,13 @@ fn main() -> eframe::Result {
             // --reload-note=ask: it has unsaved changes here, so it asks.
             if let Some(a) = std::env::args().find(|a| a == "--reload-note" || a == "--reload-note=ask") {
                 app.demo_reload_note(a.ends_with("=ask"));
+            }
+            // --closing-restore (screenshots): the window closed while a
+            // restore runs: it waits, saying so (S2). The made-up restore
+            // never ends; the screenshot ends the program.
+            if std::env::args().any(|a| a == "--closing-restore") {
+                std::mem::forget(app.handoff.begin(updates::Work::Restore));
+                app.quit_wait = Some(updates::Work::Restore);
             }
             // --restore-note (screenshots, with --library-dir= a new, empty
             // folder): another PC restored the shop; this one is told (BK13).

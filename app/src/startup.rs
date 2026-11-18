@@ -429,10 +429,21 @@ impl crate::App {
             save(&staged)?;
         }
         self.cfg = staged;
-        // The open jobs' sheets taken from stock, what they hold and the
-        // remnants they stored are the old Library's stock: forgotten, so a
-        // save never books them against the new Library's, and the undo
-        // steps that could bring them back go too.
+        self.forget_old_library_stock();
+        // S2: a PC in a shop never takes a public release: whatever was
+        // offered or chosen from them is withdrawn.
+        self.setui.upd.withdraw(self.handoff);
+        self.setui.shop = None;
+        Ok(self.library_folder_changed())
+    }
+
+    /// SH10 (S6): the Library changed: the open jobs' sheets taken from
+    /// stock, what they hold and the remnants they stored are the old
+    /// Library's stock: forgotten, so a save never books them against the
+    /// new Library's, and the undo steps that could bring them back go too.
+    /// A join and a trial's switches (Try on this PC, Stop trying, back to
+    /// the shop after a roll out) all do this.
+    pub fn forget_old_library_stock(&mut self) {
         let forget = |formats: &mut [crate::nest::SheetFormat], held: &mut std::collections::BTreeMap<String, i32>| {
             crate::engine::stockflow::forget_booking(formats, held);
             for f in formats.iter_mut() {
@@ -445,11 +456,6 @@ impl crate::App {
         }
         self.undo.clear();
         self.redo.clear();
-        // S2: a PC in a shop never takes a public release: whatever was
-        // offered or chosen from them is withdrawn.
-        self.setui.upd.withdraw(self.handoff);
-        self.setui.shop = None;
-        Ok(self.library_folder_changed())
     }
 
     /// Take in what a start or join answered: on success this PC's Library
