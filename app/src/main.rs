@@ -957,6 +957,7 @@ impl App {
             self.status = format!("Couldn't save the job: {e}");
             return;
         }
+        crate::shared::pause("window save: checked");
         // A Library job's sheets are booked when it's saved to the Library,
         // after its revision check (LB8): saved to a file, it leaves the
         // stock alone, and the file is a copy holding none of its sheets or
@@ -4263,6 +4264,44 @@ mod job_tests {
         v[shop::SHOP_VERSION] = serde_json::json!(newer);
         std::fs::write(&f, v.to_string()).unwrap();
         (newer, lib)
+    }
+
+    /// UP26 (review S1): the shop is rolled back while this window's save
+    /// waits for the write lock: the shop version is read again under the
+    /// lock, so the window, now on the release left, writes nothing into the
+    /// shop folder and books nothing.
+    #[test]
+    fn a_roll_back_landing_while_a_save_waits_leaves_the_shop_untouched() {
+        let dir = std::env::temp_dir().join(format!("nestpro_save_during_rollback_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = dir.join("Nesting");
+        library::create(&lib).unwrap();
+        let sam = shared::Who::new("sam", "PC-A");
+        // The shop rolled out an older release, then this program's.
+        let older = "0.0.9";
+        engine::shop::start(&lib, "Acme", &sam, &shared::Clock::at(1_794_216_000), older).unwrap();
+        engine::rollout::rollout(&lib, &engine::rollout::fake_release(&dir, older), &sam, older).unwrap();
+        engine::rollout::rollout(&lib, &engine::rollout::fake_release(&dir, updates::VERSION), &sam, updates::VERSION).unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        stock::Stock::update(&a.library_at(), |s| s.add_sheet(stock::Item::sheet("DEMO-S1", a.spec.material, a.spec.thickness, 3000.0, 1500.0, 3), true)).unwrap();
+        a.add_part(Shape::Rectangle);
+        a.run_nesting();
+        let stock_before = std::fs::read(stock::Stock::file(&lib)).unwrap();
+        let dest = lib.join("DEMO-001.snjob");
+        let (l2, s2) = (lib.clone(), sam.clone());
+        shared::hooks::set(move |step| {
+            if step == "window save: checked" {
+                engine::rollout::rollback(&l2, &s2, updates::VERSION).unwrap();
+            }
+        });
+        a.save_job_to(&dest);
+        shared::hooks::clear();
+        assert_eq!(shop::read(&lib).unwrap().unwrap().shop_version(), Some(older));
+        assert!(a.status.contains(&format!("Restart to go back to {older}")), "{}", a.status);
+        assert!(!dest.exists(), "the window saved into the shop after it was rolled back");
+        assert_eq!(std::fs::read(stock::Stock::file(&lib)).unwrap(), stock_before, "sheets were booked for a save that was refused");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
