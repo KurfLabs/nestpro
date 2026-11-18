@@ -932,6 +932,8 @@ impl App {
             "rollback" | "rollback-refused" => {
                 self.who = sam.clone();
                 self.rollout.show_card = true;
+                // The shop version's own packages, as its roll out left them.
+                let _ = updates::fetch_release(&src, v, &rollout::release_dir(&dir, v));
                 let _ = crate::engine::shop::record_pc(&dir, &sam, &Clock::at(now), v);
                 let _ = crate::engine::shop::record_pc(&dir, &Who::new("kim", "PC-B"), &Clock::at(now - 1200), v);
                 self.prepare_rollback();
