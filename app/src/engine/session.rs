@@ -13,8 +13,10 @@ pub struct Session {
     pub ctx: Ctx,
     pub job: Option<JobFile>,
     pub path: Option<PathBuf>,
-    /// When the open job's file was last read or written by us.
-    stamp: Option<SystemTime>,
+    /// When the open job's file was last read or written by us, and its
+    /// size then: another PC's save within the same clock tick keeps the
+    /// time but almost never the size.
+    stamp: Option<(SystemTime, u64)>,
     undo: Vec<JobFile>,
     /// The material list this session read last (MA34): whether the open
     /// job's material was in it, whatever list another session in the same
@@ -38,8 +40,8 @@ pub fn backup_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-fn mtime(p: &Path) -> Option<SystemTime> {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+fn mtime(p: &Path) -> Option<(SystemTime, u64)> {
+    std::fs::metadata(p).and_then(|m| Ok((m.modified()?, m.len()))).ok()
 }
 
 /// A job path as given, with the job extension added when it has none.

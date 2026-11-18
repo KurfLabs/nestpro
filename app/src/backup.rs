@@ -1353,8 +1353,16 @@ mod backup_tests {
     #[test]
     fn a_pc_of_its_own_keeps_backups_beside_its_library() {
         let f = |s: &str| folder(Path::new(s), false);
-        assert_eq!(f("/srv/Sheet Nesting/Library").unwrap(), Path::new("/srv/Sheet Nesting/Backups"));
-        assert_eq!(f("/srv/Sheet Nesting/Library/").unwrap(), Path::new("/srv/Sheet Nesting/Backups"));
+        #[cfg(unix)]
+        {
+            assert_eq!(f("/srv/Sheet Nesting/Library").unwrap(), Path::new("/srv/Sheet Nesting/Backups"));
+            assert_eq!(f("/srv/Sheet Nesting/Library/").unwrap(), Path::new("/srv/Sheet Nesting/Backups"));
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(f(r"D:\srv\Sheet Nesting\Library").unwrap(), Path::new(r"D:\srv\Sheet Nesting\Backups"));
+            assert_eq!(f(r"D:\srv\Sheet Nesting\Library\").unwrap(), Path::new(r"D:\srv\Sheet Nesting\Backups"));
+        }
         // At the top of a drive: beside it, in the drive's root.
         #[cfg(unix)]
         assert_eq!(f("/Library").unwrap(), Path::new("/Backups"));
@@ -1370,7 +1378,7 @@ mod backup_tests {
         let e = f("/srv/Sheet Nesting/Backups").unwrap_err();
         assert!(e.contains("the Library itself"), "{e}");
         // In a shop: the shop folder's own Backups.
-        assert_eq!(folder(Path::new("/srv/Nesting"), true).unwrap(), Path::new("/srv/Nesting").join("Backups"));
+        assert_eq!(folder(Path::new("/srv/Nesting"), true).unwrap(), std::path::absolute("/srv/Nesting").unwrap().join("Backups"));
     }
 
     /// BK11: a zip entry's name, `/` or `\` between folders, never outside
