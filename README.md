@@ -92,7 +92,7 @@ nestpro ops --gui      # which GUI ribbon command each operation stands for
   `nestpro setup --join \\srv\Nesting --text` joins this PC to it: it
   prints each check (reached, a Library and a shop there, the write lock, a
   file written and removed, the shop version) and exits non-zero on a
-  refusal. `docs/shop-setup.md` is the guide to setting a shop up.
+  refusal; a PC already in another shop adds `--leave`. `docs/shop-setup.md` is the guide to setting a shop up.
 - **Job folders** are the Library's, the same on every PC: `job-folders
   --mode=list` shows the tree, and `new`, `rename`, `delete` (empty folders
   only) and `move` (a saved job or a folder) change it, as the Job Explorer's
