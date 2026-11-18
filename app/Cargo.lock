@@ -2243,6 +2243,7 @@ dependencies = [
  "tiny-skia",
  "ureq",
  "velopack",
+ "zip",
 ]
 
 [[package]]

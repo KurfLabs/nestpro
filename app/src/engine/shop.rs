@@ -5,6 +5,7 @@
 
 use super::ops::{Args, Outcome};
 use super::Ctx;
+use crate::backup;
 use crate::shared::{Clock, Saved, Who, WriteLock};
 use crate::shop::{self, Admin, PcRecord, SettingsBy, ShopFile};
 use serde_json::{json, Map, Value};
@@ -89,6 +90,7 @@ pub fn start_shop(dir: &Path, name: &str, who: &Who, clock: &Clock, version: &st
         admin: Admin { pc: who.pc.clone(), by: who.clone(), at, was: None },
         settings_by: SettingsBy::AdminPc,
         started: Saved { by: who.clone(), at },
+        backups: Default::default(),
         other: Map::new(),
     };
     if let Err(e) = shop::write(dir, &s, &lock, version) {
@@ -194,13 +196,137 @@ impl Status {
     }
 }
 
-/// The `shop` operation (SH6, SH7).
+// ---------------------------------------------------------------------------
+// Backups (BK1–BK7): the rules on where they go and what they hold are in
+// `crate::backup`; these say whose settings they follow and who changes them.
+// ---------------------------------------------------------------------------
+
+/// BK2: the day's backup, as the program takes it when it opens: none when
+/// one of today is there already (another PC, or this one, took it). It
+/// follows the shop file's settings in a shop and `own` (this PC's)
+/// otherwise, read once this PC holds the write lock.
+pub fn daily_backup(dir: &Path, own: &backup::Settings, who: &Who, clock: &Clock) -> Result<backup::Daily, String> {
+    backup::take(dir, own, who, clock, backup::Why::Daily)
+}
+
+/// BK7: Back up now (and agents' `shop mode=backup`): a backup whatever
+/// was taken today.
+pub fn backup_now(dir: &Path, own: &backup::Settings, who: &Who, clock: &Clock) -> Result<backup::Done, String> {
+    match backup::take(dir, own, who, clock, backup::Why::Now)? {
+        backup::Daily::Taken(d) => Ok(d),
+        backup::Daily::AlreadyToday { entry, .. } => Err(format!("No backup was taken: {} is today's already.", entry.name)),
+    }
+}
+
+/// BK7: the backups of the Library in `dir`, for Settings → Shop and agents.
+pub fn backups(dir: &Path, own: &backup::Settings) -> Result<backup::Overview, String> {
+    backup::overview(dir, own)
+}
+
+/// BK4, BK5, BK7: change Keep and the second place. In a shop they are shop
+/// settings (SH3): changed only on the admin PC unless the shop changes
+/// them from any PC, in the shop file, under the Library's write lock
+/// (LB1). A PC of its own changes `own` (its settings, which the caller
+/// saves). Keep is 1 to 3650 days; the second place can't be the backup
+/// folder or in the Library (it would be zipped in every backup). Gives
+/// whether it was the shop's.
+pub fn set_backup_settings(dir: &Path, own: &mut backup::Settings, who: &Who, new: &backup::Settings, version: &str) -> Result<bool, String> {
+    if !(1..=backup::MOST_KEEP).contains(&new.keep_days) {
+        return Err(format!("Keep backups 1 to {} days. Nothing was changed.", backup::MOST_KEEP));
+    }
+    let place = new.second_place.trim();
+    if !place.is_empty() {
+        let p = Path::new(place);
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let lib = canon(dir);
+        let in_shop = shop::read(dir)?.is_some();
+        let folder = backup::folder(dir, in_shop).map(|f| canon(&f)).ok();
+        let cp = canon(p);
+        if cp.starts_with(&lib) || folder.is_some_and(|f| cp == f) {
+            return Err(format!("The second place {place} is in the Library or is its backup folder, so a dead server would take it too. Pick another drive or a NAS. Nothing was changed."));
+        }
+    }
+    let new = backup::Settings { keep_days: new.keep_days, second_place: place.to_string() };
+    let Some(s) = shop::read(dir)? else {
+        *own = new;
+        return Ok(false);
+    };
+    may_change_settings(&s, who)?;
+    let lock = WriteLock::take(dir)?;
+    let mut s = shop::read(dir)?.ok_or_else(|| format!("{} isn't a shop any more. Nothing was changed.", dir.display()))?;
+    may_change_settings(&s, who)?;
+    s.backups = new;
+    shop::write(dir, &s, &lock, version)?;
+    Ok(true)
+}
+
+/// SH3: shop settings change only on the admin PC, unless the shop changes
+/// them from any PC.
+fn may_change_settings(s: &ShopFile, who: &Who) -> Result<(), String> {
+    if s.settings_by == SettingsBy::AdminPc && s.admin.pc != who.pc {
+        return Err(format!("Shop settings are changed only on the admin PC ({}). Nothing was changed.", s.admin.pc));
+    }
+    Ok(())
+}
+
+/// What agents see of the backups (BK7).
+fn backups_json(o: &Result<backup::Overview, String>) -> Value {
+    let o = match o {
+        Ok(o) => o,
+        Err(e) => return json!({"problem": e}),
+    };
+    json!({
+        "folder": o.folder.as_ref().map(|f| f.display().to_string()).ok(),
+        "folder_problem": o.folder.as_ref().err(),
+        "last": o.last.as_ref().map(|e| json!({"file": e.name, "when": e.stamp(), "pc": e.pc})),
+        "count": o.count,
+        "keep_days": o.settings.keep(),
+        "second_place": (!o.settings.second_place.is_empty()).then_some(&o.settings.second_place),
+    })
+}
+
+/// BK7: what a backup did, in one line and for agents.
+pub fn backup_said(d: &backup::Done) -> (String, Value) {
+    let mut msg = format!("Backed up the Library to {} ({} file{}).", d.entry.path.display(), d.files, if d.files == 1 { "" } else { "s" });
+    let second = match &d.second {
+        None => Value::Null,
+        Some(Ok(p)) => {
+            msg.push_str(&format!(" Copied to {}.", p.display()));
+            json!({"copied_to": p.display().to_string()})
+        }
+        Some(Err(e)) => {
+            msg.push_str(&format!(" {e}"));
+            json!({"problem": e})
+        }
+    };
+    if !d.removed.is_empty() {
+        msg.push_str(&format!(" Removed {} backup{} past Keep.", d.removed.len(), if d.removed.len() == 1 { "" } else { "s" }));
+    }
+    let data = json!({
+        "file": d.entry.path.display().to_string(),
+        "folder": d.entry.path.parent().map(|p| p.display().to_string()),
+        "when": d.entry.stamp(),
+        "pc": d.entry.pc,
+        "files": d.files,
+        "bytes": d.entry.bytes,
+        "second_place": second,
+        "removed": d.removed,
+    });
+    (msg, data)
+}
+
+/// The `shop` operation (SH6, SH7, BK7).
 pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let dir = &ctx.library_dir;
     match a.str("mode").as_deref().unwrap_or("status") {
         // Agents never change the admin PC (SH7): the engine's own rule
         // refuses it, whoever the session says it works for.
         "admin" => make_admin(dir, &ctx.who.clone().as_agent(), &ctx.clock).map(|_| unreachable!("an agent changed the admin PC")),
+        "backup" => {
+            let d = backup_now(dir, &ctx.cfg.backups, &ctx.who, &ctx.clock)?;
+            let (message, data) = backup_said(&d);
+            Ok(Outcome { message, data, changed: false, files: vec![d.entry.path.clone()] })
+        }
         "updates" => Ok(super::updates::run(ctx)),
         _ => {
             // Using the program on this PC records it (SH4). When it can't,
@@ -215,9 +341,10 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             };
             crate::shared::pause("pc recorded");
             let Some(st) = status(dir)? else {
+                let b = backup::overview(dir, &ctx.cfg.backups);
                 return Ok(Outcome::read(
                     format!("This PC's Library ({}) isn't a shop. Start one there with `nestpro setup --start <folder> --name <name>` or Settings → Shop → Start a shop here.", dir.display()),
-                    json!({"shop": null, "folder": dir.display().to_string()}),
+                    json!({"shop": null, "folder": dir.display().to_string(), "backups": backups_json(&b)}),
                 ));
             };
             let pcs: Vec<Value> = st
@@ -240,6 +367,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     "pcs": pcs,
                     "this_pc_recorded": unrecorded.is_none(),
                     "this_pc_not_recorded": unrecorded,
+                    "backups": backups_json(&backup::overview(dir, &ctx.cfg.backups)),
                 }),
             ))
         }
