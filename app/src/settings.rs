@@ -386,12 +386,15 @@ fn unesc(s: &str) -> String {
     o
 }
 
+/// The settings file's name, in this PC's settings folder.
+pub const FILE_NAME: &str = "settings.ini";
+
 impl AppSettings {
     pub fn file() -> PathBuf {
         // Tests never touch this PC's own settings: what they save goes to a
         // folder of the test run's own.
         if cfg!(test) {
-            return std::env::temp_dir().join(format!("nestpro_test_settings_{}", std::process::id())).join("settings.ini");
+            return std::env::temp_dir().join(format!("nestpro_test_settings_{}", std::process::id())).join(FILE_NAME);
         }
         // %APPDATA% on Windows; $XDG_CONFIG_HOME or ~/.config elsewhere.
         let base = std::env::var_os("APPDATA")
@@ -399,7 +402,7 @@ impl AppSettings {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
             .unwrap_or_else(|| PathBuf::from("."));
-        base.join("nestpro").join("settings.ini")
+        base.join("nestpro").join(FILE_NAME)
     }
 
     /// The app's material for a name from outside (an import, a program, a

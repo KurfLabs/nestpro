@@ -1676,10 +1676,18 @@ impl App {
             let start_hover = "The Library's folder becomes the shop folder where it is: the shop file and the Shop, Updates and Backups folders are added in it. Nothing moves, and every PC keeps its path. This PC becomes the admin PC.";
             match self.setui.shop_start.clone() {
                 None => {
-                    if page_button(ui, "Shop", "Start a shop here…", true).on_hover_text(start_hover).clicked() {
-                        self.setui.shop_start = Some(String::new());
-                        self.setui.shop_note = None;
-                    }
+                    ui.horizontal(|ui| {
+                        if page_button(ui, "Shop", "Start a shop here…", true).on_hover_text(start_hover).clicked() {
+                            self.setui.shop_start = Some(String::new());
+                            self.setui.shop_note = None;
+                        }
+                        // SH16: join a shop started on another PC; its
+                        // folder becomes this PC's Library, after the checks.
+                        if page_button(ui, "Shop", "Join a shop…", true).on_hover_text("Use the shop's folder on the share, e.g. \\\\srv\\Nesting. The folder is checked first; this PC's own Library is left as it is.").clicked() {
+                            self.firstrun = Some(crate::startup::FirstRun::join_from_settings());
+                            self.setui.shop_note = None;
+                        }
+                    });
                 }
                 Some(mut name) => {
                     row(ui, "Shop name", |ui| {

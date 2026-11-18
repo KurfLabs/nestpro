@@ -395,7 +395,8 @@ pub static OPS: &[Op] = &[
     Op { name: "shop", group: "Library", kind: Kind::Global, help: "The shop this PC's Library belongs to (Settings → Shop): status gives its name, its folder (the Library's folder), its admin PC and who made it the admin PC and when, whether shop settings are changed only on the admin PC or from any PC, and every PC in it with who used it last, its version and when it was last seen (this PC's local time). Calling it records this PC in the shop's PCs list, as opening the program does; when it can't, the shop is still given, with this_pc_recorded false and why. A PCs list that can't be read is refused, naming its folder. A Library that isn't a shop says so; one that can't be reached is refused, naming its folder. Changing the admin PC (mode=admin) is refused for agents with the reason: a person does it in the window.", args: &[
         c("mode", &["status", "admin"], "status (default): the shop and its PCs; admin: make this PC the admin PC (refused for agents: a person does it in Settings → Shop)"),
     ] },
-    Op { name: "setup", group: "Library", kind: Kind::Global, help: "Set this PC up for a shop. start=<folder> name=<name> starts a shop in that Library folder (the Library's folder becomes the shop folder in place: the shop file and its Shop, Updates and Backups folders are added, and no job, library part or stock file is changed or moved), with this PC as its admin PC and shop settings changed only on the admin PC. A folder that can't be reached, holds no Library, can't be written by this PC or is already a shop is refused, naming it, and nothing is made. `nestpro setup --start \\\\srv\\Nesting --name Acme`.", args: &[
+    Op { name: "setup", group: "Library", kind: Kind::Global, help: "Set this PC up for a shop. join=<folder> joins the shop in that folder (`nestpro setup --join \\\\srv\\Nesting`): the folder is tidied (spaces, quotes, doubled or end separators) and, on Windows, a mapped drive letter becomes the \\\\server\\share path behind it, so every PC names the same Library; then it checks, in order, that the folder can be reached, holds a Library and a shop file, that this PC can take the Library's write lock there and, under it, make, change and remove a file there, and compares this PC's version with the shop version (an older PC may join and is told to update). Each check is in the message and in data.checks. A refusal says what to fix and lists the checks made; nothing is changed or made in the folder. Joined, this PC is in the shop's PCs list and its Library folder setting is the shop folder (this session works there from now on); its own Library is left as it was, and its materials join the shop's list (materials_joined). start=<folder> name=<name> starts a shop in that Library folder (the Library's folder becomes the shop folder in place: the shop file and its Shop, Updates and Backups folders are added, and no job, library part or stock file is changed or moved), with this PC as its admin PC and shop settings changed only on the admin PC. A folder that can't be reached, holds no Library, can't be written by this PC or is already a shop is refused, naming it, and nothing is made. `nestpro setup --start \\\\srv\\Nesting --name Acme`.", args: &[
+        a("join", Ty::Path, "Join the shop in this folder (e.g. \\\\srv\\Nesting)"),
         a("start", Ty::Path, "Start a shop in this Library folder (e.g. \\\\srv\\Nesting)"),
         a("name", Ty::Str, "start: the shop's name (e.g. Acme)"),
     ] },
@@ -3507,6 +3508,17 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Settings → Shop/Start a shop here…", "setup"),
     ("Settings → Shop/Start the shop", "setup"),
     ("Settings → Shop/Add this PC", "shop"),
+    ("Settings → Shop/Join a shop…", "setup"),
+    // --- the first-run screen (SH9, SH16) ---
+    ("startup.rs/Start a shop", "setup"),
+    ("startup.rs/Join a shop", "setup"),
+    ("startup.rs/Just this PC", "gui: this PC keeps its own Library, in the default place; agents work in the Library this PC's settings name"),
+    ("startup.rs/Browse…", "view: picks the folder for the box; agents give it (setup join= or start=)"),
+    ("startup.rs/Join the shop", "setup"),
+    ("startup.rs/Start the shop", "setup"),
+    ("startup.rs/Make a Library there and start the shop", "gui: a new Library is made only after a person says yes (LB12); setup start= needs a Library there"),
+    ("startup.rs/Use this PC only", "gui: this PC keeps its own Library, in the default place; agents work in the Library this PC's settings name"),
+    ("startup.rs/Start working", "view: closes the first-run screen"),
     ("Settings → Shop/Make this PC the admin PC", "gui: a person changes the admin PC, after a warning (SH7); shop mode=admin refuses agents with the reason"),
     // --- labels built at run time ("{expression}") ---
     ("ERP / MES/{&format!(\"{}\\njobs\", p.name())}", "todo: [AGT-7] bring ERP work in as a job"),
