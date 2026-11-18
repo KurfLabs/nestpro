@@ -139,13 +139,14 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let dir = &ctx.library_dir;
     match a.str("mode").as_deref().unwrap_or("status") {
         "admin" => Err(AGENT_ADMIN.into()),
+        "updates" => Ok(super::updates::run(ctx)),
         _ => {
             // Using the program on this PC records it (SH4).
             record_pc(dir, &ctx.who, &ctx.clock, &ctx.version)?;
             let Some(st) = status(dir)? else {
                 return Ok(Outcome::read(
                     format!("This PC's Library ({}) isn't a shop. Start one there with `nestpro setup --start <folder> --name <name>` or Settings → Shop → Start a shop here.", dir.display()),
-                    json!({"shop": null, "folder": dir.display().to_string()}),
+                    json!({"shop": null, "folder": dir.display().to_string(), "this_version": ctx.version}),
                 ));
             };
             let pcs: Vec<Value> = st
@@ -164,6 +165,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     "admin_set_at": ctx.clock.stamp(s.admin.at),
                     "admin_was": s.admin.was,
                     "shop_settings": s.settings_by.words(),
+                    "this_version": ctx.version,
                     "pcs": pcs,
                 }),
             ))

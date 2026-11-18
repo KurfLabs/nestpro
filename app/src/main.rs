@@ -2800,6 +2800,9 @@ impl eframe::App for App {
         self.settings_window(&ctx);
         self.new_library_window(&ctx);
         self.shop_admin_window(&ctx);
+        // UP11: releases for a PC of its own, checked off the window's thread.
+        self.update_tick(&ctx);
+        self.whats_new_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
         self.stock_window(&ctx);
@@ -2943,6 +2946,8 @@ impl eframe::App for App {
                     .stroke(Stroke::new(1.0, th().border)),
             )
             .show(ui, |ui| self.ribbon(ui));
+        // UP13: "Version 0.5.0 is out" while a newer release is offered.
+        self.update_banner(ui);
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(th().chrome).stroke(Stroke::new(1.0, th().border)).inner_margin(egui::Margin::symmetric(8, 3)))
             .show(ui, |ui| {
@@ -3168,6 +3173,15 @@ fn main() -> eframe::Result {
             if !app.shot_mode_now() {
                 app.record_in_shop();
             }
+            // UP11: a PC of its own checks for releases (a screenshot only
+            // with a made-up list, --fake-releases=<file>).
+            let fake = std::env::args().find_map(|a| a.strip_prefix("--fake-releases=").map(PathBuf::from)).or_else(|| std::env::var_os("NESTPRO_FAKE_RELEASES").map(PathBuf::from));
+            let chosen = fake.is_some() && std::env::args().any(|a| a == "--update-chosen");
+            app.start_update_checks(fake);
+            // --update-chosen / --whats-new (screenshots, with --fake-releases):
+            // Update when I close pressed, or What's new open, once the check
+            // has answered.
+            app.setui.upd.demo = (chosen, std::env::args().any(|a| a == "--whats-new"));
             // Saved preferences (Settings → General / Appearance).
             app.warn_tech = app.cfg.warn_tech;
             app.dv.show_unbuilt = app.cfg.show_unbuilt;
@@ -3910,6 +3924,9 @@ fn main() -> eframe::Result {
     if let Err(e) = &res {
         eprintln!("window error: {e}");
     }
+    // UP14: the window has closed, and every job with it: an update chosen
+    // with Update when I close installs now.
+    updates::install_on_close();
     res
 }
 

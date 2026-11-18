@@ -7476,6 +7476,30 @@
   "source": "UP4; own design"
  },
  {
+  "name": "update check (PC of its own)",
+  "group": "releases",
+  "value": "GitHub Releases at start and once a day, background, 30 s limit; never in a shop; no connection = 'Couldn't check for updates' on the card only",
+  "source": "UP11; own design"
+ },
+ {
+  "name": "release offered",
+  "group": "releases",
+  "value": "newest plain MAJOR.MINOR.PATCH newer than this version, numeric compare; no pre-releases; nothing in a shop",
+  "source": "UP12; own design"
+ },
+ {
+  "name": "update banner",
+  "group": "releases",
+  "value": "'Version X is out': What's new, Update when I close, Later; 'Changes machine programs' entries first",
+  "source": "UP13; own design"
+ },
+ {
+  "name": "update when I close",
+  "group": "releases",
+  "value": "download in background, install after the window closes, no restart; Windows installer builds only (Linux: releases are for Windows)",
+  "source": "UP14; own design"
+ },
+ {
   "name": "start a shop",
   "group": "shop",
   "value": "Settings → Shop → Start a shop here, or setup start= name=; refused (nothing made) for no name, unreachable, no Library, already a shop, not writable",

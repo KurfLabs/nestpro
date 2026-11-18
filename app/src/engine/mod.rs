@@ -27,6 +27,7 @@ pub mod render;
 pub mod selection;
 pub mod session;
 pub mod shop;
+pub mod updates;
 pub mod sheetpick;
 pub mod stockflow;
 
@@ -67,6 +68,10 @@ pub struct Ctx {
     /// test plays a PC on another version). Recorded in the shop's PCs list
     /// (SH4).
     pub version: String,
+    /// Where the public release list comes from (UP11): GitHub on Windows
+    /// builds with the installer, a made-up list for tests and screenshots
+    /// (`NESTPRO_FAKE_RELEASES`), none on Linux. Tests never read GitHub.
+    pub releases: crate::updates::Source,
 }
 
 /// The post library of a machine (built-in values when it has none or it can't be read).
@@ -378,7 +383,7 @@ impl Ctx {
         let who = crate::shared::Who::this_pc().as_agent();
         let clock = crate::shared::Clock::pc();
         let _ = load_materials(&library_dir, &pc_dir, &cfg, true, Some(&|| crate::library::Library::at(&library_dir, &who, &clock).saved()));
-        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who, clock, watch: Default::default(), pc_dir, version: crate::updates::VERSION.to_string() }
+        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who, clock, watch: Default::default(), pc_dir, version: crate::updates::VERSION.to_string(), releases: crate::updates::source(std::env::var_os("NESTPRO_FAKE_RELEASES").map(PathBuf::from)) }
     }
 
     /// Where the material list lives for this session (MA14).
@@ -403,6 +408,8 @@ impl Ctx {
         // Never the shop's real stock: an empty library of the test's own.
         c.library_dir = std::env::temp_dir().join(format!("nestpro_test_nolib_{}_{:?}", std::process::id(), std::thread::current().id()));
         c.pc_dir = std::env::temp_dir().join(format!("nestpro_test_pc_{}_{:?}", std::process::id(), std::thread::current().id()));
+        // Never the network: a test gives a made-up release list (UP11).
+        c.releases = crate::updates::Source::Off("tests never read GitHub");
         // The material list of a new install, on this test's thread.
         material::install(material::List::seed(&c.cfg));
         c

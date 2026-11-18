@@ -148,3 +148,25 @@ dry run: it builds the same installer as a workflow download and publishes nothi
 first **Changes machine programs**, the changes that touch the code that writes machine
 programs. That code is the "Risky paths" list in `AGENTS.md`, which the script reads each time.
 `tools/release-test.sh` tests both scripts.
+
+## Updates on a PC of its own
+
+A PC whose Library isn't a shop's checks GitHub Releases when the program opens and once a
+day while it stays open (rules UP11–UP14 in `app/MECHANICS.md`). The check runs off the
+window's thread and gives up after 30 seconds; with no connection the window shows no banner
+and no dialog, only "Couldn't check for updates" on Settings → Shop → Updates. A PC in a shop
+never checks GitHub: it updates from the shop folder (ADR 0006).
+
+- **What is offered** is decided by `engine::updates::offer`: the newest plain
+  `MAJOR.MINOR.PATCH` release newer than this PC's version, never a pre-release. Its notes'
+  "Changes machine programs" entries are shown first.
+- **Update when I close** downloads the full package in the background
+  (`download_updates`); when the window closes, `wait_exit_then_apply_updates` hands it to
+  the installer, which installs once the program has ended. The program isn't restarted.
+- **Agents** see the same with `nestpro shop --mode=updates`; installing stays a person's
+  choice, in the window.
+- **Trying it without GitHub:** `--fake-releases=<file>` (or `NESTPRO_FAKE_RELEASES=<file>`)
+  reads a made-up list instead, on any system: a JSON list of `{"version": "0.2.0",
+  "notes": "..."}`. A file that isn't there plays no connection. `--update-chosen` and
+  `--whats-new` show the banner after Update when I close, and What's new, for screenshots.
+  Tests never read GitHub.
