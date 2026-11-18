@@ -794,12 +794,21 @@ impl Stock {
     pub fn save(&self, library_dir: &Path) -> Result<(), String> {
         crate::library::usable(library_dir)?;
         let lock = crate::shared::WriteLock::take(library_dir)?;
-        self.store(library_dir, &lock)
+        let versions = crate::shop::versions(library_dir, crate::updates::VERSION);
+        Self::may_change(library_dir, &versions)?;
+        self.store(library_dir, &lock, &versions.this)
+    }
+
+    /// UP7: the stock may be changed by a program on `versions`: not when a
+    /// newer version changed it last.
+    fn may_change(library_dir: &Path, versions: &crate::shared::Versions) -> Result<(), String> {
+        crate::shared::may_write_over(&Self::file(library_dir), versions, "The sheet stock")
     }
 
     /// Written through a temporary file of this writer's own and renamed into
-    /// place, so a shared folder never shows half a file (LB3).
-    fn store(&self, library_dir: &Path, lock: &crate::shared::WriteLock) -> Result<(), String> {
+    /// place, so a shared folder never shows half a file (LB3), recording
+    /// the program `version` that wrote it (UP5).
+    fn store(&self, library_dir: &Path, lock: &crate::shared::WriteLock, version: &str) -> Result<(), String> {
         // Every item with its material's id and name (invariant 3, MA17).
         let mut named = self.clone();
         for it in named.items.iter_mut() {
@@ -808,7 +817,7 @@ impl Stock {
             // the job file's own number.
             it.material = crate::engine::material::file_id(it.material);
         }
-        let text = serde_json::to_string_pretty(&named).map_err(|e| e.to_string())?;
+        let text = crate::shared::stamped(&named, version)?;
         crate::shared::write_file(&Self::file(library_dir), text.as_bytes(), Some(lock))
     }
 
@@ -831,6 +840,8 @@ impl Stock {
     pub fn update<T>(lib: &crate::library::Library, f: impl FnOnce(&mut Stock) -> Result<T, String>) -> Result<T, String> {
         crate::library::usable(&lib.dir)?;
         let lock = lib.lock()?;
+        // UP7: not over a stock a newer version changed last.
+        Self::may_change(&lib.dir, &lib.versions())?;
         let mut s = Stock::load(&lib.dir)?;
         let before = s.clone();
         let out = f(&mut s)?;
@@ -843,7 +854,7 @@ impl Stock {
             crate::materials::not_deleted(&lib.dir, m, "the stock")?;
         }
         s.sign(&before, &lib.saved());
-        s.store(&lib.dir, &lock)?;
+        s.store(&lib.dir, &lock, &lib.version)?;
         Ok(out)
     }
 
