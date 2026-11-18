@@ -195,37 +195,26 @@ impl Status {
 // `crate::backup`; these say whose settings they follow and who changes them.
 // ---------------------------------------------------------------------------
 
-/// BK7: whether the Library in `dir` is a shop, and the backup settings it
-/// follows: the shop file's in a shop, this PC's own (`own`) otherwise. A
-/// Library that can't be reached is refused, naming it (SH8).
-pub fn backup_settings(dir: &Path, own: &backup::Settings) -> Result<(bool, backup::Settings), String> {
-    Ok(match shop::read(dir)? {
-        Some(s) => (true, s.backups),
-        None => (false, own.clone()),
-    })
-}
-
 /// BK2: the day's backup, as the program takes it when it opens: none when
-/// one of today is there already (another PC, or this one, took it).
+/// one of today is there already (another PC, or this one, took it). It
+/// follows the shop file's settings in a shop and `own` (this PC's)
+/// otherwise, read once this PC holds the write lock.
 pub fn daily_backup(dir: &Path, own: &backup::Settings, who: &Who, clock: &Clock) -> Result<backup::Daily, String> {
-    let (in_shop, set) = backup_settings(dir, own)?;
-    backup::take(dir, in_shop, &set, who, clock, backup::Why::Daily)
+    backup::take(dir, own, who, clock, backup::Why::Daily)
 }
 
 /// BK7: Back up now (and agents' `shop mode=backup`): a backup whatever
 /// was taken today.
 pub fn backup_now(dir: &Path, own: &backup::Settings, who: &Who, clock: &Clock) -> Result<backup::Done, String> {
-    let (in_shop, set) = backup_settings(dir, own)?;
-    match backup::take(dir, in_shop, &set, who, clock, backup::Why::Now)? {
+    match backup::take(dir, own, who, clock, backup::Why::Now)? {
         backup::Daily::Taken(d) => Ok(d),
-        backup::Daily::Done(e) => Err(format!("No backup was taken: {} is today's already.", e.name)),
+        backup::Daily::AlreadyToday { entry, .. } => Err(format!("No backup was taken: {} is today's already.", entry.name)),
     }
 }
 
 /// BK7: the backups of the Library in `dir`, for Settings → Shop and agents.
 pub fn backups(dir: &Path, own: &backup::Settings) -> Result<backup::Overview, String> {
-    let (in_shop, set) = backup_settings(dir, own)?;
-    Ok(backup::overview(dir, in_shop, &set))
+    backup::overview(dir, own)
 }
 
 /// BK4, BK5, BK7: change Keep and the second place. In a shop they are shop
@@ -275,7 +264,11 @@ fn may_change_settings(s: &ShopFile, who: &Who) -> Result<(), String> {
 }
 
 /// What agents see of the backups (BK7).
-fn backups_json(o: &backup::Overview) -> Value {
+fn backups_json(o: &Result<backup::Overview, String>) -> Value {
+    let o = match o {
+        Ok(o) => o,
+        Err(e) => return json!({"problem": e}),
+    };
     json!({
         "folder": o.folder.as_ref().map(|f| f.display().to_string()).ok(),
         "folder_problem": o.folder.as_ref().err(),
@@ -303,9 +296,6 @@ pub fn backup_said(d: &backup::Done) -> (String, Value) {
     if !d.removed.is_empty() {
         msg.push_str(&format!(" Removed {} backup{} past Keep.", d.removed.len(), if d.removed.len() == 1 { "" } else { "s" }));
     }
-    if !d.skipped.is_empty() {
-        msg.push_str(&format!(" {} file{} couldn't be read and {} not in it: {}.", d.skipped.len(), if d.skipped.len() == 1 { "" } else { "s" }, if d.skipped.len() == 1 { "is" } else { "are" }, d.skipped.join(", ")));
-    }
     let data = json!({
         "file": d.entry.path.display().to_string(),
         "folder": d.entry.path.parent().map(|p| p.display().to_string()),
@@ -315,7 +305,6 @@ pub fn backup_said(d: &backup::Done) -> (String, Value) {
         "bytes": d.entry.bytes,
         "second_place": second,
         "removed": d.removed,
-        "not_read": d.skipped,
     });
     (msg, data)
 }
@@ -328,8 +317,6 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         // refuses it, whoever the session says it works for.
         "admin" => make_admin(dir, &ctx.who.clone().as_agent(), &ctx.clock).map(|_| unreachable!("an agent changed the admin PC")),
         "backup" => {
-            // Recorded as using the program (SH4); a backup is taken whether or not.
-            let _ = record_pc(dir, &ctx.who, &ctx.clock, &ctx.version);
             let d = backup_now(dir, &ctx.cfg.backups, &ctx.who, &ctx.clock)?;
             let (message, data) = backup_said(&d);
             Ok(Outcome { message, data, changed: false, files: vec![d.entry.path.clone()] })
@@ -342,7 +329,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 Err(e) => Some(e),
             };
             let Some(st) = status(dir)? else {
-                let b = backup::overview(dir, false, &ctx.cfg.backups);
+                let b = backup::overview(dir, &ctx.cfg.backups);
                 return Ok(Outcome::read(
                     format!("This PC's Library ({}) isn't a shop. Start one there with `nestpro setup --start <folder> --name <name>` or Settings → Shop → Start a shop here.", dir.display()),
                     json!({"shop": null, "folder": dir.display().to_string(), "backups": backups_json(&b)}),
@@ -368,7 +355,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     "pcs": pcs,
                     "this_pc_recorded": unrecorded.is_none(),
                     "this_pc_not_recorded": unrecorded,
-                    "backups": backups_json(&backup::overview(dir, true, &s.backups)),
+                    "backups": backups_json(&backup::overview(dir, &ctx.cfg.backups)),
                 }),
             ))
         }
