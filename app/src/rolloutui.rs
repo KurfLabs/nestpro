@@ -221,10 +221,12 @@ impl App {
     /// the Library's quick check (UP21); the trial when the Library opens
     /// (UP16, UP17); and pick up what runs in the background.
     pub fn shop_update_tick(&mut self, ctx: &egui::Context) {
+        let dir = self.library_dir();
+        // S3: the close looks at this Library's shop once more.
+        self.handoff.set_place(&dir, &crate::library::default_dir());
         if self.setui.upd.source.is_none() {
             return;
         }
-        let dir = self.library_dir();
         if self.rollout.library.as_deref() != Some(dir.as_path()) {
             self.drop_fetch();
             let r = &mut self.rollout;

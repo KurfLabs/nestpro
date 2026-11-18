@@ -12967,3 +12967,61 @@ fn files_outside_the_shop_folder_keep_the_ordinary_version_check_after_a_roll_ba
     opens_and_saves(&lib, &in_shop, "0.4.0", "DEMO-001 on 0.4.0");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// What a close installs (review S3), as `finish_on_close` hands it to the
+/// installer: the release, from where, and whether it was fetched then.
+fn close_installs(h: &'static crate::updates::Handoff, this: &str) -> (Result<Option<String>, String>, Vec<(String, crate::updates::Source, crate::updates::Why)>, Vec<String>) {
+    let mut fetched = vec![];
+    let mut applied = vec![];
+    let r = crate::updates::finish_on_close_as(h, this, std::time::Duration::from_secs(1), |c| {
+        fetched.push(c.version.clone());
+        Ok(())
+    }, |c| {
+        applied.push((c.version.clone(), c.src.clone(), c.why));
+        Ok(())
+    });
+    (r, applied, fetched)
+}
+
+/// UP21, UP26 (review S3): a PC on the release left that closes before its
+/// next look at the shop still goes back: at close it reads the shop version
+/// (within the time limit), fetches it from the shop folder's Updates and
+/// installs it. Nothing was queued before.
+#[test]
+fn closing_right_after_a_roll_back_installs_the_shop_version() {
+    let d = dir("rollback_close");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+    h.set_place(&lib, &d.join("own"));
+    // On the shop version: nothing to install.
+    assert_eq!(close_installs(h, "0.5.0").0, Ok(None));
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let (r, applied, fetched) = close_installs(h, "0.5.0");
+    assert_eq!(r, Ok(Some("0.4.0".into())));
+    assert_eq!(fetched, ["0.4.0"]);
+    assert_eq!(applied, [("0.4.0".to_string(), crate::updates::Source::Folder(lib.join("Updates").join("0.4.0")), crate::updates::Why::Shop)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP17, UP26 (review S3): the admin PC queued the release it tries; the
+/// shop is rolled back before the program closes: the trial is over, so
+/// the tried release doesn't install; the shop version does.
+#[test]
+fn a_trial_queued_before_a_roll_back_never_installs_after_it() {
+    use crate::updates::{Chosen, Source, Why};
+    let d = dir("rollback_close_trial");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let t = crate::engine::rollout::start_trial(&lib, &d.join("Trials"), "0.6.0", &admin(), &Clock::at(1_794_216_600), "0.5.0", &Default::default()).unwrap();
+    let rel = crate::engine::rollout::fake_release(&d, "0.6.0");
+    let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+    h.set_place(&t.copy, &d.join("own"));
+    let trial = Chosen { version: "0.6.0".into(), dir: t.copy.clone(), own: d.join("own"), src: Source::Folder(rel), why: Why::Trial };
+    let n = h.start(trial.clone());
+    h.done(n, true);
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    assert!(trial.stands().is_err(), "the trial still stood after the shop rolled back");
+    let (r, applied, _) = close_installs(h, "0.5.0");
+    assert_eq!(r, Ok(Some("0.4.0".into())));
+    assert_eq!(applied, [("0.4.0".to_string(), Source::Folder(lib.join("Updates").join("0.4.0")), Why::Shop)]);
+    let _ = std::fs::remove_dir_all(&d);
+}

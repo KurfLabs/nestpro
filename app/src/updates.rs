@@ -311,8 +311,14 @@ impl Chosen {
                 Ok(None) => Err(NotStandalone::Moved(format!("Version {} wasn't installed: this PC's Library isn't a shop's any more.", self.version))),
                 Err(e) => Err(NotStandalone::Unknown(format!("Not installed: {e}"))),
             },
+            // S3: a trial stands only while the real shop is still on the
+            // version it began on: a roll out or a roll back ends it.
             Why::Trial => match crate::shop::read(&self.dir) {
-                Ok(Some(s)) if s.trial().is_some_and(|m| m.version == self.version) => Ok(()),
+                Ok(Some(s)) if s.trial().is_some_and(|m| m.version == self.version) => match crate::engine::rollout::trial_now(&self.dir, &self.version) {
+                    crate::engine::rollout::TrialNow::Trying { .. } => Ok(()),
+                    crate::engine::rollout::TrialNow::ShopAway { said, .. } => Err(NotStandalone::Unknown(format!("Version {} wasn't installed: {said}", self.version))),
+                    _ => Err(NotStandalone::Moved(format!("Version {} wasn't installed: the shop moved on while this PC was trying it.", self.version))),
+                },
                 Ok(_) => Err(NotStandalone::Moved(format!("Version {} wasn't installed: this PC stopped trying it.", self.version))),
                 Err(e) => Err(NotStandalone::Unknown(format!("Not installed: {e}"))),
             },
@@ -326,6 +332,9 @@ impl Chosen {
 pub struct Handoff {
     slot: Mutex<(u64, Stage)>,
     changed: Condvar,
+    /// S3: the Library the window works on, and this PC's own Library
+    /// folder, so the close can look at its shop once more.
+    place: Mutex<Option<(PathBuf, PathBuf)>>,
 }
 
 /// The program's own handoff: the window fills it, `install_on_close`
@@ -334,7 +343,20 @@ pub static HANDOFF: Handoff = Handoff::new();
 
 impl Handoff {
     pub const fn new() -> Handoff {
-        Handoff { slot: Mutex::new((0, Stage::Idle)), changed: Condvar::new() }
+        Handoff { slot: Mutex::new((0, Stage::Idle)), changed: Condvar::new(), place: Mutex::new(None) }
+    }
+
+    /// S3: the window works on the Library in `dir` (`own`: this PC's own
+    /// Library folder).
+    pub fn set_place(&self, dir: &Path, own: &Path) {
+        let mut p = self.place.lock().unwrap_or_else(|p| p.into_inner());
+        if p.as_ref().is_none_or(|(d, o)| d != dir || o != own) {
+            *p = Some((dir.to_path_buf(), own.to_path_buf()));
+        }
+    }
+
+    fn place(&self) -> Option<(PathBuf, PathBuf)> {
+        self.place.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, (u64, Stage)> {
@@ -433,40 +455,123 @@ pub fn download_in_background(h: &'static Handoff, c: Chosen) -> Receiver<Result
     rx
 }
 
-/// UP14: what happens once the window has closed: wait up to `limit` for
-/// the chosen release, check again that this PC is outside a shop, then hand
-/// it to `apply`. Ok(None): nothing to install (none chosen, or not ready in
-/// time: the next start offers it again).
+/// UP14, UP21 (S3): what happens once the window has closed: wait up to
+/// `limit` for the chosen release, look once more at where this PC stands
+/// (`at_close`), fetch the shop's release then if it wasn't fetched yet, and
+/// hand it to `apply`. Ok(None): nothing to install (none chosen, not ready
+/// in time, or this PC runs the shop version: the next start decides).
 pub fn finish_on_close(h: &Handoff, limit: Duration, apply: impl FnOnce(&Chosen) -> Result<(), String>) -> Result<Option<String>, String> {
-    finish_on_close_with(h, limit, Chosen::stands, CHECK_TIMEOUT, apply)
+    finish_on_close_as(h, VERSION, limit, |c| fetch_now(c, CLOSE_WAIT), apply)
 }
 
-/// `finish_on_close`, with the shop lookup given (tests). The lookup has
+/// `finish_on_close` for a program on `this`, fetching with `fetch` (tests).
+pub fn finish_on_close_as(h: &Handoff, this: &str, limit: Duration, fetch: impl FnOnce(&Chosen) -> Result<(), String>, apply: impl FnOnce(&Chosen) -> Result<(), String>) -> Result<Option<String>, String> {
+    let place = h.place();
+    let this = this.to_string();
+    finish_on_close_with(h, limit, move |q| at_close(q, place, &this), CHECK_TIMEOUT, fetch, apply)
+}
+
+/// `finish_on_close`, with the look at the shop given (tests). The look has
 /// `lookup_limit`: a share that doesn't answer in time installs nothing (the
-/// next start offers the release again), and the program still ends.
+/// next start decides), and the program still ends.
 pub fn finish_on_close_with(
     h: &Handoff,
     limit: Duration,
-    lookup: impl FnOnce(&Chosen) -> Result<(), NotStandalone> + Send + 'static,
+    resolve: impl FnOnce(Option<Chosen>) -> Result<Option<(Chosen, bool)>, NotStandalone> + Send + 'static,
     lookup_limit: Duration,
+    fetch: impl FnOnce(&Chosen) -> Result<(), String>,
     apply: impl FnOnce(&Chosen) -> Result<(), String>,
 ) -> Result<Option<String>, String> {
-    let Some(c) = h.take_ready(limit) else { return Ok(None) };
+    let queued = h.take_ready(limit);
+    let what = queued.as_ref().map_or("The shop's release".to_string(), |c| format!("Version {}", c.version));
     let (tx, rx) = channel();
-    let c2 = c.clone();
     spawn("update shop lookup", move || {
-        let _ = tx.send(lookup(&c2));
+        let _ = tx.send(resolve(queued));
     })
-    .map_err(|e| format!("Version {} wasn't installed: {e}", c.version))?;
-    match rx.recv_timeout(lookup_limit) {
-        Ok(Ok(())) => {}
-        Ok(Err(NotStandalone::InShop(name))) => return Err(format!("Version {} wasn't installed: this PC is in shop {name} now.", c.version)),
-        Ok(Err(NotStandalone::Unknown(e))) => return Err(format!("Version {} wasn't installed: {e}", c.version)),
+    .map_err(|e| format!("{what} wasn't installed: {e}"))?;
+    let (c, fetched) = match rx.recv_timeout(lookup_limit) {
+        Ok(Ok(None)) => return Ok(None),
+        Ok(Ok(Some(c))) => c,
+        Ok(Err(NotStandalone::InShop(name))) => return Err(format!("{what} wasn't installed: this PC is in shop {name} now.")),
+        Ok(Err(NotStandalone::Unknown(e))) => return Err(format!("{what} wasn't installed: {e}")),
         Ok(Err(NotStandalone::Moved(e))) => return Err(e),
-        Err(_) => return Err(format!("Version {} wasn't installed: this PC's Library didn't answer in {} s, so it isn't known whether this PC is in a shop. It is offered again next time.", c.version, lookup_limit.as_secs())),
+        Err(_) => return Err(format!("{what} wasn't installed: this PC's Library didn't answer in {} s, so it isn't known what the shop runs. The next start decides.", lookup_limit.as_secs())),
+    };
+    if !fetched {
+        fetch(&c).map_err(|e| format!("Version {} wasn't installed: {e}", c.version))?;
     }
     apply(&c)?;
     Ok(Some(c.version))
+}
+
+/// UP21 (S3): what a PC on `this` installs when it closes, looked at then,
+/// with `queued` the release it chose (and fetched) before, and `place` the
+/// Library it works on and its own Library folder. Gives the release, and
+/// whether it is fetched already.
+///
+/// - Not known where it works: the release queued, while it still stands.
+/// - A Library of its own: a public release queued, while this PC is still
+///   outside a shop; a shop's or a trial's queued release is dropped.
+/// - A trial copy: the tried release queued, while the trial lasts. A
+///   trial the shop moved on from (a roll out or a roll back) is over: what
+///   the real shop runs, as below.
+/// - A shop: its shop version, from its `Updates`, when this PC runs
+///   another (fetched now when it wasn't queued); nothing when this PC runs
+///   it, or the shop has none, or its package isn't there.
+pub fn at_close(queued: Option<Chosen>, place: Option<(PathBuf, PathBuf)>, this: &str) -> Result<Option<(Chosen, bool)>, NotStandalone> {
+    use crate::engine::rollout::{trial_now, TrialNow};
+    use crate::engine::updates::{from_shop, FromShop};
+    let Some((lib, own)) = place else {
+        return match queued {
+            None => Ok(None),
+            Some(c) => c.stands().map(|()| Some((c, true))),
+        };
+    };
+    let shop_dir = match crate::shop::read(&lib) {
+        Err(e) => return Err(NotStandalone::Unknown(e)),
+        Ok(None) => {
+            return match queued {
+                Some(c) if c.why == Why::Public && c.dir == lib => c.stands().map(|()| Some((c, true))),
+                _ => Ok(None),
+            }
+        }
+        Ok(Some(s)) => match s.trial() {
+            None => lib.clone(),
+            Some(m) => match trial_now(&lib, this) {
+                TrialNow::Trying { .. } | TrialNow::NotTrial => {
+                    return Ok(queued.filter(|c| c.why == Why::Trial && c.version == m.version && c.dir == lib).map(|c| (c, true)));
+                }
+                TrialNow::ShopAway { said, .. } => return Err(NotStandalone::Unknown(said)),
+                TrialNow::Over { mark, .. } => PathBuf::from(mark.shop_folder),
+            },
+        },
+    };
+    match from_shop(&shop_dir, this) {
+        Err(e) => Err(NotStandalone::Unknown(e)),
+        Ok(FromShop::Update { version, folder, .. }) => {
+            if let Some(c) = queued.filter(|c| c.why == Why::Shop && c.version == version && c.dir == shop_dir) {
+                return Ok(Some((c, true)));
+            }
+            Ok(Some((Chosen { version, dir: shop_dir, own, src: Source::Folder(folder), why: Why::Shop }, false)))
+        }
+        Ok(_) => Ok(None),
+    }
+}
+
+/// S3: fetch `c` at close, from its folder, waiting at most `limit`.
+fn fetch_now(c: &Chosen, limit: Duration) -> Result<(), String> {
+    let p = match &c.src {
+        Source::Folder(p) => p.clone(),
+        Source::Fake(_) => return Ok(()),
+        Source::Off(why) => return Err(why.to_string()),
+        Source::Github => return Err("a shop's release comes from the shop folder".into()),
+    };
+    let (tx, rx) = channel();
+    let v = c.version.clone();
+    spawn("update fetch on close", move || {
+        let _ = tx.send(installer::download_from(&p, &v));
+    })?;
+    rx.recv_timeout(limit).unwrap_or_else(|_| Err(format!("it wasn't fetched within {} s", limit.as_secs())))
 }
 
 /// UP14: the program has closed (its window is gone, and every job with it):
@@ -982,11 +1087,11 @@ mod tests {
         let n = h.start(chosen(&d, &l, "0.2.0"));
         h.done(n, true);
         let t = Instant::now();
-        let stall = |_: &Chosen| {
+        let stall = |q: Option<Chosen>| {
             std::thread::sleep(Duration::from_millis(400));
-            Ok(())
+            Ok(q.map(|c| (c, true)))
         };
-        let r = finish_on_close_with(h, Duration::from_secs(1), stall, Duration::from_millis(100), |_| panic!("installed without knowing whether this PC is in a shop"));
+        let r = finish_on_close_with(h, Duration::from_secs(1), stall, Duration::from_millis(100), |_| panic!("fetched without knowing whether this PC is in a shop"), |_| panic!("installed without knowing whether this PC is in a shop"));
         assert!(matches!(&r, Err(e) if e.contains("didn't answer")), "{r:?}");
         assert!(t.elapsed() < Duration::from_millis(350), "waited for the share: {:?}", t.elapsed());
         let _ = std::fs::remove_dir_all(&d);
