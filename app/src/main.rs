@@ -769,6 +769,11 @@ impl App {
         if let Some(d) = library_dir_arg() {
             a.cfg.library_dir = d;
         }
+        // --shop-demo (screenshot runs only): a temporary Library of its own,
+        // never the configured one or --library-dir's (SH5).
+        if a.shot.is_some() && settings_ui::shop_demo_arg().is_some() {
+            a.cfg.library_dir = settings_ui::shop_demo_dir().display().to_string();
+        }
         // The material list (MA14): the Library's, or this PC's own.
         a.reload_materials(true);
         a.run_nesting();
@@ -3259,8 +3264,6 @@ fn main() -> eframe::Result {
                 app.open_settings(sec);
                 // Screenshots of a machine's cut order scroll down to it.
                 app.setui.show_order = s == "machines-order";
-                // Screenshots of the warning before this PC becomes the admin PC (SH7).
-                app.setui.shop_admin_ask = s == "shop-admin";
                 // Screenshots of Settings → Materials with a material picked.
                 if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--settings-material=").map(str::to_string)) {
                     // The page lists the materials in the list's order.
@@ -3363,10 +3366,11 @@ fn main() -> eframe::Result {
             if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--save-question=").map(str::to_string)) {
                 app.demo_save_question(&what);
             }
-            // --shop-demo[=none] (screenshots, with --library-dir= a new, empty
-            // folder): a made-up shop and its PCs (SH5).
-            if let Some(a) = std::env::args().find(|a| a == "--shop-demo" || a.starts_with("--shop-demo=")) {
-                app.demo_shop(a.strip_prefix("--shop-demo=").unwrap_or(""));
+            // --shop-demo[=none|unrecorded] (screenshots): a made-up shop and
+            // its PCs in a temporary Library of its own (SH5);
+            // --settings=shop-admin: with the admin PC question open (SH7).
+            if let Some(what) = settings_ui::shop_demo_arg() {
+                app.demo_shop(&what);
             }
             // --in-use=note|ask|warning|taken (screenshots, with --library-dir=
             // a new, empty folder): jobs in use on made-up PCs (CU8–CU10).
@@ -4211,6 +4215,26 @@ mod job_tests {
         a.save_job_to(&out);
         assert_eq!(jobfile::load(&out).unwrap().material_name, "Stainless steel");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SH5: `--shop-demo` never touches a real Library: outside a screenshot
+    /// run it does nothing at all, and its Library is always a temporary one
+    /// of its own, never the configured one.
+    #[test]
+    fn the_shop_demo_never_touches_a_real_library() {
+        let lib = std::env::temp_dir().join(format!("nestpro_shop_demo_real_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lib);
+        crate::library::create(&lib).unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        a.demo_shop("");
+        assert!(!lib.join(crate::shop::FILE).exists() && !lib.join(crate::shop::PCS).exists(), "the demo made a shop in the configured Library");
+        let demo = settings_ui::shop_demo_dir();
+        assert!(demo.starts_with(std::env::temp_dir()) && demo != lib);
+        a.cfg.library_dir = demo.display().to_string();
+        a.demo_shop("");
+        assert!(!demo.exists(), "the demo ran outside a screenshot run");
+        let _ = std::fs::remove_dir_all(&lib);
     }
 
     #[test]

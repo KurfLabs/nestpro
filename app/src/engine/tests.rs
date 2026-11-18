@@ -9132,13 +9132,20 @@ fn two_pcs_using_the_shop_at_once_both_show_with_their_version_and_last_seen() {
     let lib = a.ctx.library_dir.clone();
     call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
     clock.advance(std::time::Duration::from_secs(10 * 60));
-    // PC-B, a version behind, and PC-A open the program at the same moment.
+    // PC-B, a version behind, and PC-A use the program at the same moment:
+    // each asks for the shop's status, as an agent does, again and again.
     std::thread::scope(|t| {
-        for (who, version) in [(Who::new("kim", "PC-B"), "0.1.0"), (Who::new("sam", "PC-A"), "0.2.0")] {
+        for (who, version) in [(Who::new("kim", "PC-B").as_agent(), "0.1.0"), (Who::new("sam", "PC-A").as_agent(), "0.2.0")] {
             let (lib, clock) = (&lib, &clock);
             t.spawn(move || {
-                for _ in 0..20 {
-                    assert!(crate::engine::shop::record_pc(lib, &who, clock, version).unwrap());
+                let mut ctx = stock_ctx_again(lib);
+                ctx.who = who;
+                ctx.clock = clock.clone();
+                ctx.version = version.into();
+                let mut s = Session::new(ctx);
+                for _ in 0..10 {
+                    let st = call(&mut s, "shop", None, json!({"mode": "status"}));
+                    assert_eq!(st["data"]["this_pc_recorded"], true, "{st}");
                 }
             });
         }
@@ -9267,6 +9274,168 @@ fn starting_a_shop_refuses_what_it_cant_start_and_changes_nothing() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A session as `who` (an agent) in the shop folder `lib`, on `clock`.
+fn shop_session(lib: &Path, who: Who, clock: &Clock) -> Session {
+    let mut ctx = stock_ctx_again(lib);
+    ctx.who = who;
+    ctx.clock = clock.clone();
+    Session::new(ctx)
+}
+
+/// SH2: a setup that loses the Library's write lock (it stalled, and another
+/// PC took the lock over and started the shop with the folders this one
+/// made) is refused and leaves those folders and the other PC's shop as they
+/// are: it never takes away what another PC may be using.
+#[test]
+fn a_setup_that_loses_the_lock_leaves_the_folders_the_other_pc_started_the_shop_with() {
+    let d = dir("shop_lost_lock");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let other = lib.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "shop folders made" {
+            // PC-B takes the lock over and starts its shop meanwhile.
+            std::fs::write(other.join(crate::shared::LOCK_FILE), r#"{"user":"kim","pc":"PC-B","process":1,"since":0,"token":"PC-B-token"}"#).unwrap();
+            std::fs::write(other.join(crate::shop::FILE), "PC-B's shop").unwrap();
+        }
+    });
+    let e = s.call("setup", None, &json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    crate::shared::hooks::clear();
+    let e = e.err().expect("a setup that lost the lock was not refused");
+    assert!(e.contains("No shop was started"), "{e}");
+    for f in ["Shop", "Updates", "Backups"] {
+        assert!(lib.join(f).is_dir(), "the setup that lost the lock took {f} away");
+    }
+    assert_eq!(std::fs::read_to_string(lib.join(crate::shop::FILE)).unwrap(), "PC-B's shop");
+    assert!(std::fs::read_to_string(lib.join(crate::shared::LOCK_FILE)).unwrap().contains("PC-B-token"), "PC-B's lock was taken away");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH2, SH8: a Library that goes away while a shop is being started (the
+/// share drops after the lock was taken, before or after the folders were
+/// made) is never made again: setup is refused, naming it, and no empty
+/// folder appears in its place.
+#[test]
+fn a_library_that_goes_while_a_shop_is_started_is_never_made_again() {
+    for step in ["shop locked", "shop folders made"] {
+        let d = dir(&format!("shop_gone_{}", step.replace(' ', "_")));
+        let clock = Clock::at(1_794_216_000);
+        let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+        let lib = s.ctx.library_dir.clone();
+        let (from, to) = (lib.clone(), d.join("moved"));
+        crate::shared::hooks::set(move |at| {
+            if at == step {
+                std::fs::rename(&from, &to).unwrap();
+            }
+        });
+        let r = s.call("setup", None, &json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+        crate::shared::hooks::clear();
+        let e = r.err().unwrap_or_else(|| panic!("{step}: setup went ahead in a Library that went away"));
+        assert!(e.contains(&lib.display().to_string()) && e.contains("can't be reached"), "{step}: {e}");
+        assert!(!lib.exists(), "{step}: the Library folder was made again in its place");
+        assert!(!d.join("moved").join(crate::shop::FILE).exists(), "{step}: a shop was started");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// SH7: the window asked "PC-B in place of PC-A", but PC-C was made the
+/// admin PC while the question was open: yes changes nothing and says who
+/// the admin PC is now.
+#[test]
+fn confirming_an_admin_change_after_another_pc_took_it_changes_nothing() {
+    let d = dir("shop_admin_race");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    clock.advance(std::time::Duration::from_secs(600));
+    crate::engine::shop::make_admin(&lib, &Who::new("lee", "PC-C"), &clock).unwrap();
+    let e = crate::engine::shop::replace_admin(&lib, &Who::new("kim", "PC-B"), &clock, "PC-A").unwrap_err();
+    assert!(e.contains("PC-C was made the admin PC of Acme by lee on PC-C") && e.contains("Nothing was changed"), "{e}");
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!(st["data"]["admin_pc"], "PC-C", "{st}");
+    // Asked again, about PC-C, it goes ahead.
+    crate::engine::shop::replace_admin(&lib, &Who::new("kim", "PC-B"), &clock, "PC-C").unwrap();
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!((st["data"]["admin_pc"].as_str(), st["data"]["admin_was"].as_str()), (Some("PC-B"), Some("PC-C")), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH4, SH6: a PC that can't add itself to the PCs list (its folder is
+/// read-only for this PC) still sees the shop, told why it isn't listed;
+/// a PCs list that can't be read is refused, naming its folder, never shown
+/// as an empty list.
+#[cfg(unix)]
+#[test]
+fn shop_status_shows_the_shop_when_this_pc_cant_be_added_and_never_an_empty_list_it_cant_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("shop_status_failures");
+    let clock = Clock::at(1_794_216_000);
+    let mut a = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let pcs = lib.join(crate::shop::PCS);
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // (Someone allowed to write anyway, as root, can't play this PC.)
+    if std::fs::write(pcs.join("probe"), "").is_err() {
+        let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+        let st = call(&mut b, "shop", None, json!({}));
+        assert_eq!(st["data"]["name"], "Acme", "{st}");
+        assert_eq!(st["data"]["this_pc_recorded"], false, "{st}");
+        assert!(st["message"].as_str().unwrap().contains("PC-B couldn't be added to the shop's PCs list"), "{st}");
+        assert!(st["data"]["pcs"].as_array().unwrap().iter().any(|p| p["pc"] == "PC-A"), "{st}");
+        std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let e = err(&mut b, "shop", json!({}));
+        assert!(e.contains(&pcs.display().to_string()) && e.contains("can't be read"), "{e}");
+    }
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH1, SH4: when the PC starting a shop can't be added to its PCs list,
+/// setup says so and the shop is started all the same; the PC adds itself
+/// at its next go.
+#[cfg(unix)]
+#[test]
+fn setup_says_when_the_admin_pc_cant_be_added_and_it_adds_itself_later() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("shop_admin_unrecorded");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let pcs = lib.join(crate::shop::PCS);
+    std::fs::create_dir(&pcs).unwrap();
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(pcs.join("probe"), "").is_err() {
+        let r = call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+        assert!(r["message"].as_str().unwrap().contains("PC-A couldn't be added to the shop's PCs list"), "{r}");
+        assert_eq!(r["data"]["this_pc_recorded"], false, "{r}");
+        assert!(lib.join(crate::shop::FILE).is_file(), "the shop wasn't started");
+        std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let st = call(&mut s, "shop", None, json!({}));
+        assert_eq!(st["data"]["this_pc_recorded"], true, "{st}");
+        assert!(st["data"]["pcs"].as_array().unwrap().iter().any(|p| p["pc"] == "PC-A"), "{st}");
+    }
+    std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH4: two PCs whose long names start alike each keep their own record.
+#[test]
+fn two_pcs_whose_long_names_start_alike_each_keep_their_record() {
+    let d = dir("shop_long_names");
+    let clock = Clock::at(1_794_216_000);
+    let (one, two) = ("PROGRAMMING-STATION-IN-THE-NORTH-WORKSHOP-1", "PROGRAMMING-STATION-IN-THE-NORTH-WORKSHOP-2");
+    let mut a = used_library(&d, Who::new("sam", one).as_agent(), &clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let mut b = shop_session(&lib, Who::new("kim", two).as_agent(), &clock);
+    call(&mut b, "shop", None, json!({}));
+    let st = call(&mut a, "shop", None, json!({}));
+    let pcs: Vec<&str> = st["data"]["pcs"].as_array().unwrap().iter().map(|p| p["pc"].as_str().unwrap()).collect();
+    assert_eq!(pcs, vec![one, two], "{st}");
 
 // ---------------------------------------------------------------------------
 // Older never overwrites newer (spec #178, UP5–UP10): two sessions play two
