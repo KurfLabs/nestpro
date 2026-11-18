@@ -660,6 +660,10 @@ fn may_roll_back(dir: &Path, s: &ShopFile, who: &Who, this: &str, changes: &[One
     Ok((from, to))
 }
 
+/// UP24: the kinds of shop record a roll back makes saveable on the release
+/// gone back to again (UP25), as its warning names them.
+pub const RECORDS: &str = "Jobs, library parts, the Library's list, the sheet stock, the material list and the shop file";
+
 /// UP24: what rolling the shop in `dir` back would do, as the window warns
 /// before it: refused (with the reason, as Roll back itself would refuse
 /// it), or the warning's lines. Changes nothing.
@@ -674,7 +678,9 @@ pub fn rollback_ask_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeCh
     }
     let st = super::shop::status(dir)?.ok_or_else(|| format!("{} isn't a shop. Nothing was rolled back.", dir.display()))?;
     let (from, to) = may_roll_back(dir, &st.shop, who, this, changes)?;
-    let mut lines = vec![format!("Jobs saved since {from} was rolled out may lose what only {from} knew about them when saved again.")];
+    // S7: every kind of shop record the roll back makes saveable on `to`
+    // again (UP25), each saved back through `to`'s own layout.
+    let mut lines = vec![format!("{RECORDS} saved since {from} was rolled out may lose what only {from} knew about them when saved again.")];
     for p in &st.pcs {
         let me = if p.pc == who.pc { " (this PC)" } else { "" };
         match shared::version_order(&p.version, &to) {

@@ -7760,25 +7760,25 @@
  {
   "name": "roll back",
   "group": "shop",
-  "value": "person on the admin PC only (agents refused); to the release kept beside the shop version, its packages whole in Updates; this PC on the shop version or the one kept; not a trial copy; shop file: shop version = the one kept, none kept before it, its layouts; both releases stay in Updates; every PC goes back when its program closes",
+  "value": "person on the admin PC only (agents refused); to the release kept beside the shop version, its package whole in Updates (size and checksum); this PC on the shop version or the one kept; not a trial copy; Yes rolls back only the from/to the warning showed, else asks again; shop file: shop version = the one kept, none kept before it, its layouts; both releases stay in Updates; every PC goes back when its program closes",
   "source": "UP23; own design"
  },
  {
   "name": "roll back refused for layouts",
   "group": "shop",
-  "value": "refused when a kind of file is recorded in a newer layout than the release kept writes, or one it doesn't know: Jobs were saved in a layout 0.4.0 can't read. Restore a backup instead.; also for a one-time change it doesn't know; else a warning first: Jobs saved since 0.5.0 was rolled out may lose what only 0.5.0 knew about them when saved again, the PCs read-only until they go back",
+  "value": "only to a release that recorded its own file layouts when rolled out (roll-back-aware releases); refused when a kind of file is recorded in a newer layout than it writes: Jobs were saved in a layout 0.4.0 can't read. Restore a backup instead.; a missing, damaged or partial layout record refused alike; a one-time change it doesn't know refused; else a warning naming jobs, library parts, the Library's list, the sheet stock, the material list and the shop file, and the PCs read-only until they go back",
   "source": "UP24; own design"
  },
  {
   "name": "releases rolled back from",
   "group": "shop",
-  "value": "roll back adds the release left to the shop file's list (once each); files last written by any count as the shop version's, never as newer than they are; agents' shop gives rolled_back_from",
+  "value": "roll back adds the release left to the shop file's list (once each); files in the shop folder last written by any count as the shop version's, never as newer than they are; files elsewhere keep the ordinary check; agents' shop gives rolled_back_from",
   "source": "UP25; own design"
  },
  {
   "name": "PC on the release left",
   "group": "shop",
-  "value": "a PC still running the release rolled back from (not in a trial) finds the shop read-only: Restart to go back to 0.4.0, until it has installed it",
+  "value": "a PC still running the release rolled back from (not in a trial) finds the shop read-only: Restart to go back to 0.4.0; saves read the shop version again under the write lock; at close the shop is looked at once more (30 s): the shop version installs (fetched then if needed), an ended trial doesn't; no answer installs nothing",
   "source": "UP26; own design"
  }
 ]

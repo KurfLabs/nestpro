@@ -208,14 +208,22 @@ A PC in a shop never checks GitHub by itself. The admin PC decides which release
   missing or damaged. Agents are refused, and so is a roll out while a job from the trial copy is
   open.
 - **Roll back to 0.4.0** makes the release kept beside the shop version the shop version again,
-  after a warning that what only the newer release knew about a job may be lost when it is saved
-  again. It is refused, changing nothing, when the shop file records a file layout the release
-  kept can't read ("Jobs were saved in a layout 0.4.0 can't read. Restore a backup instead"),
-  or when that release's index or package isn't whole in `Updates\<version>`. The shop file then
-  lists the release left among those rolled back from, so the files it wrote save on the shop
+  after a warning that jobs, library parts, the stock, the material list and the shop file saved
+  since may lose what only the newer release knew about them when saved again. Each release
+  records its own file layouts in the shop file when it is rolled out, and roll back goes only
+  to a release that did (one that knows about roll back). It is refused, changing nothing, when
+  the shop file records a file layout the release kept can't read ("Jobs were saved in a layout
+  0.4.0 can't read. Restore a backup instead"), when either layout record is missing, damaged or
+  incomplete, or when that release's package isn't whole in `Updates\<version>` (size and
+  checksum). Yes rolls back only what the warning showed. The shop file then lists the release
+  left among those rolled back from, so the files it wrote in the shop folder save on the shop
   version again. Both releases stay in `Updates`. Every PC on the release left finds the shop
   read-only ("Restart to go back to 0.4.0") and goes back when its program closes: a downgrade,
   installed as below. Agents are refused.
+- **At close** the program looks at the shop once more (30 s): when this PC runs another release
+  than the shop version it installs the shop version, fetching it from `Updates` then if it
+  wasn't fetched before; a trial the shop moved on from is over, so the tried release doesn't
+  install. A shop that doesn't answer in time installs nothing.
 - **Every other PC** reads the shop version when the program opens and at the Library's quick
   check. When its own version differs, it fetches that version from `Updates\<version>`
   (`FileSource`, with `AllowVersionDowngrade` when it goes back to an older shop version) and

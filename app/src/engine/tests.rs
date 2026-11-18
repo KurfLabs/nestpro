@@ -12870,7 +12870,8 @@ fn a_roll_back_while_another_pc_saves_lands_whole() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// UP24: the warning before Roll back: what may be lost, each PC that
+/// UP24 (review S7): the warning before Roll back: what may be lost, every
+/// kind of shop record roll back makes saveable again named, each PC that
 /// finds the shop read-only until it goes back (this PC named), each PC
 /// that installs it, and that the release left stays in Updates.
 #[test]
@@ -12885,7 +12886,7 @@ fn the_roll_back_warning_names_what_may_be_lost_and_the_pcs() {
     assert_eq!(
         ask.lines,
         [
-            "Jobs saved since 0.5.0 was rolled out may lose what only 0.5.0 knew about them when saved again.",
+            "Jobs, library parts, the Library's list, the sheet stock, the material list and the shop file saved since 0.5.0 was rolled out may lose what only 0.5.0 knew about them when saved again.",
             "PC-A (this PC) is on 0.5.0: it opens the shop read-only until it goes back to 0.4.0 (when its program closes).",
             "PC-B is on 0.5.0: it opens the shop read-only until it goes back to 0.4.0 (when its program closes).",
             "PC-D is on 0.3.2: it installs 0.4.0 from the shop folder when its program closes.",
