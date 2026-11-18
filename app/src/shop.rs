@@ -65,10 +65,69 @@ pub struct ShopFile {
     /// Keep and the second place of the shop's backups (BK4, BK5).
     #[serde(default)]
     pub backups: crate::backup::Settings,
+    /// The last restore of a backup (BK12): other PCs see it at their next
+    /// quick check (BK13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored: Option<Restore>,
     /// What later versions keep in the shop file, kept as it was when this
     /// version writes it again.
     #[serde(flatten)]
     pub other: Map<String, Value>,
+}
+
+/// A restore of a backup, as the shop file records it (BK12).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restore {
+    /// The backup put back: its file name, and its day and time
+    /// ("2026-11-09 09:20", the local time of the PC that took it).
+    pub backup: String,
+    pub backup_when: String,
+    /// The backup of the Library as it was, taken first (BK9).
+    pub before: String,
+    /// Who restored it (the admin PC), and when.
+    pub by: Who,
+    pub at: u64,
+    /// False while the files are put back, and when that stopped halfway.
+    #[serde(default)]
+    pub finished: bool,
+    /// Every revision a record had before the restore is at most this, so
+    /// a save after it never gives a record a revision it had before (BK12,
+    /// LB7).
+    #[serde(default)]
+    pub revision_floor: u64,
+    /// How many restores the shop has had, this one included: a job or
+    /// library part read before it was read in an earlier generation, so
+    /// saving it asks first whatever its revision (BK12, LB7).
+    #[serde(default)]
+    pub generation: u64,
+    /// The write lock's token the restore holds: while that lock is held
+    /// and renewed, the restore is running (BK13).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lock: String,
+}
+
+/// BK12: saves after a restore give records revisions above this.
+/// 0 when the shop has never been restored (or isn't a shop, or its file
+/// can't be read just now).
+pub fn revision_floor(dir: &Path) -> u64 {
+    read(dir).ok().flatten().and_then(|s| s.restored).map_or(0, |r| r.revision_floor)
+}
+
+/// BK12: the generation of a restore that hasn't finished (running, or
+/// stopped halfway): what is read then matches no finished restore's, so
+/// saving it after the restore asks first.
+pub const UNSETTLED: u64 = u64::MAX;
+
+/// BK12: how many restores the shop has had (0: none, or no shop); what a
+/// PC reads from the Library is read in this generation (LB7). While a
+/// restore is unfinished, `UNSETTLED`. A shop that has never been restored
+/// stays 0, so its saves are judged on revisions alone, as before.
+pub fn restore_generation(dir: &Path) -> u64 {
+    match read(dir).ok().flatten().and_then(|s| s.restored) {
+        None => 0,
+        Some(r) if r.finished => r.generation,
+        Some(_) => UNSETTLED,
+    }
 }
 
 /// One PC's record in `Shop` (SH4): written by that PC when it opens the

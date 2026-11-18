@@ -56,6 +56,8 @@ pub struct LibUi {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LibRead {
     pub revision: u64,
+    /// BK12: the shop's restore generation the job was read or saved in.
+    pub restore: u64,
     pub parts: std::collections::BTreeMap<String, Record>,
 }
 
@@ -313,7 +315,7 @@ impl App {
             booked: true,
             erp: self.erp_job.clone(),
             saved: None,
-            library: self.job_lib_id.map(|id| Record { id, revision: self.lib_read.revision }),
+            library: self.job_lib_id.map(|id| Record { id, revision: self.lib_read.revision, restore: self.lib_read.restore }),
             library_parts: self.lib_read.parts.clone(),
             material_name: crate::engine::material::read_name(self.spec.material, &self.job_material_names),
         }
@@ -494,8 +496,8 @@ impl App {
     fn job_save_to(&self) -> SaveTo {
         self.job_lib_id.map_or(SaveTo::New, |id| {
             // Overwrite (LB9) goes over their save as the question saw it.
-            let revision = self.libui.overwrite.as_ref().filter(|o| o.id == id).map_or(self.lib_read.revision, |o| o.revision);
-            SaveTo::Read(Record { id, revision })
+            let (revision, restore) = self.libui.overwrite.as_ref().filter(|o| o.id == id).map_or((self.lib_read.revision, self.lib_read.restore), |o| (o.revision, o.restore));
+            SaveTo::Read(Record { id, revision, restore })
         })
     }
 
@@ -576,6 +578,7 @@ impl App {
                 // if storing it fails, saving again finishes it without
                 // asking, and gives their sheets back only this once.
                 self.lib_read.revision = o.revision;
+                self.lib_read.restore = o.restore;
             }
             stock_note = self.stock_on_save();
             Ok(self.current_jobfile())
@@ -584,6 +587,7 @@ impl App {
             Ok(rec) => {
                 self.job_lib_id = Some(rec.id);
                 self.lib_read.revision = rec.revision;
+                self.lib_read.restore = rec.restore;
                 self.mark_job_saved(self.cur_job);
                 self.lib_refresh();
                 let f = self.libui.tree.folder_of(rec.id);
@@ -916,6 +920,9 @@ impl App {
         // UP9: a part a newer version saved is used as it is; saving it back
         // is refused (UP7), and the status says so now.
         let newer = self.library().ok().and_then(|l| l.product_newer(id)).map_or_else(String::new, |n| format!(" It is read-only on this PC: {} Saving it back to the library is refused.", n.message()));
+        // BK12: the generation first: a restore landing between the two
+        // reads makes saving it back ask.
+        let generation = self.library().map_or(0, |l| l.restore_generation());
         match self.library().and_then(|l| l.load_product(id)) {
             Ok(pf) => {
                 let mut p = pf.part;
@@ -926,7 +933,7 @@ impl App {
                 // taken as read now, saving it would go over a newer save
                 // unasked.
                 if !self.parts.iter().any(|q| q.name == name) {
-                    self.lib_read.parts.insert(name.clone(), Record { id, revision: pf.revision });
+                    self.lib_read.parts.insert(name.clone(), Record { id, revision: pf.revision, restore: generation });
                 }
                 self.parts.push(p);
                 self.sel_part = Some(self.parts.len() - 1);
@@ -1433,7 +1440,7 @@ impl App {
                 let pf = sam.load_product(rec.id)?;
                 let mut q = pf.part.clone();
                 q.qty += 1;
-                sam.save_product(&q, "Acme", pf.material, pf.thickness, SaveTo::Read(Record { id: rec.id, revision: pf.revision }))?;
+                sam.save_product(&q, "Acme", pf.material, pf.thickness, SaveTo::Read(Record { id: rec.id, revision: pf.revision, restore: 0 }))?;
                 later(5);
                 let i = self.parts.len() - 1;
                 self.parts[i].qty += 3;
@@ -1487,7 +1494,7 @@ pub(crate) fn place_in(tree: &crate::folders::Tree, id: u64) -> (u64, String) {
 /// the Open jobs folder it sits in (JX15).
 /// `newer`: why it is read-only here, when a newer version saved it (UP9).
 pub(crate) fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile, place: (u64, String), newer: Option<crate::shared::Newer>) -> crate::Job {
-    let lib_read = LibRead { revision: j.library.map_or(0, |r| r.revision), parts: j.library_parts };
+    let lib_read = LibRead { revision: j.library.map_or(0, |r| r.revision), restore: j.library.map_or(0, |r| r.restore), parts: j.library_parts };
     let mut result = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 };
     result.normalise(&j.spec);
     let (folder, week) = place;

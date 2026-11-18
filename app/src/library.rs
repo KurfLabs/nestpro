@@ -113,10 +113,15 @@ impl Entry {
 /// A Library record as a job or a part in it was read from it, or last
 /// saved to it: its number, and its revision then (LB7). Every save of a
 /// record gives it the next revision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     pub id: u64,
     pub revision: u64,
+    /// BK12: the shop's restore generation it was read (or saved) in: a
+    /// record read before a restore is "saved since" whatever its revision.
+    /// 0 outside a shop and before any restore.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub restore: u64,
 }
 
 /// Where a Library save goes (LB7).
@@ -158,6 +163,8 @@ pub struct Changed {
     pub at: u64,
     /// Its revision now: what a save that overwrites it was read at.
     pub revision: u64,
+    /// The shop's restore generation now (BK12).
+    pub restore: u64,
 }
 
 impl Changed {
@@ -173,7 +180,7 @@ impl Changed {
 
     /// The record as it is now, read at its revision now.
     pub fn record(&self) -> Record {
-        Record { id: self.id, revision: self.revision }
+        Record { id: self.id, revision: self.revision, restore: self.restore }
     }
 }
 
@@ -667,7 +674,8 @@ impl Library {
         }
         shared::pause("revision checked");
         let read = if let SaveTo::Read(r) = to { r.revision } else { 0 };
-        let revision = now.as_ref().map_or(0, |d| d.revision()).max(read) + 1;
+        // BK12: after a restore, never a revision the record had before it.
+        let revision = now.as_ref().map_or(0, |d| d.revision()).max(read).max(crate::shop::revision_floor(&self.dir)) + 1;
         let prepared = prepare().map_err(nothing)?;
         let (id, new) = match to.id() {
             Some(i) => (i, false),
@@ -683,11 +691,12 @@ impl Library {
             }
             Refused::Failed(nothing(e))
         };
-        let (text, entry) = record(prepared, self.saved(), Record { id, revision }).map_err(give_back)?;
+        let restore = self.restore_generation();
+        let (text, entry) = record(prepared, self.saved(), Record { id, revision, restore }).map_err(give_back)?;
         if let Err(e) = shared::write_file(&path, text.as_bytes(), Some(&lock)) {
             return Err(give_back(e));
         }
-        let stored = Record { id, revision };
+        let stored = Record { id, revision, restore };
         shared::pause("record written");
         let Err(e) = self.upsert(entry(id), &lock) else { return Ok(stored) };
         // The record is stored but its line isn't: undo this save's own
@@ -747,8 +756,11 @@ impl Library {
     /// The record `to` goes over as it is now (`d`), when that isn't as it
     /// was read (LB7). A record that isn't there any more is saved again.
     fn changed(&self, kind: Kind, to: SaveTo, d: &OnDisk) -> Option<Changed> {
+        // BK12: read before the shop's last restore: saved since, whatever
+        // its revision says.
+        let restore = self.restore_generation();
         let differs = match to {
-            SaveTo::Read(r) => d.revision() != r.revision,
+            SaveTo::Read(r) => d.revision() != r.revision || r.restore != restore,
             SaveTo::Unread(_) => true,
             SaveTo::New | SaveTo::Over(_) => false,
         };
@@ -760,6 +772,7 @@ impl Library {
             by: d.saved.as_ref().map(|s| s.by.clone()),
             at: d.saved.as_ref().map_or_else(|| self.written(kind, id), |s| s.at),
             revision: d.revision(),
+            restore,
         })
     }
 
@@ -856,9 +869,17 @@ impl Library {
     /// `load_job`, and why it is read-only here (UP9): a newer version saved
     /// it last (UP7, UP8). None for a job this program may save over.
     pub fn load_job_read(&self, id: u64) -> Result<(JobFile, Option<shared::Newer>), String> {
+        // BK12: the generation first: a restore landing between the two
+        // reads makes saving it ask.
+        let restore = self.restore_generation();
         let (mut j, written) = crate::jobfile::load_versioned(&self.path(Kind::Job, id))?;
-        j.library = Some(Record { id, revision: j.library.map_or(0, |r| r.revision) });
+        j.library = Some(Record { id, revision: j.library.map_or(0, |r| r.revision), restore });
         Ok((j, self.versions().newer(written.as_deref())))
+    }
+
+    /// BK12: the shop's restore generation: what is read now is read in it.
+    pub fn restore_generation(&self) -> u64 {
+        crate::shop::restore_generation(&self.dir)
     }
 
     /// UP9: why library part `id` is read-only here: a newer version saved

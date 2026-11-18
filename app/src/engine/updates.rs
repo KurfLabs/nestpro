@@ -177,7 +177,7 @@ mod tests {
 
     fn acme() -> ShopFile {
         let who = Who::new("sam", "PC-A");
-        ShopFile { name: "Acme".into(), admin: Admin { pc: "PC-A".into(), by: who.clone(), at: 0, was: None }, settings_by: SettingsBy::AdminPc, started: Saved { by: who, at: 0 }, backups: Default::default(), other: Default::default() }
+        ShopFile { name: "Acme".into(), admin: Admin { pc: "PC-A".into(), by: who.clone(), at: 0, was: None }, settings_by: SettingsBy::AdminPc, started: Saved { by: who, at: 0 }, backups: Default::default(), restored: None, other: Default::default() }
     }
 
     #[test]

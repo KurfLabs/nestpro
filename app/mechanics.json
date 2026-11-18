@@ -7672,6 +7672,42 @@
   "group": "shop",
   "value": "Settings → Shop → Backups: last backup, folder, Keep, second place, Back up now; settings saved in the background, read under the lock by each backup; agents shop mode=backup",
   "source": "BK7; own design"
+ },
+ {
+  "name": "restore on the admin PC",
+  "group": "shop",
+  "value": "Restore… on Settings → Shop → Backups, admin PC only (whatever SH3 says), in a shop; lists backups by date, asks once more; other PCs and agents refused with the reason",
+  "source": "BK8; own design"
+ },
+ {
+  "name": "before restore backup",
+  "group": "shop",
+  "value": "the Library as it is now zipped first under the lock (… before restore.zip), no Keep pruning, read through by the restore's own reader and checked against the files and folders zipped; failing that nothing is restored; a Library with files a newer version wrote, or names a restore refuses, isn't restored; one of the Library's backups, kept its first day",
+  "source": "BK9; own design"
+ },
+ {
+  "name": "what a restore puts back",
+  "group": "shop",
+  "value": "the Library made to match the backup; kept as they are: Updates, Backups, Shop, Holds, the shop file, the backup id, lock files, links; records taken out keep their numbers (.deleted written first, existing marks stay)",
+  "source": "BK10; own design"
+ },
+ {
+  "name": "restore unpacking",
+  "group": "shop",
+  "value": "read and version-checked under the renewed lock (shop file included), unpacked from the same handle; refused: names outside the shop folder, trailing dot/space, short names, device names, capitals twins, a name twice, links, damaged files, newer files, links or aliases where it goes; every change fenced by the lock; a failure says what state the Library is in",
+  "source": "BK11; own design"
+ },
+ {
+  "name": "restore record",
+  "group": "shop",
+  "value": "shop file: backup, its day, before restore backup, PC, when, finished, lock token, generation, revision floor; the generation is published once every file is in place; reads carry it (none while a restore is unfinished), an older one is saved since (asks) whatever the revision",
+  "source": "BK12; own design"
+ },
+ {
+  "name": "restore notice",
+  "group": "shop",
+  "value": "next quick check, from one shop file read: restored / being restored / stopped halfway; open jobs wait while it runs; baseline taken when the window first shows the Library; open jobs reload or ask; old job saves ask; Backups card shows the last restore; agents shop last_restore (running too)",
+  "source": "BK13; own design"
  }
 ]
 }
