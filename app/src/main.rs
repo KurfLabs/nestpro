@@ -768,7 +768,9 @@ impl App {
         // --shop-demo (screenshot runs only): a temporary Library of its own,
         // never the configured one or --library-dir's (SH5).
         if a.shot.is_some() && settings_ui::shop_demo_arg().is_some() {
-            a.cfg.library_dir = settings_ui::shop_demo_dir().display().to_string();
+            if let Some(d) = settings_ui::shop_demo_dir() {
+                a.cfg.library_dir = d.display().to_string();
+            }
         }
         // The material list (MA14): the Library's, or this PC's own.
         a.reload_materials(true);
@@ -4145,12 +4147,143 @@ mod job_tests {
         a.cfg.library_dir = lib.display().to_string();
         a.demo_shop("");
         assert!(!lib.join(crate::shop::FILE).exists() && !lib.join(crate::shop::PCS).exists(), "the demo made a shop in the configured Library");
-        let demo = settings_ui::shop_demo_dir();
-        assert!(demo.starts_with(std::env::temp_dir()) && demo != lib);
+        // Its own folder is made fresh for the run: never one already there.
+        let demo = settings_ui::shop_demo_dir().unwrap();
+        let fresh = demo.parent().unwrap().to_path_buf();
+        assert!(fresh.starts_with(std::env::temp_dir()) && demo != lib);
+        assert_eq!(std::fs::read_dir(&fresh).unwrap().count(), 0, "the demo's folder wasn't made fresh");
         a.cfg.library_dir = demo.display().to_string();
         a.demo_shop("");
         assert!(!demo.exists(), "the demo ran outside a screenshot run");
-        let _ = std::fs::remove_dir_all(&lib);
+        // Two allocations are two new, empty folders; one already there,
+        // with someone's files in it, is never used or emptied.
+        let (one, two) = (settings_ui::new_temp_folder("nestpro-test-alloc").unwrap(), settings_ui::new_temp_folder("nestpro-test-alloc").unwrap());
+        assert_ne!(one, two);
+        std::fs::write(one.join("keep.txt"), "someone's").unwrap();
+        let three = settings_ui::new_temp_folder("nestpro-test-alloc").unwrap();
+        assert!(three != one && one.join("keep.txt").is_file());
+        for d in [&lib, &fresh, &one, &two, &three] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// A window as kim on PC-B whose Library is a shop Acme (admin PC-A),
+    /// in a new folder named after `tag`.
+    fn shop_window(tag: &str) -> (App, std::path::PathBuf) {
+        use crate::shared::{Clock, Who};
+        let d = std::env::temp_dir().join(format!("nestpro_add_pc_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let lib = d.join("Nesting");
+        crate::library::create(&lib).unwrap();
+        crate::engine::shop::start(&lib, "Acme", &Who::new("sam", "PC-A"), &Clock::pc(), "0.1.0").unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        a.who = Who::new("kim", "PC-B");
+        (a, d)
+    }
+
+    /// Wait for this PC's background add to finish.
+    fn wait_added(a: &mut App) {
+        let t = std::time::Instant::now();
+        while a.poll_add_this_pc() {
+            assert!(t.elapsed() < std::time::Duration::from_secs(20), "adding this PC never finished");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// A folder this PC can only read (unix, not as root).
+    #[cfg(unix)]
+    fn read_only(p: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::write(p.join("probe"), "").is_err()
+    }
+
+    #[cfg(unix)]
+    fn writable(p: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// SH4: Add this PC never makes the window wait for the write lock: it
+    /// runs in the background and its answer comes in later.
+    #[test]
+    fn add_this_pc_never_waits_for_the_lock() {
+        let (mut a, d) = shop_window("lock");
+        let lib = a.library_dir();
+        let lock = lib.join(crate::shared::LOCK_FILE);
+        std::fs::write(&lock, r#"{"user":"lee","pc":"PC-C","process":1,"since":0,"token":"PC-C-token"}"#).unwrap();
+        let t = std::time::Instant::now();
+        a.add_this_pc(true);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "Add this PC waited for the lock");
+        assert!(a.poll_add_this_pc(), "it should still be waiting for the lock");
+        std::fs::remove_file(&lock).unwrap();
+        wait_added(&mut a);
+        assert_eq!(a.setui.shop_unrecorded, None);
+        assert_eq!(a.setui.shop_note.as_ref().map(|n| n.0), Some(true), "{:?}", a.setui.shop_note);
+        assert!(crate::shop::records(&lib).unwrap().iter().any(|p| p.pc == "PC-B"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// SH4: when this PC can't bring its row up to date as the program opens
+    /// (though it is listed from before), the failure is kept for the PCs
+    /// card until a try works.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_add_at_start_up_is_kept_until_a_try_works() {
+        let (mut a, d) = shop_window("startup");
+        let lib = a.library_dir();
+        a.add_this_pc(false);
+        wait_added(&mut a);
+        assert!(crate::shop::records(&lib).unwrap().iter().any(|p| p.pc == "PC-B"));
+        let pcs = lib.join(crate::shop::PCS);
+        if read_only(&pcs) {
+            a.record_in_shop();
+            wait_added(&mut a);
+            assert!(a.setui.shop_unrecorded.as_deref().is_some_and(|e| e.contains("PC-B couldn't be added")), "{:?}", a.setui.shop_unrecorded);
+        }
+        writable(&pcs);
+        a.add_this_pc(true);
+        wait_added(&mut a);
+        assert_eq!(a.setui.shop_unrecorded, None, "a try that worked clears the failure");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// SH1, SH4: Start the shop in Settings keeps the failure too, when this
+    /// PC can't be added to the new shop's PCs list.
+    #[cfg(unix)]
+    #[test]
+    fn start_the_shop_keeps_why_this_pc_isnt_listed() {
+        let d = std::env::temp_dir().join(format!("nestpro_start_here_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let lib = d.join("Nesting");
+        crate::library::create(&lib).unwrap();
+        let pcs = lib.join(crate::shop::PCS);
+        std::fs::create_dir(&pcs).unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = lib.display().to_string();
+        a.who = crate::shared::Who::new("kim", "PC-B");
+        if read_only(&pcs) {
+            a.start_shop_here("Acme");
+            assert!(lib.join(crate::shop::FILE).is_file(), "the shop wasn't started");
+            assert!(a.setui.shop_unrecorded.as_deref().is_some_and(|e| e.contains("PC-B couldn't be added")), "{:?}", a.setui.shop_unrecorded);
+        }
+        writable(&pcs);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// SH4: Add this PC on a Library that is no shop (any more) says no
+    /// success: only a record written counts.
+    #[test]
+    fn adding_this_pc_to_a_library_that_is_no_shop_says_no_success() {
+        let (mut a, d) = shop_window("plain");
+        let plain = d.join("Plain");
+        crate::library::create(&plain).unwrap();
+        a.cfg.library_dir = plain.display().to_string();
+        a.add_this_pc(true);
+        wait_added(&mut a);
+        assert_eq!(a.setui.shop_note.as_ref().map(|n| n.0), Some(false), "{:?}", a.setui.shop_note);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

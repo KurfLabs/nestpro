@@ -176,6 +176,13 @@ pub struct SettingsUi {
     pub shop_admin_ask: Option<(std::path::PathBuf, String)>,
     /// Shop page: the last result of a change (true: done).
     pub shop_note: Option<(bool, String)>,
+    /// SH4: this PC adding itself to its shop in the background (at
+    /// start-up, or Add this PC): the answer to come, and whether a person
+    /// pressed Add this PC.
+    pub shop_adding: Option<(Receiver<Result<bool, String>>, bool)>,
+    /// SH4: why this PC's last try to add itself to the shop failed; shown on
+    /// the PCs card with Add this PC until a try succeeds.
+    pub shop_unrecorded: Option<String>,
 }
 
 /// "lower left" → "Lower left".
@@ -338,6 +345,11 @@ impl App {
     }
 
     pub fn settings_window(&mut self, ctx: &egui::Context) {
+        // SH4: this PC adding itself to its shop, whether Settings is open
+        // or not (it starts when the program opens).
+        if self.poll_add_this_pc() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
         if let Some(rx) = &self.setui.pending {
             if let Ok(r) = rx.try_recv() {
                 self.setui.test = r;
@@ -1688,12 +1700,15 @@ impl App {
     }
 
     /// SH1: start a shop in this PC's Library folder, this PC its admin PC.
-    fn start_shop_here(&mut self, name: &str) {
+    /// When this PC can't be added to the PCs list, the shop is started and
+    /// the PCs card says why, with Add this PC (SH4).
+    pub(crate) fn start_shop_here(&mut self, name: &str) {
         let dir = self.library_dir();
-        self.setui.shop_note = Some(match crate::engine::shop::start(&dir, name, &self.who, &self.clock, crate::updates::VERSION) {
-            Ok(s) => {
+        self.setui.shop_note = Some(match crate::engine::shop::start_shop(&dir, name, &self.who, &self.clock, crate::updates::VERSION) {
+            Ok(st) => {
                 self.setui.shop_start = None;
-                (true, format!("Started shop {} in {}. This PC is its admin PC.", s.name, dir.display()))
+                self.setui.shop_unrecorded = st.unrecorded;
+                (true, format!("Started shop {} in {}. This PC is its admin PC.", st.shop.name, dir.display()))
             }
             Err(e) => (false, e),
         });
@@ -1752,17 +1767,25 @@ impl App {
                 ui.label(RichText::new("No PC has opened the program in this shop yet.").size(11.5).color(t.text_dim));
             }
             // SH4: this PC couldn't add itself (the share was busy or
-            // read-only when the program opened): it can try again here.
-            if !st.pcs.iter().any(|p| p.pc == self.who.pc) {
+            // read-only when the program opened, or its row couldn't be
+            // brought up to date): one line saying so, and Add this PC.
+            let adding = self.setui.shop_adding.is_some();
+            let listed = st.pcs.iter().any(|p| p.pc == self.who.pc);
+            if adding || !listed || self.setui.shop_unrecorded.is_some() {
+                let _ = dir;
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{} isn't in the list yet.", self.who.pc)).size(11.5).color(t.warn_fg));
-                    if page_button(ui, "Shop", "Add this PC", true).on_hover_text("Adds this PC, its user and version to the shop's PCs list. Each PC adds itself when the program opens; this tries again.").clicked() {
-                        self.setui.shop_note = Some(match crate::engine::shop::record_pc(dir, &self.who, &self.clock, crate::updates::VERSION) {
-                            Ok(_) => (true, format!("{} is in the shop's PCs list.", self.who.pc)),
-                            Err(e) => (false, e),
-                        });
-                        self.setui.shop = None;
+                    let (line, hover) = match &self.setui.shop_unrecorded {
+                        _ if adding => (format!("Adding {}…", self.who.pc), String::new()),
+                        Some(e) => (format!("{} couldn't be added to the PCs list just now.", self.who.pc), e.clone()),
+                        None => (format!("{} isn't in the list yet.", self.who.pc), String::new()),
+                    };
+                    let l = ui.label(RichText::new(line).size(11.5).color(if adding { t.text_dim } else { t.warn_fg }));
+                    if !hover.is_empty() {
+                        l.on_hover_text(hover);
+                    }
+                    if page_button(ui, "Shop", "Add this PC", !adding).on_hover_text("Adds this PC, its user and version to the shop's PCs list. Each PC adds itself when the program opens; this tries again.").clicked() {
+                        self.add_this_pc(true);
                     }
                 });
             }
@@ -1826,12 +1849,46 @@ impl App {
     }
 
     /// SH4: this PC records itself in the shop when the program opens, in
-    /// the background (a share can be slow to answer).
-    pub fn record_in_shop(&self) {
+    /// the background (a share can be slow to answer); a failure is kept and
+    /// shown on Settings → Shop.
+    pub fn record_in_shop(&mut self) {
+        self.add_this_pc(false);
+    }
+
+    /// SH4: add this PC to its shop's PCs list in the background: the write
+    /// lock can be busy for up to 2 minutes, and the window never waits for
+    /// it. `asked`: a person pressed Add this PC (its result is said).
+    pub fn add_this_pc(&mut self, asked: bool) {
+        if self.setui.shop_adding.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
         let (dir, who, clock) = (self.library_dir(), self.who.clone(), self.clock.clone());
         std::thread::spawn(move || {
-            let _ = crate::engine::shop::record_pc(&dir, &who, &clock, crate::updates::VERSION);
+            let _ = tx.send(crate::engine::shop::record_pc(&dir, &who, &clock, crate::updates::VERSION));
         });
+        self.setui.shop_adding = Some((rx, asked));
+    }
+
+    /// Takes in the answer of adding this PC once it has come. True while
+    /// it is still on its way.
+    pub fn poll_add_this_pc(&mut self) -> bool {
+        let Some((rx, asked)) = &self.setui.shop_adding else { return false };
+        let asked = *asked;
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(format!("{} couldn't be added to the shop's PCs list: the try stopped. Try again.", self.who.pc)),
+        };
+        self.setui.shop_adding = None;
+        let (unrecorded, note) = added_note(&self.who.pc, r, asked);
+        self.setui.shop_unrecorded = unrecorded;
+        if note.is_some() {
+            self.setui.shop_note = note;
+        }
+        // The page shows the list as it is now.
+        self.setui.shop = None;
+        false
     }
 
     /// `--shop-demo` (screenshot runs only): a made-up shop Acme with three
@@ -1843,11 +1900,12 @@ impl App {
     /// no real Library or shop ever gets made-up PCs.
     pub fn demo_shop(&mut self, what: &str) {
         use crate::shared::{Clock, Who};
-        let dir = shop_demo_dir();
+        // Only the folder allocated for this run, fresh and empty; nothing
+        // is ever deleted to make room for it.
+        let Some(dir) = shop_demo_dir() else { return };
         if !self.shot_mode_now() || self.library_dir() != dir {
             return;
         }
-        let _ = std::fs::remove_dir_all(&dir);
         if crate::library::create(&dir).is_err() {
             return;
         }
@@ -1862,6 +1920,8 @@ impl App {
         let _ = crate::engine::shop::record_pc(&dir, &Who::new("sam", "PC-A"), &at(25 * 60), "0.1.0");
         if what != "unrecorded" {
             let _ = crate::engine::shop::record_pc(&dir, &Who::new("kim", "PC-B"), &at(0), crate::updates::VERSION);
+        } else {
+            self.setui.shop_unrecorded = Some("PC-B couldn't be added to the shop's PCs list (Permission denied). It adds itself again when the program next opens, or with Add this PC on Settings → Shop.".into());
         }
         let _ = crate::engine::shop::record_pc(&dir, &Who::new("lee", "PC-C"), &at(2 * 86400 + 3 * 3600), "0.0.9");
         self.setui.shop = None;
@@ -1876,8 +1936,40 @@ pub fn shop_demo_arg() -> Option<String> {
     std::env::args().find(|a| a == "--shop-demo" || a.starts_with("--shop-demo=")).map(|a| a.strip_prefix("--shop-demo=").unwrap_or("").to_string())
 }
 
-/// The temporary Library `--shop-demo` works in: its own, in this system's
-/// temporary folder, never a real one.
-pub fn shop_demo_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("nestpro-shop-demo-{}", std::process::id())).join("Nesting")
+/// SH4: what to keep and say after this PC tried to add itself to its shop:
+/// why it failed (kept for the PCs card until a try succeeds), and the note
+/// for a person who pressed Add this PC. Only a record written counts:
+/// `Ok(false)` (the folder was no shop when it looked) is no success.
+pub fn added_note(pc: &str, r: Result<bool, String>, asked: bool) -> (Option<String>, Option<(bool, String)>) {
+    match r {
+        Ok(true) => (None, asked.then(|| (true, format!("{pc} is in the shop's PCs list.")))),
+        Ok(false) => (None, asked.then(|| (false, format!("{pc} wasn't added: this PC's Library isn't a shop any more.")))),
+        Err(e) => (Some(e), None),
+    }
+}
+
+/// The temporary Library `--shop-demo` works in: `Nesting` inside a folder
+/// made fresh for this run in the system's temporary folder (never one that
+/// was there before, and never a real Library). Made once, the first time
+/// it is asked for; None when no folder could be made.
+pub fn shop_demo_dir() -> Option<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| new_temp_folder("nestpro-shop-demo").map(|d| d.join("Nesting"))).clone()
+}
+
+/// A folder made just now in the system's temporary folder, under a name no
+/// folder had: made with create-dir, so a folder already there (another
+/// run's, whatever it holds) is never used, and nothing is deleted.
+pub fn new_temp_folder(stem: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::temp_dir();
+    for n in 0..1000u32 {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        let d = base.join(format!("{stem}-{}-{nanos:09}-{n}", std::process::id()));
+        match std::fs::create_dir(&d) {
+            Ok(()) => return Some(d),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }

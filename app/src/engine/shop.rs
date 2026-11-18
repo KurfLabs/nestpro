@@ -198,10 +198,15 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         _ => {
             // Using the program on this PC records it (SH4). When it can't,
             // the shop is still shown, with why this PC isn't in it (SH6).
+            // Only a record written counts: Ok(false) means the folder was
+            // no shop when this PC looked, so it wasn't added (a shop
+            // started a moment later is shown, without this PC).
             let unrecorded = match record_pc(dir, &ctx.who, &ctx.clock, &ctx.version) {
-                Ok(_) => None,
+                Ok(true) => None,
+                Ok(false) => Some(format!("{} wasn't added to the PCs list: there was no shop here when it looked. Call shop again.", ctx.who.pc)),
                 Err(e) => Some(e),
             };
+            crate::shared::pause("pc recorded");
             let Some(st) = status(dir)? else {
                 return Ok(Outcome::read(
                     format!("This PC's Library ({}) isn't a shop. Start one there with `nestpro setup --start <folder> --name <name>` or Settings → Shop → Start a shop here.", dir.display()),

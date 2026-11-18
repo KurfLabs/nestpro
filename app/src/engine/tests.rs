@@ -9438,3 +9438,101 @@ fn two_pcs_whose_long_names_start_alike_each_keep_their_record() {
     assert_eq!(pcs, vec![one, two], "{st}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// SH5: a shop whose PCs list folder is missing (starting the shop made it,
+/// so someone took it away or it can't be seen) says so, naming it, never
+/// "no PCs".
+#[test]
+fn a_missing_pcs_list_folder_is_named_never_shown_as_no_pcs() {
+    let d = dir("shop_pcs_missing");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let pcs = lib.join(crate::shop::PCS);
+    std::fs::remove_dir_all(&pcs).unwrap();
+    let e = crate::engine::shop::status(&lib).err().expect("a missing PCs list was shown as a list");
+    assert!(e.contains(&pcs.display().to_string()) && e.contains("missing"), "{e}");
+    // An agent whose PC can't add itself (so the folder isn't made again)
+    // is told the same.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&lib, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(lib.join("probe"), "").is_err() {
+            let e = err(&mut s, "shop", json!({}));
+            assert!(e.contains(&pcs.display().to_string()) && e.contains("missing"), "{e}");
+        }
+        std::fs::set_permissions(&lib, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH2 (LB2): the shop's writer puts nothing in the shop folder, and takes
+/// nothing out of it, once the write lock isn't its own: no temporary file
+/// is made when the lock was already lost, and one made before it was lost
+/// is left where it is.
+#[test]
+fn the_shop_writer_touches_nothing_once_the_lock_is_lost() {
+    let d = dir("shop_writer_lease");
+    let lib = d.join("Nesting");
+    crate::library::create(&lib).unwrap();
+    let tmps = |lib: &Path| std::fs::read_dir(lib).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+    let foreign = r#"{"user":"kim","pc":"PC-B","process":1,"since":0,"token":"PC-B-token"}"#;
+    let target = lib.join(crate::shop::FILE);
+    // Lost before the write.
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        std::fs::write(lib.join(crate::shared::LOCK_FILE), foreign).unwrap();
+        assert!(crate::shared::write_existing(&target, b"mine", &lock).is_err());
+        assert_eq!(tmps(&lib), 0, "a temporary file was made without the lock");
+        assert!(!target.exists());
+    }
+    std::fs::remove_file(lib.join(crate::shared::LOCK_FILE)).unwrap();
+    // Lost after the temporary file was made, before it was renamed.
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        // Taken over just after the check made before staging (the first
+        // read of the lock), so the temporary file is made with the lock,
+        // and the rename then finds it lost.
+        let l = lib.join(crate::shared::LOCK_FILE);
+        let mut reads = 0;
+        crate::shared::hooks::set(move |step| {
+            if step == "lock read" {
+                reads += 1;
+                if reads == 1 {
+                    std::fs::write(&l, foreign).unwrap();
+                }
+            }
+        });
+        let r = crate::shared::write_existing(&target, b"mine", &lock);
+        crate::shared::hooks::clear();
+        assert!(r.is_err());
+        assert_eq!(tmps(&lib), 1, "the temporary file was removed without the lock");
+        assert!(!target.exists());
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH6: a shop started by another PC just after this PC looked (and found
+/// none) is shown, but this PC isn't counted as added.
+#[test]
+fn a_shop_started_while_this_pc_looked_doesnt_count_it_as_added() {
+    let d = dir("shop_started_meanwhile");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("kim", "PC-B").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let (l, c) = (lib.clone(), clock.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "pc recorded" {
+            crate::engine::shop::start(&l, "Acme", &Who::new("sam", "PC-A"), &c, "0.1.0").unwrap();
+        }
+    });
+    let st = s.call("shop", None, &json!({})).map(|r| r.json);
+    crate::shared::hooks::clear();
+    let st = st.unwrap();
+    assert_eq!(st["data"]["name"], "Acme", "{st}");
+    assert_eq!(st["data"]["this_pc_recorded"], false, "{st}");
+    assert!(st["message"].as_str().unwrap().contains("PC-B wasn't added"), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}

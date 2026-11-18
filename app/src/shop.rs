@@ -141,16 +141,20 @@ pub fn write_record(dir: &Path, rec: &PcRecord, lock: &WriteLock) -> Result<(), 
 }
 
 /// Every PC's record in the shop, by PC name. A record that is damaged is
-/// left out; a shop folder or `Shop` folder that can't be read (the share
-/// dropped while reading it) is an error naming it, never an empty list.
+/// left out; a shop folder or `Shop` folder that is missing or can't be read
+/// (the share dropped while reading it) is an error naming it, never an
+/// empty list.
 pub fn records(dir: &Path) -> Result<Vec<PcRecord>, String> {
     let pcs = dir.join(PCS);
     let failed = |e: std::io::Error| {
         if dir.is_dir() { format!("The PCs list in {} can't be read ({e}). Check the network or the server.", pcs.display()) } else { crate::library::unreachable(dir) }
     };
     let list = match std::fs::read_dir(&pcs) {
-        // No PC has recorded itself yet (or someone took the folder away).
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir.is_dir() => return Ok(vec![]),
+        // Starting a shop makes it: one that's missing was taken away or
+        // can't be seen, never "no PCs".
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir.is_dir() => {
+            return Err(format!("The PCs list folder {} is missing. A PC adds it again when it adds itself to the shop.", pcs.display()))
+        }
         r => r.map_err(failed)?,
     };
     let mut out = vec![];
