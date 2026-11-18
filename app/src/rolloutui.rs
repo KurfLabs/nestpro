@@ -47,6 +47,15 @@ pub struct RolloutUi {
     /// settings file: None for the usual places (a test gives its own).
     pub local: Option<PathBuf>,
     pub settings_file: Option<PathBuf>,
+    /// N1: a roll out runs, from Yes on the warning until it is done: no
+    /// job is opened meanwhile.
+    pub rolling: bool,
+    /// S8: on the admin PC on the shop version, why that version's package
+    /// in Updates is missing or damaged (Roll out repairs it), and the
+    /// package as it was when last checked (size, last change), so a quick
+    /// check doesn't read it whole again.
+    pub repair: Option<String>,
+    pub repair_seen: Option<(String, u64, Option<std::time::SystemTime>)>,
 }
 
 /// A step done in the background.
@@ -68,6 +77,9 @@ pub struct WarnAsk {
     pub release: PathBuf,
     pub lines: Vec<String>,
 }
+
+/// N1: why no job opens while a roll out runs.
+pub const ROLLING: &str = "Rolling out — wait until it's done.";
 
 /// Decision on #185: why Roll out waits while jobs from the trial are open.
 pub const CLOSE_TRIAL_JOBS: &str = "Close your jobs from the trial first: saved after the roll out, they would go into the shop.";
@@ -257,6 +269,15 @@ impl App {
                 }
             }
             Ok(FromShop::Trial(_)) => {}
+            // S8: the admin PC on the shop version checks that version's
+            // package in Updates, to offer the repair.
+            Ok(FromShop::UpToDate(v)) => {
+                let v = v.clone();
+                if self.rollout.fetch_why == Why::Shop {
+                    self.drop_fetch();
+                }
+                self.look_at_package(dir, &v);
+            }
             // Up to date, no shop version, missing packages or no shop:
             // a shop release chosen before is withdrawn.
             _ if self.rollout.fetch_why == Why::Shop => self.drop_fetch(),
@@ -271,6 +292,38 @@ impl App {
     pub fn resolve_trial_at_start(&mut self) {
         let dir = self.library_dir();
         self.look_at_trial(&dir, false);
+    }
+
+    /// S8: on the admin PC, whether the shop version `v`'s package in
+    /// Updates is whole: its size at every look, its checksum again only
+    /// when the file changed since the last check.
+    fn look_at_package(&mut self, dir: &Path, v: &str) {
+        let admin = crate::shop::read(dir).ok().flatten().is_some_and(|s| s.admin.pc == self.who.pc);
+        if !admin {
+            self.rollout.repair = None;
+            return;
+        }
+        let folder = rollout::release_dir(dir, v);
+        let pack = match rollout::pack_in(&folder, v) {
+            Ok(p) => p,
+            Err(e) => {
+                self.rollout.repair = Some(e);
+                self.rollout.repair_seen = None;
+                return;
+            }
+        };
+        let m = std::fs::metadata(folder.join(&pack.package)).ok();
+        let seen = (v.to_string(), m.as_ref().map_or(0, |m| m.len()), m.and_then(|m| m.modified().ok()));
+        if self.rollout.repair_seen.as_ref() != Some(&seen) {
+            self.rollout.repair = rollout::verify(&folder, &pack).err();
+            self.rollout.repair_seen = Some(seen);
+        }
+    }
+
+    /// S8: the release this PC runs is the shop version, and its package in
+    /// Updates is missing or damaged: Roll out copies it again.
+    pub fn repair_needed(&self) -> bool {
+        self.rollout.repair.is_some() || matches!(self.rollout.from, Some(Ok(FromShop::Missing { ref version, .. })) if version == updates::VERSION)
     }
 
     /// UP16, UP17, UP18: the trial, when this Library opens. `arm`: fetch the
@@ -320,12 +373,19 @@ impl App {
             Err(_) => Err("It stopped before it was done. Nothing was changed.".into()),
         };
         self.rollout.busy = None;
+        self.rollout.rolling = false;
         match got {
             Err(e) => self.rollout.note = Some((false, e)),
             Ok(Step::Ready(w)) => self.rollout.warn = Some(w),
             Ok(Step::Trial(t)) => self.trial_begun(t),
             Ok(Step::RolledOut(r)) => {
                 let shop = self.real_shop();
+                // N1: never back to the shop with a job from the trial open.
+                if self.trial_mark().is_some() && self.trial_jobs_open() {
+                    self.rollout.note = Some((false, format!("Rolled out {}. This PC stays on its trial copy while jobs from it are open: close them and reopen the program, and it works on the shop again.", r.version)));
+                    self.setui.shop = None;
+                    return;
+                }
                 if self.trial_mark().is_some() {
                     if let Err(e) = self.switch_library(&shop) {
                         self.rollout.note = Some((false, format!("Rolled out {}, but this PC stays on its trial copy: {e} Point it back at {} in Settings → Folders.", r.version, shop.display())));
@@ -466,6 +526,7 @@ impl App {
         let who = self.who.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let v = w.version.clone();
+        self.rollout.rolling = true;
         std::thread::spawn(move || {
             let _ = tx.send(rollout::rollout(&w.shop, &w.release, &who, &w.version).map(Step::RolledOut));
         });
@@ -621,7 +682,7 @@ impl App {
                 let newer = sv.as_deref().is_none_or(|v| crate::shared::version_order(this, v) == Some(std::cmp::Ordering::Greater));
                 // S8: the shop version's package is missing in Updates: the
                 // admin PC on it copies it again.
-                let repair = sv.as_deref() == Some(this) && matches!(self.rollout.from, Some(Ok(FromShop::Missing { .. })));
+                let repair = sv.as_deref() == Some(this) && self.repair_needed();
                 let newer = newer || repair;
                 let trial_ready = trial.as_ref().is_none_or(|m| m.version == this);
                 if newer && trial_ready && can_check {
@@ -636,6 +697,11 @@ impl App {
                     ui.spinner();
                     ui.label(RichText::new(b).size(11.5).color(t.text_dim));
                 });
+            }
+            // S8: the shop version's package needs copying again.
+            if sv.as_deref() == Some(this) && self.repair_needed() {
+                let why = self.rollout.repair.clone().unwrap_or_default();
+                ui.label(RichText::new(format!("⚠ The shop version's package in the shop folder is missing or damaged: Roll out to the shop copies it again. {why}")).size(11.5).color(t.warn_fg));
             }
             if let Some((ok, n)) = &self.rollout.note {
                 ui.label(RichText::new(n).size(11.5).color(if *ok { t.ok_fg } else { t.warn_fg }));
@@ -969,6 +1035,97 @@ mod tests {
         a.export();
         assert!(a.status.contains("this PC is trying a release on a copy of the shop"), "{}", a.status);
         assert!(!lib.join("Programs").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S8: the admin PC on the shop version finds its package damaged in
+    /// Updates at the next look, and the repair is offered; once copied
+    /// again, it isn't.
+    #[test]
+    fn the_admin_pc_is_offered_the_repair_of_a_damaged_package() {
+        let d = tmp("s8");
+        let lib = acme(&d, Some(updates::VERSION));
+        let mut a = admin_app(&d, &lib);
+        let ctx = egui::Context::default();
+        a.shop_update_tick(&ctx);
+        assert!(matches!(a.rollout.from, Some(Ok(FromShop::UpToDate(_)))));
+        assert!(!a.repair_needed());
+        let pkg = rollout::release_dir(&lib, updates::VERSION).join(format!("KurfLabs.nestpro-{}-full.nupkg", updates::VERSION));
+        // Damaged, its size kept: only the checksum tells.
+        let len = std::fs::metadata(&pkg).unwrap().len() as usize;
+        std::fs::write(&pkg, "X".repeat(len)).unwrap();
+        // A file system that keeps times to the second still tells it changed.
+        std::fs::File::options().write(true).open(&pkg).unwrap().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000)).unwrap();
+        a.rollout.look = true;
+        a.shop_update_tick(&ctx);
+        assert!(a.repair_needed(), "no repair offered");
+        rollout::rollout(&lib, &rollout::fake_release(&d, updates::VERSION), &sam(), updates::VERSION).unwrap();
+        a.rollout.look = true;
+        a.shop_update_tick(&ctx);
+        assert!(!a.repair_needed());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// N1: from Yes on the warning until the roll out is done, no job is
+    /// opened; completing it with a trial job open keeps the PC on the copy.
+    #[test]
+    fn no_job_opens_while_a_roll_out_runs() {
+        let d = tmp("n1");
+        let lib = acme(&d, Some(updates::VERSION));
+        let l = crate::library::Library::open(&lib, &sam(), &Clock::at(1_794_216_000)).unwrap();
+        let id = l.save_job(&crate::jobfile::JobFile::new_job("DEMO-001", crate::engine::default_spec()), crate::library::SaveTo::New).unwrap().id;
+        let mut a = admin_app(&d, &lib);
+        let t = try_now(&a, &lib, "9.0.0");
+        let copy = t.copy.clone();
+        a.trial_begun(t);
+        a.roll_out(WarnAsk { version: "9.0.0".into(), shop: lib.clone(), name: "Acme".into(), release: d.join("nowhere"), lines: vec![] });
+        assert!(a.rollout.rolling);
+        a.open_library_job(id);
+        assert_eq!(a.job_lib_id, None, "a job opened while rolling out");
+        assert_eq!(a.status, ROLLING);
+        a.open_job_file(&copy.join("x.snjob"));
+        assert_eq!(a.status, ROLLING);
+        // Done (here it failed: no release there): jobs open again.
+        let until = Instant::now() + Duration::from_secs(60);
+        while a.rollout.busy.is_some() {
+            a.poll_busy();
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!a.rollout.rolling);
+        a.open_library_job(id);
+        assert_eq!(a.job_lib_id, Some(id));
+        // A roll out that completes with a job from the trial open leaves
+        // the PC on its copy.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(Step::RolledOut(rollout::RolledOut { version: "9.0.0".into(), previous: None, removed: vec![], changes: vec![], repaired: false }))).unwrap();
+        a.rollout.busy = Some((String::new(), rx));
+        a.poll_busy();
+        assert_eq!(a.library_dir(), copy);
+        assert!(a.rollout.note.as_ref().is_some_and(|n| n.1.contains("stays on its trial copy")), "{:?}", a.rollout.note);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S9: opening a Library job on a PC ahead of the shop version takes no
+    /// hold in the shop (the job opens read-only).
+    #[test]
+    fn a_pc_ahead_of_the_shop_holds_no_job() {
+        let d = tmp("s9_hold");
+        let lib = acme(&d, None);
+        let l = crate::library::Library::open(&lib, &sam(), &Clock::at(1_794_216_000)).unwrap();
+        let id = l.save_job(&crate::jobfile::JobFile::new_job("DEMO-001", crate::engine::default_spec()), crate::library::SaveTo::New).unwrap().id;
+        // Then the shop is on an older release than this PC's.
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        let mut s = crate::shop::read(&lib).unwrap().unwrap();
+        s.other.insert(crate::shop::SHOP_VERSION.into(), serde_json::json!("0.0.1"));
+        crate::shop::write_judged(&lib, &s, &lock, updates::VERSION, &crate::shared::Versions::this(updates::VERSION)).unwrap();
+        drop(lock);
+        let mut a = admin_app(&d, &lib);
+        a.cfg.in_use_warn = true;
+        a.open_library_job(id);
+        assert_eq!(a.job_lib_id, Some(id));
+        assert!(a.inuse.held.is_empty() && !crate::engine::inuse::path(&lib, id).exists(), "a hold was taken in the shop");
+        assert!(a.read_only().is_some());
         let _ = std::fs::remove_dir_all(&d);
     }
 
