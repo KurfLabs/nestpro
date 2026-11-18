@@ -58,6 +58,7 @@ mod folders;
 mod libtree;
 mod refreshui;
 mod shared;
+mod shop;
 mod region;
 mod remline;
 mod remmark;
@@ -2798,6 +2799,7 @@ impl eframe::App for App {
         }
         self.settings_window(&ctx);
         self.new_library_window(&ctx);
+        self.shop_admin_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
         self.stock_window(&ctx);
@@ -3161,6 +3163,11 @@ fn main() -> eframe::Result {
                     }
                 }
             }
+            // SH4: this PC records itself in its shop when the program opens.
+            // Never in a screenshot run, which works on made-up PCs.
+            if !app.shot_mode_now() {
+                app.record_in_shop();
+            }
             // Saved preferences (Settings → General / Appearance).
             app.warn_tech = app.cfg.warn_tech;
             app.dv.show_unbuilt = app.cfg.show_unbuilt;
@@ -3192,6 +3199,7 @@ fn main() -> eframe::Result {
             if let Some(s) = std::env::args().find_map(|a| a.strip_prefix("--settings=").map(str::to_string)) {
                 use settings_ui::Section::*;
                 let sec = match s.as_str() {
+                    "shop" | "shop-admin" => Shop,
                     "appearance" => Appearance,
                     "shortcuts" => Shortcuts,
                     "about" => About,
@@ -3206,6 +3214,8 @@ fn main() -> eframe::Result {
                 app.open_settings(sec);
                 // Screenshots of a machine's cut order scroll down to it.
                 app.setui.show_order = s == "machines-order";
+                // Screenshots of the warning before this PC becomes the admin PC (SH7).
+                app.setui.shop_admin_ask = s == "shop-admin";
                 // Screenshots of Settings → Materials with a material picked.
                 if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--settings-material=").map(str::to_string)) {
                     // The page lists the materials in the list's order.
@@ -3307,6 +3317,11 @@ fn main() -> eframe::Result {
             // (`library_dir_arg`); --lib-save: screenshots of a filled library.
             if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--save-question=").map(str::to_string)) {
                 app.demo_save_question(&what);
+            }
+            // --shop-demo[=none] (screenshots, with --library-dir= a new, empty
+            // folder): a made-up shop and its PCs (SH5).
+            if let Some(a) = std::env::args().find(|a| a == "--shop-demo" || a.starts_with("--shop-demo=")) {
+                app.demo_shop(a.strip_prefix("--shop-demo=").unwrap_or(""));
             }
             // --in-use=note|ask|warning|taken (screenshots, with --library-dir=
             // a new, empty folder): jobs in use on made-up PCs (CU8–CU10).

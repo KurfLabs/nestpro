@@ -21,6 +21,8 @@ use std::sync::mpsc::Receiver;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Section {
+    /// SH5: the shop this PC's Library belongs to, at the top of the list.
+    Shop,
     #[default]
     General,
     Appearance,
@@ -36,7 +38,8 @@ pub enum Section {
 
 impl Section {
     /// The navigation, in groups.
-    const GROUPS: [(&'static str, &'static [Section]); 4] = [
+    const GROUPS: [(&'static str, &'static [Section]); 5] = [
+        ("SHOP", &[Section::Shop]),
         ("APP", &[Section::General, Section::Appearance, Section::Shortcuts]),
         ("PRODUCTION", &[Section::Connections, Section::Machines, Section::Nesting, Section::Materials, Section::Folders]),
         ("INTEGRATIONS", &[Section::Integrations]),
@@ -44,6 +47,7 @@ impl Section {
     ];
     fn title(self) -> &'static str {
         match self {
+            Section::Shop => "Shop",
             Section::General => "General",
             Section::Appearance => "Appearance",
             Section::Shortcuts => "Shortcuts",
@@ -58,6 +62,7 @@ impl Section {
     }
     fn hint(self) -> &'static str {
         match self {
+            Section::Shop => "This shop and its PCs",
             Section::General => "Warnings and commands",
             Section::Appearance => "Light, dark or Windows",
             Section::Shortcuts => "Keys and mouse",
@@ -72,6 +77,7 @@ impl Section {
     }
     fn icon(self) -> &'static str {
         match self {
+            Section::Shop => "🏭",
             Section::General => "🔧",
             Section::Appearance => "◐",
             Section::Shortcuts => "⌨",
@@ -157,6 +163,18 @@ pub struct SettingsUi {
     pub order_file: Option<(String, crate::ct1::OrderSettings, bool, Option<String>)>,
     /// Scroll the Machines page down to the cut order (`--settings=machines-order`).
     pub show_order: bool,
+    /// Shop page (SH5): the shop as last read: Err when the Library can't
+    /// be reached, Ok(None) when it's no shop. None: read it when the page is
+    /// next drawn (on opening Settings and on Try again, never every frame:
+    /// a share that's down can take seconds to answer, LB11).
+    pub shop: Option<Result<Option<crate::engine::shop::Status>, String>>,
+    /// Shop page: Start a shop here was pressed, and the name typed for it.
+    pub shop_start: Option<String>,
+    /// Shop page: Make this PC the admin PC was pressed; the warning is open
+    /// (SH7).
+    pub shop_admin_ask: bool,
+    /// Shop page: the last result of a change (true: done).
+    pub shop_note: Option<(bool, String)>,
 }
 
 /// "lower left" → "Lower left".
@@ -275,6 +293,8 @@ impl App {
         self.setui.order_file = None;
         // The Materials page looks again whether the list can be changed (MA21).
         self.setui.mat_recheck = true;
+        // The Shop page reads the shop again (SH5).
+        self.setui.shop = None;
     }
 
     /// Apply the settings: the active machine's post library and BLM post
@@ -367,6 +387,7 @@ impl App {
                             if resp.clicked() {
                                 self.setui.section = s;
                                 self.setui.mat_recheck = true;
+                                self.setui.shop = None;
                             }
                             ui.add_space(2.0);
                         }
@@ -383,6 +404,7 @@ impl App {
                     let out = egui::ScrollArea::vertical().id_salt("settings_body").auto_shrink([false, false]).show(ui, |ui| ui.vertical(|ui| {
                         ui.set_max_width(ui.available_width() - 8.0);
                         match self.setui.section {
+                            Section::Shop => self.settings_shop(ui),
                             Section::General => self.settings_general(ui),
                             Section::Appearance => self.settings_appearance(ui),
                             Section::Shortcuts => self.settings_shortcuts(ui),
@@ -1588,5 +1610,229 @@ mod settings_ui_tests {
         let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
         assert_eq!(stored.get(1).unwrap().name, "DEMO Inox");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settings → Shop (spec #178, SH5–SH8): this shop and its PCs. Short lines,
+// details on hover. The rules are in engine::shop; agents have `shop` and
+// `setup`.
+// ---------------------------------------------------------------------------
+
+impl App {
+    fn settings_shop(&mut self, ui: &mut egui::Ui) {
+        let dir = self.library_dir();
+        if self.setui.shop.is_none() {
+            // A Library that is no shop must be one to start a shop in
+            // (LB12): read once with the shop, not at every frame.
+            self.setui.shop = Some(crate::engine::shop::status(&dir).and_then(|s| match s {
+                None => crate::library::usable(&dir).map(|()| None),
+                s => Ok(s),
+            }));
+        }
+        ui.label(RichText::new("Shop").size(18.0).strong().color(th().text_strong));
+        ui.add_space(8.0);
+        let t = th();
+        match self.setui.shop.clone().unwrap_or(Ok(None)) {
+            // SH8 (LB11): said, naming the folder; nothing is offered that
+            // would make a shop or a Library in its place.
+            Err(e) => {
+                card(ui, "This shop", "This PC's Library can't be used just now.", |ui| {
+                    ui.label(RichText::new(format!("⚠ {e}")).size(12.0).color(t.warn_fg));
+                    ui.add_space(4.0);
+                    if page_button(ui, "Shop", "Try again", true).clicked() {
+                        self.setui.shop = None;
+                    }
+                });
+            }
+            Ok(None) => self.shop_not_started(ui, &dir),
+            Ok(Some(st)) => self.shop_cards(ui, &dir, &st),
+        }
+        if let Some((ok, note)) = &self.setui.shop_note {
+            ui.add_space(6.0);
+            ui.label(RichText::new(note).size(11.5).color(if *ok { t.ok_fg } else { t.warn_fg }));
+        }
+    }
+
+    /// SH1: a Library that is no shop yet, with Start a shop here.
+    fn shop_not_started(&mut self, ui: &mut egui::Ui, dir: &std::path::Path) {
+        card(ui, "This shop", "This PC's Library isn't in a shop.", |ui| {
+            row(ui, "Library folder", |ui| {
+                ui.label(RichText::new(dir.display().to_string()).monospace().size(11.5));
+            });
+            let start_hover = "The Library's folder becomes the shop folder where it is: the shop file and the Shop, Updates and Backups folders are added in it. Nothing moves, and every PC keeps its path. This PC becomes the admin PC.";
+            match self.setui.shop_start.clone() {
+                None => {
+                    if page_button(ui, "Shop", "Start a shop here…", true).on_hover_text(start_hover).clicked() {
+                        self.setui.shop_start = Some(String::new());
+                        self.setui.shop_note = None;
+                    }
+                }
+                Some(mut name) => {
+                    row(ui, "Shop name", |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut name).desired_width(220.0).hint_text("Acme"));
+                        let go = page_button(ui, "Shop", "Start the shop", !name.trim().is_empty()).on_hover_text(start_hover).clicked();
+                        let cancel = ui.button("Cancel").clicked();
+                        if go {
+                            self.start_shop_here(name.trim());
+                        } else if cancel {
+                            self.setui.shop_start = None;
+                        } else {
+                            self.setui.shop_start = Some(name.clone());
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    /// SH1: start a shop in this PC's Library folder, this PC its admin PC.
+    fn start_shop_here(&mut self, name: &str) {
+        let dir = self.library_dir();
+        self.setui.shop_note = Some(match crate::engine::shop::start(&dir, name, &self.who, &self.clock, crate::updates::VERSION) {
+            Ok(s) => {
+                self.setui.shop_start = None;
+                (true, format!("Started shop {} in {}. This PC is its admin PC.", s.name, dir.display()))
+            }
+            Err(e) => (false, e),
+        });
+        self.setui.shop = None;
+    }
+
+    /// SH5: This shop, and PCs in this shop.
+    fn shop_cards(&mut self, ui: &mut egui::Ui, dir: &std::path::Path, st: &crate::engine::shop::Status) {
+        let t = th();
+        let s = &st.shop;
+        let this_admin = s.admin.pc == self.who.pc;
+        card(ui, "This shop", "The PCs that share this Library.", |ui| {
+            row(ui, "Name", |ui| {
+                ui.label(RichText::new(&s.name).strong());
+            });
+            row(ui, "Folder", |ui| {
+                ui.label(RichText::new(dir.display().to_string()).monospace().size(11.5))
+                    .on_hover_text("The shop folder is the Library's folder. It also holds the shop file and the Shop, Updates and Backups folders.");
+            });
+            row(ui, "Admin PC", |ui| {
+                let me = if this_admin { " (this PC)" } else { "" };
+                ui.label(format!("{}{me}", s.admin.pc)).on_hover_text(format!("{}. The admin PC rolls out updates and restores backups.", st.admin_note(&self.clock)));
+                if !this_admin && page_button(ui, "Shop", "Make this PC the admin PC", true).on_hover_text("For when the admin PC is gone or replaced. Asks first, and records who did it and when.").clicked() {
+                    self.setui.shop_admin_ask = true;
+                }
+            });
+            row(ui, "Shop settings", |ui| {
+                ui.label(cap(s.settings_by.words())).on_hover_text("Who may change the settings every PC in the shop shares: only on the admin PC, or from any PC. A new shop: only the admin PC.");
+            });
+        });
+        ui.add_space(10.0);
+        card(ui, "PCs in this shop", "Each PC adds itself when the program opens.", |ui| {
+            egui::Grid::new("shop_pcs").num_columns(4).spacing([28.0, 6.0]).show(ui, |ui| {
+                for h in ["PC", "Who", "Version", "Last seen"] {
+                    ui.label(RichText::new(h).size(11.5).strong().color(t.text_dim));
+                }
+                ui.end_row();
+                for p in &st.pcs {
+                    let mut tags = vec![];
+                    if p.pc == self.who.pc {
+                        tags.push("this PC");
+                    }
+                    if p.pc == s.admin.pc {
+                        tags.push("admin");
+                    }
+                    let tag = if tags.is_empty() { String::new() } else { format!("  ({})", tags.join(", ")) };
+                    let hover = format!("{} opened the program on {} {} with version {}.", p.user, p.pc, self.clock.when(p.last_seen), p.version);
+                    ui.label(RichText::new(format!("{}{tag}", p.pc)).color(t.text_strong)).on_hover_text(&hover);
+                    ui.label(&p.user).on_hover_text(&hover);
+                    ui.label(&p.version).on_hover_text(&hover);
+                    ui.label(self.clock.shown(p.last_seen)).on_hover_text(&hover);
+                    ui.end_row();
+                }
+            });
+            if st.pcs.is_empty() {
+                ui.label(RichText::new("No PC has opened the program in this shop yet.").size(11.5).color(t.text_dim));
+            }
+        });
+    }
+
+    /// SH7: the warning before this PC becomes the admin PC. Yes records who
+    /// did it and when; agents can't do this.
+    pub fn shop_admin_window(&mut self, ctx: &egui::Context) {
+        if !self.setui.shop_admin_ask {
+            return;
+        }
+        let Some(Ok(Some(st))) = self.setui.shop.clone() else {
+            // Not read yet: asked once the page has read the shop. No shop,
+            // or it can't be reached: nothing to ask.
+            if self.setui.shop.is_some() {
+                self.setui.shop_admin_ask = false;
+            }
+            return;
+        };
+        let (s, me) = (&st.shop, self.who.pc.clone());
+        let (mut yes, mut no) = (false, false);
+        let mut open = true;
+        egui::Window::new(RichText::new("Make this PC the admin PC?").size(16.0).strong())
+            .id(egui::Id::unique("shop_admin_question"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_max_width(480.0);
+                ui.label(RichText::new(format!("{me} becomes the admin PC of {} in place of {}.", s.name, s.admin.pc)).color(th().text_strong));
+                ui.add_space(6.0);
+                ui.label(RichText::new("The admin PC rolls out updates and restores backups. Do this only when the admin PC is gone or replaced.").color(th().text));
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("The shop records that {} did it, and when.", self.who.label())).size(11.5).color(th().text_dim));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    yes = ui.add(egui::Button::new(RichText::new("Make this PC the admin PC").color(egui::Color32::WHITE)).fill(th().accent).min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                    no = ui.add(egui::Button::new(format!("Cancel — keep {}", s.admin.pc)).min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                });
+            });
+        if yes {
+            self.setui.shop_admin_ask = false;
+            self.setui.shop_note = Some(match crate::engine::shop::make_admin(&self.library_dir(), &self.who, &self.clock) {
+                Ok(s) => (true, format!("{} is now the admin PC of {}.", s.admin.pc, s.name)),
+                Err(e) => (false, e),
+            });
+            self.setui.shop = None;
+        } else if no || !open {
+            self.setui.shop_admin_ask = false;
+        }
+    }
+
+    /// SH4: this PC records itself in the shop when the program opens, in
+    /// the background (a share can be slow to answer).
+    pub fn record_in_shop(&self) {
+        let (dir, who, clock) = (self.library_dir(), self.who.clone(), self.clock.clone());
+        std::thread::spawn(move || {
+            let _ = crate::engine::shop::record_pc(&dir, &who, &clock, crate::updates::VERSION);
+        });
+    }
+
+    /// `--shop-demo` (screenshots, with `--library-dir=` a new, empty
+    /// folder): a made-up shop Acme with three PCs, this window on PC-B
+    /// (not the admin PC). `--shop-demo=none`: a Library that isn't a shop
+    /// yet, with Start a shop here pressed.
+    pub fn demo_shop(&mut self, what: &str) {
+        use crate::shared::{Clock, Who};
+        let dir = self.library_dir();
+        if crate::library::create(&dir).is_err() {
+            return;
+        }
+        self.who = Who::new("kim", "PC-B");
+        if what == "none" {
+            self.setui.shop_start = Some("Acme".into());
+            return;
+        }
+        let now = self.clock.now();
+        let at = |ago: u64| Clock::at(now - ago);
+        let _ = crate::engine::shop::start(&dir, "Acme", &Who::new("sam", "PC-A"), &at(40 * 86400), "0.1.0");
+        let _ = crate::engine::shop::record_pc(&dir, &Who::new("sam", "PC-A"), &at(25 * 60), "0.1.0");
+        let _ = crate::engine::shop::record_pc(&dir, &Who::new("kim", "PC-B"), &at(0), crate::updates::VERSION);
+        let _ = crate::engine::shop::record_pc(&dir, &Who::new("lee", "PC-C"), &at(2 * 86400 + 3 * 3600), "0.0.9");
+        self.setui.shop = None;
     }
 }

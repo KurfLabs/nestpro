@@ -9049,3 +9049,221 @@ fn every_operation_is_tested_like_an_agent_calls_it() {
         .collect();
     assert!(untested.is_empty(), "Operations with no test in engine/tests.rs — add one that runs each through call(&mut s, \"<op>\", …): {untested:?}");
 }
+
+// ---------------------------------------------------------------------------
+// The shop (spec #178): starting a shop in the Library's folder, the PCs in
+// it, and who is its admin PC (SH1–SH8).
+// ---------------------------------------------------------------------------
+
+/// Every file under `dir` and its bytes, by its path inside `dir`.
+fn files_under(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p);
+            } else {
+                out.insert(p.strip_prefix(dir).unwrap().display().to_string(), std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    out
+}
+
+/// A test Library with a saved job, a library part and stock in it, as a
+/// PC that has used it for a while has.
+fn used_library(d: &Path, who: Who, clock: &Clock) -> Session {
+    let mut ctx = stock_ctx(d);
+    ctx.who = who;
+    ctx.clock = clock.clone();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-001 frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2, "name": "DEMO-P1"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "folder": "Acme"}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 1500, "h": 750, "thickness": 3, "qty": 2}));
+    s
+}
+
+/// SH1, SH2: starting a shop on a Library that already holds jobs, library
+/// parts and stock adds the shop file and its Shop, Updates and Backups
+/// folders in that folder, and leaves every file already there as it was.
+#[test]
+fn starting_a_shop_on_a_used_library_adds_the_shop_and_moves_nothing() {
+    let d = dir("shop_start");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let before = files_under(&lib);
+    assert!(before.keys().any(|k| k.starts_with("Jobs")) && before.keys().any(|k| k.starts_with("Products")) && before.keys().any(|k| k.starts_with("Sheets")), "{:?}", before.keys());
+    let r = call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Acme") && m.contains(&lib.display().to_string()) && m.contains("PC-A"), "{m}");
+    let after = files_under(&lib);
+    for (k, bytes) in &before {
+        assert_eq!(after.get(k), Some(bytes), "{k} changed or went when the shop was started");
+    }
+    for f in ["Shop", "Updates", "Backups"] {
+        assert!(lib.join(f).is_dir(), "no {f} folder");
+    }
+    // Only the shop's own files are new: the shop file and this PC's record.
+    let new: Vec<&String> = after.keys().filter(|k| !before.contains_key(*k)).collect();
+    assert!(new.iter().all(|k| k.as_str() == crate::shop::FILE || k.starts_with("Shop")), "{new:?}");
+    // The shop says what it is.
+    let st = call(&mut s, "shop", None, json!({"mode": "status"}));
+    assert_eq!(st["data"]["name"], "Acme", "{st}");
+    assert_eq!(st["data"]["folder"], lib.display().to_string(), "{st}");
+    assert_eq!(st["data"]["admin_pc"], "PC-A", "{st}");
+    assert_eq!(st["data"]["shop_settings"], "only on the admin PC", "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH4, SH5: two sessions acting as two PCs, on two versions, both record
+/// themselves when they use the program, at the same time, and both show in
+/// `shop status` with who, their version and when they were last seen.
+#[test]
+fn two_pcs_using_the_shop_at_once_both_show_with_their_version_and_last_seen() {
+    let d = dir("shop_two_pcs");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut a = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = a.ctx.library_dir.clone();
+    call(&mut a, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    // PC-B, a version behind, and PC-A open the program at the same moment.
+    std::thread::scope(|t| {
+        for (who, version) in [(Who::new("kim", "PC-B"), "0.1.0"), (Who::new("sam", "PC-A"), "0.2.0")] {
+            let (lib, clock) = (&lib, &clock);
+            t.spawn(move || {
+                for _ in 0..20 {
+                    assert!(crate::engine::shop::record_pc(lib, &who, clock, version).unwrap());
+                }
+            });
+        }
+    });
+    let mut ctx = stock_ctx_again(&lib);
+    ctx.who = Who::new("lee", "PC-C").as_agent();
+    ctx.clock = clock.clone();
+    ctx.version = "0.3.0".into();
+    let mut c = Session::new(ctx);
+    let st = call(&mut c, "shop", None, json!({}));
+    let pcs = st["data"]["pcs"].as_array().unwrap();
+    let row = |pc: &str| pcs.iter().find(|p| p["pc"] == pc).cloned().unwrap_or_else(|| panic!("{pc} isn't listed: {st}"));
+    assert_eq!(pcs.len(), 3, "{st}");
+    let (pa, pb, pc) = (row("PC-A"), row("PC-B"), row("PC-C"));
+    assert_eq!((pa["user"].as_str(), pa["version"].as_str(), pa["last_seen"].as_str(), pa["admin"].as_bool()), (Some("sam"), Some("0.2.0"), Some("2026-11-09 09:30"), Some(true)), "{pa}");
+    assert_eq!((pb["user"].as_str(), pb["version"].as_str(), pb["last_seen"].as_str(), pb["admin"].as_bool()), (Some("kim"), Some("0.1.0"), Some("2026-11-09 09:30"), Some(false)), "{pb}");
+    assert_eq!((pc["version"].as_str(), pc["this_pc"].as_bool()), (Some("0.3.0"), Some(true)), "{pc}");
+    // Each PC wrote only its own record; no lock or temporary file is left.
+    let left: Vec<String> = std::fs::read_dir(&lib).unwrap().chain(std::fs::read_dir(lib.join("Shop")).unwrap()).flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp") || n.ends_with(".lock")).collect();
+    assert!(left.is_empty(), "{left:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH7: an agent asking to change the admin PC is refused with the reason
+/// and nothing changes; a person on another PC changes it in the window,
+/// and the shop records who did it and when.
+#[test]
+fn only_a_person_changes_the_admin_pc_and_the_shop_records_who_and_when() {
+    let d = dir("shop_admin");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let file = std::fs::read(lib.join(crate::shop::FILE)).unwrap();
+    // An agent on PC-B asks.
+    s.ctx.who = Who::new("kim", "PC-B").as_agent();
+    let e = err(&mut s, "shop", json!({"mode": "admin"}));
+    assert!(e.contains("refused for agents") && e.contains("Make this PC the admin PC") && e.contains("Nothing was changed"), "{e}");
+    assert_eq!(std::fs::read(lib.join(crate::shop::FILE)).unwrap(), file, "a refused admin change changed the shop file");
+    // The engine refuses an agent too, whoever calls it.
+    let e = crate::engine::shop::make_admin(&lib, &Who::new("kim", "PC-B").as_agent(), &clock).unwrap_err();
+    assert!(e.contains("refused for agents"), "{e}");
+    // Kim does it in the window on PC-B, an hour later.
+    clock.advance(std::time::Duration::from_secs(3600));
+    crate::engine::shop::make_admin(&lib, &Who::new("kim", "PC-B"), &clock).unwrap();
+    let st = call(&mut s, "shop", None, json!({"mode": "status"}));
+    assert_eq!(st["data"]["admin_pc"], "PC-B", "{st}");
+    assert_eq!(st["data"]["admin_set_by"], "kim on PC-B", "{st}");
+    assert_eq!(st["data"]["admin_set_at"], "2026-11-09 10:20", "{st}");
+    assert_eq!(st["data"]["admin_was"], "PC-A", "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH8 (LB11): a shop folder that can't be reached says so and names it,
+/// for status and for starting a shop, a Windows share path included; no
+/// shop, Library or folder is made in its place.
+#[test]
+fn a_shop_folder_that_cant_be_reached_is_named_and_nothing_is_made() {
+    let d = dir("shop_unreachable");
+    let mut ctx = Ctx::builtin();
+    let share = d.join("srv").join("Nesting");
+    ctx.library_dir = share.clone();
+    let mut s = Session::new(ctx);
+    let e = err(&mut s, "shop", json!({"mode": "status"}));
+    assert!(e.contains(&share.display().to_string()) && e.contains("can't be reached"), "{e}");
+    let e = err(&mut s, "setup", json!({"start": share.to_str().unwrap(), "name": "Acme"}));
+    assert!(e.contains(&share.display().to_string()) && e.contains("can't be reached"), "{e}");
+    assert!(!d.join("srv").exists(), "something was made in place of the share");
+    // The shop's share as Windows names it, read on any system.
+    s.ctx.library_dir = PathBuf::from(r"\\srv\Nesting");
+    let e = err(&mut s, "shop", json!({}));
+    assert!(e.contains(r"The Library on \\srv\Nesting can't be reached"), "{e}");
+    let e = err(&mut s, "setup", json!({"start": r"\\srv\Nesting", "name": "Acme"}));
+    assert!(e.contains(r"\\srv\Nesting can't be reached"), "{e}");
+    assert!(!Path::new(r"\\srv\Nesting").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH1, SH8: what starting a shop refuses, each naming the folder and
+/// leaving it as it was: no name, a folder that holds no Library, a folder
+/// that is already a shop, and a folder this PC can't write to. A Library
+/// that isn't a shop says so.
+#[test]
+fn starting_a_shop_refuses_what_it_cant_start_and_changes_nothing() {
+    let d = dir("shop_refusals");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = used_library(&d, Who::new("sam", "PC-A").as_agent(), &clock);
+    let lib = s.ctx.library_dir.clone();
+    let st = call(&mut s, "shop", None, json!({}));
+    assert!(st["data"]["shop"].is_null() && st["message"].as_str().unwrap().contains("isn't a shop"), "{st}");
+    let before = files_under(&lib);
+    // No name.
+    let e = err(&mut s, "setup", json!({"start": lib.to_str().unwrap(), "name": "  "}));
+    assert!(e.contains("name"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    // A folder with other files in it, but no Library.
+    let other = d.join("Drawings");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("bracket.dxf"), "0\nEOF\n").unwrap();
+    let e = err(&mut s, "setup", json!({"start": other.to_str().unwrap(), "name": "Acme"}));
+    assert!(e.contains(&other.display().to_string()) && e.contains("holds no Library"), "{e}");
+    assert_eq!(std::fs::read_dir(&other).unwrap().count(), 1, "something was made in a folder with no Library");
+    // Started once; a second start (another PC, another name) is refused
+    // and the shop stays as it was.
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    let shop = std::fs::read(lib.join(crate::shop::FILE)).unwrap();
+    s.ctx.who = Who::new("kim", "PC-B").as_agent();
+    let e = err(&mut s, "setup", json!({"start": lib.to_str().unwrap(), "name": "Other shop"}));
+    assert!(e.contains("already the shop folder of Acme") && e.contains("PC-A"), "{e}");
+    assert_eq!(std::fs::read(lib.join(crate::shop::FILE)).unwrap(), shop);
+    // A Library this PC can only read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let ro = d.join("ReadOnly");
+        crate::library::create(&ro).unwrap();
+        let ro_before = files_under(&ro);
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // (Someone allowed to write anyway, as root, can't play this PC.)
+        if std::fs::write(ro.join("probe"), "").is_err() {
+            let e = err(&mut s, "setup", json!({"start": ro.to_str().unwrap(), "name": "Acme"}));
+            assert!(e.contains(&ro.display().to_string()) && e.contains("can't write"), "{e}");
+            assert_eq!(files_under(&ro), ro_before, "a refused start left files behind");
+        }
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

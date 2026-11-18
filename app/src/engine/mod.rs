@@ -26,6 +26,7 @@ pub mod refresh;
 pub mod render;
 pub mod selection;
 pub mod session;
+pub mod shop;
 pub mod sheetpick;
 pub mod stockflow;
 
@@ -62,6 +63,10 @@ pub struct Ctx {
     /// This PC's settings folder: the material list lives there when the PC
     /// has no Library (MA14).
     pub pc_dir: PathBuf,
+    /// The program version this session runs as: the package version (a
+    /// test plays a PC on another version). Recorded in the shop's PCs list
+    /// (SH4).
+    pub version: String,
 }
 
 /// The post library of a machine (built-in values when it has none or it can't be read).
@@ -373,7 +378,7 @@ impl Ctx {
         let who = crate::shared::Who::this_pc().as_agent();
         let clock = crate::shared::Clock::pc();
         let _ = load_materials(&library_dir, &pc_dir, &cfg, true, Some(&|| crate::library::Library::at(&library_dir, &who, &clock).saved()));
-        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who, clock, watch: Default::default(), pc_dir }
+        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who, clock, watch: Default::default(), pc_dir, version: crate::updates::VERSION.to_string() }
     }
 
     /// Where the material list lives for this session (MA14).

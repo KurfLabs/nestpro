@@ -89,9 +89,10 @@ pub struct Op {
 impl Op {
     /// Changes a file: the job, the sheet stock (`stock`), the material list
     /// (`material`), the Library's job or part folders (`job-folders`,
-    /// `part-folders`) or a test Library folder (`library-check`).
+    /// `part-folders`), a test Library folder (`library-check`), or the
+    /// shop's files (`shop` records this PC in it, `setup` starts one).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "material" | "library-check" | "job-folders" | "part-folders")
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "material" | "library-check" | "job-folders" | "part-folders" | "shop" | "setup")
     }
 
     /// MCP tool name (underscores).
@@ -390,6 +391,14 @@ pub static OPS: &[Op] = &[
         a("size", Ty::Int, "Image width in pixels (default 1400)"), a("path", Ty::Bool, "Show the cut path, leads and order (default true)"),
     ] },
     // --- reference ---
+    // --- the shop (spec #178) ---
+    Op { name: "shop", group: "Library", kind: Kind::Global, help: "The shop this PC's Library belongs to (Settings → Shop): status gives its name, its folder (the Library's folder), its admin PC and who made it the admin PC and when, whether shop settings are changed only on the admin PC or from any PC, and every PC in it with who used it last, its version and when it was last seen (this PC's local time). Calling it records this PC in the shop's PCs list, as opening the program does. A Library that isn't a shop says so; one that can't be reached is refused, naming its folder. Changing the admin PC (mode=admin) is refused for agents with the reason: a person does it in the window.", args: &[
+        c("mode", &["status", "admin"], "status (default): the shop and its PCs; admin: make this PC the admin PC (refused for agents: a person does it in Settings → Shop)"),
+    ] },
+    Op { name: "setup", group: "Library", kind: Kind::Global, help: "Set this PC up for a shop. start=<folder> name=<name> starts a shop in that Library folder (the Library's folder becomes the shop folder in place: the shop file and its Shop, Updates and Backups folders are added, and no job, library part or stock file is changed or moved), with this PC as its admin PC and shop settings changed only on the admin PC. A folder that can't be reached, holds no Library, can't be written by this PC or is already a shop is refused, naming it, and nothing is made. `nestpro setup --start \\\\srv\\Nesting --name Acme`.", args: &[
+        a("start", Ty::Path, "Start a shop in this Library folder (e.g. \\\\srv\\Nesting)"),
+        a("name", Ty::Str, "start: the shop's name (e.g. Acme)"),
+    ] },
     Op { name: "catalog", group: "Reference", kind: Kind::Global, help: "Choices the other operations take: shapes, materials, thicknesses, nesting levels, machine types, lead/joint types, qualities, text kinds and fields, layer roles.", args: &[] },
     Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, its gas as saved (the gas a new job starts with; gas_note when its number and name aren't one of the list's pairs, written as saved until a gas is picked in Settings → Machines), the sheet and hole order changed for it in Settings → Machines (order_changes), and the active machine's technology (CT1) values, with how it orders the parts on a sheet (sheet_order: start corner, columns or rows, zig-zag, zones) and a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits); for each, where the value comes from (Settings → Machines, the machine file or the default) and what the machine file alone gives.", args: &[] },
 ];
@@ -1248,7 +1257,7 @@ impl Outcome {
     fn msg(m: impl Into<String>) -> Outcome {
         Outcome { message: m.into(), data: Value::Null, changed: true, files: vec![] }
     }
-    fn read(m: impl Into<String>, data: Value) -> Outcome {
+    pub(crate) fn read(m: impl Into<String>, data: Value) -> Outcome {
         Outcome { message: m.into(), data, changed: false, files: vec![] }
     }
     pub fn to_json(&self) -> Value {
@@ -1419,6 +1428,8 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value, open: Option<&JobFile>) -
         "import-xml" => import_xml(ctx, &a),
         "job-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Job),
         "part-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Product),
+        "shop" => super::shop::run(ctx, &a),
+        "setup" => super::shop::setup(ctx, &a),
         "library-check" => {
             let rounds = match a.int("rounds")? {
                 Some(n) if n < 1 => return Err(format!("rounds {n}: at least 1")),
@@ -3491,6 +3502,11 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Settings → Materials/Reset to defaults", "material"),
     ("Settings → Materials/Try again", "material"),
     ("Settings → Materials/Use standard", "material"),
+    // --- Settings → Shop (SH5–SH7) ---
+    ("Settings → Shop/Try again", "shop"),
+    ("Settings → Shop/Start a shop here…", "setup"),
+    ("Settings → Shop/Start the shop", "setup"),
+    ("Settings → Shop/Make this PC the admin PC", "gui: a person changes the admin PC, after a warning (SH7); shop mode=admin refuses agents with the reason"),
     // --- labels built at run time ("{expression}") ---
     ("ERP / MES/{&format!(\"{}\\njobs\", p.name())}", "todo: [AGT-7] bring ERP work in as a job"),
     ("Text/{label}", "text"),
