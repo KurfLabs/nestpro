@@ -96,9 +96,15 @@ pub fn install_machine(m: &settings::Machine, lantek_dir: &str) -> crate::ct1::M
 /// `by` None: read only, never join (a screenshot run writes to no
 /// Library). Shared with the window.
 pub fn load_materials(library_dir: &Path, pc_dir: &Path, cfg: &AppSettings, first: bool, by: Option<&dyn Fn() -> crate::shared::Saved>) -> Result<Option<crate::materials::JoinedNow>, String> {
+    load_materials_on(library_dir, pc_dir, cfg, first, by, crate::updates::VERSION)
+}
+
+/// `load_materials` by a program on `version`, which a list it stores
+/// records (UP5); it never stores over a list a newer version wrote (UP7).
+pub fn load_materials_on(library_dir: &Path, pc_dir: &Path, cfg: &AppSettings, first: bool, by: Option<&dyn Fn() -> crate::shared::Saved>, version: &str) -> Result<Option<crate::materials::JoinedNow>, String> {
     let home = crate::materials::Home::of(library_dir, pc_dir);
     let joined = match by {
-        Some(by) => crate::materials::join(&home, pc_dir, cfg, by),
+        Some(by) => crate::materials::join(&home, pc_dir, cfg, by, version),
         None => Ok(None),
     };
     match crate::materials::load(&home, pc_dir, cfg) {
@@ -389,7 +395,7 @@ impl Ctx {
     /// Read the material list again (each call: another PC may have changed
     /// it). While the Library can't be reached the list in use stays.
     pub fn reload_materials(&self) -> Option<crate::materials::JoinedNow> {
-        load_materials(&self.library_dir, &self.pc_dir, &self.cfg, false, Some(&|| self.library_at().saved())).ok().flatten()
+        load_materials_on(&self.library_dir, &self.pc_dir, &self.cfg, false, Some(&|| self.library_at().saved()), &self.version).ok().flatten()
     }
 
     /// Built-in values only (tests).
@@ -411,7 +417,13 @@ impl Ctx {
     /// The Library folder as this agent works on it (its user and clock),
     /// without setting anything up: stock changes are signed with it (SV9).
     pub fn library_at(&self) -> crate::library::Library {
-        crate::library::Library::at(&self.library_dir, &self.who, &self.clock)
+        crate::library::Library::at(&self.library_dir, &self.who, &self.clock).on_version(&self.version)
+    }
+
+    /// UP7, UP8: the versions this session's Library files are judged by:
+    /// its own, and the shop's when its Library is a shop.
+    pub fn versions(&self) -> crate::shared::Versions {
+        crate::shop::versions(&self.library_dir, &self.version)
     }
 
     /// The sheet stock (empty when there is none yet).

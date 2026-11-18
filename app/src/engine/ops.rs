@@ -1515,7 +1515,7 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
 /// The Library, as the agent's user (LB5).
 fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
     reach_library(ctx, "Nothing was read from or saved to the Library, and the job is as it was")?;
-    Ok(crate::library::Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?.watching(&ctx.watch))
+    Ok(crate::library::Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?.watching(&ctx.watch).on_version(&ctx.version))
 }
 
 /// The Library folder can be used, or the refusal naming it, what was left
@@ -2158,7 +2158,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     // The job as saved now, linked to its record and revision
                     // (LB10). Its stock booking stays the record's: this file
                     // leaves the stock alone (stock-book refuses it).
-                    let mut j = lib.load_job(id)?;
+                    let (mut j, newer) = lib.load_job_read(id)?;
+                    // UP9: opened into this job file it would be saved by this
+                    // older version, dropping what only the newer one knows.
+                    if let Some(n) = newer {
+                        return Err(format!("{} It wasn't opened into this job file: saved here, it would lose what only the newer version knows about it.", n.refusal(&format!("Library job {}", crate::library::auto_ref(crate::library::Kind::Job, id)))));
+                    }
                     j.booked = false;
                     let saved = j.saved.as_ref().map(|s| format!(", saved by {} at {}", s.by.label(), ctx.clock.stamp(s.at))).unwrap_or_default();
                     // Reading a job in use is allowed; saving over it isn't (CU12).
@@ -2177,6 +2182,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         _ => return Err("library add needs 'id' or 'name'".into()),
                     };
                     let pf = lib.load_product(id)?;
+                    // UP9: a part a newer version saved is used as it is;
+                    // saving it back is refused (UP7).
+                    let newer = lib.product_newer(id).map_or_else(String::new, |n| format!(" It is read-only on this PC: {} save-part can't save it back.", n.message()));
                     // Saved back, it goes over that part as read here (LB7). A
                     // part of that name already in the job keeps what it read.
                     if !job.parts.iter().any(|q| q.name == pf.part.name) {
@@ -2191,7 +2199,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     if pf.material != job.spec.material || (pf.thickness - job.spec.thickness).abs() > 1e-6 {
                         note = format!(" (stored for {} {} mm; the job is {} {} mm)", super::material::name_or(pf.material, "?"), pf.thickness, super::material::name_or(job.spec.material, "?"), job.spec.thickness);
                     }
-                    let m = format!("Added {} from the library as part {}{note}.", p.name, job.parts.len() + 1);
+                    let m = format!("Added {} from the library as part {}{note}.{newer}", p.name, job.parts.len() + 1);
                     job.parts.push(p);
                     job.stale = true;
                     Ok(Outcome::msg(m))

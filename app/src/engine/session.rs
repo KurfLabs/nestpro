@@ -20,6 +20,9 @@ pub struct Session {
     /// job's material was in it, whatever list another session in the same
     /// process installed since.
     seen: Option<std::sync::Arc<super::material::List>>,
+    /// Why the open job is read-only (UP9): a newer version saved its file
+    /// last. Operations that change it are refused; reading it works.
+    read_only: Option<crate::shared::Newer>,
 }
 
 /// What a call gave back: the JSON answer and, for render, the PNG.
@@ -47,7 +50,7 @@ pub fn job_path(s: &str) -> PathBuf {
 
 impl Session {
     pub fn new(ctx: Ctx) -> Session {
-        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None }
+        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None, read_only: None }
     }
 
     /// Open a job file (again, when it changed on disk).
@@ -56,7 +59,8 @@ impl Session {
         if same && self.job.is_some() && mtime(path) == self.stamp {
             return Ok(());
         }
-        let j = jobfile::load(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+        let (j, written) = jobfile::load_versioned(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+        self.read_only = self.ctx.versions().newer(written.as_deref());
         if same && self.job.is_some() {
             // Changed on disk by someone else (the window, another agent):
             // undoing to a copy from before that would drop their change.
@@ -74,7 +78,7 @@ impl Session {
         if path.exists() && before.is_some() {
             let _ = std::fs::copy(path, backup_path(path));
         }
-        jobfile::save(path, job)?;
+        jobfile::save_on(path, job, &self.ctx.versions())?;
         self.stamp = mtime(path);
         if let Some(b) = before {
             self.undo.push(b);
@@ -126,6 +130,9 @@ impl Session {
                 if p.exists() && !force {
                     return Err(format!("{} already exists — pick another name, or force=true to overwrite it.", p.display()));
                 }
+                // UP7: force never writes over a job a newer version saved.
+                let file = p.file_name().map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+                crate::shared::may_write_over(&p, &self.ctx.versions(), &format!("The job file {file}"))?;
                 let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "New job".into());
                 let mut a = args.clone();
                 if let Some(m) = a.as_object_mut() {
@@ -137,6 +144,7 @@ impl Session {
                 }
                 self.job = Some(j);
                 self.path = Some(p.clone());
+                self.read_only = None;
                 self.undo.clear();
                 self.save(None)?;
                 return Ok(done(Outcome {
@@ -154,6 +162,16 @@ impl Session {
                 Some(p) => self.open(&p)?,
                 None => return Err("No job open — give the job file (job).".into()),
             },
+        }
+        // UP9: a job a newer version saved is read-only here: nothing that
+        // changes it runs (nor books stock for it), and its file stays as it
+        // is. Listing the Library changes nothing, so it still answers.
+        if let Some(n) = &self.read_only {
+            let listing = op.name == "library" && ops::Args(&args).str("mode").as_deref() == Some("list");
+            if op.kind == Kind::Write && !listing {
+                let file = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+                return Err(n.refusal(&format!("The job file {file}")));
+            }
         }
         match op.name {
             "undo" => return self.undo_step().map(done),
@@ -203,6 +221,9 @@ impl Session {
         if let Some(p) = &self.path {
             reply.json["job"] = json!(p.display().to_string());
         }
+        if let Some(n) = &self.read_only {
+            reply.json["read_only"] = json!(format!("This job is read-only on this PC. {}", n.message()));
+        }
         Ok(reply)
     }
 
@@ -214,11 +235,12 @@ impl Session {
             None => jobfile::load(&backup_path(&path)).map_err(|_| "Nothing to undo.".to_string())?,
         };
         let note = self.restock_for_undo(prev)?;
-        jobfile::save(&path, self.job.as_ref().unwrap())?;
+        let versions = self.ctx.versions();
+        jobfile::save_on(&path, self.job.as_ref().unwrap(), &versions)?;
         // The copy beside the file moves one step back too, so a later run
         // can undo once more.
         match self.undo.last() {
-            Some(older) => jobfile::save(&backup_path(&path), older)?,
+            Some(older) => jobfile::save_on(&backup_path(&path), older, &versions)?,
             None => {
                 let _ = std::fs::remove_file(backup_path(&path));
             }

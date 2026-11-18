@@ -506,6 +506,12 @@ impl App {
     /// is saved and the window asks what to do (LB7, LB9): before remnants
     /// are named, and under the write lock before any stock is booked (LB8).
     pub fn save_job_to_library(&mut self) {
+        // UP9: a job a newer version saved is never saved by this one.
+        if let Some(why) = self.read_only() {
+            self.libui.overwrite = None;
+            self.status = format!("Not saved to the library: this job is read-only on this PC. {why}");
+            return;
+        }
         // A Library that can't be reached refuses the save before anything
         // else happens (LB11, LB13).
         let lib = match self.library() {
@@ -596,7 +602,7 @@ impl App {
     /// job holds what their save holds.
     pub fn reload_theirs(&mut self) {
         let Some(c) = self.job_question() else { return };
-        let j = match self.library().and_then(|l| l.load_job(c.id)) {
+        let (j, newer) = match self.library().and_then(|l| l.load_job_read(c.id)) {
             Ok(j) => j,
             Err(e) => {
                 self.status = format!("Couldn't reload {}: {e}", self.job_name);
@@ -606,7 +612,7 @@ impl App {
         let cur = self.cur_job;
         let name = if self.jobs.iter().enumerate().any(|(k, o)| k != cur && o.name == j.name) { self.job_name.clone() } else { j.name.clone() };
         let place = self.lib_place(c.id);
-        self.jobs[cur] = job_from_library(c.id, name, j, place);
+        self.jobs[cur] = job_from_library(c.id, name, j, place, newer);
         self.cur_job = usize::MAX;
         self.open_job_forced(cur);
         self.mark_job_saved(cur);
@@ -857,7 +863,7 @@ impl App {
     /// Open library job `id` now, whoever has it in use (asked before,
     /// `open_library_job`, CU8).
     pub fn open_library_job_now(&mut self, id: u64) {
-        let j = match self.library().and_then(|l| l.load_job(id)) {
+        let (j, newer) = match self.library().and_then(|l| l.load_job_read(id)) {
             Ok(j) => j,
             Err(e) => {
                 self.status = format!("Couldn't open library job {id}: {e}");
@@ -874,7 +880,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let place = self.lib_place(id);
-        self.jobs.push(job_from_library(id, name, j, place));
+        self.jobs.push(job_from_library(id, name, j, place, newer));
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.refresh();
@@ -1452,13 +1458,14 @@ pub(crate) fn place_in(tree: &crate::folders::Tree, id: u64) -> (u64, String) {
 /// linked to its record and the revisions read (LB7).
 /// `place`: its folder in the Library's job folders and that folder's name,
 /// the Open jobs folder it sits in (JX15).
-pub(crate) fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile, place: (u64, String)) -> crate::Job {
+/// `newer`: why it is read-only here, when a newer version saved it (UP9).
+pub(crate) fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile, place: (u64, String), newer: Option<crate::shared::Newer>) -> crate::Job {
     let lib_read = LibRead { revision: j.library.map_or(0, |r| r.revision), parts: j.library_parts };
     let mut result = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 };
     result.normalise(&j.spec);
     let (folder, week) = place;
     let material_names = crate::engine::material::names_read(j.spec.material, &j.material_name);
-    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder), material_names }
+    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder), material_names, read_only: newer.map(|n| n.message()) }
 }
 
 #[cfg(test)]

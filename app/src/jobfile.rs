@@ -85,31 +85,66 @@ pub fn layout_for(job: &JobFile) -> u32 {
 }
 
 /// The job as written to its file, marked with the layout it needs, with
-/// its material's id and name (invariant 3, MA17).
+/// its material's id and name (invariant 3, MA17), by this program.
+#[cfg(test)]
 pub fn to_text(job: &JobFile) -> Result<String, String> {
+    to_text_on(job, crate::updates::VERSION)
+}
+
+/// `to_text` by a program on `version`, which the file records (UP5).
+pub fn to_text_on(job: &JobFile, version: &str) -> Result<String, String> {
     let v = layout_for(job);
     let name = crate::engine::material::stored_name(job.spec.material, &job.material_name);
     // MA31: an unresolved material is saved with the file's own number.
     let id = crate::engine::material::file_id(job.spec.material);
     if job.version == v && job.material_name == name && id == job.spec.material {
-        return serde_json::to_string_pretty(job).map_err(|e| e.to_string());
+        return crate::shared::stamped(job, version);
     }
     let mut out = JobFile { version: v, material_name: name, ..job.clone() };
     out.spec.material = id;
-    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+    crate::shared::stamped(&out, version)
 }
 
+/// Save a job file by this program, outside a shop.
 pub fn save(path: &std::path::Path, job: &JobFile) -> Result<(), String> {
-    let text = to_text(job)?;
+    save_on(path, job, &crate::shared::Versions::this(crate::updates::VERSION))
+}
+
+/// Save a job file by a program on `versions.this`, which the file records
+/// (UP5). Refused, saying to update this PC, when the file there was last
+/// written by a newer version (UP7, UP8).
+pub fn save_on(path: &std::path::Path, job: &JobFile, versions: &crate::shared::Versions) -> Result<(), String> {
+    crate::shared::may_write_over(path, versions, &what(path))?;
+    let text = to_text_on(job, &versions.this)?;
     // Write next to it, then rename, so a crash never leaves half a file
     // (as Expert rewrites LANTEKIN.CNI through a temporary file, LK3); the
     // temporary file is this writer's own (LB3).
     crate::shared::write_file(path, text.as_bytes(), None)
 }
 
+/// "The job file DEMO-001.snjob", as a refusal names it.
+fn what(path: &std::path::Path) -> String {
+    format!("The job file {}", path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned()))
+}
+
+
+
 pub fn load(path: &std::path::Path) -> Result<JobFile, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let j: JobFile = serde_json::from_str(&text).map_err(|e| format!("not a job file ({e})"))?;
+    load_versioned(path).map(|(j, _)| j)
+}
+
+/// A job file and the program version that last wrote it (UP5: None for a
+/// job saved before versions were recorded). A program older than that
+/// version opens the job read-only and never saves over it (UP7, UP9).
+pub fn load_versioned(path: &std::path::Path) -> Result<(JobFile, Option<String>), String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let j = from_bytes(&bytes)?;
+    Ok((j, crate::shared::recorded_version(&bytes)))
+}
+
+fn from_bytes(bytes: &[u8]) -> Result<JobFile, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    let j: JobFile = serde_json::from_str(text).map_err(|e| format!("not a job file ({e})"))?;
     if j.format != FORMAT {
         return Err("not a sheet-nesting job file".into());
     }
