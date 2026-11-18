@@ -210,6 +210,14 @@ pub const PREVIOUS_VERSION: &str = "previous_shop_version";
 /// The file layouts of the release the shop rolled out last (UP19, UP20):
 /// `{"jobs": 2, "library": 1, …}`.
 pub const LAYOUTS: &str = "layouts";
+/// The file layouts each release kept in `Updates` saves in, recorded by
+/// that release when it was rolled out (UP19, UP24): `{"0.4.0": {"jobs": 2,
+/// …}, …}`. Only releases that know about roll back record them, so roll
+/// back goes only to a release found here.
+pub const RELEASE_LAYOUTS: &str = "release_layouts";
+/// The releases the shop has rolled back from (UP10, UP25): what they wrote
+/// counts as the shop version's.
+pub const ROLLED_BACK_FROM: &str = "rolled_back_from";
 /// The one-time changes made to the shop's files, by their names (UP18).
 pub const CHANGES_MADE: &str = "one_time_changes";
 /// The mark of a trial copy (UP16): only ever in a copy, never in a shop.
@@ -256,13 +264,33 @@ impl ShopFile {
     pub fn layouts(&self) -> Option<std::collections::BTreeMap<String, u32>> {
         self.other.get(LAYOUTS).and_then(|v| serde_json::from_value(v.clone()).ok())
     }
+
+    /// UP24: the file layouts `version` recorded when it was rolled out:
+    /// Ok(None) when it recorded none, Err when the record is damaged.
+    pub fn release_layouts(&self, version: &str) -> Result<Option<std::collections::BTreeMap<String, u32>>, ()> {
+        match self.other.get(RELEASE_LAYOUTS) {
+            None => Ok(None),
+            Some(Value::Object(m)) => match m.get(version) {
+                None => Ok(None),
+                Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| ()),
+            },
+            Some(_) => Err(()),
+        }
+    }
+
+    /// UP10, UP25: the releases the shop has rolled back from, in the order
+    /// it left them.
+    pub fn rolled_back_from(&self) -> Vec<String> {
+        self.other.get(ROLLED_BACK_FROM).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect()).unwrap_or_default()
+    }
 }
 
 /// UP7, UP8, UP21: the versions a Library file in `dir` is judged by: this
 /// program's `this`, and the shop's version when `dir` is a shop folder that
 /// records one. A shop file that can't be read just now names no shop
-/// version (the refusal then names only the file's). The releases the shop
-/// rolled back from (UP10) are filled in by roll back; none yet. A PC on a
+/// version (the refusal then names only the file's). Files written by a
+/// release the shop rolled back from count as the shop version's (UP10,
+/// UP25). A PC on a
 /// release newer than the shop version, in the shop itself (not a trial
 /// copy), gets the whole shop read-only (UP21).
 pub fn versions(dir: &Path, this: &str) -> shared::Versions {
@@ -270,8 +298,9 @@ pub fn versions(dir: &Path, this: &str) -> shared::Versions {
     let shop = s.as_ref().and_then(|s| s.shop_version().map(String::from));
     let trial_of = s.as_ref().and_then(|s| s.trial()).map(|m| PathBuf::from(m.shop_folder));
     let back_to = shop.clone().filter(|v| trial_of.is_none() && shared::version_order(this, v) == Some(std::cmp::Ordering::Greater));
-    let shop_dir = back_to.as_ref().map(|_| dir.to_path_buf());
-    shared::Versions { this: this.to_string(), shop, rolled_back_from: vec![], back_to, shop_dir, trial_of }
+    let shop_dir = shop.as_ref().map(|_| dir.to_path_buf());
+    let rolled_back_from = s.as_ref().map(ShopFile::rolled_back_from).unwrap_or_default();
+    shared::Versions { this: this.to_string(), shop, rolled_back_from, back_to, shop_dir, trial_of }
 }
 
 /// Write this PC's record, under the Library's write lock (LB1, LB3). The

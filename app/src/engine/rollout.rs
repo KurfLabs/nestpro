@@ -1,5 +1,5 @@
 //! Trying a release on the admin PC and rolling it out to the shop (spec
-//! #178, ADR 0006, UP15–UP22). Plain functions over a shop folder and a
+//! #178, ADR 0006, UP15–UP26). Plain functions over a shop folder and a
 //! release folder: Settings → Shop → Updates calls them, and the agents'
 //! `shop` operation reads what they read (rolling out is refused for
 //! agents). They never call the installer: a release folder is a folder of
@@ -15,6 +15,10 @@
 //!   makes it the shop version, keeping the previous one beside it.
 //! - **A trial** (UP16) works on a copy of the shop made from a fresh
 //!   backup, in a folder on this PC: nothing it does reaches the shop.
+//! - **Roll back** (UP23–UP26) makes the release kept beside the shop
+//!   version the shop version again, when it can read every file layout the
+//!   shop records; files the release left wrote count as the shop
+//!   version's from then on.
 
 use crate::backup;
 use crate::engine::updates::plain_version;
@@ -421,6 +425,13 @@ pub fn rollout_with(dir: &Path, release: &Path, who: &Who, this: &str, changes: 
         None => s.other.remove(shop::PREVIOUS_VERSION),
     };
     s.other.insert(shop::LAYOUTS.into(), json!(layouts()));
+    // UP24: this release records its own layouts, so the shop can roll
+    // back to it later; the record of the one before stays (it is kept for
+    // roll back), older ones go with their packages.
+    let mut mine = s.other.get(shop::RELEASE_LAYOUTS).and_then(Value::as_object).cloned().unwrap_or_default();
+    mine.retain(|v, _| before.as_deref() == Some(v.as_str()));
+    mine.insert(this.to_string(), json!(layouts()));
+    s.other.insert(shop::RELEASE_LAYOUTS.into(), Value::Object(mine));
     shop::write_judged(dir, &s, &lock, this, &judged).map_err(|e| format!("Not rolled out: the shop file couldn't be written ({e}). {}", still()))?;
     let removed = prune_updates(dir, &[this, before.as_deref().unwrap_or(this)], &lock);
     Ok(RolledOut { version: this.to_string(), previous: before, removed, changes: made, repaired: false })
@@ -531,6 +542,207 @@ fn prune_updates(dir: &Path, keep: &[&str], lock: &WriteLock) -> Vec<String> {
 pub fn current_release_ok(dir: &Path, version: &str) -> Result<(), String> {
     let f = release_dir(dir, version);
     pack_in(&f, version).and_then(|p| verify(&f, &p))
+}
+
+// ---------------------------------------------------------------------------
+// Roll back (UP23–UP26).
+// ---------------------------------------------------------------------------
+
+/// UP23: why an agent can't roll back.
+pub const AGENT_ROLLBACK: &str = "Rolling back is refused for agents: it changes the release every PC in the shop installs, going back to an older one, so a person does it on the admin PC, in the window (Settings → Shop → Updates → Roll back), after reading the warning. The shop version and the shop folder are as they were. Agents can read the shop version, the release kept for roll back and the releases rolled back from with `shop`.";
+
+/// UP24: what a roll back would do, as the window asks it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RollBackAsk {
+    /// The shop version now: the release the shop leaves.
+    pub from: String,
+    /// The release kept for roll back, which becomes the shop version.
+    pub to: String,
+    /// The warning's lines.
+    pub lines: Vec<String>,
+}
+
+/// What a roll back did.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RolledBack {
+    pub from: String,
+    pub to: String,
+}
+
+/// UP24: a kind of file as roll back's refusal names it, and whether it
+/// takes "were".
+fn kind_words(kind: &str) -> (String, bool) {
+    match kind {
+        "jobs" => ("jobs".into(), true),
+        "library" => ("library parts".into(), true),
+        "materials" => ("materials".into(), true),
+        "stock" => ("the sheet stock".into(), false),
+        k => (format!("{k} files"), true),
+    }
+}
+
+/// UP24: "Jobs were saved in a layout 0.4.0 can't read. Restore a backup
+/// instead." for the kinds of file in `kinds`.
+fn layout_refusal(kinds: &[String], to: &str) -> String {
+    let words: Vec<(String, bool)> = kinds.iter().map(|k| kind_words(k)).collect();
+    let mut names = match words.len() {
+        1 => words[0].0.clone(),
+        n => format!("{} and {}", words[..n - 1].iter().map(|w| w.0.as_str()).collect::<Vec<_>>().join(", "), words[n - 1].0),
+    };
+    if let Some(c) = names.get(0..1) {
+        names.replace_range(0..1, &c.to_uppercase());
+    }
+    let verb = if words.len() == 1 && !words[0].1 { "was" } else { "were" };
+    format!("{names} {verb} saved in a layout {to} can't read. Restore a backup instead. Nothing was changed.")
+}
+
+/// UP23, UP24: may `who`, on `this`, roll the shop `s` (in `dir`) back?
+/// Gives (the release left, the release gone back to). Only a person on the
+/// admin PC, on the shop itself (not a trial copy), running the shop
+/// version or the one kept; only to a release whose packages are whole in
+/// `Updates`, which reads every file layout the shop records, and which
+/// knows every one-time change (of `changes`) made to the shop's files.
+fn may_roll_back(dir: &Path, s: &ShopFile, who: &Who, this: &str, changes: &[OneTimeChange]) -> Result<(String, String), String> {
+    if who.agent {
+        return Err(AGENT_ROLLBACK.into());
+    }
+    if s.trial().is_some() {
+        return Err(format!("{} is a trial copy, not the shop. Stop trying first. Nothing was rolled back.", dir.display()));
+    }
+    if s.admin.pc != who.pc {
+        return Err(format!("Rolling back is done on the admin PC ({}). Nothing was rolled back.", s.admin.pc));
+    }
+    let Some(from) = s.shop_version().map(String::from) else {
+        return Err("The shop has no shop version yet: there is nothing to roll back. Nothing was changed.".into());
+    };
+    let Some(to) = s.previous_version().map(String::from) else {
+        return Err(format!("The shop keeps no release before {from} to go back to. Restore a backup instead. Nothing was changed."));
+    };
+    // The shop file is written by this program: on the release left (its
+    // files count as the shop version's afterwards) or the one gone back
+    // to, it stays saveable on the shop version (invariant 3).
+    let on = |v: &str| shared::version_order(this, v) == Some(Ordering::Equal);
+    if !on(&from) && !on(&to) {
+        return Err(format!("This PC runs {this}. Roll back on the admin PC while it runs the shop version {from} (or {to}), so the shop file stays saveable on {to}. Nothing was rolled back."));
+    }
+    // Its package checked as a roll out checks one (size and checksum).
+    let folder = release_dir(dir, &to);
+    if let Err(e) = current_release_ok(dir, &to) {
+        return Err(format!("{to}'s packages aren't whole in the shop folder's Updates ({e}), so the PCs couldn't install it. Put {to}'s release index and full package (from its GitHub release) back in {}, then Roll back again, or restore a backup instead. Nothing was changed.", folder.display()));
+    }
+    // UP24: both records must be there, readable and whole: every kind of
+    // file this program guards. Nothing is ever guessed.
+    let guarded = layouts();
+    let whole = |l: &BTreeMap<String, u32>| guarded.keys().all(|k| l.contains_key(k));
+    let reads = match s.release_layouts(&to) {
+        Ok(None) => return Err(format!("{to} didn't record the file layouts it saves in when it was rolled out: it is from before roll back, and can't save what {from} wrote. Restore a backup instead. Nothing was changed.")),
+        Ok(Some(l)) if whole(&l) => l,
+        _ => return Err(format!("The shop file's record of the file layouts {to} saves in is damaged or incomplete, so it can't be told whether {to} reads the shop's files. Restore a backup instead. Nothing was changed.")),
+    };
+    let Some(written) = s.layouts().filter(|l| whole(l)) else {
+        return Err(format!("The shop file doesn't record every file layout the shop's files are saved in, so it can't be told whether {to} reads them. Restore a backup instead. Nothing was changed."));
+    };
+    let unread: Vec<String> = written.into_iter().filter(|(k, n)| reads.get(k).is_none_or(|r| n > r)).map(|(k, _)| k).collect();
+    if !unread.is_empty() {
+        return Err(layout_refusal(&unread, &to));
+    }
+    // UP24: a one-time change of a release after `to` (or one this program
+    // doesn't know) changed the shop's files in a way `to` doesn't know.
+    let newer: Vec<String> = s
+        .changes_made()
+        .into_iter()
+        .filter(|n| changes.iter().find(|c| c.name == n).is_none_or(|c| shared::version_order(c.release, &to) == Some(Ordering::Greater)))
+        .map(|n| changes.iter().find(|c| c.name == n).map_or(n, |c| c.what.to_string()))
+        .collect();
+    if !newer.is_empty() {
+        return Err(format!("{from} changed the shop's files in a way {to} doesn't know about ({}). Restore a backup instead. Nothing was changed.", newer.join("; ")));
+    }
+    Ok((from, to))
+}
+
+/// UP24: the kinds of shop record a roll back makes saveable on the release
+/// gone back to again (UP25), as its warning names them.
+pub const RECORDS: &str = "Jobs, library parts, the Library's list, the sheet stock, the material list and the shop file";
+
+/// UP24: what rolling the shop in `dir` back would do, as the window warns
+/// before it: refused (with the reason, as Roll back itself would refuse
+/// it), or the warning's lines. Changes nothing.
+pub fn rollback_ask(dir: &Path, who: &Who, this: &str) -> Result<RollBackAsk, String> {
+    rollback_ask_with(dir, who, this, CHANGES)
+}
+
+/// `rollback_ask`, with the one-time changes given (tests).
+pub fn rollback_ask_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeChange]) -> Result<RollBackAsk, String> {
+    if who.agent {
+        return Err(AGENT_ROLLBACK.into());
+    }
+    let st = super::shop::status(dir)?.ok_or_else(|| format!("{} isn't a shop. Nothing was rolled back.", dir.display()))?;
+    let (from, to) = may_roll_back(dir, &st.shop, who, this, changes)?;
+    // S7: every kind of shop record the roll back makes saveable on `to`
+    // again (UP25), each saved back through `to`'s own layout.
+    let mut lines = vec![format!("{RECORDS} saved since {from} was rolled out may lose what only {from} knew about them when saved again.")];
+    for p in &st.pcs {
+        let me = if p.pc == who.pc { " (this PC)" } else { "" };
+        match shared::version_order(&p.version, &to) {
+            Some(Ordering::Equal) => {}
+            Some(Ordering::Greater) => lines.push(format!("{}{me} is on {}: it opens the shop read-only until it goes back to {to} (when its program closes).", p.pc, p.version)),
+            _ => lines.push(format!("{}{me} is on {}: it installs {to} from the shop folder when its program closes.", p.pc, p.version)),
+        }
+    }
+    lines.push(format!("{from} stays in the shop folder's Updates, so it can be rolled out again."));
+    Ok(RollBackAsk { from, to, lines })
+}
+
+/// UP23, UP25: roll the shop in `dir` back to the release kept beside the
+/// shop version, by a person on the admin PC running `this`.
+pub fn rollback(dir: &Path, who: &Who, this: &str) -> Result<RolledBack, String> {
+    rollback_with(dir, who, this, CHANGES, None)
+}
+
+/// UP24 (S4): Yes on the warning: the roll back `ask` showed, from its
+/// release to its release, and only that. Looked at under the lock: when
+/// the shop version or the release kept changed since the warning, nothing
+/// changes and the person is asked again.
+pub fn rollback_as_asked(dir: &Path, who: &Who, this: &str, ask: &RollBackAsk) -> Result<RolledBack, String> {
+    rollback_with(dir, who, this, CHANGES, Some((&ask.from, &ask.to)))
+}
+
+/// `rollback`, with the one-time changes given (tests).
+///
+/// Refused (changing nothing) as `rollback_ask` says. Under the Library's
+/// write lock (LB1), looked at again there: the shop file names the release
+/// kept the shop version, keeps no release before it, records the layouts
+/// that release writes, and adds the release left to the releases rolled
+/// back from (UP25). `Updates` keeps both releases. Every PC then installs
+/// the shop version when its program closes, going back (UP21).
+pub fn rollback_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeChange], asked: Option<(&str, &str)>) -> Result<RolledBack, String> {
+    if who.agent {
+        return Err(AGENT_ROLLBACK.into());
+    }
+    let not_shop = || format!("{} isn't a shop. Nothing was rolled back.", dir.display());
+    let s = shop::read(dir)?.ok_or_else(not_shop)?;
+    may_roll_back(dir, &s, who, this, changes)?;
+    let lock = WriteLock::take(dir).map_err(|e| format!("Nothing was rolled back: {e}"))?;
+    shared::pause("rollback: locked");
+    let mut s = shop::read(dir)?.ok_or_else(not_shop)?;
+    let (from, to) = may_roll_back(dir, &s, who, this, changes)?;
+    if let Some((f, t)) = asked.filter(|(f, t)| *f != from || *t != to) {
+        return Err(format!("The shop changed since you were asked to roll back from {f} to {t}: the shop version is {from} now, and the release kept for roll back {to}. Nothing was rolled back: ask again to see what rolling back would do now."));
+    }
+    let mut list = s.rolled_back_from();
+    if !list.iter().any(|v| shared::version_order(v, &from) == Some(Ordering::Equal)) {
+        list.push(from.clone());
+    }
+    let reads = s.release_layouts(&to).ok().flatten().unwrap_or_default();
+    s.other.insert(shop::SHOP_VERSION.into(), json!(to));
+    s.other.remove(shop::PREVIOUS_VERSION);
+    s.other.insert(shop::LAYOUTS.into(), json!(reads));
+    s.other.insert(shop::ROLLED_BACK_FROM.into(), json!(list));
+    // Judged as the shop will be: what the release left wrote counts as
+    // the shop version's.
+    let judged = Versions { this: this.to_string(), shop: Some(to.clone()), rolled_back_from: list, shop_dir: Some(dir.to_path_buf()), ..Default::default() };
+    shop::write_judged(dir, &s, &lock, this, &judged).map_err(|e| format!("Not rolled back: the shop file couldn't be written ({e}). The shop version is still {from}."))?;
+    Ok(RolledBack { from, to })
 }
 
 // ---------------------------------------------------------------------------
@@ -651,7 +863,10 @@ pub fn trial_now(lib: &Path, this: &str) -> TrialNow {
         Ok(None) => TrialNow::ShopAway { said: format!("This PC stays on its trial copy: {} holds no shop any more.", shop_dir.display()), mark },
         Ok(Some(s)) if s.shop_version() != mark.shop_version.as_deref() => {
             let now = s.shop_version().unwrap_or("none");
-            TrialNow::Over { said: format!("Shop {} rolled out {now} while this PC was trying {}: the trial is over, and this PC works on the shop again.", s.name, mark.version), mark }
+            // UP26: a roll back ends a trial too.
+            let back = mark.shop_version.as_deref().is_some_and(|was| shared::version_order(now, was) == Some(Ordering::Less));
+            let did = if back { "rolled back to" } else { "rolled out" };
+            TrialNow::Over { said: format!("Shop {} {did} {now} while this PC was trying {}: the trial is over, and this PC works on the shop again.", s.name, mark.version), mark }
         }
         Ok(Some(_)) => TrialNow::Trying { installed: shared::version_order(this, &mark.version) == Some(Ordering::Equal), mark },
     }

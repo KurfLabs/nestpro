@@ -419,6 +419,8 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         // UP19: rolling out stays with a person on the admin PC: the
         // engine's own rule refuses it, whoever the session says it works for.
         "rollout" => super::rollout::rollout(dir, Path::new(""), &ctx.who.clone().as_agent(), &ctx.version).map(|_| unreachable!("an agent rolled out a release")),
+        // UP23: so is rolling back.
+        "rollback" => super::rollout::rollback(dir, &ctx.who.clone().as_agent(), &ctx.version).map(|_| unreachable!("an agent rolled the shop back")),
         _ => {
             // Using the program on this PC records it (SH4). When it can't,
             // the shop is still shown, with why this PC isn't in it (SH6).
@@ -468,6 +470,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     "shop_settings": s.settings_by.words(),
                     "shop_version": sv,
                     "previous_shop_version": s.previous_version(),
+                    "rolled_back_from": s.rolled_back_from(),
                     "releases_in_updates": super::rollout::in_updates(dir).unwrap_or_default(),
                     "pcs": pcs,
                     "this_pc_recorded": unrecorded.is_none(),

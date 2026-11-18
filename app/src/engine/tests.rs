@@ -12536,3 +12536,550 @@ fn a_trial_works_on_a_copy_and_never_changes_the_shop_folder() {
     call(&mut on_shop, "library", None, json!({"mode": "save-job"}));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Rolling the shop back (spec #178, ticket #186: UP23–UP26): the admin PC
+// makes the previous release kept in Updates the shop version again.
+// ---------------------------------------------------------------------------
+
+/// The shop of `rolled_out_shop` with `later` rolled out after `first`.
+fn shop_rolled_to(d: &Path, first: &str, later: &str) -> PathBuf {
+    let lib = rolled_out_shop(d, first);
+    crate::engine::rollout::rollout(&lib, &crate::engine::rollout::fake_release(d, later), &Who::new("sam", "PC-A"), later).unwrap();
+    lib
+}
+
+/// UP23: with no layout change, roll back makes the previous release the
+/// shop version again; another PC on the release left is offered it from
+/// Updates (going back), and one on it is up to date.
+#[test]
+fn rolling_back_makes_the_previous_release_the_shop_version_and_other_pcs_are_offered_it() {
+    let d = dir("rollback_plain");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let back = crate::engine::rollout::rollback(&lib, &Who::new("sam", "PC-A"), "0.5.0").unwrap();
+    assert_eq!((back.from.as_str(), back.to.as_str()), ("0.5.0", "0.4.0"));
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["shop_version"], "0.4.0", "{r}");
+    let f = &r["data"]["from_shop"];
+    assert_eq!((f["version"].as_str(), f["back"].as_bool()), (Some("0.4.0"), Some(true)), "{r}");
+    assert_eq!(f["folder"], lib.join("Updates").join("0.4.0").display().to_string(), "{r}");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let r = call(&mut c, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["from_shop"], Value::Null, "the shop version's PC was offered something: {r}");
+    // Both releases stay in Updates (0.5.0 can be rolled out again); there
+    // is nothing further back to go to.
+    let st = call(&mut c, "shop", None, json!({}));
+    assert_eq!(st["data"]["releases_in_updates"], json!(["0.4.0", "0.5.0"]), "{st}");
+    assert_eq!(st["data"]["previous_shop_version"], Value::Null, "{st}");
+    assert_eq!(st["data"]["rolled_back_from"], json!(["0.5.0"]), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// sam on PC-A, the admin PC: a person in the window.
+fn admin() -> Who {
+    Who::new("sam", "PC-A")
+}
+
+/// Roll out `version` from a made-up release folder, as PC-A running it.
+fn roll_out(lib: &Path, d: &Path, version: &str) {
+    crate::engine::rollout::rollout(lib, &crate::engine::rollout::fake_release(d, version), &admin(), version).unwrap();
+}
+
+/// A job `name` saved by a PC on `version` into the Library: its job file
+/// in the folder `d` and its Library record. Gives the job file.
+fn job_saved_on(lib: &Path, d: &Path, version: &str, name: &str) -> PathBuf {
+    let jp = d.join(format!("{name}.snjob"));
+    let mut s = pc_running(lib, Who::new("kim", "PC-B").as_agent(), version);
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1, "name": "DEMO-P1"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(crate::shared::recorded_version(&std::fs::read(&jp).unwrap()).as_deref(), Some(version));
+    jp
+}
+
+/// The job file `jp` opens on a PC running `version` and saves there: not
+/// read-only, a change saved to the file and to the Library.
+fn opens_and_saves(lib: &Path, jp: &Path, version: &str, new_name: &str) {
+    let mut s = pc_running(lib, Who::new("lee", "PC-C").as_agent(), version);
+    let job = jp.to_str().unwrap();
+    let info = call(&mut s, "info", Some(job), json!({}));
+    assert!(info.get("read_only").is_none(), "read-only on {version}: {info}");
+    call(&mut s, "rename", Some(job), json!({"name": new_name}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(crate::shared::recorded_version(&std::fs::read(jp).unwrap()).as_deref(), Some(version));
+}
+
+/// UP25: after a roll back, a job the release left saved opens and saves
+/// normally on the shop version, and so does the stock it last wrote.
+#[test]
+fn after_a_roll_back_a_job_saved_by_the_release_left_saves_on_the_shop_version() {
+    let d = dir("rollback_job");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S5", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    // Before the roll back the job is newer than 0.4.0: read-only there.
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let info = call(&mut c, "info", Some(jp.to_str().unwrap()), json!({}));
+    assert!(info["read_only"].is_string(), "{info}");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    opens_and_saves(&lib, &jp, "0.4.0", "DEMO-001 on 0.4.0");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    call(&mut c, "stock", None, json!({"mode": "create", "ref": "S2", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    // The shop file too: a PC on the shop version changes it again.
+    let mut sam = crate::backup::Settings::default();
+    crate::engine::shop::set_backup_settings(&lib, &mut sam, &admin(), &crate::backup::Settings { keep_days: 20, second_place: String::new() }, "0.4.0").unwrap();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP25: rolled back from 0.5.0, then 0.6.0 rolled out and rolled back
+/// too: a job 0.5.0 saved last still saves on the shop version, and the
+/// list keeps both releases.
+#[test]
+fn rolling_back_twice_keeps_every_release_rolled_back_from() {
+    let d = dir("rollback_twice");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let j5 = job_saved_on(&lib, &lib, "0.5.0", "DEMO-005");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    roll_out(&lib, &d, "0.6.0");
+    let j6 = job_saved_on(&lib, &lib, "0.6.0", "DEMO-006");
+    let back = crate::engine::rollout::rollback(&lib, &admin(), "0.6.0").unwrap();
+    assert_eq!((back.from.as_str(), back.to.as_str()), ("0.6.0", "0.4.0"));
+    opens_and_saves(&lib, &j5, "0.4.0", "DEMO-005 again");
+    opens_and_saves(&lib, &j6, "0.4.0", "DEMO-006 again");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let st = call(&mut c, "shop", None, json!({}));
+    assert_eq!(st["data"]["rolled_back_from"], json!(["0.5.0", "0.6.0"]), "{st}");
+    // There is nothing further back: roll back again is refused.
+    let e = crate::engine::rollout::rollback(&lib, &admin(), "0.4.0").unwrap_err();
+    assert_eq!(e, "The shop keeps no release before 0.4.0 to go back to. Restore a backup instead. Nothing was changed.");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP21, UP26: a PC still on the release left (not in a trial) finds the
+/// shop read-only with "Restart to go back to 0.4.0" until it has
+/// installed it; on the release kept, it saves again.
+#[test]
+fn a_pc_still_on_the_release_left_opens_the_shop_read_only_with_the_restart_message() {
+    let d = dir("rollback_left");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    // A job kept in the shop folder, and one on the desktop.
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    let own = job_saved_on(&lib, &d, "0.5.0", "DEMO-002");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let job = jp.to_str().unwrap();
+    let info = call(&mut b, "info", Some(job), json!({}));
+    assert_eq!(info["read_only"], "This job is read-only on this PC. This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0.", "{info}");
+    let e = b.call("rename", Some(job), &json!({"name": "DEMO-001 x"})).err().expect("a PC on the release left saved into the shop");
+    assert!(e.contains("Restart to go back to 0.4.0") && e.contains("Nothing was saved"), "{e}");
+    // Its own job file outside the shop folder saves; the Library doesn't.
+    call(&mut b, "rename", Some(own.to_str().unwrap()), json!({"name": "DEMO-002 x"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    let e = err(&mut b, "stock", json!({"mode": "create", "ref": "S3", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
+    assert!(r["message"].as_str().unwrap().contains("Restart to go back to 0.4.0"), "{r}");
+    // Once it runs 0.4.0 again (installed when its program closed).
+    opens_and_saves(&lib, &jp, "0.4.0", "DEMO-001 back");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP25: 0.5.0 rolled out again after the shop rolled back from it: a
+/// session on 0.5.0 works normally, and a PC still on 0.4.0 is behind again
+/// (what 0.5.0 saves is read-only there).
+#[test]
+fn rolling_out_the_release_left_again_works_normally_on_it() {
+    let d = dir("rollback_again");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    opens_and_saves(&lib, &jp, "0.4.0", "DEMO-001 on 0.4.0");
+    // The packages kept in Updates roll it out again.
+    let kept = crate::engine::rollout::release_dir(&lib, "0.5.0");
+    crate::engine::rollout::rollout(&lib, &kept, &admin(), "0.5.0").unwrap();
+    let mut a = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let r = call(&mut a, "shop", None, json!({"mode": "updates"}));
+    assert_eq!((r["data"]["shop_version"].as_str(), &r["data"]["from_shop"]), (Some("0.5.0"), &Value::Null), "{r}");
+    opens_and_saves(&lib, &jp, "0.5.0", "DEMO-001 on 0.5.0");
+    call(&mut a, "stock", None, json!({"mode": "create", "ref": "S4", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let info = call(&mut c, "info", Some(jp.to_str().unwrap()), json!({}));
+    assert_eq!(info["read_only"], "This job is read-only on this PC. Made by version 0.5.0. Update this PC: the shop is on 0.5.0.", "{info}");
+    // And it can be rolled back again, to 0.4.0.
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap().to, "0.4.0");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The shop file's layouts set by hand: the release kept for roll back
+/// wrote jobs in an older layout than the shop version does.
+fn kept_release_wrote_older_jobs(lib: &Path) {
+    edit_shop_file(lib, |v| {
+        let jobs = v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["jobs"].as_u64().unwrap();
+        v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["jobs"] = json!(jobs - 1);
+    });
+}
+
+/// The shop file of `lib`, changed by hand.
+fn edit_shop_file(lib: &Path, f: impl FnOnce(&mut Value)) {
+    let p = lib.join(crate::shop::FILE);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    f(&mut v);
+    std::fs::write(&p, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+}
+
+/// UP24: roll back after the shop's files were saved in a layout the
+/// release kept can't read is refused, with the message, and changes
+/// nothing: the warning is refused alike.
+#[test]
+fn rolling_back_after_a_newer_layout_was_written_is_refused_and_changes_nothing() {
+    let d = dir("rollback_layout");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    kept_release_wrote_older_jobs(&lib);
+    let before = files_under(&lib);
+    let want = "Jobs were saved in a layout 0.4.0 can't read. Restore a backup instead. Nothing was changed.";
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap_err(), want);
+    assert_eq!(crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err(), want);
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    // A kind the release kept reads in no layout it can read: refused.
+    edit_shop_file(&lib, |v| v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["stock"] = json!(0));
+    assert_eq!(crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err(), "Jobs and the sheet stock were saved in a layout 0.4.0 can't read. Restore a backup instead. Nothing was changed.");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP23: an agent asking to roll back is refused with the reason, and
+/// nothing changes; the agent still reads what roll back would go to.
+#[test]
+fn an_agent_asking_to_roll_back_is_refused_with_the_reason() {
+    let d = dir("rollback_agent");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let before = files_under(&lib);
+    let mut a = pc_running(&lib, Who::new("sam", "PC-A").as_agent(), "0.5.0");
+    assert_eq!(err(&mut a, "shop", json!({"mode": "rollback"})), crate::engine::rollout::AGENT_ROLLBACK);
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    // The engine refuses an agent whatever is asked.
+    assert_eq!(crate::engine::rollout::rollback(&lib, &admin().as_agent(), "0.5.0").unwrap_err(), crate::engine::rollout::AGENT_ROLLBACK);
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin().as_agent(), "0.5.0").unwrap_err(), crate::engine::rollout::AGENT_ROLLBACK);
+    let st = call(&mut a, "shop", None, json!({}));
+    assert_eq!((st["data"]["shop_version"].as_str(), st["data"]["previous_shop_version"].as_str()), (Some("0.5.0"), Some("0.4.0")), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP23: what else roll back refuses, each changing nothing: no release
+/// kept, the release kept's packages missing or partial, another PC than
+/// the admin PC, a PC on a third version, and a one-time change the
+/// release kept doesn't know.
+#[test]
+fn roll_back_refuses_without_a_whole_release_kept_or_from_the_wrong_pc() {
+    use crate::engine::rollout::{self, OneTimeChange};
+    let d = dir("rollback_refused");
+    // Only one release rolled out: nothing kept.
+    let lone = rolled_out_shop(&d.join("lone"), "0.4.0");
+    assert!(rollout::rollback(&lone, &admin(), "0.4.0").unwrap_err().contains("keeps no release before 0.4.0"));
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let before = files_under(&lib);
+    let e = rollout::rollback(&lib, &Who::new("kim", "PC-B"), "0.5.0").unwrap_err();
+    assert_eq!(e, "Rolling back is done on the admin PC (PC-A). Nothing was rolled back.");
+    let e = rollout::rollback(&lib, &admin(), "0.6.0").unwrap_err();
+    assert!(e.contains("This PC runs 0.6.0") && e.contains("Nothing was rolled back"), "{e}");
+    // A one-time change of 0.5.0 made on the shop: 0.4.0 doesn't know it.
+    fn nothing(_: &Path, _: &crate::shared::WriteLock) -> Result<(), String> {
+        Ok(())
+    }
+    const MOVED: &[OneTimeChange] = &[OneTimeChange { name: "machines-into-shop", release: "0.5.0", what: "Moves the machines into the shop", run: nothing }];
+    let f = lib.join(crate::shop::FILE);
+    let shop_file = std::fs::read(&f).unwrap();
+    let mut v: Value = serde_json::from_slice(&shop_file).unwrap();
+    v[crate::shop::CHANGES_MADE] = json!(["machines-into-shop"]);
+    std::fs::write(&f, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let e = rollout::rollback_with(&lib, &admin(), "0.5.0", MOVED, None).unwrap_err();
+    assert_eq!(e, "0.5.0 changed the shop's files in a way 0.4.0 doesn't know about (Moves the machines into the shop). Restore a backup instead. Nothing was changed.");
+    std::fs::write(&f, &shop_file).unwrap();
+    // The release kept's package is missing, then only its index.
+    let kept = rollout::release_dir(&lib, "0.4.0");
+    let pkg = kept.join("KurfLabs.nestpro-0.4.0-full.nupkg");
+    let bytes = std::fs::read(&pkg).unwrap();
+    std::fs::remove_file(&pkg).unwrap();
+    let e = rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err();
+    assert!(e.starts_with("0.4.0's packages aren't whole in the shop folder's Updates") && e.contains(&kept.display().to_string()) && e.ends_with("Nothing was changed."), "{e}");
+    // Partial: a copy that stopped halfway (its size and checksum differ).
+    std::fs::write(&pkg, &bytes[..bytes.len() / 2]).unwrap();
+    let e = rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err();
+    assert!(e.contains("aren't whole") && e.contains("incomplete or damaged"), "{e}");
+    std::fs::write(&pkg, &bytes).unwrap();
+    let idx = std::fs::read(kept.join(rollout::INDEX)).unwrap();
+    std::fs::remove_file(kept.join(rollout::INDEX)).unwrap();
+    assert!(rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err().contains("aren't whole"));
+    std::fs::write(kept.join(rollout::INDEX), &idx).unwrap();
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    // Whole again: it goes through, on the admin PC running the release
+    // kept too (its shop file is then written by 0.4.0, over 0.5.0's).
+    rollout::rollback(&lib, &admin(), "0.4.0").unwrap();
+    assert_eq!(crate::shop::read(&lib).unwrap().unwrap().shop_version(), Some("0.4.0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP23, UP17: the admin PC rolls back while it is trying a release (not
+/// restarted yet, so it runs the shop version): the trial copy is never
+/// written, and the trial is over (the shop moved on). From the trial copy
+/// itself, roll back is refused.
+#[test]
+fn a_roll_back_during_a_trial_never_touches_the_copy_and_ends_the_trial() {
+    use crate::engine::rollout::{self, TrialNow};
+    let d = dir("rollback_trial");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let t = rollout::start_trial(&lib, &d.join("Trials"), "0.6.0", &admin(), &Clock::at(1_794_216_600), "0.5.0", &Default::default()).unwrap();
+    let copy = files_under(&t.copy);
+    assert!(rollout::rollback(&t.copy, &admin(), "0.5.0").unwrap_err().contains("is a trial copy, not the shop. Stop trying first."));
+    // Running the tried release, the admin PC can't roll back.
+    assert!(rollout::rollback(&lib, &admin(), "0.6.0").unwrap_err().contains("This PC runs 0.6.0"));
+    rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    assert_eq!(files_under(&t.copy), copy, "the roll back changed the trial copy");
+    assert!(matches!(rollout::trial_now(&t.copy, "0.5.0"), TrialNow::Over { said, .. } if said.contains("rolled back to 0.4.0")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP23, LB1: the admin PC rolls back while another PC saves into the
+/// shop at the same moment: both go through the write lock, the roll back
+/// lands, and the other PC's save is either before it (on 0.5.0) or
+/// refused after it (it runs 0.5.0, newer than the shop version), never
+/// half.
+#[test]
+fn a_roll_back_while_another_pc_saves_lands_whole() {
+    let d = dir("rollback_two_pcs");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    std::thread::scope(|t| {
+        let l = &lib;
+        t.spawn(move || crate::engine::rollout::rollback(l, &admin(), "0.5.0").unwrap());
+        let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+        for i in 0..10 {
+            let r = b.call("stock", None, &json!({"mode": "create", "ref": format!("R{i}"), "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+            if let Err(e) = r {
+                assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+            }
+        }
+    });
+    let s = crate::shop::read(&lib).unwrap().unwrap();
+    assert_eq!((s.shop_version(), s.rolled_back_from()), (Some("0.4.0"), vec!["0.5.0".to_string()]));
+    // The stock it saved on 0.5.0 before the roll back saves on 0.4.0.
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    call(&mut c, "stock", None, json!({"mode": "create", "ref": "S-after", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP24 (review S7): the warning before Roll back: what may be lost, every
+/// kind of shop record roll back makes saveable again named, each PC that
+/// finds the shop read-only until it goes back (this PC named), each PC
+/// that installs it, and that the release left stays in Updates.
+#[test]
+fn the_roll_back_warning_names_what_may_be_lost_and_the_pcs() {
+    let d = dir("rollback_warning");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let c = Clock::at(1_794_216_600);
+    for (who, v) in [(admin(), "0.5.0"), (Who::new("kim", "PC-B"), "0.5.0"), (Who::new("lee", "PC-C"), "0.4.0"), (Who::new("max", "PC-D"), "0.3.2")] {
+        crate::engine::shop::record_pc(&lib, &who, &c, v).unwrap();
+    }
+    let ask = crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap();
+    assert_eq!(
+        ask.lines,
+        [
+            "Jobs, library parts, the Library's list, the sheet stock, the material list and the shop file saved since 0.5.0 was rolled out may lose what only 0.5.0 knew about them when saved again.",
+            "PC-A (this PC) is on 0.5.0: it opens the shop read-only until it goes back to 0.4.0 (when its program closes).",
+            "PC-B is on 0.5.0: it opens the shop read-only until it goes back to 0.4.0 (when its program closes).",
+            "PC-D is on 0.3.2: it installs 0.4.0 from the shop folder when its program closes.",
+            "0.5.0 stays in the shop folder's Updates, so it can be rolled out again.",
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP26 (review S1): the shop is rolled back while an agent's change waits
+/// for the write lock: the shop version is read again under the lock, so a
+/// session on the release left writes nothing into the shop: an XML import
+/// into the shop folder, and a change to the shop's material list.
+#[test]
+fn a_roll_back_landing_while_an_agents_change_waits_leaves_the_shop_untouched() {
+    let d = dir("rollback_while_waiting");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    std::fs::write(d.join("brk.dxf"), crate::dxf::SAMPLE_DXF).unwrap();
+    let xml = d.join("order-77.xml");
+    std::fs::write(&xml, r#"<?xml version="1.0"?><Import>
+  <Product Reference="DEMO-12" Material="Mild steel" Thickness="3" Quantity="4" Fich="brk.dxf"/>
+</Import>"#).unwrap();
+    let out = lib.join("Imported");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let l2 = lib.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "xml import: checked" {
+            crate::engine::rollout::rollback(&l2, &admin(), "0.5.0").unwrap();
+        }
+    });
+    let e = b.call("import-xml", None, &json!({"path": xml.to_str().unwrap(), "dir": out.to_str().unwrap()})).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("the import wrote into the shop after it was rolled back");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    assert_eq!(std::fs::read_dir(&out).map(|r| r.count()).unwrap_or(0), 0, "a job file was written");
+    // The material list, as the shop's admin rolls back from 0.6.0.
+    roll_out(&lib, &d, "0.6.0");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.6.0");
+    let list = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list).ok();
+    let l3 = lib.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "materials: before lock" {
+            crate::engine::rollout::rollback(&l3, &admin(), "0.6.0").unwrap();
+        }
+    });
+    let e = c.call("material", None, &json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"})).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("the material list was changed after the shop was rolled back");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    assert_eq!(std::fs::read(&list).ok(), before, "the material list was written");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP25 (review S2): what a release the shop rolled back from wrote counts
+/// as the shop version's only inside the shop folder. A job file the
+/// release left saves on the desktop after the roll back stays its own: a
+/// PC on the shop version opens it read-only and never saves over it, while
+/// a job in the shop folder that release wrote saves on the shop version.
+#[test]
+fn files_outside_the_shop_folder_keep_the_ordinary_version_check_after_a_roll_back() {
+    let d = dir("rollback_desktop");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let in_shop = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    // PC-B, still on 0.5.0, saves a job of its own on its desktop.
+    let desk = d.join("desktop");
+    std::fs::create_dir_all(&desk).unwrap();
+    let mine = desk.join("DEMO-002.snjob");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    call(&mut b, "new", Some(mine.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let bytes = std::fs::read(&mine).unwrap();
+    // PC-C, on the shop version, reads it but never saves over it.
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    let info = call(&mut c, "info", Some(mine.to_str().unwrap()), json!({}));
+    assert_eq!(info["read_only"], "This job is read-only on this PC. Made by version 0.5.0. Update this PC to 0.5.0 or later.", "{info}");
+    let e = c.call("rename", Some(mine.to_str().unwrap()), &json!({"name": "DEMO-002 x"})).err().expect("a job file outside the shop was saved over by an older PC");
+    assert!(e.contains("Made by version 0.5.0"), "{e}");
+    assert_eq!(std::fs::read(&mine).unwrap(), bytes);
+    // The job in the shop folder 0.5.0 wrote saves on 0.4.0.
+    opens_and_saves(&lib, &in_shop, "0.4.0", "DEMO-001 on 0.4.0");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// What a close installs (review S3), as `finish_on_close` hands it to the
+/// installer: the release, from where, and whether it was fetched then.
+fn close_installs(h: &'static crate::updates::Handoff, this: &str) -> (Result<Option<String>, String>, Vec<(String, crate::updates::Source, crate::updates::Why)>, Vec<String>) {
+    let mut fetched = vec![];
+    let mut applied = vec![];
+    let r = crate::updates::finish_on_close_as(h, this, std::time::Duration::from_secs(1), |c| {
+        fetched.push(c.version.clone());
+        Ok(())
+    }, |c| {
+        applied.push((c.version.clone(), c.src.clone(), c.why));
+        Ok(())
+    });
+    (r, applied, fetched)
+}
+
+/// UP21, UP26 (review S3): a PC on the release left that closes before its
+/// next look at the shop still goes back: at close it reads the shop version
+/// (within the time limit), fetches it from the shop folder's Updates and
+/// installs it. Nothing was queued before.
+#[test]
+fn closing_right_after_a_roll_back_installs_the_shop_version() {
+    let d = dir("rollback_close");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+    h.set_place(&lib, &d.join("own"));
+    // On the shop version: nothing to install.
+    assert_eq!(close_installs(h, "0.5.0").0, Ok(None));
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let (r, applied, fetched) = close_installs(h, "0.5.0");
+    assert_eq!(r, Ok(Some("0.4.0".into())));
+    assert_eq!(fetched, ["0.4.0"]);
+    assert_eq!(applied, [("0.4.0".to_string(), crate::updates::Source::Folder(lib.join("Updates").join("0.4.0")), crate::updates::Why::Shop)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP17, UP26 (review S3): the admin PC queued the release it tries; the
+/// shop is rolled back before the program closes: the trial is over, so
+/// the tried release doesn't install; the shop version does.
+#[test]
+fn a_trial_queued_before_a_roll_back_never_installs_after_it() {
+    use crate::updates::{Chosen, Source, Why};
+    let d = dir("rollback_close_trial");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let t = crate::engine::rollout::start_trial(&lib, &d.join("Trials"), "0.6.0", &admin(), &Clock::at(1_794_216_600), "0.5.0", &Default::default()).unwrap();
+    let rel = crate::engine::rollout::fake_release(&d, "0.6.0");
+    let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+    h.set_place(&t.copy, &d.join("own"));
+    let trial = Chosen { version: "0.6.0".into(), dir: t.copy.clone(), own: d.join("own"), src: Source::Folder(rel), why: Why::Trial };
+    let n = h.start(trial.clone());
+    h.done(n, true);
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    assert!(trial.stands().is_err(), "the trial still stood after the shop rolled back");
+    let (r, applied, _) = close_installs(h, "0.5.0");
+    assert_eq!(r, Ok(Some("0.4.0".into())));
+    assert_eq!(applied, [("0.4.0".to_string(), Source::Folder(lib.join("Updates").join("0.4.0")), Why::Shop)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP24 (review S5): roll back goes only to a release that recorded its
+/// own file layouts when it was rolled out: only releases that know about
+/// roll back (and so save what a release left wrote) record them. A
+/// release kept that was rolled out by an older program, which recorded
+/// only the shop's layouts, is refused, changing nothing.
+#[test]
+fn roll_back_goes_only_to_a_release_that_recorded_its_own_layouts() {
+    let d = dir("rollback_unaware");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    // As a release from before roll back rolled 0.4.0 out: no record of
+    // 0.4.0's own layouts (the shop's `layouts` stay).
+    edit_shop_file(&lib, |v| {
+        v[crate::shop::RELEASE_LAYOUTS].as_object_mut().unwrap().remove("0.4.0");
+    });
+    let before = files_under(&lib);
+    let e = crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err();
+    assert_eq!(e, "0.4.0 didn't record the file layouts it saves in when it was rolled out: it is from before roll back, and can't save what 0.5.0 wrote. Restore a backup instead. Nothing was changed.");
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap_err(), e);
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP24 (review S6): the layouts the shop's files are recorded in must be
+/// there, readable and whole (every kind of file the program guards):
+/// missing, damaged or partial records refuse roll back, never pass it.
+#[test]
+fn roll_back_refuses_layout_records_that_are_missing_damaged_or_partial() {
+    let d = dir("rollback_layout_records");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let shop_file = std::fs::read(lib.join(crate::shop::FILE)).unwrap();
+    let cases: [(&str, fn(&mut Value)); 6] = [
+        ("shop's layouts missing", |v| {
+            v.as_object_mut().unwrap().remove(crate::shop::LAYOUTS);
+        }),
+        ("shop's layouts damaged", |v| v[crate::shop::LAYOUTS] = json!("jobs 2")),
+        ("shop's layouts partial", |v| {
+            v[crate::shop::LAYOUTS].as_object_mut().unwrap().remove("stock");
+        }),
+        ("release's layouts damaged", |v| v[crate::shop::RELEASE_LAYOUTS]["0.4.0"] = json!([1, 2])),
+        ("release's layouts partial", |v| {
+            v[crate::shop::RELEASE_LAYOUTS]["0.4.0"].as_object_mut().unwrap().remove("materials");
+        }),
+        ("release records damaged", |v| v[crate::shop::RELEASE_LAYOUTS] = json!(7)),
+    ];
+    for (what, f) in cases {
+        std::fs::write(lib.join(crate::shop::FILE), &shop_file).unwrap();
+        edit_shop_file(&lib, f);
+        let before = files_under(&lib);
+        let e = crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").expect_err(what);
+        assert!(e.contains("Restore a backup instead") && e.ends_with("Nothing was changed."), "{what}: {e}");
+        assert_eq!(files_under(&lib), before, "{what}: a refused roll back changed the shop folder");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

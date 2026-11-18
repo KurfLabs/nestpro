@@ -860,9 +860,9 @@ pub struct Versions {
     pub this: String,
     /// The shop's version, when the Library is a shop that records one.
     pub shop: Option<String>,
-    /// UP10: the releases the shop has rolled back from. What they wrote
-    /// counts as the shop version's, so it can be saved again. Roll back
-    /// fills this list; until then it is empty.
+    /// UP10, UP25: the releases the shop has rolled back from (the shop
+    /// file's list, kept by Roll back). What they wrote counts as the shop
+    /// version's, so it can be saved again.
     pub rolled_back_from: Vec<String>,
     /// UP21: the shop version, when this PC runs a release newer than it
     /// and its Library isn't a trial copy: every file in the shop folder
@@ -870,7 +870,8 @@ pub struct Versions {
     /// version (when its program closes), so nothing it saves there is
     /// unreadable to the other PCs. Files elsewhere stay its own.
     pub back_to: Option<String>,
-    /// The shop folder `back_to` covers.
+    /// The shop folder, in a shop: what `back_to` and `rolled_back_from`
+    /// cover (`at`).
     pub shop_dir: Option<PathBuf>,
     /// UP16: the real shop folder, when this PC's Library is a trial copy of
     /// it: nothing the trial saves may land in it.
@@ -910,25 +911,32 @@ impl Versions {
         let Some(file) = version_numbers(w) else {
             return Some(Newer { written: w.to_string(), shop: None, back_to: None });
         };
+        // UP25: a release the shop rolled back from counts as the shop
+        // version, but never as newer than it is (once the shop rolls out a
+        // later release, what it wrote is simply older).
         let counts_as = match &shop {
-            Some(s) if self.rolled_back_from.iter().filter_map(|r| version_numbers(r)).any(|r| !is_newer(&r, &file) && !is_newer(&file, &r)) => s.clone(),
+            Some(s) if is_newer(&file, s) && self.rolled_back_from.iter().filter_map(|r| version_numbers(r)).any(|r| !is_newer(&r, &file) && !is_newer(&file, &r)) => s.clone(),
             _ => file.clone(),
         };
         if !is_newer(&counts_as, &this) {
             return None;
         }
         // UP8: the shop's version is named when updating to it is enough.
-        let shop = shop.filter(|s| !is_newer(&file, s)).and(self.shop.clone());
+        let shop = shop.filter(|s| !is_newer(&counts_as, s)).and(self.shop.clone());
         Some(Newer { written: w.to_string(), shop, back_to: None })
     }
 
-    /// UP21: these versions as they judge the file at `path`: a PC newer
-    /// than the shop version finds only the files in the shop folder
-    /// read-only, not those elsewhere.
+    /// UP21, UP25: these versions as they judge the file at `path`: a PC
+    /// newer than the shop version finds only the files in the shop folder
+    /// read-only, and only those count as the shop version's when a release
+    /// the shop rolled back from wrote them; files elsewhere are judged by
+    /// the version that wrote them.
     pub fn at(&self, path: &Path) -> Versions {
         let mut v = self.clone();
         if !v.shop_dir.as_deref().is_some_and(|d| inside(path, d)) {
             v.back_to = None;
+            // UP25: only the shop's files count as the shop version's.
+            v.rolled_back_from.clear();
         }
         v
     }
@@ -1459,6 +1467,29 @@ mod version_tests {
         // Not in a shop that records a version, nothing counts as another's.
         let none = Versions { shop: None, ..v };
         assert!(none.newer(Some("0.5.0")).is_some());
+    }
+
+    /// UP25: a release rolled back from counts as the shop version only
+    /// while it is newer than the shop version: once a later release is
+    /// rolled out, what it wrote is older again, and a PC still on it saves
+    /// its own files. A PC older than the shop version is told to update to
+    /// the shop version, which is enough.
+    #[test]
+    fn a_release_rolled_back_from_never_counts_as_newer_than_it_is() {
+        let later = Versions { this: "0.5.0".into(), shop: Some("0.6.0".into()), rolled_back_from: vec!["0.5.0".into()], ..Default::default() };
+        assert!(later.newer(Some("0.5.0")).is_none(), "a PC on 0.5.0 couldn't save what it wrote itself");
+        let old = Versions { this: "0.3.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], ..Default::default() };
+        assert_eq!(old.newer(Some("0.5.0")).unwrap().message(), "Made by version 0.5.0. Update this PC: the shop is on 0.4.0.");
+    }
+
+    /// UP25 (review S2): outside the shop folder a release rolled back from
+    /// is judged as itself.
+    #[test]
+    fn a_release_rolled_back_from_counts_as_the_shop_versions_only_in_the_shop_folder() {
+        let d = std::env::temp_dir().join("nestpro-version-scope");
+        let v = Versions { this: "0.4.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], shop_dir: Some(d.join("shop")), ..Default::default() };
+        assert!(v.at(&d.join("shop").join("Jobs").join("DEMO-001.snjob")).newer(Some("0.5.0")).is_none());
+        assert!(v.at(&d.join("desktop").join("DEMO-002.snjob")).newer(Some("0.5.0")).is_some());
     }
 
     /// UP21: a PC on a release newer than the shop version (outside a
