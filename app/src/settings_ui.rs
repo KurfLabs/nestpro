@@ -186,6 +186,9 @@ pub struct SettingsUi {
     pub backup_run: std::sync::Arc<std::sync::Mutex<BackupRun>>,
     /// The `BackupRun::ended` the card has seen.
     pub backup_seen: u64,
+    /// BK8: Restore… was pressed: the list of backups is open, with the
+    /// one picked, and whether it asks once more.
+    pub restore: Option<RestoreAsk>,
     /// SH4: this PC adding itself to its shop in the background (at
     /// start-up, or Add this PC): the answer to come, and whether a person
     /// pressed Add this PC.
@@ -348,9 +351,19 @@ pub struct BackupRun {
     pub note: Option<(bool, String)>,
     /// Save backup settings is waiting for the write lock (BK7).
     pub saving: bool,
+    /// A restore running in the background since then (BK8).
+    pub restoring: Option<u64>,
     /// What saving gave, for the window to take: whether they were the
     /// shop's, and this PC's own settings after it.
     pub saved: Option<(Result<bool, String>, crate::backup::Settings)>,
+}
+
+/// BK8: the Restore window: the backup picked, and whether the person
+/// was asked once more (Restore pressed).
+#[derive(Clone, Debug, Default)]
+pub struct RestoreAsk {
+    pub pick: Option<String>,
+    pub sure: bool,
 }
 
 /// "lower left" → "Lower left".
@@ -2347,7 +2360,30 @@ impl App {
         }
         self.setui.shop = None;
         if std::env::args().any(|a| a == "--settings=shop-admin") {
-            self.setui.shop_admin_ask = Some((dir, "PC-A".into()));
+            self.setui.shop_admin_ask = Some((dir.clone(), "PC-A".into()));
+        }
+        // `--shop-demo=restore` (BK8): this window on the admin PC, PC-A,
+        // with the Restore list open on the backup of two days ago;
+        // `--shop-demo=restore-ask`: asking once more.
+        if what == "restore" || what == "restore-ask" {
+            self.who = Who::new("sam", "PC-A");
+            let all = crate::backup::overview(&dir, &own).map(|o| o.all).unwrap_or_default();
+            let pick = all.iter().find(|e| e.pc == "PC-C").or(all.first()).map(|e| e.name.clone());
+            self.setui.restore = Some(RestoreAsk { pick, sure: what == "restore-ask" });
+        }
+        // `--shop-demo=restore-stopped` (BK13): the admin PC's restore of the
+        // backup of two days ago stopped halfway 20 minutes ago; the Backups
+        // card says so from the shop file.
+        if what == "restore-stopped" {
+            self.who = Who::new("sam", "PC-A");
+            let all = crate::backup::overview(&dir, &own).map(|o| o.all).unwrap_or_default();
+            if let (Some(e), Ok(Some(mut s)), Ok(lock)) = (all.iter().find(|e| e.pc == "PC-C"), crate::shop::read(&dir), crate::shared::WriteLock::take(&dir)) {
+                let id8 = e.name.split(' ').nth(2).unwrap_or_default();
+                let before = format!("Backup Acme {id8} {} PC-A before restore.zip", self.clock.stamp(now - 20 * 60).replace(':', ""));
+                s.restored = Some(crate::shop::Restore { backup: e.name.clone(), backup_when: e.stamp(), before, by: Who::new("sam", "PC-A"), at: now - 20 * 60, finished: false, revision_floor: 0, generation: 1, lock: String::new() });
+                let _ = crate::shop::write(&dir, &s, &lock, crate::updates::VERSION);
+            }
+            self.setui.shop = None;
         }
     }
 
@@ -2360,7 +2396,7 @@ impl App {
     /// when the Library is a shop.
     fn backups_card(&mut self, ui: &mut egui::Ui, dir: &std::path::Path, shop: Option<&crate::shop::ShopFile>) {
         let t = th();
-        let (since, note, saving) = self.setui.backup_run.lock().map(|r| (r.since, r.note.clone(), r.saving)).unwrap_or_default();
+        let (since, note, saving, restoring) = self.setui.backup_run.lock().map(|r| (r.since, r.note.clone(), r.saving, r.restoring)).unwrap_or_default();
         // Who may change Keep and the second place (SH3).
         let may = match shop {
             Some(s) if s.settings_by == crate::shop::SettingsBy::AdminPc && s.admin.pc != self.who.pc => Err(format!("Shop settings are changed only on the admin PC ({}).", s.admin.pc)),
@@ -2388,6 +2424,16 @@ impl App {
                     ui.label(RichText::new("None yet").color(t.text_dim));
                 }
             });
+            // BK12, BK13: the shop's last restore, as the shop file says,
+            // whatever this window saw: running, stopped halfway (with the
+            // backup that holds the Library as it was), or done.
+            if let Some(r) = shop.and_then(|s| s.restored.as_ref()) {
+                let state = crate::engine::shop::restore_state(dir, r);
+                let (warn, line) = restore_line(r, state, &self.clock);
+                row(ui, "Last restore", |ui| {
+                    ui.label(RichText::new(line).size(11.5).color(if warn { t.warn_fg } else { t.text })).on_hover_text(format!("{} — restored from {} by {}. The Library as it was before is in {}.", backup_day(r), r.backup, r.by.label(), r.before));
+                });
+            }
             row(ui, "Folder", |ui| match &ov.folder {
                 Ok(f) => {
                     ui.label(RichText::new(f.display().to_string()).monospace().size(11.5)).on_hover_text("Each backup is one zip, named by its day and the PC that took it. Other files kept here are never touched.");
@@ -2414,8 +2460,22 @@ impl App {
             self.setui.backup_edit = changed.then_some(edit.clone());
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if page_button(ui, "Shop", "Back up now", since.is_none()).on_hover_text("Take a backup now, whatever was taken today: before a big change, say.").clicked() {
+                if page_button(ui, "Shop", "Back up now", since.is_none() && restoring.is_none()).on_hover_text("Take a backup now, whatever was taken today: before a big change, say.").clicked() {
                     self.start_backup(crate::backup::Why::Now);
+                }
+                // BK8: offered only on the admin PC, whatever the shop says
+                // about who changes shop settings.
+                if shop.is_some_and(|s| s.admin.pc == self.who.pc)
+                    && page_button(ui, "Shop", "Restore…", since.is_none() && restoring.is_none() && ov.count > 0)
+                        .on_hover_text("Put the shop back as it was in an earlier backup. The Library as it is now is kept first, as a backup named \"before restore\".")
+                        .clicked()
+                {
+                    self.setui.restore = Some(RestoreAsk { pick: ov.all.first().map(|e| e.name.clone()), sure: false });
+                }
+                if let Some(at) = restoring {
+                    ui.spinner();
+                    ui.label(RichText::new(format!("Restoring… (since {})", self.clock.shown(at)))).on_hover_text("The Library is being put back from the backup. Other PCs wait until it's done.");
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
                 }
                 if changed && page_button(ui, "Shop", "Save backup settings", may.is_ok() && !saving).clicked() {
                     self.save_backup_settings(dir, &edit);
@@ -2519,6 +2579,150 @@ impl App {
                 r.note = note;
             }
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Restore (BK8–BK13): the rules are in crate::backup and engine::shop.
+// ---------------------------------------------------------------------------
+
+impl App {
+    /// BK8: the Restore window: the backups by date, newest first, one
+    /// picked; Restore asks once more, then restores in the background.
+    pub fn restore_window(&mut self, ctx: &egui::Context) {
+        let Some(mut ask) = self.setui.restore.clone() else { return };
+        let all = match &self.setui.backups {
+            Some(Ok(o)) => o.all.clone(),
+            _ => vec![],
+        };
+        let shop = match &self.setui.shop {
+            Some(Ok(Some(st))) => st.shop.name.clone(),
+            _ => String::new(),
+        };
+        let t = th();
+        let mut open = true;
+        let (mut go, mut cancel) = (false, false);
+        egui::Window::new(RichText::new("Restore a backup").size(16.0).strong())
+            .id(egui::Id::unique("restore_window"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_max_width(520.0);
+                let picked = all.iter().find(|e| Some(&e.name) == ask.pick.as_ref()).cloned();
+                if ask.sure {
+                    let Some(e) = picked else {
+                        ask.sure = false;
+                        return;
+                    };
+                    ui.label(RichText::new(format!("Restore {shop} to {}?", e.shown())).size(14.0).strong().color(t.text_strong));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Every job, part and sheet saved since then is taken out of the Library, on every PC. Programmers should save and close their jobs first.").color(t.text));
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("The Library as it is now is kept first, as a backup named \"before restore\", so this can be undone.").size(11.5).color(t.text_dim));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        go = ui.add(egui::Button::new(RichText::new(format!("Restore to {}", e.shown())).color(egui::Color32::WHITE)).fill(t.warn_fg).min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                        cancel = ui.add(egui::Button::new("Cancel — change nothing").min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                    });
+                    return;
+                }
+                ui.label(RichText::new("Pick the day to put the shop back to. Nothing changes until you confirm.").color(t.text));
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for e in &all {
+                        let mut text = format!("{}   on {}", e.shown(), e.pc);
+                        if e.before_restore {
+                            text.push_str("   (before restore)");
+                        }
+                        let on = ask.pick.as_ref() == Some(&e.name);
+                        let r = ui.add(egui::Button::selectable(on, RichText::new(text).monospace().size(12.5)).min_size(egui::Vec2::new(480.0, 24.0)));
+                        if r.on_hover_text(format!("{} — {:.1} MB", e.name, e.bytes as f64 / 1e6)).clicked() {
+                            ask.pick = Some(e.name.clone());
+                        }
+                    }
+                    if all.is_empty() {
+                        ui.label(RichText::new("No backups yet.").color(t.text_dim));
+                    }
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let label = picked.as_ref().map_or_else(|| "Restore…".to_string(), |e| format!("Restore {}…", e.shown()));
+                    if ui.add_enabled(picked.is_some(), egui::Button::new(label).min_size(egui::Vec2::new(0.0, 28.0))).clicked() {
+                        ask.sure = true;
+                    }
+                    cancel = ui.add(egui::Button::new("Cancel").min_size(egui::Vec2::new(0.0, 28.0))).clicked();
+                });
+            });
+        if go {
+            self.setui.restore = None;
+            if let Some(name) = ask.pick {
+                self.start_restore(&name);
+            }
+        } else if cancel || !open {
+            self.setui.restore = None;
+        } else {
+            self.setui.restore = Some(ask);
+        }
+    }
+
+    /// BK8: restore the backup named `name`, in the background (it zips and
+    /// unpacks the whole Library). The card says how it went, and the page
+    /// reads the shop and its backups again when it's done.
+    pub(crate) fn start_restore(&self, name: &str) {
+        let run = self.setui.backup_run.clone();
+        {
+            let Ok(mut r) = run.lock() else { return };
+            if r.since.is_some() || r.restoring.is_some() {
+                return;
+            }
+            r.restoring = Some(self.clock.now());
+        }
+        let (dir, who, clock, name) = (self.library_dir(), self.who.clone(), self.clock.clone(), name.to_string());
+        std::thread::spawn(move || {
+            let got = crate::engine::shop::restore(&dir, &name, &who, &clock, crate::updates::VERSION);
+            if let Ok(mut r) = run.lock() {
+                r.restoring = None;
+                r.ended += 1;
+                r.note = Some(restore_note(got));
+            }
+        });
+    }
+}
+
+/// "9 Nov 09:20": the day of the backup a restore put back.
+fn backup_day(r: &crate::shop::Restore) -> String {
+    crate::backup::shown_stamp(&r.backup_when)
+}
+
+/// BK12, BK13: the Backups card's line for the shop's last restore, from
+/// the shop file (true: a warning).
+pub(crate) fn restore_line(r: &crate::shop::Restore, state: crate::engine::shop::RestoreState, clock: &crate::shared::Clock) -> (bool, String) {
+    use crate::engine::shop::RestoreState::*;
+    match state {
+        Finished => (false, format!("Back to {}, by {}, {}", backup_day(r), r.by.pc, clock.shown(r.at))),
+        Running => (false, format!("Restoring to {} on {} (since {})…", backup_day(r), r.by.pc, clock.shown(r.at))),
+        Stopped => (true, format!("⚠ Restore to {} stopped halfway ({}, {}): restore its \"before restore\" backup", backup_day(r), r.by.pc, clock.shown(r.at))),
+    }
+}
+
+/// BK8, BK9: what the Backups card says of a restore this PC made.
+pub(crate) fn restore_note(got: Result<crate::engine::shop::RestoreDone, String>) -> (bool, String) {
+    match got {
+        Ok(r) => {
+            let d = &r.done;
+            let mut n = format!("Restored the shop to {}: {} file{} put back, {} taken out. The Library as it was is kept in {}.", d.from.shown(), d.files, if d.files == 1 { "" } else { "s" }, d.removed, d.before.name);
+            let mut ok = true;
+            if let Some(Err(e)) = &r.second {
+                n.push_str(&format!(" {e}"));
+                ok = false;
+            }
+            (ok, n)
+        }
+        Err(e) => (false, e),
     }
 }
 
