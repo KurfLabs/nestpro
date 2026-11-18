@@ -335,12 +335,13 @@ impl Tree {
     }
 
     /// Where a record saved into the Library for the first time goes (JX15):
-    /// into `prefer` while that folder is still there, else into the
-    /// top-level folder named `name`, made if missing. Returns the folder.
+    /// into `prefer` while that folder is still there, else into the folder
+    /// its Open jobs folder `name` names, made if missing: "Fulcrum › WO-7" is
+    /// WO-7 inside Fulcrum (JX21). Returns the folder.
     pub fn file_new(&mut self, record: u64, prefer: Option<u64>, name: &str) -> u64 {
         let to = match prefer.filter(|&f| f == TOP || self.get(f).is_some()) {
             Some(f) => f,
-            None => self.top_folder_named(name),
+            None => self.folder_made(&crate::jobtree::folder_levels(name)).unwrap_or(TOP),
         };
         let _ = self.put(record, to);
         to
@@ -504,7 +505,7 @@ pub enum PartsFolder {
     /// place in the jobs' tree when the job is in the Library (`record`),
     /// else the jobs' folder `folder` while that is still there (the library
     /// job it was opened or copied from, JX15; the top: no folder), else its
-    /// Open jobs folder `week`, a top-level name ("" for none).
+    /// Open jobs folder `week`, its levels from the top (JX21; "" for none).
     LikeJob { record: Option<u64>, folder: Option<u64>, week: String },
     /// A path in the parts tree ("Acme/2026-11", names separated by / or \).
     Path(String),
@@ -521,7 +522,7 @@ impl PartsFolder {
                 let at = record.filter(|r| saved.iter().any(|e| e.kind == Kind::Job && e.id == *r)).map(|r| jobs.folder_of(r)).or_else(|| folder.filter(|&f| f == TOP || jobs.get(f).is_some()));
                 match at {
                     Some(f) => jobs.names(f),
-                    None => Some(week.trim()).filter(|w| !w.is_empty()).map(String::from).into_iter().collect(),
+                    None => crate::jobtree::folder_levels(week),
                 }
             }
         }
@@ -547,6 +548,22 @@ mod folders_tests {
 
     fn entry(id: u64, name: &str, folder: &str) -> Entry {
         Entry { kind: Kind::Job, id, name: name.into(), folder: folder.into(), material: 0, material_name: String::new(), thickness: 3.0, w: 2000.0, h: 1000.0, count_a: 1, count_b: 1, updated: 0, tech: false, saved_by: None, gas: None }
+    }
+
+    #[test]
+    fn a_job_from_a_folder_inside_a_folder_is_filed_at_both_levels() {
+        // JX21: Open jobs folder "Fulcrum › WO-7/8 Acme" → Library folder WO-7/8 Acme inside Fulcrum.
+        let mut t = Tree::default();
+        let f = t.file_new(5, None, "Fulcrum › WO-7/8 Acme");
+        let top = t.children(TOP);
+        assert_eq!(top.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Fulcrum"]);
+        assert_eq!(t.names(f), vec!["Fulcrum".to_string(), "WO-7/8 Acme".to_string()]);
+        assert_eq!(t.folder_of(5), f);
+        // A second job of the same work order goes in the same folder.
+        assert_eq!(t.file_new(6, None, "Fulcrum › wo-7/8 acme"), f);
+        // A library part saved from it is filed the same way.
+        let like = PartsFolder::LikeJob { record: None, folder: None, week: "Fulcrum › WO-7/8 Acme".into() };
+        assert_eq!(like.names(&Tree::default(), &[]), vec!["Fulcrum".to_string(), "WO-7/8 Acme".to_string()]);
     }
 
     #[test]

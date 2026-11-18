@@ -339,9 +339,9 @@ fn r4(x: f64) -> f64 {
     (x * 1e4).round() / 1e4
 }
 
-/// The nest in Fulcrum's form, in `units`; `sheet_item` is the stock item
-/// the sheets are cut from, when known.
-pub fn setup_body(nest: &NestReport, units: Units, software: &str, sheet_item: Option<&str>) -> NestingSetupSave {
+/// The nest in Fulcrum's form, in `units`; `sheet_item` gives the id of the
+/// stock item a sheet is cut from, when known.
+pub fn setup_body(nest: &NestReport, units: Units, software: &str, sheet_item: impl Fn(&NestSheet) -> Option<String>) -> NestingSetupSave {
     let u = units.mm();
     NestingSetupSave {
         nesting_software: software.to_string(),
@@ -368,7 +368,7 @@ pub fn setup_body(nest: &NestReport, units: Units, software: &str, sheet_item: O
                 runtime_seconds: s.runtime_s.round(),
                 count: s.count.max(1),
                 page_number: k as u32 + 1,
-                item_id: sheet_item.map(str::to_string),
+                item_id: sheet_item(s),
                 sheet_name: s.name.clone(),
                 parts: s.parts.iter().map(|(n, q)| SavePlatePart { part_number: n.clone(), quantity: *q }).collect(),
             })
@@ -593,23 +593,25 @@ impl Connector for Fulcrum {
             res.error = Some("The work order's operation isn't known — forget the work order and send again.".into());
             return Ok(res);
         }
-        // The sheet stock item, if one is named on the job.
-        let sheet_item = if link.sheet_item.trim().is_empty() {
-            None
-        } else {
-            match self.item_id_by_number(&link.sheet_item) {
-                Ok(Some(id)) => Some(id),
-                Ok(None) => {
-                    res.issues.push(format!("No Fulcrum item numbered \"{}\" — sheets sent without their stock item.", link.sheet_item.trim()));
-                    None
-                }
-                Err(e) => {
-                    res.issues.push(format!("Couldn't look up the sheet item: {e}"));
-                    None
-                }
+        // Each sheet's stock item, if one is named: its own (F36: each
+        // material's job names its own), else the job's. Looked up once each.
+        let mut items: std::collections::HashMap<String, String> = Default::default();
+        let mut looked: Vec<String> = vec![];
+        for s in &nest.sheets {
+            let n = if s.item.trim().is_empty() { link.sheet_item.trim() } else { s.item.trim() };
+            if n.is_empty() || looked.iter().any(|l| l == n) {
+                continue;
             }
-        };
-        let body = setup_body(nest, self.units, &self.software, sheet_item.as_deref());
+            looked.push(n.to_string());
+            match self.item_id_by_number(n) {
+                Ok(Some(id)) => {
+                    items.insert(n.to_string(), id);
+                }
+                Ok(None) => res.issues.push(format!("No Fulcrum item numbered \"{n}\" — its sheets sent without their stock item.")),
+                Err(e) => res.issues.push(format!("Couldn't look up the sheet item \"{n}\": {e}")),
+            }
+        }
+        let body = setup_body(nest, self.units, &self.software, |s| items.get(if s.item.trim().is_empty() { link.sheet_item.trim() } else { s.item.trim() }).cloned());
         match self.http.put_json::<_, SaveResultDto>(&format!("/api/work-orders/{}/operations/{}/nesting-setup", wo.id, wo.op_id), &body) {
             Ok(r) => res.issues.extend(r.validation_issues.iter().map(issue_text)),
             Err(e) => res.error = Some(format!("Couldn't store the nest: {e}")),
@@ -686,7 +688,7 @@ pub(crate) mod tests {
         NestReport {
             machine: "Laser 1".into(),
             parts: vec![NestPart { number: "BRK-1".into(), qty: 10, area_mm2: 645.16, contour_mm: 254.0, item_id: "it1".into(), per_op: vec![("j".into(), "jo1".into(), 10)] }],
-            sheets: vec![NestSheet { w_mm: 3048.0, h_mm: 1524.0, count: 2, runtime_s: 300.4, name: "J-1".into(), parts: vec![("BRK-1".into(), 5)] }],
+            sheets: vec![NestSheet { w_mm: 3048.0, h_mm: 1524.0, count: 2, runtime_s: 300.4, name: "J-1".into(), parts: vec![("BRK-1".into(), 5)], item: String::new() }],
             unplaced: vec![Unplaced { file_id: "a".into(), file_name: "BRK-1.dxf".into(), qty: 2, reason: "10 of 12 placed".into() }],
             notes: vec![],
         }
@@ -694,7 +696,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_nest_is_sent_in_inches_or_mm() {
-        let b = setup_body(&report(), Units::Inch, "unknown", Some("sheetitem"));
+        let b = setup_body(&report(), Units::Inch, "unknown", |_| Some("sheetitem".into()));
         assert_eq!((b.parts[0].surface_area, b.parts[0].contours_length), (1.0, 10.0));
         assert_eq!((b.plates[0].dimension_x, b.plates[0].dimension_y, b.plates[0].count, b.plates[0].runtime_seconds, b.plates[0].page_number), (120.0, 60.0, 2, 300.0, 1));
         assert_eq!(b.plates[0].item_id.as_deref(), Some("sheetitem"));
@@ -702,7 +704,7 @@ pub(crate) mod tests {
         assert_eq!(v["parts"][0]["jobOperationQuantities"][0]["jobOperationId"], "jo1");
         assert_eq!(v["unplacedParts"][0]["quantity"], 2);
         assert_eq!(v["nestingSoftware"], "unknown");
-        let mm = setup_body(&report(), Units::Millimeter, "lantek", None);
+        let mm = setup_body(&report(), Units::Millimeter, "lantek", |_| None);
         assert_eq!((mm.plates[0].dimension_x, mm.parts[0].surface_area), (3048.0, 645.16));
         assert!(serde_json::to_value(&mm).unwrap()["plates"][0].get("itemId").is_none());
     }
@@ -726,7 +728,7 @@ pub(crate) mod tests {
         let wp = f.work_package(&[("6650aaaaaaaaaaaaaaaaaaaa".into(), "jo1".into(), "itm1".into())]).unwrap();
         assert_eq!(wp.parts.len(), 1);
         assert_eq!(f.download(wp.parts[0].dxf().unwrap()).unwrap(), b"0\nEOF\n");
-        let link = ErpJob { provider: Provider::Fulcrum, material_id: String::new(), material_name: String::new(), operation_id: String::new(), operation_name: String::new(), work_order: None, sent: None, sheet_item: "SHT-304-14".into() };
+        let link = ErpJob { provider: Provider::Fulcrum, material_id: String::new(), material_name: String::new(), operation_id: String::new(), operation_name: String::new(), work_order: None, sent: None, sheet_item: "SHT-304-14".into(), step_materials: vec![] };
         let r = f.send_nest("W45 304 1/4", &link, &[("6650aaaaaaaaaaaaaaaaaaaa".into(), "jo1".into())], &report()).unwrap();
         assert!(r.created && r.error.is_none(), "{:?}", r.error);
         assert_eq!(r.work_order.as_ref().unwrap().op_id, "woop9");

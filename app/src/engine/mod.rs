@@ -1435,6 +1435,33 @@ pub fn format_at(formats: &[SheetFormat], spec: &SheetSpec, k: usize) -> SheetFo
     formats.get(k).cloned().unwrap_or_else(|| SheetFormat::rect(spec.w, spec.h))
 }
 
+/// Identical sheets folded together, in nesting order (original: rows with
+/// CopyIndx > 1 are hidden and Quantity counts the copies — MECHANICS.md #4):
+/// the same parts in the same places on the same kind of sheet (a remnant or
+/// another stock size is a different sheet). Returns (first sheet index,
+/// number of identical sheets).
+pub fn sheet_groups(result: &crate::nest::NestResult, spec: &SheetSpec) -> Vec<(usize, usize)> {
+    let sig = |s: &Vec<Placed>| {
+        let mut v: Vec<(usize, i64, i64, u8, bool, i64)> = s.iter().map(|p| (p.part, (p.x * 10.0).round() as i64, (p.y * 10.0).round() as i64, p.turns, p.mirror, (p.spin.deg * 100.0).round() as i64)).collect();
+        v.sort();
+        v
+    };
+    let fmt = |i: usize| {
+        let f = result.format(i, spec);
+        ((f.w * 10.0).round() as i64, (f.h * 10.0).round() as i64, f.stock_ref)
+    };
+    let mut groups: Vec<(usize, usize, Vec<(usize, i64, i64, u8, bool, i64)>)> = vec![];
+    for (i, s) in result.sheets.iter().enumerate() {
+        let g = sig(s);
+        if let Some(e) = groups.iter_mut().find(|e| e.2 == g && fmt(e.0) == fmt(i)) {
+            e.1 += 1;
+        } else {
+            groups.push((i, 1, g));
+        }
+    }
+    groups.into_iter().map(|(i, n, _)| (i, n)).collect()
+}
+
 /// Cutting plan of every sheet (manual picks first, the rest automatically),
 /// each with its own sheet size.
 pub fn plans(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], spec: &SheetSpec, manual: &[Vec<ManualCut>]) -> Vec<SheetPlan> {

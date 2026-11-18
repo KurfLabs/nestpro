@@ -316,6 +316,10 @@ pub struct ErpJob {
     /// so the system knows what material is used (empty = not sent).
     #[serde(default)]
     pub sheet_item: String,
+    /// Every material the work-order step was opened with, as (material
+    /// id, name): one job each (F35). A send carries them all (F36).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub step_materials: Vec<(String, String)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +510,8 @@ pub struct NestSheet {
     pub name: String,
     /// (part number, how many on one sheet).
     pub parts: Vec<(String, u32)>,
+    /// The system's item number for this sheet's stock (empty: the job's).
+    pub item: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -639,6 +645,8 @@ pub struct ImportPart {
     pub name: String,
     pub drawing: DrawingRef,
     pub demands: Vec<Demand>,
+    /// The material the system cuts it from, if it says.
+    pub material: Option<MaterialInfo>,
 }
 
 impl ImportPart {
@@ -683,9 +691,10 @@ pub fn plan_import(wp: &WorkPackage, on_step: Option<&str>) -> (Vec<ImportPart>,
             continue;
         }
         let key_item = cp.item.id.clone();
-        match out.iter_mut().find(|p| p.drawing.id == dxf.id && p.demands.first().is_some_and(|f| f.item_id == key_item)) {
+        let shape = |m: &Option<MaterialInfo>| m.as_ref().map(|m| m.shape_id.clone());
+        match out.iter_mut().find(|p| p.drawing.id == dxf.id && p.demands.first().is_some_and(|f| f.item_id == key_item) && shape(&p.material) == shape(&cp.material)) {
             Some(p) => p.demands.push(d),
-            None => out.push(ImportPart { name: cp.part_name(), drawing: dxf.clone(), demands: vec![d] }),
+            None => out.push(ImportPart { name: cp.part_name(), drawing: dxf.clone(), demands: vec![d], material: cp.material.clone() }),
         }
     }
     // Same name, different drawing: keep names unique so parts stay apart.
@@ -839,7 +848,7 @@ pub fn nest_report(provider: Provider, job_name: &str, machine: &str, parts: &[P
             continue;
         }
         let f = crate::engine::format_at(formats, spec, first);
-        r.sheets.push(NestSheet { w_mm: f.w, h_mm: f.h, count: count as u32, runtime_s: seconds.get(first).copied().unwrap_or(0.0), name: format!("{job_name}-{}", g + 1), parts: on });
+        r.sheets.push(NestSheet { w_mm: f.w, h_mm: f.h, count: count as u32, runtime_s: seconds.get(first).copied().unwrap_or(0.0), name: format!("{job_name}-{}", g + 1), parts: on, item: String::new() });
     }
     r
 }
@@ -855,6 +864,126 @@ pub fn job_ops(parts: &[Part], provider: Provider) -> Vec<(String, String)> {
         }
     }
     v
+}
+
+// ---------------------------------------------------------------------------
+// A work-order step cut from several materials (F35, F36).
+// ---------------------------------------------------------------------------
+
+/// A part's material as the step's jobs are keyed (F35): the system's
+/// material shape, else `fallback`.
+fn material_ref(m: &Option<MaterialInfo>, fallback: &Ref) -> Ref {
+    match m {
+        Some(m) if !m.shape_id.is_empty() || !m.name.is_empty() => Ref { id: m.shape_id.clone(), name: if m.name.is_empty() { m.material_name.clone() } else { m.name.clone() } },
+        _ => fallback.clone(),
+    }
+}
+
+/// The materials of a work-order step's parts, in the order first met, each
+/// with its system description (if given) and the indexes of its parts (F35:
+/// one job per material). A part the system gives no material for goes with
+/// `fallback`, the material of the row it was opened from.
+pub fn split_by_material(parts: &[ImportPart], fallback: &Ref) -> Vec<(Ref, Option<MaterialInfo>, Vec<usize>)> {
+    let mut out: Vec<(Ref, Option<MaterialInfo>, Vec<usize>)> = vec![];
+    for (i, p) in parts.iter().enumerate() {
+        let r = material_ref(&p.material, fallback);
+        match out.iter_mut().find(|(k, _, _)| k.id == r.id && (!r.id.is_empty() || k.name == r.name)) {
+            Some((_, info, ix)) => {
+                if info.is_none() {
+                    *info = p.material.clone();
+                }
+                ix.push(i);
+            }
+            None => out.push((r, p.material.clone(), vec![i])),
+        }
+    }
+    out
+}
+
+/// Every material on a work-order step's cut list, drawing or not (F36):
+/// the parts on no other step's nest, by material, as `split_by_material`
+/// names them (no material: `fallback`).
+pub fn step_materials(wp: &WorkPackage, step: &str, fallback: &Ref) -> Vec<Ref> {
+    let mut out: Vec<Ref> = vec![];
+    for cp in wp.parts.iter().filter(|p| p.nested_on.as_deref().is_none_or(|w| w == step)) {
+        let r = material_ref(&cp.material, fallback);
+        if !out.iter().any(|k| k.id == r.id && (!r.id.is_empty() || k.name == r.name)) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// One job's share of a work-order step's nest.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Share {
+    pub job: String,
+    /// The job's sheet stock item number (empty: none named).
+    pub sheet_item: String,
+    pub report: NestReport,
+}
+
+/// The nest of a work-order step from the nests of its jobs, one per
+/// material (F36): the system keeps one nest per step and a send replaces
+/// all of it, so every material's sheets go together. Each sheet keeps its
+/// own job's stock item; a part number another job already uses gets "#2",
+/// "#3"… as within one job; notes name their job.
+pub fn combine_reports(shares: &[Share]) -> NestReport {
+    let mut r = NestReport { machine: shares.iter().map(|s| s.report.machine.clone()).find(|m| !m.trim().is_empty()).unwrap_or_default(), ..Default::default() };
+    let mut numbers: Vec<String> = vec![];
+    for s in shares {
+        let mut renamed: std::collections::HashMap<String, String> = Default::default();
+        for p in &s.report.parts {
+            let mut n = p.number.clone();
+            let mut k = 1;
+            while numbers.contains(&n) {
+                k += 1;
+                n = format!("{} #{k}", p.number);
+            }
+            numbers.push(n.clone());
+            if n != p.number {
+                renamed.insert(p.number.clone(), n.clone());
+            }
+            r.parts.push(NestPart { number: n, ..p.clone() });
+        }
+        let num = |n: &String| renamed.get(n).cloned().unwrap_or_else(|| n.clone());
+        for sh in &s.report.sheets {
+            r.sheets.push(NestSheet { parts: sh.parts.iter().map(|(n, q)| (num(n), *q)).collect(), item: if sh.item.is_empty() { s.sheet_item.clone() } else { sh.item.clone() }, ..sh.clone() });
+        }
+        r.unplaced.extend(s.report.unplaced.iter().cloned());
+        let many = shares.len() > 1;
+        r.notes.extend(s.report.notes.iter().map(|n| if many { format!("{}: {n}", s.job) } else { n.clone() }));
+    }
+    r
+}
+
+/// A job open here on a work-order step, as the send sees it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StepJob {
+    pub name: String,
+    pub material_id: String,
+    pub material_name: String,
+    /// It has nested sheets.
+    pub nested: bool,
+}
+
+/// Why a work-order step's nest can't be sent yet (F36): a material the step
+/// was opened with has no job open here, or a job on it isn't nested. Its
+/// sheets would be lost from the step, as a send replaces the whole nest.
+pub fn step_not_ready(provider: Provider, expected: &[(String, String)], jobs: &[StepJob]) -> Option<String> {
+    let mut gaps: Vec<String> = vec![];
+    for (id, name) in expected {
+        if !jobs.iter().any(|j| &j.material_id == id) {
+            gaps.push(format!("{name}: its job isn't open here (open it from the Library, or open the work order again to make it; if its drawings couldn't be read, fix them first)"));
+        }
+    }
+    for j in jobs.iter().filter(|j| !j.nested) {
+        gaps.push(format!("{}: not nested yet", j.name));
+    }
+    if gaps.is_empty() {
+        return None;
+    }
+    Some(format!("Nothing sent. {} keeps one nest per work-order step and a send replaces all of it, so every material on the step goes together. Not ready — {}.", provider.name(), gaps.join("; ")))
 }
 
 /// Seconds since 1970.
@@ -930,6 +1059,50 @@ mod tests {
 
     fn at(part: usize, x: f64) -> Placed {
         Placed { part, x, y: 5.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() }
+    }
+
+    #[test]
+    fn a_step_cut_from_several_materials_makes_one_job_each_and_one_nest() {
+        // F35: the parts of one work-order step, by the material each is cut from.
+        let mi = |id: &str, name: &str| Some(MaterialInfo { shape_id: id.into(), name: name.into(), ..Default::default() });
+        let ip = |name: &str, m: Option<MaterialInfo>| ImportPart { name: name.into(), drawing: DrawingRef { id: name.into(), ..Default::default() }, demands: vec![], material: m };
+        let parts = vec![ip("A", mi("AL-11GA", "5052 11GA")), ip("B", mi("AL-125", "5052 1/8")), ip("C", mi("AL-11GA", "5052 11GA")), ip("D", None)];
+        let row = Ref { id: "AL-125".into(), name: "5052 1/8".into() };
+        let s = split_by_material(&parts, &row);
+        assert_eq!(s.iter().map(|(r, _, ix)| (r.id.as_str(), r.name.as_str(), ix.clone())).collect::<Vec<_>>(), vec![("AL-11GA", "5052 11GA", vec![0, 2]), ("AL-125", "5052 1/8", vec![1, 3])], "a part without a material goes with the row's");
+
+        // F36: one nest for the step, each sheet with its own job's stock item;
+        // a part number the other job uses too is told apart.
+        let share = |job: &str, item: &str, sheet: &str| Share {
+            job: job.into(),
+            sheet_item: item.into(),
+            report: NestReport {
+                machine: "Fiber 1".into(),
+                parts: vec![NestPart { number: "BRK-1".into(), qty: 4, per_op: vec![("j".into(), format!("jo-{job}"), 4)], ..Default::default() }],
+                sheets: vec![NestSheet { name: sheet.into(), count: 2, parts: vec![("BRK-1".into(), 2)], ..Default::default() }],
+                unplaced: vec![Unplaced { file_name: format!("{job}.dxf"), qty: 1, ..Default::default() }],
+                notes: vec!["Sheet 3 has no Fulcrum parts and was left out".into()],
+            },
+        };
+        let r = combine_reports(&[share("WO-7 11GA", "SHT-11", "WO-7 11GA-1"), share("WO-7 1/8", "", "WO-7 1/8-1")]);
+        assert_eq!(r.machine, "Fiber 1");
+        assert_eq!(r.parts.iter().map(|p| p.number.as_str()).collect::<Vec<_>>(), vec!["BRK-1", "BRK-1 #2"]);
+        assert_eq!(r.parts[1].per_op[0].1, "jo-WO-7 1/8", "each part keeps its own orders");
+        assert_eq!(r.sheets.iter().map(|s| (s.name.as_str(), s.item.as_str(), s.parts[0].0.as_str())).collect::<Vec<_>>(), vec![("WO-7 11GA-1", "SHT-11", "BRK-1"), ("WO-7 1/8-1", "", "BRK-1 #2")]);
+        assert_eq!(r.unplaced.len(), 2);
+        assert_eq!(r.notes[1], "WO-7 1/8: Sheet 3 has no Fulcrum parts and was left out");
+        // One job alone is reported as it is.
+        let one = combine_reports(&[share("J", "", "J-1")]);
+        assert_eq!((one.parts[0].number.as_str(), one.notes[0].as_str()), ("BRK-1", "Sheet 3 has no Fulcrum parts and was left out"));
+
+        // Nothing is sent while a material's job is missing or not nested.
+        let expected = vec![("AL-11GA".to_string(), "5052 11GA".to_string()), ("AL-125".to_string(), "5052 1/8".to_string())];
+        let job = |name: &str, id: &str, nested: bool| StepJob { name: name.into(), material_id: id.into(), material_name: String::new(), nested };
+        let why = step_not_ready(Provider::Fulcrum, &expected, &[job("WO-7 11GA", "AL-11GA", true)]).unwrap();
+        assert!(why.contains("5052 1/8: its job isn't open here") && why.starts_with("Nothing sent. Fulcrum keeps one nest per work-order step"), "{why}");
+        let why = step_not_ready(Provider::Fulcrum, &expected, &[job("WO-7 11GA", "AL-11GA", true), job("WO-7 1/8", "AL-125", false)]).unwrap();
+        assert!(why.contains("WO-7 1/8: not nested yet") && !why.contains("isn't open"), "{why}");
+        assert_eq!(step_not_ready(Provider::Fulcrum, &expected, &[job("WO-7 11GA", "AL-11GA", true), job("WO-7 1/8", "AL-125", true)]), None);
     }
 
     #[test]
