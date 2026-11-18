@@ -1900,10 +1900,14 @@ impl App {
         if let Some(rx) = &u.checking {
             match rx.try_recv() {
                 Ok(found) => {
-                    u.offer = match &found {
-                        crate::updates::Found::Releases(l) => crate::engine::updates::offer(crate::updates::VERSION, l, None),
-                        _ => None,
-                    };
+                    // A release being downloaded, or ready to install, stays
+                    // the one offered until the program closes.
+                    if !matches!(u.fetch, Fetch::Running(..) | Fetch::Ready(_)) {
+                        u.offer = match &found {
+                            crate::updates::Found::Releases(l) => crate::engine::updates::offer(crate::updates::VERSION, l, None),
+                            _ => None,
+                        };
+                    }
                     u.found = Some(found);
                     u.checking = None;
                     let (chosen, whats) = std::mem::take(&mut u.demo);
