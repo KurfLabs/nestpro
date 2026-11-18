@@ -8884,6 +8884,44 @@ fn an_omax_waterjet_gets_omax_path_files() {
 }
 
 #[test]
+fn a_post_file_that_cant_be_read_stops_the_program_and_the_export() {
+    // EXP2: a machine whose post library can't be read (moved, or the shop
+    // folder out of reach) writes nothing, rather than the built-in form;
+    // the job's earlier programs stay. Once the file is back, the next call
+    // reads it without restarting.
+    let d = dir("post_missing");
+    let cff = d.join("DEMO.CFF");
+    let m = crate::settings::Machine { name: "Demo laser".into(), post_lib: cff.to_string_lossy().into(), ..Default::default() };
+    let cfg = shop_settings(&d.join("Lantek"), "# Demo laser\n", vec![m]);
+    let mut s = squares_job(&d, cfg);
+    let _m = apply_machine(&mut s);
+    std::fs::write(&cff, "A014 \".TXT\"\n").unwrap();
+    s.ctx.post = crate::engine::load_post(&s.ctx.cfg.machine());
+    assert!(s.ctx.post.missing.is_empty());
+    let out = d.join("out");
+    call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    let old = out.join("squares").join("SQUARESX1.TXT");
+    assert!(old.is_file());
+    // The file goes: nothing is written, and the old program stays.
+    std::fs::remove_file(&cff).unwrap();
+    s.ctx.post = crate::engine::load_post(&s.ctx.cfg.machine());
+    assert_eq!(s.ctx.post.missing, vec![cff.to_string_lossy().to_string()]);
+    let why = err(&mut s, "export", json!({"dir": out.to_str().unwrap()}));
+    assert!(why.contains("DEMO.CFF") && why.contains("can't be read") && why.contains("Nothing was written"), "{why}");
+    assert!(err(&mut s, "program", json!({"sheet": 1})).contains("can't be read"));
+    assert!(old.is_file() && !out.join("squares").join("SQUARESX1.CNC").exists());
+    // It comes back: the next export reads it.
+    std::fs::write(&cff, "A014 \".TXT\"\n").unwrap();
+    let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    assert!(e["files"].as_array().unwrap().iter().any(|f| f.as_str().unwrap().ends_with("SQUARESX1.TXT")), "{e}");
+    // An LC5's BLM post files count too; an empty path is the built-in values.
+    let lc5 = crate::settings::Machine { output: crate::settings::Output::BlmSiemens, blm_ps1: d.join("NONE.PS1").to_string_lossy().into(), ..Default::default() };
+    assert_eq!(crate::engine::unreadable_post_files(&lc5).len(), 1);
+    assert!(crate::engine::unreadable_post_files(&crate::settings::Machine::default()).is_empty());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn an_agent_names_the_machine_for_one_export_and_the_settings_stay() {
     // AG4: export and program write for the machine named (number or name,
     // any case) for this call only; the settings and the job don't change.

@@ -205,6 +205,7 @@ original (or a real job).
 | MAC-96 | OMAX file not yet loaded on a real OMAX (LAYOUT or MAKE): file version 2 and the lead (9), head-up traverse (10) and minimum-taper (11) qualities are from the original's post and OMAX's own files, not a load test | Estimate | ★★★ | MECHANICS OM4, OX12 |
 | MAC-97 | Common-cut contours as OMAX slits (quality + 20, cut on the line without offset) | Missing | ★ | MECHANICS OX12; MAC-2 |
 | MAC-98 | OMAX `.ord` files (no side column: negative quality = kerf on the left) and the original's hand-off to OMAX's time calculation after posting | Missing | ★ | MECHANICS OX1 |
+| MAC-108 | **One way to pick a machine's program writer**: today G-code, LC5, OMAX (and ByStar on spec #122) are picked by the machine's output setting, an OMAX flag on the post, the LC5 switch, and a guess from the machine's name containing "LC5" or "BLM"; the LC5 post values and technology table are held program-wide and swapped for a call that names another machine. One writer per machine, its settings handed in, and every writer's program read back before it is written (the LC5 and OMAX are; plain G-code isn't). Do after spec #122 merges | Missing | ★★ | council 2026-11-18 (post library) |
 
 ## Jobs, parts and data (JOB)
 
@@ -421,6 +422,7 @@ original (or a real job).
 
 | ID | What | Built |
 |---|---|---|
+| MAC-107 | **A post file that can't be read stops the program**: a machine's post library, or an LC5's BLM post files, that can't be read (moved, or the shop folder out of reach) stops export, the program view and agents' `program` and `export`, saying which file, instead of writing programs in the built-in form; the job's earlier programs stay, and the next export reads the file again | 2026-11-18 (`PostConfig::refusal`, `engine::unreadable_post_files`, MECHANICS EXP2) |
 | APP-14b | **A PC newer than the shop version saves its own files elsewhere**: only the files inside the shop folder are read-only on it (UP21); a job file on the desktop, say, saves as usual (decided on #185) | 2026-11-18 |
 | APP-14d | **Roll out waits for the trial's jobs**: while a job from the trial copy is open (a Library job, or a job file in the copy), Roll out is refused with "Close your jobs from the trial first", so none is carried into the shop afterwards (UP19; decided on #185) | 2026-11-18 |
 | — | **An older program never saves over newer work**: every Library file (jobs, library parts, the Library's list, the sheet stock, the material list, the shop file) records the version that last wrote it. A job or library part a newer version saved opens read-only, with "Made by version 0.5.0. Update this PC: the shop is on 0.5.0" (outside a shop, only the file's version), and every save, stock change, material change or list update over a newer file is refused with it, for agents alike. Versions compare as numbers (0.10.0 > 0.9.0); files from before record none and save as before | 2026-11-18 (`shared.rs`, `jobfile.rs`, `library.rs`, `stock.rs`, `materials.rs`, `shop.rs`, MECHANICS UP5–UP10) |

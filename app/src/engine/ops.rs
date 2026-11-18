@@ -3397,6 +3397,10 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let s = sheet_idx(job, &a)?;
             // AG4: the machine named for this call (before the plans: its technology file).
             let on = super::CallMachine::of(ctx, a.str("machine").as_deref(), job.spec.machine)?;
+            // EXP2: the same refusal as export.
+            if let Some(why) = on.post.refusal() {
+                return Err(why);
+            }
             let plans = job.plans();
             // JOB-41, MAC-46: the same stop as export.
             let stops = stop_issues(&job.parts, &job.sheets[s], &job.spec_at(s), &plans[s]);

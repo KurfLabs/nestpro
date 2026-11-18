@@ -50,8 +50,9 @@ Never commit, anywhere in the public repo (code comments and test names included
   `Expert/LogFile$`), `research/`, `history/`.
 
 Names that must never appear publicly but are too specific to list here (the shop's server,
-database, customers) are in `research/public-denylist.txt`; the check reads it when
-`research/` is present. Add to it when you meet a new one.
+database, customers) are in `research/public-denylist.txt`. The check reads it from this
+checkout's `research/` or, in a worktree, the main checkout's (or from `NESTPRO_DENYLIST`),
+and fails when a `research/` is there without it. Add to it when you meet a new one.
 
 ## Platform
 
