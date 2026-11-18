@@ -158,6 +158,46 @@ impl SizeRule {
             self.r_to
         }
     }
+
+    /// The row's upper thickness, mm, with "no limit" as infinity.
+    fn t_upto(&self) -> f64 {
+        if self.t_to <= 0.0 {
+            f64::INFINITY
+        } else {
+            self.t_to
+        }
+    }
+
+    /// Why the row can never be used, in shop words: its material isn't in
+    /// the list `materials` (renamed or removed; an empty list can't tell),
+    /// or a range ends where it starts. None when it can.
+    pub fn problem(&self, materials: &[String]) -> Option<String> {
+        let m = self.material.trim();
+        if !m.is_empty() && !materials.is_empty() && !materials.iter().any(|n| n.trim().eq_ignore_ascii_case(m)) {
+            return Some(format!("there is no material named \"{m}\" now, so no sheet fits it. Pick its material again."));
+        }
+        if self.t_to > 0.0 && self.t_to < self.t_from {
+            return Some("its thickness \"to\" is below \"from\", so no sheet fits it.".into());
+        }
+        if self.r_to > 0.0 && self.r_to <= self.r_from {
+            return Some("its size \"up to\" isn't above \"from\", so no contour fits it.".into());
+        }
+        None
+    }
+
+    /// Some sheet and contour fit both this row and `o`.
+    fn overlaps(&self, o: &SizeRule) -> bool {
+        let (a, b) = (self.material.trim(), o.material.trim());
+        (a.is_empty() || b.is_empty() || a.eq_ignore_ascii_case(b)) && self.t_from <= o.t_upto() && o.t_from <= self.t_upto() && self.r_from < o.r_upto() && o.r_from < self.r_upto()
+    }
+}
+
+/// The first two rows some contour fits both of (CQ9): (earlier, later),
+/// numbered from 0. Where both fit, the earlier is used. Rows that can't
+/// be used (`SizeRule::problem`) are left out.
+pub fn sizes_overlap(rules: &[SizeRule], materials: &[String]) -> Option<(usize, usize)> {
+    let ok = |r: &SizeRule| r.problem(materials).is_none();
+    (0..rules.len()).flat_map(|a| (a + 1..rules.len()).map(move |b| (a, b))).find(|&(a, b)| ok(&rules[a]) && ok(&rules[b]) && rules[a].overlaps(&rules[b]))
 }
 
 /// The shop's size rows for a sheet (CQ9): (size from, up to, quality) of
@@ -359,6 +399,26 @@ mod tests {
         assert_eq!(sizes_read(&line), rows);
         assert!(sizes_read(r#"[{"q":13},{"material":"x"}]"#).is_empty());
         assert!(sizes_read("not a list").is_empty());
+    }
+
+    #[test]
+    fn a_size_row_that_can_never_be_used_or_is_partly_hidden_by_an_earlier_one_is_told() {
+        let list: Vec<String> = vec!["Mild steel".into(), "Stainless steel".into()];
+        let row = |m: &str, t: (f64, f64), r: (f64, f64)| SizeRule { material: m.into(), t_from: t.0, t_to: t.1, r_from: r.0, r_to: r.1, quality: q(1) };
+        assert_eq!(row("mild steel", (0.0, 0.0), (0.0, 5.0)).problem(&list), None, "names in any case");
+        assert!(row("Mild steel (old)", (0.0, 0.0), (0.0, 5.0)).problem(&list).unwrap().contains("no material named \"Mild steel (old)\""));
+        assert_eq!(row("Anything", (0.0, 0.0), (0.0, 5.0)).problem(&[]), None, "no list: can't tell");
+        assert!(row("", (6.0, 3.0), (0.0, 5.0)).problem(&list).unwrap().contains("thickness"));
+        assert!(row("", (0.0, 0.0), (5.0, 5.0)).problem(&list).unwrap().contains("size"));
+        assert_eq!(row("", (6.0, 0.0), (5.0, 0.0)).problem(&list), None, "0 = no upper limit");
+
+        let small = row("Mild steel", (2.0, 6.0), (0.0, 5.0));
+        // Sizes that only touch, other materials and other thicknesses don't overlap.
+        assert_eq!(sizes_overlap(&[small.clone(), row("", (0.0, 0.0), (5.0, 15.0))], &list), None);
+        assert_eq!(sizes_overlap(&[small.clone(), row("Stainless steel", (0.0, 0.0), (0.0, 5.0))], &list), None);
+        assert_eq!(sizes_overlap(&[small.clone(), row("", (8.0, 0.0), (0.0, 5.0))], &list), None);
+        assert_eq!(sizes_overlap(&[small.clone(), row("Stainless steel", (0.0, 0.0), (0.0, 3.0)), row("", (0.0, 0.0), (0.0, 15.0))], &list), Some((0, 2)));
+        assert_eq!(sizes_overlap(&[row("Gone", (0.0, 0.0), (0.0, 5.0)), small], &list), None, "a row that fits nothing hides nothing");
     }
 
     #[test]

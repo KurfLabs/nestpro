@@ -288,6 +288,15 @@ impl App {
     /// files, its output kind and gas; saves when anything changed.
     pub fn apply_settings(&mut self, force: bool) {
         let m = self.cfg.machine();
+        // Only the shop's quality names, notes or size rows changed (CQ7,
+        // CQ9): put them on the machine in use without reading its files
+        // again, so typing or dragging in those tables stays quick.
+        let only_qualities = !force && self.applied_machine.as_ref().is_some_and(|a| a != &m && crate::settings::Machine { qualities: m.qualities.clone(), sizes: m.sizes.clone(), ..a.clone() } == m);
+        if only_qualities {
+            crate::ct1::set_shop_qualities(&m);
+            self.applied_machine = Some(m.clone());
+            self.refresh();
+        }
         if force || self.applied_machine.as_ref() != Some(&m) {
             let reload_post = force || self.applied_machine.as_ref().map(|a| &a.post_lib) != Some(&m.post_lib);
             if reload_post {
@@ -1115,6 +1124,19 @@ impl App {
             }
             if let Some(i) = remove {
                 rules.remove(i);
+            }
+            // A row that can never be used (a renamed material, a range that
+            // ends where it starts), or one an earlier row partly hides.
+            let warn = |ui: &mut egui::Ui, s: String| {
+                ui.add(egui::Label::new(RichText::new(format!("⚠ {s}")).size(11.5).color(th().warn_fg)).wrap());
+            };
+            for (i, r) in rules.iter().enumerate() {
+                if let Some(why) = r.problem(&materials) {
+                    warn(ui, format!("Row {}: {why}", i + 1));
+                }
+            }
+            if let Some((a, b)) = crate::qualities::sizes_overlap(rules, &materials) {
+                warn(ui, format!("Rows {} and {} overlap: where both fit, row {} is used.", a + 1, b + 1, a + 1));
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {

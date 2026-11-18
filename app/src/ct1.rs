@@ -260,6 +260,16 @@ pub fn set_active(t: MachineTech) {
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Put machine `m`'s own quality names, notes (CQ7) and size rows (CQ9) on
+/// the machine in use, as `MachineTech::for_machine` does, without reading
+/// its files again.
+pub fn set_shop_qualities(m: &crate::settings::Machine) {
+    let mut t = active();
+    t.qualities = Arc::new(t.qualities.as_ref().clone().with_shop(&m.qualities));
+    t.size_rules = Arc::new(m.sizes.clone());
+    set_active(t);
+}
+
 /// Tests: use this machine on the calling thread only (None = the shared one again).
 #[cfg(test)]
 pub fn set_thread_active(t: Option<MachineTech>) {

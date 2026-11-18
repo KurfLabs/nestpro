@@ -2354,6 +2354,11 @@ fn the_shops_size_table_picks_each_contours_quality_on_auto() {
     call(&mut s, "new", Some(d.join("plate.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3}));
     call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
     assert_eq!(contour_quality_names(&mut s), ["Quality 1", "Quality 2", "Quality 3"]);
+    // part-info says the holes' qualities come from the shop's table.
+    let info = call(&mut s, "part-info", None, json!({"part": 1}));
+    let mut from: Vec<(f64, String)> = cut_contours(&info).iter().map(|c| (c["length_mm"].as_f64().unwrap(), c["quality_from"].as_str().unwrap_or("").to_string())).collect();
+    from.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(from.into_iter().map(|c| c.1).collect::<Vec<_>>(), ["shop size table", "shop size table", "default"], "{info}");
     let r = call(&mut s, "qualities", None, json!({}));
     assert_eq!(r["data"]["sizes_from"], json!("settings"), "{r}");
     // On 8 mm plate no row fits, so nothing picks by size: everything at 3.

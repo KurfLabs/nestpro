@@ -934,7 +934,9 @@ fn part_info(job: &JobFile, i: usize) -> Value {
                 let (q, from) = cnc::contour_quality(&tech, &mt, &c.pts, c.quality);
                 v["quality"] = json!(q.number());
                 v["quality_name"] = json!(mt.qualities.label(q));
-                v["quality_from"] = json!(from.label());
+                // Auto by size from the shop's own table (CQ9), not the machine file's.
+                let shop = from == cnc::QualityFrom::SizeBand && mt.size_bands().1 == crate::ct1::SizesFrom::Settings;
+                v["quality_from"] = json!(if shop { "shop size table" } else { from.label() });
             }
             // Its leads as cut (LE1): what lead-edit changes.
             if let Some(pc) = numbers.iter().position(|&x| x == k).and_then(|ci| plan.contours.iter().find(|pc| pc.contour == ci)) {
