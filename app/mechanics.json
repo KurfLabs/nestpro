@@ -7450,6 +7450,30 @@
   "group": "grain",
   "value": "GRAIN arrow along X above the part, G badge",
   "source": "GR6"
+ },
+ {
+  "name": "release notes",
+  "group": "releases",
+  "value": "changes since the previous v*.*.* tag, first-parent; 'Changes machine programs' = changes touching AGENTS.md's machine-program risky paths",
+  "source": "UP1; own design"
+ },
+ {
+  "name": "installer start-up hook",
+  "group": "releases",
+  "value": "first in main, Windows (MSVC) builds only; no auto-apply of a downloaded update at start-up",
+  "source": "UP2; own design"
+ },
+ {
+  "name": "version shown",
+  "group": "releases",
+  "value": "Settings → About: the package version; elsewhere than Windows, that installers and updates are for Windows",
+  "source": "UP3; own design"
+ },
+ {
+  "name": "release tag",
+  "group": "releases",
+  "value": "v + package version, MAJOR.MINOR.PATCH only, on main; any other tag refused before building",
+  "source": "UP4; own design"
  }
 ]
 }

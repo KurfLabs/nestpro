@@ -25,6 +25,12 @@ geo = { version = "0.33", default-features = false }
 # (schannel, uses the Windows certificate store) there; rustls elsewhere.
 [target.'cfg(windows)'.dependencies]
 ureq = { version = "3.5.1", default-features = false, features = ["native-tls"] }
+# The installer and updates (updates.rs, docs/releases.md): Windows builds with
+# the MSVC toolchain, as CI and the release workflow make them. Its TLS needs a
+# C compiler, which the Linux type-check for windows-gnu (tools/check.sh) lacks.
+# The release workflow packs with the `vpk` tool of the same version.
+[target.'cfg(all(windows, target_env = "msvc"))'.dependencies]
+velopack = "=1.2.161"
 [target.'cfg(not(windows))'.dependencies]
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 

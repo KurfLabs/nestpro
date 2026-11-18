@@ -2325,6 +2325,19 @@ The catalogue (MA12):
 - The replacement icon file is looked for next to the program first (SU1), then in the working folder.
 - Not followed: `/hide` (`SW_HIDE` 0; a hidden egui window couldn't be reached), the single-copy check, the splash and the help files.
 
+## Releases and the installer (spec #178, the rebuild's own design)
+
+How a release is made and what the installed program does at start-up (ADR 0006,
+`docs/releases.md`). Nothing here is copied from the original program: each rule is
+**own design**, decided by spec #178.
+
+| # | Rule | Kind |
+|---|------|------|
+| UP1 | **Release notes** (`tools/release-notes.sh`): every change since the previous release (the nearest plain `vX.Y.Z` tag on main's own line: never a pre-release tag or a tag on a merged branch's commit), one line per change on main (a merged pull request counts once, by its title and number). Above them, **Changes machine programs** names the changes that touch the code that writes machine programs, with those files (a moved file under its old and new paths), so the shop test-cuts before rolling the release out; "None: ..." when no change does. That code is the machine-program list in `AGENTS.md`'s "Risky paths" item, read each time; when the list can't be found the notes stop instead of saying "None". | own design |
+| UP2 | **The installer's start-up hook** runs first in `main`, before the window or the command line, in Windows builds made with MSVC (as releases are). It handles the installer's own runs (install, update, uninstall) and exits; a copy that `Setup.exe` didn't install carries on as before. It never applies a downloaded update by itself at start-up: updates are applied only where the program decides to. Other builds (Linux) don't have it. | own design |
+| UP3 | **Settings → About** shows the program's version (the package version), and on other systems than Windows that installers and updates are for Windows. On Windows it doesn't say whether `Setup.exe` installed this copy: a copy unpacked from the release's portable zip can't be told from an installed one. | own design |
+| UP4 | **A release tag is `v` plus the package version**, `MAJOR.MINOR.PATCH` only (not `0.2.0`, `v0.2` or `v0.2.0-rc1`), on a commit of main's own line (not a commit of a branch merged into it). The release workflow refuses any other tag before it builds, saying what to change (`tools/release-check.sh`). A release is made by bumping the package version and tagging that commit; a manual run is a dry run that builds the same `Setup.exe` as a download and publishes nothing. | own design |
+
 ## Sheet stock and remnants (Linux continuation, 2026-11-04)
 
 Sheet stock, remnants made from nested sheets, and how automatic nesting picks sheets from stock.
