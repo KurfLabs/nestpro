@@ -20,6 +20,9 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 tiny-skia = "0.11.4"
 geo = { version = "0.33", default-features = false }
+# The Library's daily backups (backup.rs): deflate in pure Rust only, the
+# version the installer crate already brings in.
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # HTTPS for ERP/MES integrations (integrations/http.rs): Windows' own TLS
 # (schannel, uses the Windows certificate store) there; rustls elsewhere.

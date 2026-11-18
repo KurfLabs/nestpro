@@ -10246,6 +10246,729 @@ fn pictures_and_drawings_beside_a_library_job_are_written_and_only_records_are_r
 }
 
 // ---------------------------------------------------------------------------
+// Backups (spec #178, BK1–BK7): the day's backup, Back up now, Keep and the
+// second place, in a shop and on a PC of its own.
+// ---------------------------------------------------------------------------
+
+/// A shop Acme in a used test Library, started by PC-A (its admin PC).
+fn backup_shop(d: &Path, clock: &Clock) -> (Session, PathBuf) {
+    let mut s = used_library(d, Who::new("sam", "PC-A").as_agent(), clock);
+    let lib = s.ctx.library_dir.clone();
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    (s, lib)
+}
+
+/// The names in a zip, and the bytes of each file in it.
+fn zip_files(zip: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    use std::io::Read as _;
+    let mut a = zip::ZipArchive::new(std::fs::File::open(zip).unwrap()).unwrap();
+    let mut out = std::collections::BTreeMap::new();
+    for i in 0..a.len() {
+        let mut f = a.by_index(i).unwrap();
+        let mut b = vec![];
+        f.read_to_end(&mut b).unwrap();
+        out.insert(f.name().to_string(), b);
+    }
+    out
+}
+
+/// The Library's backups' file names in a folder, oldest first.
+fn backup_names(lib: &Path, dir: &Path) -> Vec<String> {
+    let mut n: Vec<String> = crate::backup::backups_in(lib, dir).unwrap().into_iter().map(|e| e.name).collect();
+    n.reverse();
+    n
+}
+
+/// A made-up backup id, given to a test Library before its first backup.
+const TEST_ID: &str = "0123456789abcdef0123456789abcdef";
+
+fn give_id(lib: &Path) {
+    std::fs::write(lib.join(crate::backup::ID_FILE), TEST_ID).unwrap();
+}
+
+/// A whole zip marked as a backup of the Library with `id`.
+fn marked_zip(path: &Path, id: &str) {
+    use std::io::Write as _;
+    let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    z.start_file("index.json", zip::write::SimpleFileOptions::default()).unwrap();
+    z.write_all(b"{}").unwrap();
+    z.set_comment(format!("nestpro-backup id={id}")).unwrap();
+    z.finish().unwrap();
+}
+
+/// "Backup <label> 01234567 <day k days before the clock> 0900 PC-A.zip": a
+/// name of the Library with TEST_ID.
+fn old_backup(clock: &Clock, label: &str, days_ago: i64) -> String {
+    let t = (clock.now() as i64 - days_ago * 86400) as u64;
+    format!("Backup {label} 01234567 {} 0900 PC-A.zip", &clock.stamp(t)[..10])
+}
+
+/// The file name of a published backup in an agent's result.
+fn file_of(r: &Value) -> String {
+    r["data"]["file"].as_str().unwrap().rsplit(['/', '\\']).next().unwrap().to_string()
+}
+
+/// BK2: two PCs opening the program at the same moment on the same day:
+/// exactly one takes the day's backup and the other sees it's done. Later
+/// that day nobody takes another; the next day the first PC to open does.
+#[test]
+fn the_first_pc_to_open_the_program_today_takes_the_backup_and_the_next_skips_it() {
+    use crate::backup::Daily;
+    let d = dir("backup_daily");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let (_s, lib) = backup_shop(&d, &clock);
+    let own = crate::backup::Settings::default();
+    let go = std::sync::Barrier::new(2);
+    let got: Vec<Daily> = std::thread::scope(|t| {
+        let runs: Vec<_> = [Who::new("sam", "PC-A"), Who::new("kim", "PC-B")]
+            .into_iter()
+            .map(|who| {
+                let (lib, clock, own, go) = (&lib, &clock, &own, &go);
+                t.spawn(move || {
+                    go.wait();
+                    super::shop::daily_backup(lib, own, &who, clock).unwrap()
+                })
+            })
+            .collect();
+        runs.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    let taken: Vec<_> = got.iter().filter_map(|g| if let Daily::Taken(d) = g { Some(d) } else { None }).collect();
+    assert_eq!(taken.len(), 1, "two PCs opening at once took {} backups", taken.len());
+    let backups = lib.join("Backups");
+    assert_eq!(backup_names(&lib, &backups), vec![taken[0].entry.name.clone()]);
+    let id = crate::backup::library_id(&lib).unwrap().unwrap();
+    assert!(taken[0].entry.name.starts_with(&format!("Backup Acme {} 2026-11-09 0920 PC-", &id[..8])), "{}", taken[0].entry.name);
+    // Later the same day, a third PC: done already.
+    clock.advance(std::time::Duration::from_secs(6 * 3600));
+    assert!(matches!(super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock).unwrap(), Daily::AlreadyToday { .. }));
+    assert_eq!(backup_names(&lib, &backups).len(), 1);
+    // The next morning PC-C is first.
+    clock.advance(std::time::Duration::from_secs(18 * 3600));
+    match super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock).unwrap() {
+        Daily::Taken(b) => assert_eq!(b.entry.name, format!("Backup Acme {} 2026-11-10 0920 PC-C.zip", &id[..8])),
+        other => panic!("the next day's backup wasn't taken: {other:?}"),
+    }
+    assert_eq!(backup_names(&lib, &backups).len(), 2);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK1, BK7: `shop mode=backup` takes one now and says where it went. The
+/// zip holds every Library file (names with spaces and accents too), the
+/// shop file and the PCs' records, byte for byte, and nothing of Updates or
+/// Backups. Taking it changes no file in the Library; the only file it adds
+/// is the Library's backup id.
+#[test]
+fn back_up_now_zips_the_library_and_the_shop_file_but_not_updates_or_backups() {
+    let d = dir("backup_now");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    std::fs::write(lib.join("Updates").join("nestpro-0.2.0-full.nupkg"), b"a release").unwrap();
+    std::fs::write(lib.join("Backups").join("Read me.txt"), b"kept by the shop").unwrap();
+    std::fs::create_dir_all(lib.join("Drawings").join("Größe 2 mm")).unwrap();
+    std::fs::write(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf"), b"0\nEOF\n").unwrap();
+    std::fs::create_dir_all(lib.join("Empty folder")).unwrap();
+    let before = files_under(&lib);
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let zip = PathBuf::from(r["data"]["file"].as_str().unwrap());
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains(&zip.display().to_string()), "doesn't say where it went: {m}");
+    assert_eq!(zip.parent().unwrap(), lib.join("Backups"));
+    assert_eq!(r["data"]["pc"], "PC-A", "{r}");
+    let inside = zip_files(&zip);
+    for (k, bytes) in &before {
+        let name = k.replace('\\', "/");
+        if name.starts_with("Updates/") || name.starts_with("Backups/") {
+            assert!(!inside.contains_key(&name), "{name} is in the backup");
+        } else {
+            assert_eq!(inside.get(&name), Some(bytes), "{name} isn't in the backup as it is in the Library");
+        }
+    }
+    assert!(inside.contains_key(crate::shop::FILE) && inside.keys().any(|k| k.starts_with("Shop/PC-A")), "no shop file or PC record: {:?}", inside.keys());
+    assert!(inside.contains_key("Drawings/Größe 2 mm/Flansch ø40.dxf"));
+    assert!(inside.contains_key("Empty folder/"), "an empty folder isn't kept: {:?}", inside.keys());
+    assert!(inside.contains_key(crate::backup::ID_FILE), "the backup id isn't kept with the Library");
+    assert!(!inside.keys().any(|k| k.starts_with("Updates") || k.starts_with("Backups") || k.starts_with("library.lock")), "{:?}", inside.keys());
+    // The Library is as it was, but for the backup id it was given.
+    let after = files_under(&lib);
+    assert_eq!(after.keys().filter(|k| !before.contains_key(*k) && !k.starts_with("Backups")).collect::<Vec<_>>(), vec![crate::backup::ID_FILE]);
+    for (k, bytes) in &before {
+        assert_eq!(after.get(k), Some(bytes), "{k} changed");
+    }
+    // Back up now again the same day: a second one, never over the first.
+    let r2 = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_ne!(r2["data"]["file"], r["data"]["file"]);
+    assert_eq!(backup_names(&lib, &lib.join("Backups")).len(), 2);
+    assert_eq!(std::fs::read(lib.join("Backups").join("Read me.txt")).unwrap(), b"kept by the shop");
+    // Status shows the last one, which PC, Keep and no second place.
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!(st["data"]["backups"]["count"], 2, "{st}");
+    assert_eq!(st["data"]["backups"]["last"]["pc"], "PC-A", "{st}");
+    assert_eq!(st["data"]["backups"]["last"]["when"], "2026-11-09 09:20", "{st}");
+    assert_eq!(st["data"]["backups"]["keep_days"], 30, "{st}");
+    assert!(st["data"]["backups"]["second_place"].is_null(), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK4: after a backup, those past Keep are removed, but only this
+/// Library's own whole backups, never the newest, and none dated ahead of
+/// today (a clock that went backwards). Keep 1 keeps today's only. A file
+/// merely named like one of its backups (review S1) is never removed.
+#[test]
+fn backups_past_keep_are_removed_and_nothing_else_is() {
+    let d = dir("backup_keep");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let backups = lib.join("Backups");
+    let others = ["Read me.txt", "Backup copy.zip", "Backup 2026-01-01 0900 PC-A.zip", "Backup Acme 01234567 2026-01-01 0900 PC-A.zip.bak"];
+    for o in others {
+        std::fs::write(backups.join(o), b"the shop's own").unwrap();
+    }
+    // Named like this Library's, but not a backup: an unrelated zip, and an
+    // empty file.
+    let lookalike = old_backup(&clock, "Acme", 40).replace("0900", "0800");
+    std::fs::write(backups.join(&lookalike), b"PK\x05\x06 not a backup").unwrap();
+    let empty = old_backup(&clock, "Acme", 41);
+    std::fs::write(backups.join(&empty), b"").unwrap();
+    std::fs::create_dir(backups.join(old_backup(&clock, "Acme", 50))).unwrap();
+    // A backup a day for 35 days, and one from before a holiday.
+    for k in (1..=35).chain([45]) {
+        marked_zip(&backups.join(old_backup(&clock, "Acme", k)), TEST_ID);
+    }
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let now = file_of(&r);
+    // 30 days kept, today's included: those 30 days old or more go.
+    let mut kept: Vec<String> = (1..=29).rev().map(|k| old_backup(&clock, "Acme", k)).collect();
+    kept.push(now.clone());
+    assert_eq!(backup_names(&lib, &backups), kept);
+    assert_eq!(r["data"]["removed"].as_array().unwrap().len(), 7, "{r}");
+    for o in others {
+        assert_eq!(std::fs::read(backups.join(o)).unwrap(), b"the shop's own", "{o} was touched");
+    }
+    assert!(backups.join(&lookalike).exists() && backups.join(&empty).exists(), "a file only named like a backup was removed");
+    assert!(backups.join(old_backup(&clock, "Acme", 50)).is_dir());
+    // A clock that went backwards: backups dated after today stay.
+    let mut shop = crate::shop::read(&lib).unwrap().unwrap();
+    shop.backups.keep_days = 1;
+    let lock = crate::shared::WriteLock::take(&lib).unwrap();
+    crate::shop::write(&lib, &shop, &lock, crate::updates::VERSION).unwrap();
+    drop(lock);
+    let ahead = old_backup(&clock, "Acme", -3);
+    marked_zip(&backups.join(&ahead), TEST_ID);
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let latest = file_of(&r);
+    let left = backup_names(&lib, &backups);
+    assert!(left.contains(&ahead) && left.contains(&latest) && left.contains(&now), "{left:?}");
+    assert!(!left.contains(&old_backup(&clock, "Acme", 1)) && !left.contains(&old_backup(&clock, "Acme", 29)), "{left:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S1: a file named like today's backup that isn't a whole backup
+/// of this Library (empty, or another Library's) never counts as the day's.
+#[test]
+fn a_file_only_named_like_todays_backup_doesnt_count() {
+    use crate::backup::Daily;
+    let d = dir("backup_lookalike");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let backups = lib.join("Backups");
+    std::fs::write(backups.join(old_backup(&clock, "Acme", 0)), b"").unwrap();
+    marked_zip(&backups.join(old_backup(&clock, "Acme", 0).replace("0900", "0905")), "fedcba9876543210fedcba9876543210");
+    let got = super::shop::daily_backup(&lib, &Default::default(), &Who::new("sam", "PC-A"), &clock).unwrap();
+    assert!(matches!(got, Daily::Taken(_)), "a file only named like today's backup stopped it: {got:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S1: two PCs of their own sharing one second place on the NAS,
+/// with Libraries of the same name: each counts, copies and removes only
+/// its own backups there, and never the other's `.part` file.
+#[test]
+fn two_libraries_sharing_a_second_place_never_touch_each_others_backups() {
+    let d = dir("backup_two_libraries");
+    let clock = Clock::at(1_794_216_000);
+    let nas = d.join("NAS");
+    std::fs::create_dir(&nas).unwrap();
+    let mut pcs: Vec<Session> = ["a", "b"]
+        .iter()
+        .map(|pc| {
+            std::fs::create_dir_all(d.join(pc)).unwrap();
+            let mut s = Session::new(stock_ctx(&d.join(pc)));
+            s.ctx.clock = clock.clone();
+            s.ctx.cfg.backups = crate::backup::Settings { keep_days: 1, second_place: nas.display().to_string() };
+            s
+        })
+        .collect();
+    let a = call(&mut pcs[0], "shop", None, json!({"mode": "backup"}));
+    assert!(nas.join(file_of(&a)).exists(), "{a}");
+    // PC-A's copy of its next backup is under way when PC-B backs up.
+    let a_lib = pcs[0].ctx.library_dir.clone();
+    let a_id = crate::backup::library_id(&a_lib).unwrap().unwrap();
+    let a_part = nas.join(format!("Backup library {} 2026-11-10 0920 PC-A.zip.PC-A-1-1.part", &a_id[..8]));
+    std::fs::write(&a_part, b"PK copying").unwrap();
+    for _ in 0..3 {
+        clock.advance(std::time::Duration::from_secs(86400));
+        call(&mut pcs[1], "shop", None, json!({"mode": "backup"}));
+    }
+    assert!(nas.join(file_of(&a)).exists(), "PC-B removed PC-A's backup from the NAS");
+    assert!(a_part.exists(), "PC-B removed PC-A's copy under way");
+    let b_lib = pcs[1].ctx.library_dir.clone();
+    assert_eq!(backup_names(&a_lib, &nas), vec![file_of(&a)]);
+    assert_eq!(backup_names(&b_lib, &nas).len(), 1, "PC-B keeps 1 day of its own");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK4: Keep 0 counts as 1 day, so the newest backup is never removed,
+/// whatever the clock says; Settings refuse 0.
+#[test]
+fn keep_is_at_least_one_day_and_the_newest_backup_always_stays() {
+    let d = dir("backup_keep0");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = Session::new(stock_ctx(&d));
+    s.ctx.clock = clock.clone();
+    s.ctx.cfg.backups.keep_days = 0;
+    let lib = s.ctx.library_dir.clone();
+    let first = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    // A year later, Keep 0: the old one goes, the new one stays.
+    clock.advance(std::time::Duration::from_secs(365 * 86400));
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(r["data"]["removed"].as_array().unwrap().len(), 1, "{r}");
+    let backups = d.join("Backups");
+    assert_eq!(backup_names(&lib, &backups).len(), 1);
+    assert!(!Path::new(first["data"]["file"].as_str().unwrap()).exists());
+    // Then the clock goes back two years: the backup there stays.
+    s.ctx.clock = Clock::at(clock.now() - 2 * 365 * 86400);
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(backup_names(&lib, &backups).len(), 2, "the newest backup was removed by a clock that went back");
+    let mut own = s.ctx.cfg.backups.clone();
+    let e = super::shop::set_backup_settings(&lib, &mut own, &s.ctx.who, &crate::backup::Settings { keep_days: 0, second_place: String::new() }, crate::updates::VERSION).unwrap_err();
+    assert!(e.contains("1 to 3650"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK5: with a second place set, each backup is copied there too, and its
+/// own old backups go past Keep. A second place that's missing or can't be
+/// written is reported, and the backup is taken anyway; nothing is made in
+/// its place.
+#[test]
+fn the_second_place_gets_a_copy_and_one_that_cant_be_reached_is_reported() {
+    let d = dir("backup_second");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let nas = d.join("NAS backups");
+    std::fs::create_dir(&nas).unwrap();
+    marked_zip(&nas.join(old_backup(&clock, "Acme", 40)), TEST_ID);
+    std::fs::write(nas.join("Other things.zip"), b"not ours").unwrap();
+    let mut own = crate::backup::Settings::default();
+    let set = |place: &Path, who: &Who, own: &mut crate::backup::Settings| super::shop::set_backup_settings(&lib, own, who, &crate::backup::Settings { keep_days: 1, second_place: place.display().to_string() }, crate::updates::VERSION);
+    // Only the admin PC changes shop settings (SH3).
+    let e = set(&nas, &Who::new("kim", "PC-B"), &mut own).unwrap_err();
+    assert!(e.contains("only on the admin PC") && e.contains("PC-A"), "{e}");
+    // Never inside the Library.
+    let e = set(&lib.join("Jobs"), &Who::new("sam", "PC-A"), &mut own).unwrap_err();
+    assert!(e.contains("in the Library"), "{e}");
+    assert!(set(&nas, &Who::new("sam", "PC-A"), &mut own).unwrap(), "the shop's settings, not this PC's");
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let zip = PathBuf::from(r["data"]["file"].as_str().unwrap());
+    let copy = nas.join(zip.file_name().unwrap());
+    assert_eq!(r["data"]["second_place"]["copied_to"], copy.display().to_string(), "{r}");
+    assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&zip).unwrap());
+    assert!(!nas.join(old_backup(&clock, "Acme", 40)).exists(), "the second place's old backup wasn't removed");
+    assert_eq!(std::fs::read(nas.join("Other things.zip")).unwrap(), b"not ours");
+    // The NAS is gone: said, never fatal, nothing made in its place.
+    std::fs::rename(&nas, d.join("NAS unplugged")).unwrap();
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("can't be reached") && m.contains(&nas.display().to_string()), "{m}");
+    assert!(r["data"]["second_place"]["problem"].is_string() && Path::new(r["data"]["file"].as_str().unwrap()).exists(), "{r}");
+    assert!(!nas.exists(), "a second place that can't be reached was made");
+    // A second place this PC can only read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::rename(d.join("NAS unplugged"), &nas).unwrap();
+        std::fs::set_permissions(&nas, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(nas.join("probe"), "").is_err() {
+            let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+            let m = r["message"].as_str().unwrap();
+            assert!(m.contains("couldn't be copied") && Path::new(r["data"]["file"].as_str().unwrap()).exists(), "{m}");
+        }
+        std::fs::set_permissions(&nas, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S3: a file of the same name already in the second place is never
+/// replaced: it's reported, and the backup stands in Backups.
+#[test]
+fn a_file_of_the_same_name_in_the_second_place_is_never_replaced() {
+    let d = dir("backup_second_clash");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = Session::new(stock_ctx(&d));
+    s.ctx.clock = clock.clone();
+    let nas = d.join("NAS");
+    std::fs::create_dir(&nas).unwrap();
+    s.ctx.cfg.backups.second_place = nas.display().to_string();
+    let lib = s.ctx.library_dir.clone();
+    give_id(&lib);
+    // The name this PC's backup will have, taken in the NAS by another file.
+    let name = old_backup(&clock, "library", 0).replace("0900", "0920").replace("PC-A", &crate::shared::file_safe(&s.ctx.who.pc));
+    std::fs::write(nas.join(&name), b"someone else's file").unwrap();
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(file_of(&r), name, "{r}");
+    let e = r["data"]["second_place"]["problem"].as_str().unwrap_or_default();
+    assert!(e.contains("already holds another file"), "{r}");
+    assert_eq!(std::fs::read(nas.join(&name)).unwrap(), b"someone else's file", "the second place's file was replaced");
+    assert!(std::fs::read_dir(&nas).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".part")), "a .part was left");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK5, review S12: when the PC that took today's backup stopped before
+/// copying it to the second place (or the place was down), the next PC to
+/// open the program copies it.
+#[test]
+fn a_backup_missing_from_the_second_place_is_copied_by_the_next_pc() {
+    use crate::backup::Daily;
+    let d = dir("backup_second_retry");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    let nas = d.join("NAS");
+    let mut own = crate::backup::Settings::default();
+    super::shop::set_backup_settings(&lib, &mut own, &Who::new("sam", "PC-A"), &crate::backup::Settings { keep_days: 30, second_place: nas.display().to_string() }, crate::updates::VERSION).unwrap();
+    // The NAS is down when PC-A takes the day's backup.
+    let Daily::Taken(b) = super::shop::daily_backup(&lib, &own, &Who::new("sam", "PC-A"), &clock).unwrap() else { panic!() };
+    assert!(matches!(b.second, Some(Err(_))), "{:?}", b.second);
+    std::fs::create_dir(&nas).unwrap();
+    clock.advance(std::time::Duration::from_secs(3600));
+    match super::shop::daily_backup(&lib, &own, &Who::new("kim", "PC-B"), &clock).unwrap() {
+        Daily::AlreadyToday { entry, second: Some(Ok(p)) } => {
+            assert_eq!(entry.name, b.entry.name);
+            assert_eq!(std::fs::read(&p).unwrap(), std::fs::read(&b.entry.path).unwrap());
+        }
+        other => panic!("today's backup wasn't copied to the second place: {other:?}"),
+    }
+    // And the next PC finds it there: nothing more to do.
+    assert!(matches!(super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock).unwrap(), Daily::AlreadyToday { second: Some(Ok(_)), .. }));
+    assert_eq!(std::fs::read_dir(&nas).unwrap().count(), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK3: a backup that stops halfway (a full disk) leaves no backup and no
+/// half-written file, and changes nothing in the Library; the day's backup
+/// is taken at the next opening. A PC that crashed mid-backup, leaving its
+/// lock and its half-written zip, doesn't stop the next PC: the lock is
+/// taken over (LB2) and the half zip is cleared, never counted as the day's.
+/// Review S6: clearing many half zips on a slow share renews the lock, so
+/// the backup still goes through.
+#[test]
+fn a_backup_that_stops_halfway_leaves_nothing_and_the_next_pc_takes_it() {
+    use crate::backup::Daily;
+    let d = dir("backup_halfway");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let own = crate::backup::Settings::default();
+    let backups = lib.join("Backups");
+    let before = files_under(&lib);
+    crate::backup::STOP_AFTER.with(|c| c.set(Some(2)));
+    let e = super::shop::daily_backup(&lib, &own, &Who::new("sam", "PC-A"), &clock).unwrap_err();
+    crate::backup::STOP_AFTER.with(|c| c.set(None));
+    assert!(e.contains("No backup was taken") && e.contains("halfway"), "{e}");
+    assert_eq!(files_under(&lib), before, "a backup that stopped left files or changed the Library");
+    // PC-B crashed while zipping: its lock and its half zips are left.
+    std::fs::write(lib.join(crate::shared::LOCK_FILE), r#"{"user":"kim","pc":"PC-B","process":7,"since":0,"token":"PC-B-7-0"}"#).unwrap();
+    let halves: Vec<PathBuf> = (0..6).map(|i| backups.join(format!("{}.PC-B-7-{i}.part", old_backup(&clock, "Acme", 0)))).collect();
+    for h in &halves {
+        std::fs::write(h, b"PK half").unwrap();
+    }
+    // Another Library's half zip in the same folder stays.
+    let theirs = backups.join("Backup Acme 99999999 2026-11-09 0920 PC-B.zip.PC-B-7-9.part");
+    std::fs::write(&theirs, b"PK theirs").unwrap();
+    // PC-C opens: it takes the abandoned lock over (after 3 s here), with
+    // 30 s to write, then takes the day's backup under it. The share is
+    // slow: each half zip takes 9 s to clear (played as gone by, not slept,
+    // so a loaded machine's own delays don't count against it): 54 s in all,
+    // past the 30 s, so only renewing as it goes keeps the lock.
+    let hold = std::time::Duration::from_secs(30);
+    let lock = crate::shared::WriteLock::take_holding(&lib, std::time::Duration::from_secs(3), hold, std::time::Duration::from_secs(30)).unwrap();
+    crate::shared::hooks::set(move |s| {
+        if s == "backup: part cleared" {
+            crate::shared::play_time(hold * 3 / 10);
+        }
+    });
+    let got = super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock);
+    crate::shared::hooks::clear();
+    drop(lock);
+    let Daily::Taken(b) = got.unwrap() else { panic!("a crashed PC's half zip counted as the day's backup") };
+    assert_eq!(backup_names(&lib, &backups), vec![b.entry.name.clone()]);
+    assert!(halves.iter().all(|h| !h.exists()), "a half-written zip was left");
+    assert!(theirs.exists(), "another Library's half zip was removed");
+    assert!(!zip_files(&b.entry.path).keys().any(|k| k.starts_with("library.lock")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S4: a file or folder that can't be read, or a file that changes
+/// while it's zipped, stops the backup: nothing is published and no old
+/// backup is removed.
+#[test]
+fn a_file_that_cant_be_read_or_changes_stops_the_backup() {
+    let d = dir("backup_unreadable");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let backups = lib.join("Backups");
+    let mut shop = crate::shop::read(&lib).unwrap().unwrap();
+    shop.backups.keep_days = 1;
+    let lock = crate::shared::WriteLock::take(&lib).unwrap();
+    crate::shop::write(&lib, &shop, &lock, crate::updates::VERSION).unwrap();
+    drop(lock);
+    let old = old_backup(&clock, "Acme", 5);
+    marked_zip(&backups.join(&old), TEST_ID);
+    let stopped = |s: &mut Session, what: &str| {
+        let e = err(s, "shop", json!({"mode": "backup"}));
+        assert!(e.contains("No backup was taken") && e.contains(what), "{e}");
+        assert_eq!(backup_names(&lib, &backups), vec![old.clone()], "a backup was published, or the old one removed");
+    };
+    // A file that changes while it's read, every time.
+    let grows = lib.join("Drawings growing.dxf");
+    std::fs::write(&grows, b"0\n").unwrap();
+    {
+        let grows = grows.clone();
+        crate::shared::hooks::set(move |s| {
+            if s == "backup: file read" {
+                use std::io::Write as _;
+                let mut f = std::fs::OpenOptions::new().append(true).open(&grows).unwrap();
+                f.write_all(b"SECTION\n").unwrap();
+            }
+        });
+    }
+    stopped(&mut s, "changed while it was backed up");
+    crate::shared::hooks::clear();
+    std::fs::remove_file(&grows).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // (Someone allowed to read anyway, as root, can't play this.)
+        let locked = lib.join("Locked drawing.dxf");
+        std::fs::write(&locked, b"0\nEOF\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&locked).is_err() {
+            stopped(&mut s, "Locked drawing.dxf");
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_file(&locked).unwrap();
+        let folder = lib.join("Locked folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("part.dxf"), b"0\nEOF\n").unwrap();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&folder).is_err() {
+            stopped(&mut s, "Locked folder");
+        }
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // Readable again: it goes through.
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(backup_names(&lib, &backups).len(), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S2: a Backups folder that is a link to somewhere else is refused
+/// before anything is looked at or changed there.
+#[cfg(unix)]
+#[test]
+fn a_backups_folder_that_links_elsewhere_is_refused() {
+    let d = dir("backup_linked");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let elsewhere = d.join("Other Library backups");
+    std::fs::create_dir(&elsewhere).unwrap();
+    for k in [40, 41] {
+        marked_zip(&elsewhere.join(old_backup(&clock, "Acme", k)), TEST_ID);
+    }
+    let held = files_under(&elsewhere);
+    std::fs::remove_dir(lib.join("Backups")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, lib.join("Backups")).unwrap();
+    let e = err(&mut s, "shop", json!({"mode": "backup"}));
+    assert!(e.contains("is a link to another folder") && e.contains("Backups"), "{e}");
+    let e = super::shop::daily_backup(&lib, &Default::default(), &Who::new("sam", "PC-A"), &clock).unwrap_err();
+    assert!(e.contains("is a link"), "{e}");
+    assert_eq!(files_under(&elsewhere), held, "something was changed through the link");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK6: a PC of its own backs its Library up into a Backups folder beside
+/// it (never inside it), with Keep from its own settings. An empty Library
+/// is backed up too; one that can't be reached is refused, naming it, and
+/// nothing is made. Review S5: a Library named Backups is refused.
+#[test]
+fn a_pc_of_its_own_backs_up_beside_its_library() {
+    let d = dir("backup_own");
+    let clock = Clock::at(1_794_216_000);
+    let mut s = Session::new(stock_ctx(&d));
+    s.ctx.clock = clock.clone();
+    let lib = s.ctx.library_dir.clone();
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let zip = PathBuf::from(r["data"]["file"].as_str().unwrap());
+    assert_eq!(zip.parent().unwrap(), d.join("Backups"), "{r}");
+    assert!(!lib.join("Backups").exists(), "made a Backups folder inside the Library");
+    let inside = zip_files(&zip);
+    assert_eq!(inside.keys().filter(|k| !k.ends_with('/')).count(), files_under(&lib).len(), "{:?}", inside.keys());
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!(st["data"]["backups"]["folder"], d.join("Backups").display().to_string(), "{st}");
+    assert_eq!(st["data"]["backups"]["count"], 1, "{st}");
+    // Its own settings, not a shop's.
+    let mut own = s.ctx.cfg.backups.clone();
+    assert!(!super::shop::set_backup_settings(&lib, &mut own, &s.ctx.who, &crate::backup::Settings { keep_days: 7, second_place: String::new() }, crate::updates::VERSION).unwrap());
+    assert_eq!(own.keep_days, 7);
+    // A Library named Backups would back up into itself.
+    let named = d.join("Other").join("Backups");
+    crate::library::create(&named).unwrap();
+    s.ctx.library_dir = named.clone();
+    let e = err(&mut s, "shop", json!({"mode": "backup"}));
+    assert!(e.contains("the Library itself"), "{e}");
+    let wrote: Vec<String> = files_under(&named).into_keys().filter(|k| k.ends_with(".zip") || k.ends_with(".part") || k == crate::backup::ID_FILE).collect();
+    assert!(wrote.is_empty(), "a refused backup wrote {wrote:?}");
+    // The Library is gone (a drive unplugged): said, nothing made.
+    s.ctx.library_dir = lib.clone();
+    std::fs::rename(&lib, d.join("moved")).unwrap();
+    let e = err(&mut s, "shop", json!({"mode": "backup"}));
+    assert!(e.contains(&lib.display().to_string()), "{e}");
+    assert!(!lib.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S7: a backup follows the settings as they are once it holds the
+/// write lock: the admin PC set a second place while this PC waited.
+#[test]
+fn a_backup_follows_the_settings_saved_while_it_waited_for_the_lock() {
+    let d = dir("backup_waited");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    let nas = d.join("NAS");
+    std::fs::create_dir(&nas).unwrap();
+    let lock = crate::shared::WriteLock::take(&lib).unwrap();
+    let (busy, waiting) = std::sync::mpsc::channel::<()>();
+    let pc_b = {
+        let (lib, clock) = (lib.clone(), clock.clone());
+        std::thread::spawn(move || {
+            let mut busy = Some(busy);
+            crate::shared::hooks::set(move |s| {
+                if s == "lock busy"
+                    && let Some(b) = busy.take()
+                {
+                    let _ = b.send(());
+                }
+            });
+            super::shop::backup_now(&lib, &Default::default(), &Who::new("kim", "PC-B"), &clock)
+        })
+    };
+    waiting.recv().unwrap();
+    // While PC-B waits, the admin PC sets the second place.
+    let mut shop = crate::shop::read(&lib).unwrap().unwrap();
+    shop.backups.second_place = nas.display().to_string();
+    crate::shop::write(&lib, &shop, &lock, crate::updates::VERSION).unwrap();
+    drop(lock);
+    let b = pc_b.join().unwrap().unwrap();
+    assert!(matches!(&b.second, Some(Ok(p)) if p.starts_with(&nas)), "the backup used the settings from before it waited: {:?}", b.second);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review S13: an agent's backup writes nothing else in the shop (no PC
+/// record): recording the PC is for opening the program and `shop` status.
+#[test]
+fn an_agents_backup_writes_no_pc_record() {
+    let d = dir("backup_agent_record");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let before: Vec<String> = files_under(&lib.join("Shop")).into_keys().collect();
+    call(&mut b, "shop", None, json!({"mode": "backup"}));
+    assert_eq!(files_under(&lib.join("Shop")).into_keys().collect::<Vec<_>>(), before, "the backup wrote a PC record");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review round 2 (S7): when the next PC copies today's backup to the second
+/// place, it tidies that place by Keep as it is once it holds the lock: the
+/// admin PC raised Keep while the copy was under way, so nothing goes.
+#[test]
+fn a_second_place_retry_tidies_by_keep_as_it_is_under_the_lock() {
+    use crate::backup::Daily;
+    let d = dir("backup_second_keep_now");
+    let clock = Clock::at(1_794_216_000);
+    let (_s, lib) = backup_shop(&d, &clock);
+    give_id(&lib);
+    let nas = d.join("NAS");
+    let set_keep = |lib: &Path, keep: u32, place: &Path| {
+        let lock = crate::shared::WriteLock::take(lib).unwrap();
+        let mut shop = crate::shop::read(lib).unwrap().unwrap();
+        shop.backups = crate::backup::Settings { keep_days: keep, second_place: place.display().to_string() };
+        crate::shop::write(lib, &shop, &lock, crate::updates::VERSION).unwrap();
+    };
+    set_keep(&lib, 1, &nas);
+    let own = crate::backup::Settings::default();
+    // The NAS is down when PC-A takes the day's backup.
+    let Daily::Taken(b) = super::shop::daily_backup(&lib, &own, &Who::new("sam", "PC-A"), &clock).unwrap() else { panic!() };
+    assert!(matches!(b.second, Some(Err(_))));
+    std::fs::create_dir(&nas).unwrap();
+    let old: Vec<String> = (2..=4).map(|k| old_backup(&clock, "Acme", k)).collect();
+    for o in &old {
+        marked_zip(&nas.join(o), TEST_ID);
+    }
+    // PC-B copies it; meanwhile the admin PC raises Keep to 30 days.
+    {
+        let (lib, nas) = (lib.clone(), nas.clone());
+        crate::shared::hooks::set(move |s| {
+            if s == "backup: copied to second place" {
+                set_keep(&lib, 30, &nas);
+            }
+        });
+    }
+    let got = super::shop::daily_backup(&lib, &own, &Who::new("kim", "PC-B"), &clock);
+    crate::shared::hooks::clear();
+    assert!(matches!(got.unwrap(), Daily::AlreadyToday { second: Some(Ok(_)), .. }));
+    for o in &old {
+        assert!(nas.join(o).exists(), "{o} was removed by Keep from before the lock");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP7 with BK1: a backup only reads the Library, so one whose files a
+/// newer version wrote is backed up as it is on an older PC, byte for byte;
+/// its own writes (the backup id, the zip) never go over a Library file.
+/// Saving Keep or the second place into a shop file a newer version wrote
+/// is refused like any other save over it.
+#[test]
+fn a_library_a_newer_version_wrote_is_backed_up_as_it_is() {
+    let d = dir("backup_newer_files");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    // A newer version saved the shop file and the Library's list.
+    for f in [crate::shop::FILE, crate::library::INDEX] {
+        let t = std::fs::read_to_string(lib.join(f)).unwrap();
+        let mut v: serde_json::Map<String, Value> = serde_json::from_str(&t).unwrap();
+        v.insert(crate::shared::VERSION_FIELD.into(), json!("9.0.0"));
+        std::fs::write(lib.join(f), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    }
+    let before = files_under(&lib);
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let inside = zip_files(Path::new(r["data"]["file"].as_str().unwrap()));
+    for f in [crate::shop::FILE, crate::library::INDEX] {
+        assert_eq!(inside.get(f), before.get(f), "{f} isn't in the backup as it is");
+    }
+    let after = files_under(&lib);
+    for (k, bytes) in &before {
+        assert_eq!(after.get(k), Some(bytes), "{k} changed");
+    }
+    let mut own = crate::backup::Settings::default();
+    let e = super::shop::set_backup_settings(&lib, &mut own, &Who::new("sam", "PC-A"), &crate::backup::Settings { keep_days: 7, second_place: String::new() }, "0.1.0").unwrap_err();
+    assert!(e.contains("read-only") && e.contains("9.0.0"), "{e}");
+    assert_eq!(std::fs::read(lib.join(crate::shop::FILE)).unwrap(), before[crate::shop::FILE]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
 // Joining a shop (spec #178, ticket #182: SH10–SH15): the checks before yes,
 // this PC's Library setting, and what is left as it was.
 // ---------------------------------------------------------------------------

@@ -62,6 +62,9 @@ pub struct ShopFile {
     pub settings_by: SettingsBy,
     /// Who started the shop, and when.
     pub started: Saved,
+    /// Keep and the second place of the shop's backups (BK4, BK5).
+    #[serde(default)]
+    pub backups: crate::backup::Settings,
     /// What later versions keep in the shop file, kept as it was when this
     /// version writes it again.
     #[serde(flatten)]

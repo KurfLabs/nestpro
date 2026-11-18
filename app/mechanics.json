@@ -7630,6 +7630,48 @@
   "group": "versions",
   "value": "files written by a release the shop rolled back from count as the shop version's (the list is filled by roll back); the newer-layout check stays",
   "source": "UP10; own design"
+ },
+ {
+  "name": "backup zip",
+  "group": "shop",
+  "value": "the whole Library folder (shop file and PC records too), not Updates, Backups or the lock; named Backup <name> <id8> <day> <hhmm> <PC>.zip; marked with the Library's backup id (backup-id.txt); only marked whole zips count",
+  "source": "BK1; own design"
+ },
+ {
+  "name": "day's backup",
+  "group": "shop",
+  "value": "first PC to open the program each day; others see today's and skip, looked at again under the lock",
+  "source": "BK2; own design"
+ },
+ {
+  "name": "backup whole or not at all",
+  "group": "shop",
+  "value": "under the write lock, renewed while it works; new .part published only when whole, never over a file; any read error or a file that changed stops it, nothing published or removed; this Library's abandoned .part cleared under the lock",
+  "source": "BK3; own design"
+ },
+ {
+  "name": "backup keep",
+  "group": "shop",
+  "value": "30 days by default (1–3650); removed: Keep days old or more, except the newest Keep backups; only this Library's marked zips, lock checked before each",
+  "source": "BK4; own design"
+ },
+ {
+  "name": "backup second place",
+  "group": "shop",
+  "value": "each backup copied there too, never over a file; today's copied by the next PC when missing; only this Library's old ones and stale .part removed; unreachable or read-only is said, never fatal, never made",
+  "source": "BK5; own design"
+ },
+ {
+  "name": "own PC backups",
+  "group": "shop",
+  "value": "a Library that is no shop: Backups folder beside it in its real parent, its own Keep and second place; none at a share's top, for a Library named Backups, or through a linked Backups folder",
+  "source": "BK6; own design"
+ },
+ {
+  "name": "backups card",
+  "group": "shop",
+  "value": "Settings → Shop → Backups: last backup, folder, Keep, second place, Back up now; settings saved in the background, read under the lock by each backup; agents shop mode=backup",
+  "source": "BK7; own design"
  }
 ]
 }
