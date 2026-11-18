@@ -1,0 +1,178 @@
+name: Release
+
+# A release (docs/releases.md, rules UP1–UP4): a vMAJOR.MINOR.PATCH tag on main
+# builds the program on Windows, packs the per-user Setup.exe with Velopack and
+# publishes it on GitHub Releases with notes from tools/release-notes.sh.
+# A manual run (Run workflow) is a dry run: the same installer as a workflow
+# download, and nothing is published. A pull request that changes how releases
+# are made gets the same dry run. Releases are made only when the user asks:
+# bump the package version, then tag that commit on main with it.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'tools/release-*.sh'
+      - 'app/src/updates.rs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The installer's own tool, the same version as the velopack crate (app/Cargo.toml).
+  VPK_VERSION: 1.2.161
+  # The installer's app ID. It names the install folder under the user's local
+  # app data and ties every later update to this one, so it never changes.
+  PACK_ID: KurfLabs.nestpro
+
+jobs:
+  # The version and the notes, on Linux: the tag must match the package version
+  # (UP4), and the notes list the changes since the last release (UP1).
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # every tag and main, for the notes and the main check
+      - name: Release scripts
+        run: tools/release-test.sh
+      - name: The tag matches the program's version
+        id: v
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            v=$(tools/release-check.sh --main origin/main "$GITHUB_REF_NAME")
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            v=$(tools/release-check.sh --dry-run)
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Version $v ($GITHUB_REF_TYPE $GITHUB_REF_NAME)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Release notes
+        run: |
+          tools/release-notes.sh "" HEAD > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  # The program and its installer, on Windows.
+  windows:
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+          key: release
+      - name: Build
+        working-directory: app
+        # The C runtime linked in (crt-static), so the program starts on a PC
+        # without the Visual C++ runtime installed. With --target the flag
+        # reaches the program only, not the build scripts and macros.
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: The program needs no Visual C++ runtime DLL
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object FullName -match 'Hostx64\\x64' | Select-Object -First 1
+          $deps = & $dumpbin.FullName /nologo /dependents app\target\x86_64-pc-windows-msvc\release\nestpro.exe
+          $deps
+          if ($deps -match '(?i)(vcruntime|msvcp)[0-9_]*\.dll') { throw "nestpro.exe still needs the Visual C++ runtime DLL" }
+          "nestpro.exe imports no VCRUNTIME/MSVCP DLL"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version "$VPK_VERSION"
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+      # A release only: the latest published release goes in the pack folder,
+      # so vpk makes an update package from it. vpk refuses a folder holding the
+      # same or a newer version, so that is refused here first, saying why. A
+      # dry run packs without it (it may be at a version already published).
+      - name: Earlier releases, for update packages from them
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vpk download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$GH_TOKEN" --outputDir releases
+          for f in releases/"$PACK_ID"-*-full.nupkg; do
+            [ -e "$f" ] || continue
+            v=${f#releases/"$PACK_ID"-}; v=${v%-full.nupkg}
+            if [ "$(printf '%s\n%s\n' "$v" "$VERSION" | sort -V | tail -n 1)" = "$v" ]; then
+              echo "$v is already published, and it isn't older than $VERSION: bump the package version."
+              exit 1
+            fi
+          done
+      - name: Pack
+        run: |
+          mkdir publish
+          cp app/target/x86_64-pc-windows-msvc/release/nestpro.exe publish/
+          # The icon the build made for the program file (build.rs), wherever
+          # this cargo keeps build-script output.
+          icon=$(find app/target -name nestpro.ico -path '*release*' | head -n 1)
+          [ -n "$icon" ] || { echo "the build made no nestpro.ico"; exit 1; }
+          vpk pack --packId "$PACK_ID" --packVersion "$VERSION" --packDir publish \
+            --runtime win-x64 --mainExe nestpro.exe --packTitle "Sheet Nesting" --packAuthors "Kurf Labs" \
+            --icon "$icon" --releaseNotes release-notes.md --outputDir releases
+          ls -la releases
+          test -f "releases/$PACK_ID-win-Setup.exe" || test -f "releases/$PACK_ID-Setup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nestpro-${{ env.VERSION }}-windows
+          path: releases/
+          if-no-files-found: error
+
+  # Publishing, for a release tag only; the dry run stops above.
+  publish:
+    needs: [version, windows]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && needs.version.outputs.publish == 'true'
+    # On Windows, so vpk reads the Windows release files it packed.
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version "$VPK_VERSION"
+      - uses: actions/download-artifact@v4
+        with:
+          name: nestpro-${{ env.VERSION }}-windows
+          path: releases
+      # The notes come with the package: vpk pack put them in (--releaseNotes)
+      # and vpk upload writes them as the release's text.
+      - name: Publish on GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vpk upload github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$GH_TOKEN" \
+            --outputDir releases --publish --releaseName "nestpro $VERSION" \
+            --tag "$GITHUB_REF_NAME" --targetCommitish "$GITHUB_SHA"
