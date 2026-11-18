@@ -769,9 +769,13 @@ impl App {
         // --shop-demo (screenshot runs only): a temporary Library of its own,
         // never the configured one or --library-dir's (SH5).
         if a.shot.is_some() && settings_ui::shop_demo_arg().is_some() {
-            if let Some(d) = settings_ui::shop_demo_dir() {
-                a.cfg.library_dir = d.display().to_string();
-            }
+            // No temporary folder: stop before any Library is read, so a
+            // screenshot can never show the configured (real) shop.
+            let Some(d) = settings_ui::shop_demo_dir() else {
+                eprintln!("--shop-demo: couldn't make a temporary folder for the demo Library; nothing was read.");
+                std::process::exit(2);
+            };
+            a.cfg.library_dir = d.display().to_string();
         }
         // The material list (MA14): the Library's, or this PC's own.
         a.reload_materials(true);
