@@ -234,9 +234,12 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let missing = d.join("Library");
         assert_eq!(shop_of(&missing, &missing), Ok(None));
-        // Under a file: looking at it fails, but not with "not found".
+        // Looking at it fails, but not with "not found": under a file on
+        // Linux, a name Windows can't have on Windows.
         std::fs::write(d.join("file"), "x").unwrap();
-        let odd = d.join("file").join("Library");
+        let odd = if cfg!(windows) { d.join("Lib<rary>") } else { d.join("file").join("Library") };
+        let e = std::fs::metadata(&odd).unwrap_err();
+        assert_ne!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
         assert!(shop_of(&odd, &odd).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
