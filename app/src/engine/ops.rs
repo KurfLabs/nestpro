@@ -392,8 +392,8 @@ pub static OPS: &[Op] = &[
     ] },
     // --- reference ---
     // --- the shop (spec #178) ---
-    Op { name: "shop", group: "Library", kind: Kind::Global, help: "The shop this PC's Library belongs to (Settings → Shop): status gives its name, its folder (the Library's folder), its admin PC and who made it the admin PC and when, whether shop settings are changed only on the admin PC or from any PC, and every PC in it with who used it last, its version and when it was last seen (this PC's local time). Calling it records this PC in the shop's PCs list, as opening the program does; when it can't, the shop is still given, with this_pc_recorded false and why. A PCs list that can't be read is refused, naming its folder. A Library that isn't a shop says so; one that can't be reached is refused, naming its folder. Changing the admin PC (mode=admin) is refused for agents with the reason: a person does it in the window.", args: &[
-        c("mode", &["status", "admin"], "status (default): the shop and its PCs; admin: make this PC the admin PC (refused for agents: a person does it in Settings → Shop)"),
+    Op { name: "shop", group: "Library", kind: Kind::Global, help: "The shop this PC's Library belongs to (Settings → Shop): status gives its name, its folder (the Library's folder), its admin PC and who made it the admin PC and when, whether shop settings are changed only on the admin PC or from any PC, and every PC in it with who used it last, its version and when it was last seen (this PC's local time). Calling it records this PC in the shop's PCs list, as opening the program does; when it can't, the shop is still given, with this_pc_recorded false and why. A PCs list that can't be read is refused, naming its folder. A Library that isn't a shop says so; one that can't be reached is refused, naming its folder. Changing the admin PC (mode=admin) is refused for agents with the reason: a person does it in the window. mode=updates: this PC's version and, for a PC not in a shop, the newest public release and the one the window offers (newer plain releases only), with its \"Changes machine programs\" entries; a PC in a shop never checks GitHub (it updates to the release its admin PC rolls out); no connection says \"Couldn't check for updates\". Installing an update stays a person's choice in the window.", args: &[
+        c("mode", &["status", "admin", "updates"], "status (default): the shop and its PCs; admin: make this PC the admin PC (refused for agents: a person does it in Settings → Shop); updates: this PC's version and the newest release"),
     ] },
     Op { name: "setup", group: "Library", kind: Kind::Global, help: "Set this PC up for a shop. start=<folder> name=<name> starts a shop in that Library folder (the Library's folder becomes the shop folder in place: the shop file and its Shop, Updates and Backups folders are added, and no job, library part or stock file is changed or moved), with this PC as its admin PC and shop settings changed only on the admin PC. A folder that can't be reached, holds no Library, can't be written by this PC or is already a shop is refused, naming it, and nothing is made. `nestpro setup --start \\\\srv\\Nesting --name Acme`.", args: &[
         a("start", Ty::Path, "Start a shop in this Library folder (e.g. \\\\srv\\Nesting)"),
@@ -3585,6 +3585,12 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Settings → Shop/Start the shop", "setup"),
     ("Settings → Shop/Add this PC", "shop"),
     ("Settings → Shop/Make this PC the admin PC", "gui: a person changes the admin PC, after a warning (SH7); shop mode=admin refuses agents with the reason"),
+    // --- updates on a PC of its own (UP11–UP14) ---
+    ("Settings → Shop/Check now", "shop"),
+    ("Settings → Shop/What's new", "shop"),
+    ("Settings → Shop/Update when I close", "gui: installing an update is a person's choice, in the window (UP14); shop mode=updates says what is offered"),
+    ("settings_ui.rs/What's new", "shop"),
+    ("settings_ui.rs/Later", "view: puts the update banner away for this version (UP13)"),
     // --- labels built at run time ("{expression}") ---
     ("ERP / MES/{&format!(\"{}\\njobs\", p.name())}", "todo: [AGT-7] bring ERP work in as a job"),
     ("Text/{label}", "text"),

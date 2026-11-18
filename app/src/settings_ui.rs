@@ -183,6 +183,143 @@ pub struct SettingsUi {
     /// SH4: why this PC's last try to add itself to the shop failed; shown on
     /// the PCs card with Add this PC until a try succeeds.
     pub shop_unrecorded: Option<String>,
+    /// Updates on a PC of its own (UP11–UP14): the banner, What's new and
+    /// the Updates card.
+    pub upd: UpdateState,
+}
+
+/// UP11–UP14: what this window knows about releases.
+#[derive(Default)]
+pub struct UpdateState {
+    /// Where releases come from. None: this window never checks (tests, and
+    /// screenshots without a made-up list).
+    pub source: Option<crate::updates::Source>,
+    /// A check running off the window's thread.
+    pub checking: Option<Receiver<crate::updates::Found>>,
+    /// When the last check started (UP11: again a day later).
+    pub checked_at: Option<std::time::Instant>,
+    /// What the last check found.
+    pub found: Option<crate::updates::Found>,
+    /// UP12: the release offered, from the latest check.
+    pub offer: Option<crate::engine::updates::Offer>,
+    /// UP14: Update when I close.
+    pub fetch: Fetch,
+    /// The release chosen with Update when I close (the banner shows it
+    /// while it downloads and waits for the program to close).
+    pub chosen: Option<crate::engine::updates::Offer>,
+    /// The Library folder this was found for: another one withdraws it all
+    /// (S2).
+    pub library: Option<std::path::PathBuf>,
+    /// The banner was put away for this version (Later): it comes back for a
+    /// newer one.
+    pub later: Option<String>,
+    /// What's new is open, with the notes of this release (the one the
+    /// banner or the card showed when it was pressed).
+    pub whats_new: Option<crate::engine::updates::Offer>,
+    /// Screenshots: (press Update when I close, open What's new) once the
+    /// check has answered.
+    pub demo: (bool, bool),
+}
+
+impl UpdateState {
+    /// S2: the Library folder these updates are for. When it changes (Settings
+    /// → Folders, or joining a shop) everything found, offered and chosen
+    /// for the other one is withdrawn, and this one is checked anew.
+    pub fn follow_library(&mut self, dir: &std::path::Path, h: &crate::updates::Handoff) {
+        if self.library.as_deref() == Some(dir) {
+            return;
+        }
+        if self.library.is_some() {
+            self.withdraw(h);
+        }
+        self.library = Some(dir.to_path_buf());
+    }
+
+    /// S2: forget what was found, offered and chosen (the Library changed or
+    /// became a shop's): a running check's or download's answer is dropped,
+    /// nothing installs on close, and the next frame checks again.
+    pub fn withdraw(&mut self, h: &crate::updates::Handoff) {
+        h.withdraw();
+        self.checking = None;
+        self.checked_at = None;
+        self.found = None;
+        self.offer = None;
+        self.fetch = Fetch::No;
+        self.chosen = None;
+        self.later = None;
+        self.whats_new = None;
+    }
+
+    /// UP11, UP12: a check answered. A PC whose Library is a shop's now
+    /// withdraws a release it chose from the public ones (S2).
+    pub fn receive(&mut self, found: crate::updates::Found, h: &crate::updates::Handoff) {
+        use crate::updates::Found;
+        self.checking = None;
+        self.offer = match &found {
+            Found::Releases(l) => crate::engine::updates::offer(crate::updates::VERSION, l, None),
+            _ => None,
+        };
+        if matches!(found, Found::InShop(_)) {
+            h.withdraw();
+            self.fetch = Fetch::No;
+            self.chosen = None;
+            self.whats_new = None;
+        }
+        self.found = Some(found);
+    }
+
+    /// UP13: the release the banner is about: the chosen one while it
+    /// downloads or waits for the program to close (even when a later check
+    /// couldn't answer), else the one offered.
+    pub fn banner_release(&self) -> Option<crate::engine::updates::Offer> {
+        let fetching = !matches!(self.fetch, Fetch::No);
+        (if fetching { self.chosen.clone() } else { None }).or_else(|| self.offer.clone())
+    }
+
+    /// S6: the newest release in the latest check.
+    pub fn newest(&self) -> Option<&str> {
+        match &self.found {
+            Some(crate::updates::Found::Releases(l)) => crate::engine::updates::newest(l).map(|r| r.version.as_str()),
+            _ => None,
+        }
+    }
+
+    /// UP14: Update when I close: download the offered release in the
+    /// background (`own`: this PC's own Library folder). It installs when the
+    /// program closes, never before.
+    pub fn choose(&mut self, own: std::path::PathBuf, h: &'static crate::updates::Handoff) {
+        let (Some(src), Some(o), Some(dir)) = (self.source.clone(), self.offer.clone(), self.library.clone()) else { return };
+        if matches!(self.fetch, Fetch::Running(..) | Fetch::Ready(_)) {
+            return;
+        }
+        let c = crate::updates::Chosen { version: o.version.clone(), dir, own, src };
+        self.fetch = Fetch::Running(o.version.clone(), crate::updates::download_in_background(h, c));
+        self.chosen = Some(o);
+    }
+
+    /// UP14: pick up the download's answer. True while it runs.
+    pub fn poll_fetch(&mut self) -> bool {
+        let Fetch::Running(v, rx) = &self.fetch else { return false };
+        match rx.try_recv() {
+            Ok(Ok(())) => self.fetch = Fetch::Ready(v.clone()),
+            Ok(Err(e)) => self.fetch = Fetch::Failed(v.clone(), e),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.fetch = Fetch::Failed(v.clone(), format!("Couldn't download version {v}.")),
+        }
+        false
+    }
+}
+
+/// UP14: the release chosen with Update when I close.
+#[derive(Default)]
+pub enum Fetch {
+    #[default]
+    No,
+    /// Being downloaded, in the background.
+    Running(String, Receiver<Result<(), String>>),
+    /// Downloaded: it installs when the program closes.
+    Ready(String),
+    Failed(String, String),
 }
 
 /// "lower left" → "Lower left".
@@ -1578,6 +1715,101 @@ impl App {
 mod settings_ui_tests {
     use super::*;
 
+    /// Wait for the made-up download to answer.
+    fn wait_fetch(u: &mut UpdateState) {
+        for _ in 0..500 {
+            if !u.poll_fetch() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the download never answered");
+    }
+
+    fn rel(v: &str) -> crate::engine::updates::Release {
+        crate::engine::updates::Release { version: v.into(), notes: String::new() }
+    }
+
+    /// A PC of its own on a test Library, with 0.2.0 chosen and downloaded
+    /// (a made-up list: nothing is fetched).
+    fn chosen_and_ready(d: &std::path::Path) -> (UpdateState, &'static crate::updates::Handoff, std::path::PathBuf) {
+        let lib = d.join("Library");
+        crate::library::create(&lib).unwrap();
+        let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+        let mut u = UpdateState { source: Some(crate::updates::Source::Fake(d.join("releases.json"))), ..Default::default() };
+        u.follow_library(&lib, h);
+        u.receive(crate::updates::Found::Releases(vec![rel("9.2.0")]), h);
+        u.choose(d.join("own"), h);
+        wait_fetch(&mut u);
+        assert!(matches!(&u.fetch, Fetch::Ready(v) if v == "9.2.0"));
+        (u, h, lib)
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("nestpro_upd_state_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// S2: pointing the Library elsewhere withdraws the release chosen for
+    /// the old one: nothing installs on close, and it is checked anew.
+    #[test]
+    fn another_library_withdraws_the_chosen_update() {
+        let d = tmp("library");
+        let (mut u, h, lib) = chosen_and_ready(&d);
+        u.follow_library(&lib, h);
+        assert!(matches!(u.fetch, Fetch::Ready(_)), "the same Library changed nothing");
+        u.follow_library(&d.join("Other"), h);
+        assert!(matches!(u.fetch, Fetch::No) && u.offer.is_none() && u.chosen.is_none() && u.checked_at.is_none());
+        assert_eq!(h.take_ready(std::time::Duration::ZERO), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S2: a check that finds the Library is a shop's now withdraws it too.
+    #[test]
+    fn a_library_that_became_a_shops_withdraws_the_chosen_update() {
+        let d = tmp("shop");
+        let (mut u, h, _) = chosen_and_ready(&d);
+        u.receive(crate::updates::Found::InShop("Acme".into()), h);
+        assert!(matches!(u.fetch, Fetch::No) && u.offer.is_none());
+        assert_eq!(h.take_ready(std::time::Duration::ZERO), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S6: a newer release found while one is ready: "Newest release" is
+    /// the newer one, and the chosen one keeps its own line.
+    #[test]
+    fn the_newest_release_follows_the_latest_check() {
+        let d = tmp("newest");
+        let (mut u, h, _) = chosen_and_ready(&d);
+        u.receive(crate::updates::Found::Releases(vec![rel("9.3.0"), rel("9.2.0")]), h);
+        assert_eq!(u.newest(), Some("9.3.0"));
+        assert_eq!(u.offer.as_ref().map(|o| o.version.as_str()), Some("9.3.0"));
+        assert!(matches!(&u.fetch, Fetch::Ready(v) if v == "9.2.0"));
+        assert_eq!(u.chosen.as_ref().map(|o| o.version.as_str()), Some("9.2.0"));
+        // A check that couldn't answer withdraws nothing chosen.
+        u.receive(crate::updates::Found::NotChecked("Couldn't check for updates".into()), h);
+        assert!(matches!(&u.fetch, Fetch::Ready(v) if v == "9.2.0"));
+        // N1: the banner still shows the chosen release, so its What's new
+        // has that release's notes even with nothing offered now.
+        assert!(u.offer.is_none());
+        assert_eq!(u.banner_release().map(|o| o.version), Some("9.2.0".to_string()));
+        // The dialog opened from that banner shows those notes.
+        let mut app = crate::App::new(None);
+        app.setui.upd = u;
+        app.setui.upd.whats_new = app.setui.upd.banner_release();
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_pass(egui::RawInput::default(), |c| app.whats_new_window(c));
+            out.textures_delta.clear();
+            text = crate::ui_parts::shown_text(&out);
+        }
+        assert!(text.contains("What's new in 9.2.0"), "{text}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn connection_string_masks_the_password() {
         let mut c = Connection { server: "srv".into(), database: "DB".into(), windows: false, user: "u".into(), password_enc: "0100abc".into(), ..Default::default() };
@@ -1661,6 +1893,8 @@ impl App {
             Ok(None) => self.shop_not_started(ui, &dir),
             Ok(Some(st)) => self.shop_cards(ui, &dir, &st),
         }
+        ui.add_space(10.0);
+        self.updates_card(ui);
         if let Some((ok, note)) = &self.setui.shop_note {
             ui.add_space(6.0);
             ui.label(RichText::new(note).size(11.5).color(if *ok { t.ok_fg } else { t.warn_fg }));
@@ -1708,6 +1942,9 @@ impl App {
             Ok(st) => {
                 self.setui.shop_start = None;
                 self.setui.shop_unrecorded = st.unrecorded;
+                // S2: a PC in a shop never takes a public release: whatever
+                // was offered or chosen from them is withdrawn.
+                self.setui.upd.withdraw(&crate::updates::HANDOFF);
                 (true, format!("Started shop {} in {}. This PC is its admin PC.", st.shop.name, dir.display()))
             }
             Err(e) => (false, e),
@@ -1928,6 +2165,294 @@ impl App {
         if std::env::args().any(|a| a == "--settings=shop-admin") {
             self.setui.shop_admin_ask = Some((dir, "PC-A".into()));
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Updates on a PC of its own (spec #178, UP11–UP14): the check against the
+// public releases, the banner, What's new and the Updates card. The rules
+// are in engine::updates; the installer's calls in crate::updates. Agents
+// have `shop mode=updates`; installing stays a person's choice, here.
+// ---------------------------------------------------------------------------
+
+impl App {
+    /// UP11: start a check when the program opens and once a day after, and
+    /// pick up its answer and a download's, never holding up the window.
+    pub fn update_tick(&mut self, ctx: &egui::Context) {
+        if self.setui.upd.source.is_none() {
+            return;
+        }
+        let dir = self.library_dir();
+        let h = &crate::updates::HANDOFF;
+        let u = &mut self.setui.upd;
+        let Some(src) = u.source.clone() else { return };
+        u.follow_library(&dir, h);
+        if let Some(rx) = &u.checking {
+            match rx.try_recv() {
+                Ok(found) => {
+                    u.receive(found, h);
+                    let (chosen, whats) = std::mem::take(&mut u.demo);
+                    if whats && u.offer.is_some() {
+                        u.whats_new = u.offer.clone();
+                    }
+                    if chosen {
+                        self.update_when_closed();
+                    }
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(250)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    u.found = Some(crate::updates::Found::NotChecked(crate::updates::COULDNT_CHECK.into()));
+                    u.checking = None;
+                }
+            }
+        } else if u.checked_at.is_none_or(|t| t.elapsed() >= crate::updates::CHECK_EVERY) {
+            u.checked_at = Some(std::time::Instant::now());
+            u.checking = Some(crate::updates::check_in_background(dir, crate::library::default_dir(), src));
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        } else if let Some(t) = u.checked_at {
+            // Wake for the next day's check even if nobody touches the window.
+            ctx.request_repaint_after(crate::updates::CHECK_EVERY.saturating_sub(t.elapsed()));
+        }
+        if u.poll_fetch() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
+
+    /// UP14: Update when I close: download the offered release in the
+    /// background; it installs when the program closes, never before.
+    fn update_when_closed(&mut self) {
+        self.setui.upd.choose(crate::library::default_dir(), &crate::updates::HANDOFF);
+    }
+
+    /// UP13: the banner under the ribbon while a newer release is offered.
+    pub fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let u = &self.setui.upd;
+        let fetching = !matches!(u.fetch, Fetch::No);
+        // While a chosen release downloads or waits, the banner is about it.
+        let Some(o) = u.banner_release() else { return };
+        if !fetching && u.later.as_deref() == Some(o.version.as_str()) {
+            return;
+        }
+        let t = th();
+        egui::Panel::top("update_banner")
+            .frame(egui::Frame::new().fill(t.accent_soft).stroke(Stroke::new(1.0, t.accent_border)).inner_margin(egui::Margin::symmetric(10, 5)))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let v = &o.version;
+                    match &self.setui.upd.fetch {
+                        Fetch::No => {
+                            ui.label(RichText::new(format!("⬆ Version {v} is out.")).strong().color(t.text_strong));
+                        }
+                        Fetch::Running(..) => {
+                            ui.spinner();
+                            ui.label(RichText::new(format!("Downloading version {v}…")).strong().color(t.text_strong)).on_hover_text("It installs when you close the program, never while it's open.");
+                        }
+                        Fetch::Ready(_) => {
+                            ui.label(RichText::new(format!("✔ Version {v} is ready: it installs when you close the program.")).strong().color(t.ok_fg))
+                                .on_hover_text("Finish your work and close the program when you're done. The update installs then; the program doesn't restart by itself.");
+                        }
+                        Fetch::Failed(_, e) => {
+                            ui.label(RichText::new(format!("⚠ {e}")).color(t.warn_fg));
+                        }
+                    }
+                    if !o.machine_changes.is_empty() {
+                        let n = o.machine_changes.len();
+                        ui.label(RichText::new(format!("It changes machine programs ({n}): test-cut before using it.")).color(t.warn_fg))
+                            .on_hover_text(o.machine_changes.join("\n"));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if matches!(self.setui.upd.fetch, Fetch::No) && ui.button("Later").on_hover_text("Hide this until the next version, or until the program opens again.").clicked() {
+                            self.setui.upd.later = Some(v.clone());
+                        }
+                        let again = matches!(self.setui.upd.fetch, Fetch::Failed(..));
+                        if matches!(self.setui.upd.fetch, Fetch::No | Fetch::Failed(..)) {
+                            let label = if again { "Try again" } else { "Update when I close" };
+                            let b = egui::Button::new(RichText::new(label).color(egui::Color32::WHITE)).fill(t.accent);
+                            if ui.add(b).on_hover_text("Downloads it now, in the background. It installs when you close the program, never while a job is open.").clicked() {
+                                self.setui.upd.fetch = Fetch::No;
+                                self.update_when_closed();
+                            }
+                        }
+                        // N1: the notes of the release this banner shows.
+                        if ui.button("What's new").clicked() {
+                            self.setui.upd.whats_new = Some(o.clone());
+                        }
+                    });
+                });
+            });
+    }
+
+    /// UP13: What's new: the release's notes, its changes to machine programs
+    /// first.
+    pub fn whats_new_window(&mut self, ctx: &egui::Context) {
+        let Some(o) = self.setui.upd.whats_new.clone() else { return };
+        let t = th();
+        let mut open = true;
+        let mut update = false;
+        egui::Window::new(RichText::new(format!("What's new in {}", o.version)).size(16.0).strong())
+            .id(egui::Id::unique("whats_new"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_max_width(560.0);
+                ui.label(RichText::new(format!("This PC runs {}.", crate::updates::VERSION)).size(12.0).color(t.text_dim));
+                ui.add_space(6.0);
+                if !o.machine_changes.is_empty() {
+                    egui::Frame::new().fill(t.warn_bg).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(format!("⚠ {}", crate::engine::updates::MACHINE_SECTION)).strong().color(t.warn_fg));
+                        ui.label(RichText::new("Test-cut before using this release on the machine.").size(12.0).color(t.text));
+                        for e in &o.machine_changes {
+                            ui.label(RichText::new(format!("• {e}")).size(12.0).color(t.text_strong));
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    notes_text(ui, &o.notes);
+                });
+                ui.add_space(8.0);
+                if matches!(self.setui.upd.fetch, Fetch::No | Fetch::Failed(..)) {
+                    let b = egui::Button::new(RichText::new("Update when I close").color(egui::Color32::WHITE)).fill(t.accent);
+                    update = ui.add(b).clicked();
+                }
+            });
+        if update {
+            self.setui.upd.fetch = Fetch::No;
+            self.update_when_closed();
+        }
+        if !open || update {
+            self.setui.upd.whats_new = None;
+        }
+    }
+
+    /// UP11, UP14: Settings → Shop → Updates: this PC's version and the
+    /// newest release.
+    fn updates_card(&mut self, ui: &mut egui::Ui) {
+        use crate::updates::{Found, Source};
+        let t = th();
+        let (mut check, mut update, mut whats) = (false, false, false);
+        card(ui, "Updates", "This PC's version and the newest release.", |ui| {
+            row(ui, "This PC", |ui| {
+                ui.label(RichText::new(crate::updates::VERSION).strong());
+            });
+            let u = &self.setui.upd;
+            row(ui, "Newest release", |ui| match (&u.source, &u.found) {
+                (Some(Source::Off(why)), _) => {
+                    ui.label(RichText::new(*why).color(t.text_dim));
+                }
+                _ if u.checking.is_some() => {
+                    ui.spinner();
+                    ui.label(RichText::new("Checking…").color(t.text_dim));
+                }
+                (_, Some(Found::Releases(_))) => match (&u.offer, u.newest()) {
+                    (Some(_), Some(n)) => {
+                        ui.label(RichText::new(n).strong().color(t.accent_fg));
+                        ui.label(RichText::new("is out").color(t.text));
+                    }
+                    (_, n) => {
+                        ui.label(cap(&crate::engine::updates::up_to_date(crate::updates::VERSION, n)));
+                    }
+                },
+                (_, Some(Found::InShop(name))) => {
+                    ui.label(RichText::new(format!("From the shop folder: {name}'s admin PC rolls out releases.")).color(t.text_dim))
+                        .on_hover_text("A PC in a shop never checks GitHub: it installs the release the admin PC rolled out, from the shop folder.");
+                }
+                (_, Some(Found::NotChecked(e))) => {
+                    // UP11: no connection is said here only: no banner, no dialog.
+                    let short = if e.starts_with(crate::updates::COULDNT_CHECK) { crate::updates::COULDNT_CHECK } else { e.as_str() };
+                    ui.label(RichText::new(short).color(t.warn_fg)).on_hover_text(e);
+                }
+                (None, None) => {
+                    ui.label(RichText::new("Not checked").color(t.text_dim));
+                }
+                (Some(_), None) => {
+                    ui.label(RichText::new("Checking…").color(t.text_dim));
+                }
+            });
+            if let Some(o) = &u.offer {
+                if !o.machine_changes.is_empty() {
+                    ui.label(RichText::new(format!("⚠ It changes machine programs ({}): test-cut before using it.", o.machine_changes.len())).size(11.5).color(t.warn_fg))
+                        .on_hover_text(o.machine_changes.join("\n"));
+                }
+                if matches!(u.fetch, Fetch::No | Fetch::Failed(..)) {
+                    row(ui, "", |ui| {
+                        update = page_button(ui, "Shop", "Update when I close", true).on_hover_text("Downloads it now, in the background. It installs when you close the program, never while a job is open.").clicked();
+                        whats = page_button(ui, "Shop", "What's new", true).clicked();
+                    });
+                }
+            }
+            // S6: the chosen release keeps its own line; "Newest release"
+            // above is the latest check's.
+            match &u.fetch {
+                Fetch::No => {}
+                Fetch::Failed(_, e) => {
+                    ui.label(RichText::new(format!("⚠ {e}")).size(11.5).color(t.warn_fg));
+                }
+                Fetch::Running(v, _) => {
+                    ui.label(RichText::new(format!("Downloading version {v}…")).size(11.5).color(t.text_dim));
+                }
+                Fetch::Ready(v) => {
+                    ui.label(RichText::new(format!("Version {v} installs when you close the program.")).size(11.5).color(t.ok_fg));
+                }
+            }
+            let can_check = matches!(u.source, Some(Source::Github | Source::Fake(_))) && u.checking.is_none();
+            if can_check {
+                ui.add_space(4.0);
+                check = page_button(ui, "Shop", "Check now", true).on_hover_text("This PC checks by itself when the program opens and once a day.").clicked();
+            }
+        });
+        if check {
+            self.setui.upd.checked_at = None;
+        }
+        if whats {
+            self.setui.upd.whats_new = self.setui.upd.offer.clone();
+        }
+        if update {
+            self.setui.upd.fetch = Fetch::No;
+            self.update_when_closed();
+        }
+    }
+
+    /// `--fake-releases=<file>` (screenshots) or `NESTPRO_FAKE_RELEASES`: a
+    /// made-up release list in place of GitHub, on any system. Without one, a
+    /// screenshot never checks.
+    pub fn start_update_checks(&mut self, fake: Option<std::path::PathBuf>) {
+        let src = crate::updates::source(fake.clone());
+        if fake.is_none() && self.shot_mode_now() && src == crate::updates::Source::Github {
+            return;
+        }
+        self.setui.upd.source = Some(src);
+    }
+}
+
+/// UP13: release notes as written (UP1): headings, list lines and text.
+fn notes_text(ui: &mut egui::Ui, notes: &str) {
+    let t = th();
+    let mut skip = false;
+    for line in notes.lines() {
+        let l = line.trim();
+        if let Some(h) = l.strip_prefix('#') {
+            let h = h.trim_start_matches('#').trim();
+            // The machine-program changes are shown above, on their own.
+            skip = h.eq_ignore_ascii_case(crate::engine::updates::MACHINE_SECTION);
+            if !skip {
+                ui.add_space(4.0);
+                ui.label(RichText::new(h).strong().color(t.text_strong));
+            }
+            continue;
+        }
+        if skip || l.is_empty() {
+            continue;
+        }
+        let text = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")).map_or(l.to_string(), |e| format!("• {e}"));
+        ui.label(RichText::new(text).size(12.0).color(t.text));
     }
 }
 

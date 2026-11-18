@@ -9275,6 +9275,68 @@ fn starting_a_shop_refuses_what_it_cant_start_and_changes_nothing() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+// ---------------------------------------------------------------------------
+// Updates on a PC of its own (spec #178, UP11–UP14), against a made-up
+// release list: tests never read GitHub.
+// ---------------------------------------------------------------------------
+
+/// A made-up release list in `d`.
+fn fake_releases(d: &Path, list: Value) -> crate::updates::Source {
+    let f = d.join("releases.json");
+    std::fs::write(&f, list.to_string()).unwrap();
+    crate::updates::Source::Fake(f)
+}
+
+/// UP12, UP13: a PC of its own on 0.4.0 is told of the newest newer release,
+/// with what it changes in machine programs; a pre-release is never offered.
+#[test]
+fn an_agent_sees_the_newest_release_for_a_pc_of_its_own() {
+    let d = dir("updates_offer");
+    let mut ctx = stock_ctx(&d);
+    ctx.version = "0.4.0".into();
+    let notes = "Since v0.4.0: 2 changes.\n\n## Changes machine programs\n\nTest-cut before rolling this release out: these change the code that writes machine programs.\n\n- Arc leads on round holes aim at the centre (#177): app/src/leads.rs\n\n## Changes\n\n- Arc leads on round holes aim at the centre (#177)\n- Settings → Shop (#200)\n";
+    ctx.releases = fake_releases(&d, json!([{"version": "0.4.1", "notes": ""}, {"version": "0.10.0", "notes": notes}, {"version": "0.11.0-rc1", "notes": ""}, {"version": "0.9.0", "notes": ""}]));
+    let mut s = Session::new(ctx);
+    let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["this_version"], "0.4.0", "{r}");
+    assert_eq!(r["data"]["newest"], "0.10.0", "{r}");
+    assert_eq!(r["data"]["offer"]["version"], "0.10.0", "{r}");
+    assert_eq!(r["data"]["offer"]["machine_changes"], json!(["Arc leads on round holes aim at the centre (#177): app/src/leads.rs"]), "{r}");
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("0.10.0") && m.contains("machine programs") && m.contains("A person installs it"), "{m}");
+    // Nothing changed: a check only reads.
+    assert_ne!(r["changed"], true, "{r}");
+    // Up to date.
+    s.ctx.version = "0.10.0".into();
+    let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["offer"], Value::Null, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("up to date"), "{r}");
+    assert_eq!(r["data"]["this_version"], "0.10.0", "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP11: no connection is said plainly, not as a refusal; a PC in a shop
+/// never reads the public releases (ADR 0006).
+#[test]
+fn an_agent_checking_updates_offline_or_in_a_shop() {
+    let d = dir("updates_offline");
+    let mut ctx = stock_ctx(&d);
+    ctx.version = "0.4.0".into();
+    ctx.releases = crate::updates::Source::Fake(d.join("offline"));
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["checked"], false, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("Couldn't check for updates"), "{r}");
+    call(&mut s, "setup", None, json!({"start": lib.to_str().unwrap(), "name": "Acme"}));
+    s.ctx.releases = fake_releases(&d, json!([{"version": "0.5.0"}]));
+    let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
+    assert_eq!(r["data"]["shop"], "Acme", "{r}");
+    assert_eq!(r["data"]["offer"], Value::Null, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("never from GitHub"), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// A session as `who` (an agent) in the shop folder `lib`, on `clock`.
 fn shop_session(lib: &Path, who: Who, clock: &Clock) -> Session {
     let mut ctx = stock_ctx_again(lib);

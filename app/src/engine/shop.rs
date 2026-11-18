@@ -201,6 +201,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         // Agents never change the admin PC (SH7): the engine's own rule
         // refuses it, whoever the session says it works for.
         "admin" => make_admin(dir, &ctx.who.clone().as_agent(), &ctx.clock).map(|_| unreachable!("an agent changed the admin PC")),
+        "updates" => Ok(super::updates::run(ctx)),
         _ => {
             // Using the program on this PC records it (SH4). When it can't,
             // the shop is still shown, with why this PC isn't in it (SH6).
