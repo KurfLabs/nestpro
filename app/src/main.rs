@@ -305,6 +305,9 @@ pub struct App {
     /// A folder picked in Settings that holds no Library, while asking
     /// whether to make a new Library there (LB12).
     pub lib_new_ask: Option<String>,
+    /// SH9, SH16: the first-run screen, or Settings → Shop's Join a shop,
+    /// while it is open.
+    pub firstrun: Option<startup::FirstRun>,
     /// Original option: warn before changing a part that has technology.
     pub warn_tech: bool,
     /// "Use this answer for the rest" given in the technology question.
@@ -670,6 +673,7 @@ impl App {
             quit_confirmed: false,
             lib_dir_edit: None,
             lib_new_ask: None,
+            firstrun: None,
             warn_tech: true,
             tech_answer_all: None,
             tech_all_box: false,
@@ -2866,6 +2870,7 @@ impl eframe::App for App {
         }
         self.settings_window(&ctx);
         self.new_library_window(&ctx);
+        self.first_run_window(&ctx);
         self.shop_admin_window(&ctx);
         // UP11: releases for a PC of its own, checked off the window's thread.
         self.update_tick(&ctx);
@@ -3155,6 +3160,10 @@ fn main() -> eframe::Result {
     }
     let args: Vec<String> = std::env::args().collect();
     let shot = args.iter().position(|a| a == "--screenshot").and_then(|i| args.get(i + 1)).map(PathBuf::from);
+    // SH9: a PC with no settings yet starts at the first-run screen. Looked
+    // at before anything could save them; never in a screenshot run, nor
+    // with a Library folder given on the command line.
+    let first_run = shot.is_none() && library_dir_arg().is_none() && startup::first_run(&settings::AppSettings::file(), &library::default_dir());
     let want_dark = args.iter().any(|a| a == "--dark");
     let want_light = args.iter().any(|a| a == "--light");
     let want_jobs = args.iter().any(|a| a == "--jobs");
@@ -3223,6 +3232,10 @@ fn main() -> eframe::Result {
             theme::set_dark(&cc.egui_ctx, dark);
             let load_layout = shot.is_none();
             let mut app = App::new(shot);
+            // SH9: until the first-run screen is answered, nothing saves this
+            // PC's settings: a person who closes the program first gets the
+            // screen again.
+            app.cfg.setup_pending = first_run;
             // No mode asked for: keep following Windows, like the original's
             // default style (rule V5).
             app.follow_system = !want_dark && !want_light && load_layout;
@@ -3249,6 +3262,13 @@ fn main() -> eframe::Result {
                         app.status = format!("Reopened the active job {}.", app.job_name);
                     }
                 }
+            }
+            if first_run {
+                app.firstrun = Some(startup::FirstRun::default());
+            }
+            // --first-run[=join] (screenshots): the first-run screen (SH9).
+            if let Some(what) = std::env::args().find_map(|a| if a == "--first-run" { Some(String::new()) } else { a.strip_prefix("--first-run=").map(str::to_string) }) {
+                app.demo_first_run(&what);
             }
             // SH4: this PC records itself in its shop when the program opens.
             // Never in a screenshot run, which works on made-up PCs.

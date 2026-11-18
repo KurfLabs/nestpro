@@ -648,6 +648,18 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
     Some(Lease { file: file.to_path_buf(), token, since, wall, played0, hold_for })
 }
 
+impl WriteLock {
+    /// Let go of the lock and look that its file is gone (SH11): Err names
+    /// the lock file this writer made but couldn't remove (a share that lets
+    /// a PC make files but not remove them), so a refusal can say so.
+    pub fn release(self) -> Result<(), PathBuf> {
+        let (file, token) = (self.0.file.clone(), self.0.token.clone());
+        drop(self);
+        let still = std::fs::read(&file).ok().and_then(|t| serde_json::from_slice::<Holder>(&t).ok()).is_some_and(|h| h.token == token);
+        if still { Err(file) } else { Ok(()) }
+    }
+}
+
 impl Drop for WriteLock {
     fn drop(&mut self) {
         let last = HELD.with(|h| {
@@ -771,6 +783,20 @@ fn is_newer(a: &[u64], b: &[u64]) -> bool {
     let n = a.len().max(b.len());
     let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
     (0..n).map(|i| at(a, i).cmp(&at(b, i))).find(|o| o.is_ne()) == Some(std::cmp::Ordering::Greater)
+}
+
+/// UP6: how version `a` stands to `b` (0.10.0 is newer than 0.9.0), as
+/// joining a shop compares this PC's with the shop's (SH12); None when
+/// either isn't numbers.
+pub fn version_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let (a, b) = (version_numbers(a)?, version_numbers(b)?);
+    Some(if is_newer(&a, &b) {
+        std::cmp::Ordering::Greater
+    } else if is_newer(&b, &a) {
+        std::cmp::Ordering::Less
+    } else {
+        std::cmp::Ordering::Equal
+    })
 }
 
 /// The program versions a Library file is judged by (UP7): this program's,

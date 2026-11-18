@@ -400,7 +400,13 @@ impl Ctx {
     /// Read the material list again (each call: another PC may have changed
     /// it). While the Library can't be reached the list in use stays.
     pub fn reload_materials(&self) -> Option<crate::materials::JoinedNow> {
-        load_materials_on(&self.library_dir, &self.pc_dir, &self.cfg, false, Some(&|| self.library_at().saved()), &self.version).ok().flatten()
+        self.reload_materials_checked().ok().flatten()
+    }
+
+    /// `reload_materials`, with why the list couldn't be read or this PC's
+    /// materials couldn't join it (SH10).
+    pub fn reload_materials_checked(&self) -> Result<Option<crate::materials::JoinedNow>, String> {
+        load_materials_on(&self.library_dir, &self.pc_dir, &self.cfg, false, Some(&|| self.library_at().saved()), &self.version)
     }
 
     /// Built-in values only (tests).

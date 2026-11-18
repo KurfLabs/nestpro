@@ -111,9 +111,45 @@ impl Session {
     /// Run an operation. `job` names the job file (needed for `new`, and when
     /// no job is open yet).
     pub fn call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
-        // The material list may have changed on another PC since (MA14);
-        // the first time this PC points at a Library its own list joins it
-        // (MA28), and a job open in this PC's numbering takes the Library's.
+        // SH11: setup looks at a folder before it changes anything, so it
+        // writes no Library's material list first; a join writes the shop's
+        // only once the shop passed its checks (below).
+        let mut joined = if name == "setup" { None } else { self.reload_materials() };
+        let library = self.ctx.library_dir.clone();
+        let mut r = self.run_call(name, job, args)?;
+        // SH10: joining a shop points this session's Library at it: this
+        // PC's materials join the shop's list now (MA28), not at the next
+        // call. When they can't, that is said; they join at the next read.
+        let mut not_joined = None;
+        if self.ctx.library_dir != library {
+            match self.reload_materials_checked() {
+                Ok(j) => joined = j.or(joined),
+                Err(e) => not_joined = Some(format!("This PC's materials couldn't join the shop's material list just now ({e}). They join the next time the list is read: at this session's next call, or when the program opens.")),
+            }
+        }
+        if let Some(o) = r.json.as_object_mut() {
+            if let Some(n) = joined {
+                o.insert("materials_joined".into(), json!(n.note()));
+            }
+            if let Some(e) = not_joined {
+                o.insert("materials_not_joined".into(), json!(e));
+            }
+        }
+        Ok(r)
+    }
+
+    /// `reload_materials`, saying why this PC's materials couldn't join the
+    /// Library's list when they couldn't (SH10).
+    fn reload_materials_checked(&mut self) -> Result<Option<crate::materials::JoinedNow>, String> {
+        let r = self.ctx.reload_materials_checked();
+        self.seen = Some(super::material::current());
+        r
+    }
+
+    /// The material list may have changed on another PC since (MA14); the
+    /// first time this PC points at a Library its own list joins it (MA28),
+    /// and a job open in this PC's numbering takes the Library's.
+    fn reload_materials(&mut self) -> Option<crate::materials::JoinedNow> {
         // MA34: whether the open job's material was in the list read before.
         let known = self.job.as_ref().map(|j| self.seen.as_ref().map_or_else(|| super::material::exists(j.spec.material), |l| l.get(j.spec.material).is_some()));
         let joined = self.ctx.reload_materials();
@@ -123,11 +159,7 @@ impl Session {
             // name the job came with; never by its number alone (MA34).
             j.spec.material = crate::materials::after_reload(joined.as_ref(), j.spec.material, &j.material_name, known);
         }
-        let mut r = self.run_call(name, job, args)?;
-        if let (Some(n), Some(o)) = (joined, r.json.as_object_mut()) {
-            o.insert("materials_joined".into(), json!(n.note()));
-        }
-        Ok(r)
+        joined
     }
 
     fn run_call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
@@ -135,6 +167,26 @@ impl Session {
         let args = if args.is_null() { json!({}) } else { args.clone() };
         ops::check_args(op, &args)?;
         let done = |o: Outcome| Reply { json: o.to_json(), image: None };
+        if name == "setup" {
+            // SH10: a PC that joined a shop works in the shop folder from now on.
+            let st = super::shop::setup_in(&self.ctx, &ops::Args(&args))?;
+            let mut outcome = st.outcome;
+            if let Some(d) = st.library {
+                self.ctx.cfg.library_dir = d.display().to_string();
+                self.ctx.library_dir = d;
+                // SH10: the open job, its undo steps and its stock booking
+                // are the old Library's: never saved into the shop's.
+                self.job = None;
+                self.undo.clear();
+                self.stamp = None;
+                self.read_only = None;
+                if let Some(p) = self.path.take() {
+                    outcome.message.push_str(&format!("\nThe job open in this session ({}) was closed: it belongs to the Library this PC left. Open it again to work on it.", p.display()));
+                    outcome.data["closed_job"] = json!(p.display().to_string());
+                }
+            }
+            return Ok(done(outcome));
+        }
         match op.kind {
             Kind::Global => {
                 // The open job as its file is now (the window or another
