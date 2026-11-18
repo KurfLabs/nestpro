@@ -134,6 +134,33 @@ pub struct MachineTech {
     pub source: Option<PathBuf>,
     /// The machine's cut qualities as they show: names (CQ4) and colours (CQ5).
     pub qualities: Arc<crate::qualities::CutQualities>,
+    /// The shop's own "pick quality by size" rows for this machine (CQ9).
+    pub size_rules: Arc<Vec<crate::qualities::SizeRule>>,
+    /// Those of them that fit the sheet the values were picked for (size
+    /// from, up to, quality); None = none fits, or not picked for a sheet.
+    pub sheet_sizes: Option<Arc<Vec<(f64, f64, crate::nest::CutQuality)>>>,
+}
+
+/// Where the sizes Auto picks a quality by come from (CQ9, MTL10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SizesFrom {
+    /// The shop's table in Settings → Machines.
+    Settings,
+    /// The machine file's section for the sheet.
+    MachineFile,
+    /// Nothing: Auto cuts everything at quality 3.
+    None,
+}
+
+impl SizesFrom {
+    /// For agents.
+    pub fn key(self) -> &'static str {
+        match self {
+            SizesFrom::Settings => "settings",
+            SizesFrom::MachineFile => "machine file",
+            SizesFrom::None => "none",
+        }
+    }
 }
 
 impl Default for MachineTech {
@@ -196,6 +223,8 @@ impl Default for MachineTech {
             sizes_override: None,
             source: None,
             qualities: Arc::new(Default::default()),
+            size_rules: Arc::new(vec![]),
+            sheet_sizes: None,
         }
     }
 }
@@ -206,7 +235,7 @@ static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// The last values picked for a material and thickness: (generation, the
 /// material's machine-file key, thickness bits).
 #[allow(clippy::type_complexity)]
-static PICKED: std::sync::Mutex<Option<((u64, String, u64, i32), MachineTech)>> = std::sync::Mutex::new(None);
+static PICKED: std::sync::Mutex<Option<((u64, String, u64, i32, String), MachineTech)>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 thread_local! {
@@ -290,17 +319,18 @@ pub fn for_spec(spec: &crate::nest::SheetSpec) -> MachineTech {
 pub fn for_material(material: usize, thickness: f64, gas: Option<crate::gas::Gas>) -> MachineTech {
     let key = key_of_material(material);
     let keys = JobKeys::for_job(&key, thickness, gas);
+    let name = crate::engine::material::name_or(material, "");
     #[cfg(test)]
     if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
-        return t.for_job(&keys);
+        return t.for_job(&keys).with_sheet_sizes(&name, thickness);
     }
-    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), key, thickness.to_bits(), keys.gas);
+    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), key, thickness.to_bits(), keys.gas, name.clone());
     if let Some((k, t)) = PICKED.lock().ok().and_then(|g| g.clone()) {
         if k == id {
             return t;
         }
     }
-    let t = active().for_job(&keys);
+    let t = active().for_job(&keys).with_sheet_sizes(&name, thickness);
     if let Ok(mut g) = PICKED.lock() {
         *g = Some((id, t.clone()));
     }
@@ -679,6 +709,7 @@ impl MachineTech {
                 t.source = self.source.clone();
                 t.speed_files = self.speed_files.clone();
                 t.qualities = self.qualities.clone();
+                t.size_rules = self.size_rules.clone();
                 t.section = Some(i);
                 // Settings → Machines wins over the section too (CO16, CO17).
                 t.with_order_changes(self.order_changes)
@@ -693,11 +724,41 @@ impl MachineTech {
         t
     }
 
-    /// The cut quality the applied section's size bands give a contour of
-    /// equivalent radius `r` mm (MTL10, TT8): none when the section has no
-    /// bands or the first starts above `r`; else the first band with
-    /// from ≤ r < to, its technology index turned into a quality.
+    /// Keep the shop's size rows that fit a sheet of material `name`,
+    /// `thickness` mm (CQ9).
+    pub fn with_sheet_sizes(mut self, name: &str, thickness: f64) -> MachineTech {
+        self.sheet_sizes = crate::qualities::sheet_sizes(&self.size_rules, name, thickness).map(Arc::new);
+        self
+    }
+
+    /// The sizes Auto picks a quality by for the sheet (CQ9, MTL10): the
+    /// shop's rows that fit it, else the applied section's size bands (their
+    /// technology indexes turned into qualities, TT8), else none.
+    pub fn size_bands(&self) -> (Vec<(f64, f64, crate::nest::CutQuality)>, SizesFrom) {
+        if let Some(rows) = &self.sheet_sizes {
+            return (rows.as_ref().clone(), SizesFrom::Settings);
+        }
+        let file: Vec<_> = self
+            .applied()
+            .map(|s| s.hole_bands.iter().filter_map(|b| crate::nest::CutQuality::new(crate::techtable::quality_of_index(b.2)).map(|q| (b.0, b.1, q))).collect())
+            .unwrap_or_default();
+        if file.is_empty() {
+            (file, SizesFrom::None)
+        } else {
+            (file, SizesFrom::MachineFile)
+        }
+    }
+
+    /// The cut quality Auto gives a contour of equivalent radius `r` mm by
+    /// its size: the first of the shop's rows for the sheet it fits (CQ9);
+    /// without such rows, the applied section's size bands (MTL10, TT8):
+    /// none when the section has no bands or the first starts above `r`;
+    /// else the first band with from ≤ r < to, its technology index turned
+    /// into a quality.
     pub fn band_quality(&self, r: f64) -> Option<usize> {
+        if let Some(rows) = &self.sheet_sizes {
+            return crate::qualities::size_quality(rows, r).map(|q| q.number());
+        }
         let bands = &self.applied()?.hole_bands;
         if bands.first().is_none_or(|b| b.0 > r) {
             return None;
@@ -842,6 +903,8 @@ impl MachineTech {
             sizes_override: None,
             source: None,
             qualities: Arc::new(crate::qualities::CutQualities::from_codes(m)),
+            size_rules: d.size_rules.clone(),
+            sheet_sizes: None,
         }
     }
 
@@ -870,8 +933,11 @@ impl MachineTech {
         let found = tries.iter().find(|p| p.is_file());
         let mut t = found.and_then(|p| MachineTech::load(p)).unwrap_or_default();
         // The qualities' colours are the original's display settings, the same
-        // for every machine (CQ5).
-        t.qualities = Arc::new(t.qualities.as_ref().clone().with_colours_in(Path::new(&dir)));
+        // for every machine (CQ5); the shop's own names and notes for this
+        // machine's qualities win over its file's names (CQ7).
+        t.qualities = Arc::new(t.qualities.as_ref().clone().with_colours_in(Path::new(&dir)).with_shop(&m.qualities));
+        // The shop's own "pick quality by size" rows (CQ9).
+        t.size_rules = Arc::new(m.sizes.clone());
         // The machine's CF file names its technology table and time settings
         // (TT1): the BLM post's .CF1, else a .CF<n> post library.
         let cf = [&m.blm_cf1, &m.post_lib].into_iter().filter(|p| !p.is_empty()).map(PathBuf::from).find(|p| {

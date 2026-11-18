@@ -3193,7 +3193,7 @@ fn main() -> eframe::Result {
                     "shortcuts" => Shortcuts,
                     "about" => About,
                     "connections" => Connections,
-                    "machines" | "machines-order" => Machines,
+                    "machines" | "machines-order" | "machines-qualities" | "machines-sizes" => Machines,
                     "materials" => Materials,
                     "erp" | "integrations" => Integrations,
                     "folders" => Folders,
@@ -3203,6 +3203,8 @@ fn main() -> eframe::Result {
                 app.open_settings(sec);
                 // Screenshots of a machine's cut order scroll down to it.
                 app.setui.show_order = s == "machines-order";
+                app.setui.show_qualities = s == "machines-qualities";
+                app.setui.show_sizes = s == "machines-sizes";
                 // Screenshots of Settings → Materials with a material picked.
                 if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--settings-material=").map(str::to_string)) {
                     // The page lists the materials in the list's order.
@@ -3658,6 +3660,33 @@ fn main() -> eframe::Result {
             // --path (screenshots): the sheet's cut path, at the zoom it opens with.
             if std::env::args().any(|a| a == "--path") {
                 app.show_path = true;
+            }
+            // --about-qualities (screenshots): "About cut qualities" starts open (CQ8).
+            if std::env::args().any(|a| a == "--about-qualities") {
+                cutpanel::ABOUT_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            // --demo-qualities (screenshots): the active machine writes LC5
+            // programs and the shop has named qualities 1, 2, 3 and 9 and said
+            // what each is for (CQ7), as Settings → Machines keeps them.
+            if std::env::args().any(|a| a == "--demo-qualities") {
+                let k = app.cfg.active_machine.min(app.cfg.machines.len().saturating_sub(1));
+                if let Some(m) = app.cfg.machines.get_mut(k) {
+                    m.name = "Demo LC5".into();
+                    m.output = settings::Output::BlmSiemens;
+                    for (q, name, note) in [
+                        (1, "Small holes", "Holes under about 10 mm that must come out round"),
+                        (2, "Medium holes", "Slots and holes up to about 30 mm"),
+                        (3, "Outsides", "Outlines and big cut-outs, fastest"),
+                        (9, "Marking", "Etched part numbers and bend marks"),
+                    ] {
+                        m.qualities.names[q - 1] = name.into();
+                        m.qualities.notes[q - 1] = note.into();
+                    }
+                    // And picks small holes at 1, medium ones at 2 on Auto (CQ9).
+                    let rule = |r_from: f64, r_to: f64, q: usize| crate::qualities::SizeRule { r_from, r_to, quality: nest::CutQuality::new(q).unwrap_or(nest::CutQuality::FALLBACK), ..Default::default() };
+                    m.sizes = vec![rule(0.0, 5.0, 1), rule(5.0, 15.0, 2)];
+                }
+                app.apply_settings(true);
             }
             // --cut-ranges (screenshots): Quality by size on the plate with holes,
             // its rows and each contour's quality (CQ1) by the machine's names

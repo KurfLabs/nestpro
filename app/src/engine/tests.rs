@@ -2339,6 +2339,71 @@ fn part_info_names_each_contours_quality_as_the_machine_file_does() {
 }
 
 #[test]
+fn the_shops_size_table_picks_each_contours_quality_on_auto() {
+    // CQ9: the machine file picks nothing by size for 3 mm mild steel; the
+    // shop's table says holes up to 5 mm radius are cut at 1 and up to 10 mm
+    // at 2 on mild steel up to 6 mm. Ø6 hole (r 3) → 1, Ø16 (r 8) → 2, the
+    // outline → Auto's default, 3.
+    let d = dir("quality_sizes");
+    let root = d.join("Expert");
+    laser_install(&root, "");
+    let rule = |r_to: f64, n: usize| crate::qualities::SizeRule { material: "mild steel".into(), t_from: 0.0, t_to: 6.0, r_from: 0.0, r_to, quality: crate::nest::CutQuality::new(n).unwrap() };
+    let m = crate::settings::Machine { sizes: vec![rule(5.0, 1), rule(10.0, 2)], ..Default::default() };
+    crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::for_machine(&m, root.to_str().unwrap())));
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(d.join("plate.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    assert_eq!(contour_quality_names(&mut s), ["Quality 1", "Quality 2", "Quality 3"]);
+    let r = call(&mut s, "qualities", None, json!({}));
+    assert_eq!(r["data"]["sizes_from"], json!("settings"), "{r}");
+    // On 8 mm plate no row fits, so nothing picks by size: everything at 3.
+    let r = call(&mut s, "qualities", None, json!({"thickness": 8}));
+    assert_eq!(r["data"]["sizes_from"], json!("none"), "{r}");
+    crate::ct1::set_thread_active(None);
+}
+
+#[test]
+fn an_agent_reads_what_each_quality_means_for_the_sheet() {
+    // CQ7, CQ8: the machine file names 1 and 3 and has size bands for
+    // 12.9–20.1 mm mild steel; the shop names quality 1 its own way and says
+    // what 1 and 2 are for. The machine writes LC5 programs.
+    let d = dir("quality_guide");
+    let root = d.join("Expert");
+    laser_install(&root, "A922 \"Slow\"\nA924 \"Fast\"\n");
+    let mut m = crate::settings::Machine { name: "Demo LC5".into(), output: crate::settings::Output::BlmSiemens, ..Default::default() };
+    m.qualities.names[0] = "Small holes".into();
+    m.qualities.notes[0] = "Round holes that must stay round".into();
+    m.qualities.notes[1] = "Slots and medium holes".into();
+    let mt = crate::ct1::MachineTech::for_machine(&m, root.to_str().unwrap());
+    crate::ct1::set_thread_active(Some(mt.clone()));
+    let mut ctx = Ctx::builtin();
+    ctx.tech = mt;
+    ctx.cfg.machines = vec![m];
+    ctx.cfg.active_machine = 0;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(d.join("plate.snjob").to_str().unwrap()), json!({"material": "mild steel", "thickness": 15}));
+    let r = call(&mut s, "qualities", None, json!({}));
+    let q = r["data"]["qualities"].as_array().unwrap_or_else(|| panic!("{r}"));
+    assert_eq!((q[0]["name"].as_str(), q[0]["name_from"].as_str(), q[0]["note"].as_str()), (Some("Small holes (1)"), Some("settings"), Some("Round holes that must stay round")), "{r}");
+    assert_eq!((q[2]["name"].as_str(), q[2]["name_from"].as_str()), (Some("Fast (3)"), Some("machine file")));
+    // Which sizes Auto cuts at each quality: the machine's size bands.
+    assert_eq!(q[0]["auto_bands"], json!([{"from_r": 0.0, "to_r": 5.0}]), "{r}");
+    assert_eq!(q[2]["auto_bands"], json!([{"from_r": 12.0, "to_r": null}]));
+    assert_eq!((q[2]["fallback"].as_bool(), q[8]["marking"].as_bool()), (Some(true), Some(true)), "quality 3 is the fallback; LC5 programs mark at 9");
+    assert_eq!(q[3]["known"], json!(false), "nothing says what quality 4 is for: {r}");
+    assert!(r["data"]["auto"].as_str().unwrap().contains("radius up to 5 mm → Small holes (1)"), "{r}");
+    assert!(q[0]["explain"].as_array().unwrap().iter().any(|e| e.as_str().unwrap().contains("only sends the number 1")), "{r}");
+    assert_eq!(r["data"]["about"].as_array().map(|a| a.len()), Some(5));
+    // Another sheet without touching the job: no section, so no size bands.
+    let r = call(&mut s, "qualities", None, json!({"thickness": 3}));
+    assert!(r["data"]["size_bands"].as_array().unwrap().is_empty() && r["data"]["auto"].as_str().unwrap().contains("nothing picks by size"), "{r}");
+    // machine-tech and machines carry the shop's names and notes too.
+    let r = call(&mut s, "machine-tech", None, json!({}));
+    assert_eq!(r["data"]["qualities"][1]["note"], json!("Slots and medium holes"), "{r}");
+    crate::ct1::set_thread_active(None);
+}
+
+#[test]
 fn machine_tech_lists_the_qualities_by_name_and_leaves_out_hidden_ones() {
     let d = dir("quality_list");
     let names = "A922 \"Slow\"\nA923 \"Medium\"\nA924 \"Fast\"\nA925 \"<HIDE>\"\nA930 \"Marking\"\nA931 \"Center\"\n";

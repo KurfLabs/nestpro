@@ -21,6 +21,7 @@ pub mod materialedit;
 pub mod materialops;
 pub mod ops;
 pub mod pattern;
+pub mod qualityguide;
 pub mod readback;
 pub mod refresh;
 pub mod render;

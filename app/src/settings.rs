@@ -78,6 +78,12 @@ pub struct Machine {
     /// the machine file's (CO16, CO17). Empty = the file's (settings saved
     /// before them have none).
     pub order: crate::ct1::OrderChanges,
+    /// The shop's own names for the machine's cut qualities and a note on
+    /// what each is for (CQ7). Empty = the machine file's names only.
+    pub qualities: crate::qualities::ShopQualities,
+    /// The shop's own "pick quality by size" rows (CQ9). Empty = the machine
+    /// file's size bands only.
+    pub sizes: Vec<crate::qualities::SizeRule>,
 }
 
 impl Machine {
@@ -118,7 +124,7 @@ impl Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default() }
+        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default(), qualities: Default::default(), sizes: vec![] }
     }
 }
 
@@ -480,6 +486,13 @@ impl AppSettings {
             if !m.order.is_empty() {
                 s += &format!("order = {}\n", serde_json::to_string(&m.order).unwrap_or_default());
             }
+            // Likewise the shop's quality names and notes (CQ7).
+            if !m.qualities.is_empty() {
+                s += &format!("qualities = {}\n", esc(&m.qualities.to_line()));
+            }
+            if !m.sizes.is_empty() {
+                s += &format!("sizes = {}\n", esc(&crate::qualities::sizes_to_line(&m.sizes)));
+            }
         }
         for i in &self.integrations {
             s += &format!(
@@ -629,6 +642,8 @@ impl AppSettings {
                             // Each value on its own: one that can't be read or
                             // taken is left out, the others kept (CO16).
                             "order" => m.order = crate::ct1::OrderChanges::read(&v),
+                            "qualities" => m.qualities = crate::qualities::ShopQualities::read(&v),
+                            "sizes" => m.sizes = crate::qualities::sizes_read(&v),
                             _ => {}
                         }
                     }

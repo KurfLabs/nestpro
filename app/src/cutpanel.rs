@@ -7,6 +7,7 @@
 
 use crate::dxf::{Contour, ContourState};
 use crate::engine::contours::{self, Look, Paint};
+use crate::engine::qualityguide::Guide;
 use crate::engine::selection::{Take, Window};
 use crate::nest::{CutQuality, Part, P};
 use crate::qualities::CutQualities;
@@ -508,11 +509,20 @@ pub fn canvas<T: PaintTarget>(
     }
 }
 
-/// The panel's hint, its rows with their swatches and hover cards, and All
-/// the same contours (CS6), on the part's drawing screen and in the import
-/// preview (IM11). `locked` says why nothing can be painted (the rows can't be
-/// chosen then). True when a row was chosen or let go.
-pub fn rows_ui<B>(ui: &mut egui::Ui, panel: &mut CutPanel<B>, names: &CutQualities, locked: Option<&str>) -> bool {
+/// What the panel needs to say what each quality means (CQ8): the guide
+/// for the sheet in hand and the unit the shop works in.
+#[derive(Clone, Copy)]
+pub struct Explain<'a> {
+    pub guide: &'a Guide,
+    pub unit: crate::units::LenUnit,
+}
+
+/// The panel's hint, what its qualities are for (CQ8), its rows with their
+/// swatches and hover cards, and All the same contours (CS6), on the part's
+/// drawing screen and in the import preview (IM11). `locked` says why
+/// nothing can be painted (the rows can't be chosen then). True when a row
+/// was chosen or let go.
+pub fn rows_ui<B>(ui: &mut egui::Ui, panel: &mut CutPanel<B>, names: &CutQualities, ex: Explain, locked: Option<&str>) -> bool {
     let editable = locked.is_none();
     egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
         let hint = match locked {
@@ -521,6 +531,11 @@ pub fn rows_ui<B>(ui: &mut egui::Ui, panel: &mut CutPanel<B>, names: &CutQualiti
             None => "Choose a row, then click, box or sweep over contours.",
         };
         ui.label(egui::RichText::new(hint).size(11.5).color(th().text_dim));
+        ui.add_space(4.0);
+        about_qualities(ui, ex, names, "cut_panel_about");
+        if !ex.guide.rows.iter().any(|r| r.name_from != crate::qualities::NameFrom::None || r.note.is_some()) {
+            ui.add(egui::Label::new(egui::RichText::new("The qualities have no names yet. Add them in Settings → Machines → Cut qualities.").size(11.0).color(th().warn_fg)).wrap());
+        }
     });
     ui.add_space(4.0);
     let mut rows = vec![Row::Cut(None)];
@@ -531,11 +546,11 @@ pub fn rows_ui<B>(ui: &mut egui::Ui, panel: &mut CutPanel<B>, names: &CutQualiti
         if row == Row::Mark {
             ui.add_space(6.0);
         }
-        let r = panel_row(ui, panel.row == Some(row), row, names, editable);
+        let r = panel_row(ui, panel.row == Some(row), row, names, ex, editable);
         if panel.card == Some(row) {
-            let at = r.rect.left_top() + egui::Vec2::new(-286.0, 0.0);
+            let at = r.rect.left_top() + egui::Vec2::new(-306.0, 0.0);
             egui::Area::new(egui::Id::unique("cut_panel_card")).order(egui::Order::Tooltip).fixed_pos(at).show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| row_card(ui, row, names));
+                egui::Frame::popup(ui.style()).show(ui, |ui| row_card(ui, row, names, ex));
             });
         }
         if r.clicked() {
@@ -552,24 +567,84 @@ pub fn rows_ui<B>(ui: &mut egui::Ui, panel: &mut CutPanel<B>, names: &CutQualiti
     clicked
 }
 
-/// One row of the panel: its swatch and name, chosen or not; its hover card
-/// says what it does.
-fn panel_row(ui: &mut egui::Ui, chosen: bool, row: Row, names: &CutQualities, enabled: bool) -> egui::Response {
+/// Screenshots only (`--about-qualities`): "About cut qualities" starts open.
+pub static ABOUT_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// "About cut qualities": the questions a programmer asks about them, each
+/// answered for this machine and sheet (CQ8). Closed until opened.
+pub fn about_qualities(ui: &mut egui::Ui, ex: Explain, names: &CutQualities, id: &str) {
+    ui.label(egui::RichText::new(format!("Qualities for {}", ex.guide.context(ex.unit))).size(11.5).color(th().text));
+    let open = ABOUT_OPEN.load(std::sync::atomic::Ordering::Relaxed);
+    egui::CollapsingHeader::new(egui::RichText::new("About cut qualities").size(12.0)).id_salt(id).default_open(open).show(ui, |ui| {
+        for (q, a) in ex.guide.about(ex.unit, names) {
+            ui.label(egui::RichText::new(q).strong().size(12.0));
+            ui.add(egui::Label::new(egui::RichText::new(a).size(11.5)).wrap());
+            ui.add_space(4.0);
+        }
+    });
+}
+
+/// The line under a row's name, when it has one: what Auto does, or what a
+/// quality is for (CQ8). A quality nothing says anything about has none
+/// (its name shows dim).
+fn sub_line(row: Row, names: &CutQualities, ex: Explain) -> Option<String> {
+    match row {
+        Row::Cut(None) if ex.guide.bands.is_empty() => Some(format!("all at {}", names.label(CutQuality::FALLBACK))),
+        Row::Cut(None) => Some("picked by contour size".into()),
+        Row::Cut(Some(q)) => ex.guide.row(q).known().then(|| ex.guide.row(q).summary(ex.unit)),
+        _ => None,
+    }
+}
+
+/// One row of the panel: its swatch and name, chosen or not, and for a cut
+/// row what it is for under the name; its hover card says what it does.
+fn panel_row(ui: &mut egui::Ui, chosen: bool, row: Row, names: &CutQualities, ex: Explain, enabled: bool) -> egui::Response {
     let indent = if matches!(row, Row::Cut(Some(_))) { 22.0 } else { 6.0 };
-    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(ui.available_width(), 24.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    let sub = sub_line(row, names, ex);
+    let known = match row {
+        Row::Cut(Some(q)) => ex.guide.row(q).known(),
+        _ => true,
+    };
+    let h = if sub.is_some() { 36.0 } else { 24.0 };
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(ui.available_width(), h), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
     let p = ui.painter();
     if chosen {
         p.rect_filled(rect.shrink2(egui::Vec2::new(3.0, 1.0)), egui::CornerRadius::same(5), th().accent);
     } else if resp.hovered() && enabled {
         p.rect_filled(rect.shrink2(egui::Vec2::new(3.0, 1.0)), egui::CornerRadius::same(5), th().hover);
     }
-    let sw = egui::Rect::from_center_size(egui::Pos2::new(rect.left() + indent + 9.0, rect.center().y), egui::Vec2::splat(13.0));
+    let name_y = if sub.is_some() { rect.top() + 12.0 } else { rect.center().y };
+    let sw = egui::Rect::from_center_size(egui::Pos2::new(rect.left() + indent + 9.0, name_y), egui::Vec2::splat(13.0));
     paint_swatch(p, sw, row, names);
-    let text = if chosen { egui::Color32::WHITE } else if enabled { th().text } else { th().text_dim };
-    let label = egui::RichText::new(row.label(names)).size(13.0).color(text);
-    let label = if matches!(row, Row::Cut(Some(_))) { label } else { label.strong() };
-    p.text(egui::Pos2::new(sw.right() + 8.0, rect.center().y), egui::Align2::LEFT_CENTER, label.text(), egui::FontId::proportional(13.0), text);
-    resp.on_hover_ui(|ui| row_card(ui, row, names))
+    let text = if chosen { egui::Color32::WHITE } else if enabled && known { th().text } else { th().text_dim };
+    p.text(egui::Pos2::new(sw.right() + 8.0, name_y), egui::Align2::LEFT_CENTER, row.label(names), egui::FontId::proportional(13.0), text);
+    if let Some(sub) = sub {
+        let dim = if chosen { egui::Color32::from_white_alpha(210) } else { th().text_dim };
+        let x = sw.right() + 8.0;
+        let room = (rect.right() - x - 6.0).max(20.0);
+        let shown = clip_text(ui, &sub, room);
+        p.text(egui::Pos2::new(x, rect.top() + 27.0), egui::Align2::LEFT_CENTER, shown, egui::FontId::proportional(11.0), dim);
+    }
+    resp.on_hover_ui(|ui| row_card(ui, row, names, ex))
+}
+
+/// `s` as it fits `room` points at the sub line's size: whole, or cut
+/// short with "…" (the hover card has all of it).
+fn clip_text(ui: &egui::Ui, s: &str, room: f32) -> String {
+    let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), egui::FontId::proportional(11.0), Color32::WHITE).size().x <= room;
+    if fits(s) {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut n = chars.len();
+    while n > 0 {
+        let t: String = chars[..n].iter().collect::<String>() + "…";
+        if fits(&t) {
+            return t;
+        }
+        n -= 1;
+    }
+    "…".into()
 }
 
 /// A part of the job painted on its drawing screen (CS6).
@@ -690,8 +765,11 @@ impl App {
         let editable = part.is_some_and(|i| self.parts[i].shape == crate::nest::Shape::Custom);
         let locked = (!editable).then_some("A built-in shape's contours are always cut. Save it as a drawing and import that to set its contours.");
         ui.add_space(4.0);
+        let mt = crate::ct1::for_spec(&self.spec);
+        let guide = crate::engine::qualityguide::guide(&self.spec, &mt, &self.cfg.machine());
+        let ex = Explain { guide: &guide, unit: self.cfg.nesting.units };
         egui::ScrollArea::vertical().id_salt("cut_panel_rows").show(ui, |ui| {
-            if rows_ui(ui, &mut self.cut_panel, &names, locked) {
+            if rows_ui(ui, &mut self.cut_panel, &names, ex, locked) {
                 self.dv.measure_on = false;
                 self.dv.zoom_window = false;
                 self.placing_text = false;
@@ -725,11 +803,11 @@ fn left_as_they_are(refused: &[(usize, String)]) -> String {
 }
 
 impl Row {
-    /// The row's name: "Cut · by size", the machine's name for a quality
-    /// (CQ4), or the state's.
+    /// The row's name: "Cut · auto quality", the machine's name for a
+    /// quality (CQ4, CQ7), or the state's.
     pub fn label(self, names: &CutQualities) -> String {
         match self {
-            Row::Cut(None) => "Cut · quality by size".into(),
+            Row::Cut(None) => "Cut · Auto quality".into(),
             Row::Cut(Some(q)) => names.label(q),
             Row::Mark => ContourState::Mark.label().into(),
             Row::NoCut => ContourState::NoCut.label().into(),
@@ -738,18 +816,26 @@ impl Row {
         }
     }
 
-    /// The hover card's title and its one plain sentence.
-    fn card(self, names: &CutQualities) -> (String, String) {
+    /// The hover card's title and its plain sentences: what the row does
+    /// and, for a cut row, what its quality means here (CQ8).
+    fn card(self, names: &CutQualities, ex: Explain) -> (String, Vec<String>) {
         let s = match self {
-            Row::Cut(None) => "Cut through the sheet. Each contour takes the quality its size band gives and shows in that quality's colour.".to_string(),
-            Row::Cut(Some(q)) => format!("Cut through the sheet at {}, set by hand: it wins over the size bands.", names.label(q)),
-            Row::Mark => "Etch the line on the surface without cutting through, always at the machine's marking quality.".into(),
-            Row::NoCut => "Keep the line on the part and on screen, but never cut or mark it.".into(),
-            Row::BendLine => "A no-cut line showing where the part is bent later; paint it Mark to etch it.".into(),
-            Row::LeaveOut => "Take the line off the part: not drawn on the sheet, not cut, not marked.".into(),
+            Row::Cut(None) => vec!["Cut through. Auto picks the quality for each contour.".to_string(), ex.guide.auto_sentence(ex.unit, names)],
+            Row::Cut(Some(q)) => {
+                let mut s = vec![format!("Cut through at {}. Picked by hand, so Auto won't change it.", names.label(q))];
+                s.extend(ex.guide.row(q).explain(ex.guide, ex.unit));
+                if !ex.guide.row(q).known() {
+                    s.push("Not set up yet: name it in Settings → Machines → Cut qualities.".into());
+                }
+                s
+            }
+            Row::Mark => vec!["Etch the line on the surface without cutting through, always at the machine's marking quality.".into()],
+            Row::NoCut => vec!["Keep the line on the part and on screen, but never cut or mark it.".into()],
+            Row::BendLine => vec!["A no-cut line showing where the part is bent later; paint it Mark to etch it.".into()],
+            Row::LeaveOut => vec!["Take the line off the part: not drawn on the sheet, not cut, not marked.".into()],
         };
         let title = match self {
-            Row::Cut(None) => "Cut".to_string(),
+            Row::Cut(None) => "Cut, Auto quality".to_string(),
             Row::Cut(Some(q)) => format!("Cut at {}", names.label(q)),
             r => r.label(names),
         };
@@ -783,10 +869,10 @@ fn paint_swatch(p: &egui::Painter, r: egui::Rect, row: Row, names: &CutQualities
 }
 
 /// A row's hover card: bold title, its icon (a line drawn the way the row's
-/// contours are drawn) and one plain sentence.
-fn row_card(ui: &mut egui::Ui, row: Row, names: &CutQualities) {
-    let (title, sentence) = row.card(names);
-    ui.set_max_width(260.0);
+/// contours are drawn) and its plain sentences.
+fn row_card(ui: &mut egui::Ui, row: Row, names: &CutQualities, ex: Explain) {
+    let (title, sentences) = row.card(names, ex);
+    ui.set_max_width(290.0);
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(egui::Vec2::new(30.0, 22.0), egui::Sense::hover());
         let p = ui.painter();
@@ -799,7 +885,10 @@ fn row_card(ui: &mut egui::Ui, row: Row, names: &CutQualities) {
         }
         ui.label(egui::RichText::new(title).strong().size(13.5).color(th().text_strong));
     });
-    ui.label(egui::RichText::new(sentence).size(12.5));
+    for (k, s) in sentences.iter().enumerate() {
+        let c = if k == 0 { th().text } else { th().text_dim };
+        ui.add(egui::Label::new(egui::RichText::new(s).size(12.0).color(c)).wrap());
+    }
 }
 
 /// How a contour painted with `row` shows (CS7); Cut at the size bands'
@@ -1130,7 +1219,13 @@ pub(crate) mod tests {
         assert_eq!(slow.label(&CutQualities::default()), "Quality 1");
         assert_eq!(Row::Cut(CutQuality::new(2)).label(&named), "Quality 2");
         // The Mark card says etch, the shop's word.
-        assert!(Row::Mark.card(&named).1.to_lowercase().contains("etch"));
+        let g = crate::engine::qualityguide::guide(&crate::nest::SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }, &crate::ct1::MachineTech::default(), &crate::settings::Machine::default());
+        let ex = Explain { guide: &g, unit: crate::units::LenUnit::Mm };
+        assert!(Row::Mark.card(&named, ex).1[0].to_lowercase().contains("etch"));
+        // A quality's card says what it means here, and where to say what it is for.
+        let card = Row::Cut(CutQuality::new(2)).card(&named, ex).1.join(" ");
+        assert!(card.contains("Settings → Machines → Cut qualities"), "{card}");
+        assert!(Row::Cut(None).card(&named, ex).1[1].starts_with("Auto cuts everything at "));
     }
 }
 

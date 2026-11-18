@@ -157,6 +157,13 @@ pub struct SettingsUi {
     pub order_file: Option<(String, crate::ct1::OrderSettings, bool, Option<String>)>,
     /// Scroll the Machines page down to the cut order (`--settings=machines-order`).
     pub show_order: bool,
+    /// Machines page: the machine file's own quality names of the machine
+    /// being edited, read once per file (which files, the names).
+    pub quality_file: Option<(String, crate::qualities::CutQualities)>,
+    /// Scroll the Machines page down to its cut qualities (`--settings=machines-qualities`).
+    pub show_qualities: bool,
+    /// Scroll the Machines page down to its pick-by-size rows (`--settings=machines-sizes`).
+    pub show_sizes: bool,
 }
 
 /// "lower left" → "Lower left".
@@ -958,6 +965,10 @@ impl App {
             });
         }
         ui.add_space(10.0);
+        self.settings_cut_qualities(ui, k);
+        ui.add_space(10.0);
+        self.settings_quality_sizes(ui, k);
+        ui.add_space(10.0);
         self.settings_cut_order(ui, k);
         ui.add_space(10.0);
         if self.cfg.active_machine == k {
@@ -979,6 +990,140 @@ impl App {
                 ui.add(egui::Label::new(RichText::new(preview).monospace().size(11.0)));
             });
         }
+    }
+
+    /// Machine `k`'s cut qualities (CQ7): the shop's own name for each and a
+    /// note on what it is for, over the machine file's names. What each
+    /// gives for a sheet (speed, size bands) shows where qualities are
+    /// picked (CQ8).
+    fn settings_cut_qualities(&mut self, ui: &mut egui::Ui, k: usize) {
+        let m = self.cfg.machines[k].clone();
+        let key = format!("{}|{}|{}|{}", m.post_lib, m.blm_ps1, m.blm_cf1, self.cfg.lantek_dir);
+        if self.setui.quality_file.as_ref().is_none_or(|c| c.0 != key) {
+            let file = crate::ct1::MachineTech::for_machine(&crate::settings::Machine { qualities: Default::default(), ..m.clone() }, &self.cfg.lantek_dir);
+            self.setui.quality_file = Some((key, file.qualities.as_ref().clone()));
+        }
+        let Some((_, file)) = self.setui.quality_file.clone() else { return };
+        if self.setui.show_qualities {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+            self.setui.show_qualities = self.shot_mode_now();
+        }
+        let lc5 = m.output == Output::BlmSiemens;
+        let sub = if lc5 {
+            "Give each quality your shop uses a name and a short note. The program only sends the number, so this is how people and agents know what each one is for."
+        } else {
+            "Give each quality your shop uses a name and a short note, so people and agents know what each one is for."
+        };
+        // Every frame applies the settings (`apply_settings`), so a name or
+        // note shows at once wherever a quality is picked.
+        card(ui, "Cut qualities", sub, |ui| {
+            let mq = &mut self.cfg.machines[k].qualities;
+            egui::Grid::new(("machine_qualities", k)).num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
+                ui.label("");
+                ui.label(RichText::new("Name").size(12.0).strong());
+                ui.label(RichText::new("What it is for").size(12.0).strong());
+                ui.end_row();
+                for q in crate::nest::CutQuality::all() {
+                    let i = q.number() - 1;
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("●").color(crate::techui::quality_colour(&file, q)));
+                        ui.label(format!("{}", q.number()));
+                    });
+                    let hint = match file.file_name(q) {
+                        Some(n) => format!("{n} (machine file)"),
+                        None if lc5 && q.number() == crate::blm::QUALITY_MARK => "e.g. Etching".to_string(),
+                        None => format!("Quality {}", q.number()),
+                    };
+                    ui.add_sized([170.0, 22.0], egui::TextEdit::singleline(&mut mq.names[i]).char_limit(crate::qualities::MAX_NAME).hint_text(hint));
+                    let note_hint = match q.number() {
+                        n if n == crate::nest::CutQuality::FALLBACK.number() => "e.g. outsides and big holes (Auto's default)",
+                        n if lc5 && n == crate::blm::QUALITY_MARK => "etchings are made at this one",
+                        1 => "e.g. small holes that must be round",
+                        _ => "",
+                    };
+                    ui.add_sized([340.0, 22.0], egui::TextEdit::singleline(&mut mq.notes[i]).char_limit(crate::qualities::MAX_NOTE).hint_text(note_hint));
+                    ui.end_row();
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(RichText::new("Leave a name empty to keep the machine file's. Type <HIDE> to take a quality out of the lists.").size(11.5).color(th().text_dim));
+        });
+    }
+
+    /// Machine `k`'s own "pick quality by size" rows (CQ9): for a material
+    /// and thickness, contours up to a size are cut at a quality on Auto.
+    /// The first row that fits wins; rows that fit a sheet replace the
+    /// machine file's sizes for it.
+    fn settings_quality_sizes(&mut self, ui: &mut egui::Ui, k: usize) {
+        let unit = self.cfg.nesting.units;
+        let names = self.setui.quality_file.as_ref().map(|f| f.1.clone()).unwrap_or_default().with_shop(&self.cfg.machines[k].qualities);
+        let materials: Vec<String> = crate::engine::material::current().materials.iter().map(|m| m.name.clone()).collect();
+        let sub = "On Auto, contours are cut at the quality of the first row that fits their sheet and size. Size is the radius of a circle with the same area as the contour. A sheet no row fits uses the machine file's sizes, or Auto's default quality.";
+        let fb = names.label(crate::nest::CutQuality::FALLBACK);
+        if self.setui.show_sizes {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+            self.setui.show_sizes = self.shot_mode_now();
+        }
+        card(ui, "Pick quality by size", sub, |ui| {
+            let rules = &mut self.cfg.machines[k].sizes;
+            let mut remove = None;
+            let mut up = None;
+            if rules.is_empty() {
+                ui.label(RichText::new(format!("No rows: Auto cuts at {fb} unless the machine file picks by size.")).size(12.0).color(th().text_dim));
+            } else {
+                egui::Grid::new(("quality_sizes", k)).num_columns(8).spacing([8.0, 4.0]).show(ui, |ui| {
+                    for h in ["", "Material", "Thickness from", "to", "Size from", "up to", "Quality", ""] {
+                        ui.label(RichText::new(h).size(12.0).strong());
+                    }
+                    ui.end_row();
+                    for (i, r) in rules.iter_mut().enumerate() {
+                        ui.label(RichText::new(format!("{}", i + 1)).color(th().text_dim));
+                        let shown = if r.material.trim().is_empty() { "Any material".to_string() } else { r.material.clone() };
+                        egui::ComboBox::from_id_salt(("size_material", k, i)).width(150.0).selected_text(shown).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut r.material, String::new(), "Any material");
+                            for m in &materials {
+                                ui.selectable_value(&mut r.material, m.clone(), m);
+                            }
+                        });
+                        ui.add_sized([84.0, 20.0], crate::units::len_drag(&mut r.t_from, unit, 0.0, 999.0));
+                        ui.add_sized([84.0, 20.0], crate::units::len_drag_word(&mut r.t_to, unit, 0.0, 999.0, "any", |v| v <= 0.0, 0.0));
+                        ui.add_sized([84.0, 20.0], crate::units::len_drag(&mut r.r_from, unit, 0.0, 99999.0));
+                        ui.add_sized([84.0, 20.0], crate::units::len_drag_word(&mut r.r_to, unit, 0.0, 99999.0, "any", |v| v <= 0.0, 0.0));
+                        egui::ComboBox::from_id_salt(("size_quality", k, i)).width(150.0).selected_text(crate::techui::quality_text(ui, &names, r.quality)).show_ui(ui, |ui| {
+                            for q in crate::techui::offered_qualities(&names) {
+                                let tip = names.note(q).unwrap_or("").to_string();
+                                let resp = ui.selectable_value(&mut r.quality, q, crate::techui::quality_text(ui, &names, q));
+                                if !tip.is_empty() {
+                                    resp.on_hover_text(tip);
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if i > 0 && ui.small_button("↑").on_hover_text("Move this row up: the first row that fits wins").clicked() {
+                                up = Some(i);
+                            }
+                            if ui.small_button("✖").on_hover_text("Delete this row").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+            }
+            if let Some(i) = up {
+                rules.swap(i - 1, i);
+            }
+            if let Some(i) = remove {
+                rules.remove(i);
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("+ Add row").on_hover_text("A new row: any material and thickness, holes up to 5 mm radius at quality 1. Change it to suit.").clicked() {
+                    rules.push(crate::qualities::SizeRule::default());
+                }
+                ui.label(RichText::new("\"any\" = no upper limit. The first row that fits wins.").size(11.5).color(th().text_dim));
+            });
+        });
     }
 
     /// Machine `k`'s sheet order and hole order (CO16, CO17): each value

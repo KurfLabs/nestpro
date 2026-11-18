@@ -372,6 +372,9 @@ pub struct Speeds {
     /// The post's pierce mode by quality 1–12 from the picked record, used
     /// by the LC5 whatever the time file says (BL22).
     pub pierce_mode: [Option<u32>; 13],
+    /// Which qualities 1–12 took their cutting speed from the table's record
+    /// (the others took the fallback), for the quality guide (CQ8).
+    pub from_table: [bool; 13],
     pub source: SpeedSource,
     /// Some qualities had no table speed and took the fallback (our choice, FEATURES MAC-20).
     pub fell_back: bool,
@@ -396,12 +399,16 @@ impl Speeds {
         let mut pierce = [ts.pierce_secs(keys.thickness, None); 13];
         let mut pierce_mode = [None; 13];
         let mut fell_back = false;
+        let mut from_table = [false; 13];
         let use_table = matches!(ts.cut_source, Src::Table | Src::TableReduced);
         if let Some((r, _)) = picked {
             for q in 1..=12 {
                 if use_table {
                     match r.cut_speed(q) {
-                        Some(v) => cut[q] = v,
+                        Some(v) => {
+                            cut[q] = v;
+                            from_table[q] = true;
+                        }
                         None => fell_back |= q <= 3,
                     }
                 }
@@ -422,7 +429,7 @@ impl Speeds {
             _ if active.is_some() => SpeedSource::Machine,
             _ => SpeedSource::Estimate,
         };
-        Speeds { cut, mark, rapid: rapid.filter(|&v| v > 0.001).unwrap_or(RAPID_DEFAULT), pierce, pierce_mode, source, fell_back }
+        Speeds { cut, mark, rapid: rapid.filter(|&v| v > 0.001).unwrap_or(RAPID_DEFAULT), pierce, pierce_mode, from_table, source, fell_back }
     }
 
     pub fn cut_for(&self, q: usize) -> f64 {

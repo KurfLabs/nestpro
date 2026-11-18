@@ -2793,7 +2793,10 @@ impl App {
         });
         if let Some(t) = draft.tech.as_mut() {
             // The machine's names and colours for its cut qualities (CQ4, CQ5).
-            let names = crate::ct1::for_spec(&self.spec).qualities;
+            let mt = crate::ct1::for_spec(&self.spec);
+            let names = mt.qualities.clone();
+            let guide = crate::engine::qualityguide::guide(&self.spec, &mt, &self.cfg.machine());
+            let ex = crate::cutpanel::Explain { guide: &guide, unit: u };
             egui::Grid::new("tech_edit").num_columns(2).spacing([10.0, 5.0]).show(ui, |ui| {
                 ui.label("Lead-in");
                 changed |= crate::units::drag_len_in(ui, &mut t.lead_in, u, 0.0, 30.0).changed();
@@ -2814,15 +2817,15 @@ impl App {
                     changed = true;
                 }
                 ui.end_row();
-                ui.label("Cut quality").on_hover_text("The machine's quality for every contour the size ranges don't set; Auto lets the machine's size bands decide, so small holes are cut slower");
+                ui.label("Cut quality").on_hover_text("The quality for this part's contours. Auto lets the machine pick. Hover a quality in the list to see what it does.");
                 let shown: egui::WidgetText = match t.quality {
                     Some(q) => crate::techui::quality_text(ui, &names, q).into(),
                     None => crate::techui::part_quality_label(None, &names).into(),
                 };
                 egui::ComboBox::from_id_salt("quality").width(130.0).selected_text(shown).show_ui(ui, |ui| {
-                    changed |= ui.selectable_value(&mut t.quality, None, crate::techui::part_quality_label(None, &names)).changed();
+                    changed |= ui.selectable_value(&mut t.quality, None, crate::techui::part_quality_label(None, &names)).on_hover_text(guide.auto_sentence(u, &names)).changed();
                     for q in crate::techui::offered_qualities(&names) {
-                        changed |= ui.selectable_value(&mut t.quality, Some(q), crate::techui::quality_text(ui, &names, q)).changed();
+                        changed |= ui.selectable_value(&mut t.quality, Some(q), crate::techui::quality_text(ui, &names, q)).on_hover_ui(|ui| crate::techui::quality_card(ui, ex, &names, q)).changed();
                     }
                 });
                 ui.end_row();

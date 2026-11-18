@@ -291,6 +291,10 @@ pub static OPS: &[Op] = &[
         a("material", Ty::Str, "Look at this material instead of the job's (name or number)"), a("thickness", Ty::Num, "Look at this thickness instead of the job's, mm"),
         a("gas", Ty::Str, "Look at this gas instead of the job's (name or number: 1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water)"),
     ] },
+    Op { name: "qualities", group: "Technology", kind: Kind::Read, help: "What each of the machine's 12 cut qualities means for the job's sheet (or another material/thickness/gas): its name (the shop's from Settings → Machines, else the machine file's), the shop's note on what it is for, the speed and pierce mode the machine's technology table gives it, which contour sizes Auto (the machine's size bands) cuts at it, whether it is the fallback quality or the one LC5 programs mark with, and what Auto does for this sheet. Read it before choosing a quality with contour-tech, set-tech or cut ranges.", args: &[
+        a("material", Ty::Str, "Look at this material instead of the job's (name or number)"), a("thickness", Ty::Num, "Look at this thickness instead of the job's, mm"),
+        a("gas", Ty::Str, "Look at this gas instead of the job's (name or number: 1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water)"),
+    ] },
     Op { name: "compensation", group: "Machining", kind: Kind::Write, help: "Kerf compensation: how the beam is kept half a kerf on the scrap side of each cut — control (the program writes G41/G42 and the corrector number, the CNC offsets) and/or system (the program carries the already-offset path). Shows the machine's settings, the job's choice and, per contour of a sheet, its side, corrector and radius, plus the contours system compensation can't cut (holes no bigger than the kerf, slots narrower than it). control/system set the job's choice (on, off, or machine = the machine file's).", args: &[
         c("control", &["on", "off", "machine"], "Control compensation (G41/G42 + corrector) for this job"),
         c("system", &["on", "off", "machine"], "System compensation (offset path) for this job"),
@@ -1046,10 +1050,13 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec, base: &crate::blm::Blm
     (msg, data)
 }
 
-/// The machine's 12 cut qualities as screens show them: number, name and
-/// whether the pickers offer it (CQ4), colour (CQ5).
+/// The machine's 12 cut qualities as screens show them: number, name, where
+/// the name comes from, the shop's note and whether the pickers offer it
+/// (CQ4, CQ7), colour (CQ5). `qualities` says what each means for a sheet.
 fn qualities_json(q: &crate::qualities::CutQualities) -> Value {
-    json!(nest::CutQuality::all().map(|c| json!({"quality": c.number(), "name": q.label(c), "colour": q.colour_hex(c), "offered": q.offered(c)})).collect::<Vec<_>>())
+    json!(nest::CutQuality::all()
+        .map(|c| json!({"quality": c.number(), "name": q.label(c), "name_from": q.name_from(c).key(), "note": q.note(c), "colour": q.colour_hex(c), "offered": q.offered(c)}))
+        .collect::<Vec<_>>())
 }
 
 /// Where a sheet's speeds and times come from (TT1–TT10, CTM8–CTM16): the
@@ -3008,6 +3015,27 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let (msg, data) = machine_tech_report(&spec, &job.spec, &ctx.blm);
             Ok(Outcome::read(msg, data))
         }
+        "qualities" => {
+            let mut spec = job.spec.clone();
+            if let Some(v) = a.str("material") {
+                spec.material = material_from(&v, &ctx.cfg)?;
+            }
+            if let Some(v) = a.num("thickness")? {
+                if v <= 0.0 {
+                    return Err("thickness must be more than 0 mm".into());
+                }
+                spec.thickness = v;
+            }
+            if let Some(v) = a.str("gas") {
+                spec.gas = Some(crate::gas::Gas::parse(&v)?);
+            }
+            let mt = crate::ct1::for_spec(&spec);
+            let g = super::qualityguide::guide(&spec, &mt, &ctx.cfg.machine());
+            let u = crate::units::LenUnit::Mm;
+            let known: Vec<String> = g.rows.iter().filter(|r| r.known()).map(|r| format!("{}: {}", r.label, r.summary(u))).collect();
+            let msg = format!("Cut qualities on {}. {} Known: {}.", g.context(u), g.auto_sentence(u, &mt.qualities), known.join("; "));
+            Ok(Outcome::read(msg, g.to_json(u, &mt.qualities)))
+        }
         "compensation" => {
             let pick = |k: &str| -> Result<Option<Option<bool>>, String> {
                 Ok(match a.str(k).as_deref().map(str::trim) {
@@ -3496,6 +3524,9 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Text/{label}", "text"),
     // --- right-click menus and panel buttons ("file.rs/Label"; one entry covers each control with that label in the file) ---
     ("ui_parts.rs/Nest this sheet again", "renest-sheet"),
+    // Settings → Machines → Pick quality by size (CQ9): agents read the rows (`qualities`).
+    ("settings_ui.rs/+ Add row", "todo: [TEC-37] machine settings are changed in the app only"),
+    ("settings_ui.rs/↑", "todo: [TEC-37] machine settings are changed in the app only"),
     ("dock.rs/Reset panel layout", "view:"),
     // Open jobs (the window's list): an agent's job is its file.
     ("jobs.rs/Open", "gui: name the job file in each call"),
