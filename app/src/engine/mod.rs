@@ -75,11 +75,25 @@ pub struct Ctx {
     pub releases: crate::updates::Source,
 }
 
-/// The post library of a machine (built-in values when it has none or it can't be read).
+/// The post library of a machine: built-in values when it names none. One it
+/// names that can't be read is listed in `missing`, and export and `program`
+/// refuse (EXP2) instead of writing the built-in form.
 pub fn load_post(m: &settings::Machine) -> crate::post::PostConfig {
-    let mut p: crate::post::PostConfig = if m.post_lib.is_empty() { Default::default() } else { crate::post::PostConfig::load(Path::new(&m.post_lib)).unwrap_or_default() };
+    let loaded = if m.post_lib.is_empty() { None } else { crate::post::PostConfig::load(Path::new(&m.post_lib)) };
+    let mut p = loaded.unwrap_or_default();
     p.omax = m.output == settings::Output::Omax;
+    p.missing = unreadable_post_files(m);
     p
+}
+
+/// EXP2: the post files a machine names that can't be read: its post library,
+/// and on an LC5 its BLM post files. An empty path means the built-in values.
+pub fn unreadable_post_files(m: &settings::Machine) -> Vec<String> {
+    let mut files = vec![&m.post_lib];
+    if m.output == settings::Output::BlmSiemens {
+        files.extend([&m.blm_ps1, &m.blm_cf1]);
+    }
+    files.into_iter().filter(|f| !f.is_empty() && std::fs::File::open(f.as_str()).is_err()).cloned().collect()
 }
 
 /// Make `m` the machine the rules use: its BLM post values and CT1 technology
@@ -213,7 +227,15 @@ impl CallMachine {
     /// never does, so a job set for something else is refused with how to
     /// fix it.
     pub fn of(ctx: &Ctx, which: Option<&str>, job: crate::machine::MachineKind) -> Result<CallMachine, String> {
-        let Some(which) = which else { return Ok(CallMachine { post: ctx.post.clone(), blm: ctx.blm.clone(), note: String::new(), _tech: None }) };
+        let Some(which) = which else {
+            // EXP2: an active machine whose post files couldn't be read is
+            // loaded afresh for the call, so a shop folder that is back is
+            // picked up.
+            if ctx.post.missing.is_empty() {
+                return Ok(CallMachine { post: ctx.post.clone(), blm: ctx.blm.clone(), note: String::new(), _tech: None });
+            }
+            return Ok(Self::load(ctx, &ctx.cfg.machine(), String::new()));
+        };
         let k = find_machine(&ctx.cfg, which)?;
         let m = &ctx.cfg.machines[k];
         if m.kind != job {
@@ -229,13 +251,18 @@ impl CallMachine {
             ));
         }
         let note = format!(" Written for machine {} ({}, {}), this call only.", k + 1, m.name, m.output.key());
-        if k == ctx.cfg.active_machine {
+        if k == ctx.cfg.active_machine && ctx.post.missing.is_empty() {
             return Ok(CallMachine { post: ctx.post.clone(), blm: ctx.blm.clone(), note, _tech: None });
         }
+        Ok(Self::load(ctx, m, note))
+    }
+
+    /// `m`'s post and technology files, read now, for this call only.
+    fn load(ctx: &Ctx, m: &settings::Machine, note: String) -> CallMachine {
         let back = AdiBack(crate::blm::adi());
         crate::blm::set_adi(crate::blm::AdiParams::from_files(&m.blm_ps1, &m.blm_cf1));
         let tech = crate::ct1::use_for_now(crate::ct1::MachineTech::for_machine(m, &ctx.cfg.lantek_dir));
-        Ok(CallMachine { post: load_post(m), blm: blm_base(m), note, _tech: Some((tech, back)) })
+        CallMachine { post: load_post(m), blm: blm_base(m), note, _tech: Some((tech, back)) }
     }
 }
 
@@ -1637,6 +1664,11 @@ fn remove_programs_note(dir: &Path, job_name: &str, post: &crate::post::PostConf
 /// parts report into `base\<job>`.
 #[allow(clippy::too_many_arguments)]
 pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, bridge: f64) -> Result<Exported, String> {
+    // EXP2: a post file that can't be read stops the export; the job's
+    // earlier programs stay, as they were written with it.
+    if let Some(why) = post.refusal() {
+        return Err(why);
+    }
     let dir = base.join(safe_name(job_name));
     if sheets.is_empty() {
         // The job's earlier programs would still be there to run.

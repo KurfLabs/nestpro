@@ -1958,6 +1958,11 @@ impl App {
                 return;
             }
         }
+        // EXP2: post files that couldn't be read are read again first, so a
+        // shop folder that is back is picked up; still missing, export refuses.
+        if !self.post.missing.is_empty() {
+            self.apply_settings(true);
+        }
         // Every sheet's program (or BLM LC5 set) and the CSV parts report.
         let blm = self.blm_now();
         let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
@@ -2102,6 +2107,8 @@ impl App {
         self.plans = engine::plans(&self.parts, &self.result.sheets, &self.result.formats, &self.spec, &self.manual_cuts);
         self.overlaps = self.result.sheets.get(self.cur_sheet).map_or(vec![], |s| engine::overlapping(&self.parts, s, &self.cur_spec()));
         self.program = match (self.result.sheets.get(self.cur_sheet), self.plans.get(self.cur_sheet)) {
+            // EXP2: no program while a post file can't be read.
+            (Some(_), Some(_)) if self.post.refusal().is_some() => format!("( NO PROGRAM: {} )", self.post.refusal().unwrap_or_default().replace(['(', ')'], "")),
             (Some(s), Some(pl)) => engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.remnant_marks(self.cur_sheet), &self.post, self.cfg.stock.line.edge_offset),
             _ => "( NO SHEET NESTED )".into(),
         };

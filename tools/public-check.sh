@@ -19,6 +19,7 @@
 #   - anything in research/public-denylist.txt (private: shop names, servers,
 #     job and part numbers, people). That list lives in the private research
 #     repo, so CI runs without it; run this locally with research/ checked out.
+#     A worktree reads the main checkout's research/ (see "The private denylist").
 #
 # A line that must keep a match (e.g. this script) can end with the marker
 # `public-check: allow`. Use it rarely; reviewers grep for it.
@@ -60,11 +61,36 @@ patterns=(
 # E-mails that are fine to publish.
 email_ok='hello@kurflabs\.com|noreply@anthropic\.com|users\.noreply\.github\.com|@example\.(com|org)|noreply@'
 
+# The private denylist. Worktrees (where agents work) have no research/ of
+# their own, so look in the main checkout too. NESTPRO_DENYLIST or
+# `git config nestpro.denylist` name it explicitly; a named list that isn't
+# there fails. So does a research/ checkout without one: that is a private
+# set-up whose list went missing. Only a checkout with no research/ anywhere
+# (CI, an outside contributor) runs without it.
+main_checkout=""
+if common="$(git rev-parse --git-common-dir 2>/dev/null)" && [ "$(basename "$common")" = .git ]; then
+  main_checkout="$(cd "$common/.." && pwd)"
+fi
+denylist="${NESTPRO_DENYLIST:-$(git config --get nestpro.denylist 2>/dev/null || true)}"
+if [ -n "$denylist" ]; then
+  [ -f "$denylist" ] || { echo "public-check: the denylist $denylist (NESTPRO_DENYLIST or git config nestpro.denylist) is not there; shop-data names can't be checked" >&2; exit 1; }
+else
+  for dir in research ${main_checkout:+"$main_checkout/research"}; do
+    if [ -f "$dir/public-denylist.txt" ]; then denylist="$dir/public-denylist.txt"; break; fi
+  done
+  if [ -z "$denylist" ]; then
+    for dir in research ${main_checkout:+"$main_checkout/research"}; do
+      [ -d "$dir" ] || continue
+      echo "public-check: $dir/ is here but has no public-denylist.txt; shop-data names can't be checked (restore it, or set NESTPRO_DENYLIST)" >&2
+      exit 1
+    done
+  fi
+fi
 deny=()
-if [ -f research/public-denylist.txt ]; then
-  mapfile -t deny < <(grep -v -e '^\s*#' -e '^\s*$' research/public-denylist.txt)
+if [ -n "$denylist" ]; then
+  mapfile -t deny < <(grep -v -e '^\s*#' -e '^\s*$' "$denylist")
 elif [ -z "${CI:-}" ]; then
-  echo "public-check: note: research/public-denylist.txt not found; shop-data names not checked"
+  echo "public-check: note: no research/public-denylist.txt here or in the main checkout; shop-data names not checked"
 fi
 
 images_list=tools/public-images.txt

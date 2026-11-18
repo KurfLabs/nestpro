@@ -40,6 +40,9 @@ pub struct PostConfig {
     /// The machine is an OMAX waterjet: its programs are `.omx` path files
     /// (omax.rs), not G-code; the values above then only name old programs.
     pub omax: bool,
+    /// Post files the machine names that couldn't be read (EXP2). Programs
+    /// written without them would take the built-in form, so none are.
+    pub missing: Vec<String>,
 }
 
 impl Default for PostConfig {
@@ -61,6 +64,7 @@ impl Default for PostConfig {
             sign_y: 1.0,
             circles_one_move: false,
             omax: false,
+            missing: vec![],
         }
     }
 }
@@ -107,6 +111,19 @@ impl PostConfig {
         let bytes = std::fs::read(path).ok()?;
         let text: String = bytes.iter().map(|&c| c as char).collect();
         Some(PostConfig::parse(&text, &path.display().to_string()))
+    }
+
+    /// EXP2: why no program can be written while a post file the machine
+    /// names can't be read, or None.
+    pub fn refusal(&self) -> Option<String> {
+        let first = self.missing.first()?;
+        let more = match self.missing.len() {
+            1 => String::new(),
+            n => format!(" (and {} more)", n - 1),
+        };
+        Some(format!(
+            "The machine's post file {first}{more} can't be read, so its programs would come out in the built-in form. Nothing was written. Check the file is there (or the shop folder is reachable) and apply the settings again, or clear the path in Settings → Machines to use the built-in values."
+        ))
     }
 
     /// Block number `n`: prefix, then the number — padded with zeros to A007

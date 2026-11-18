@@ -5318,6 +5318,12 @@
   "source": "MECHANICS EXP1"
  },
  {
+  "name": "a post file the machine names that can't be read stops export and program",
+  "group": "export",
+  "value": true,
+  "source": "MECHANICS EXP2"
+ },
+ {
   "name": "unsaved changes = differs from the job as last saved or opened",
   "group": "saving",
   "value": true,

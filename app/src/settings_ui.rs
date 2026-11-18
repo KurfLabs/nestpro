@@ -497,6 +497,8 @@ impl App {
             }
             // The machine's program format may have changed without its library.
             self.post.omax = m.output == Output::Omax;
+            // EXP2: and with it which post files it needs.
+            self.post.missing = crate::engine::unreadable_post_files(&m);
             // BLM post values and the machine's technology file: cutting zones
             // and their order (B110–B123), leads, joints, grouping.
             crate::engine::install_machine(&m, &self.cfg.lantek_dir);
