@@ -7496,7 +7496,7 @@
  {
   "name": "PCs list",
   "group": "shop",
-  "value": "Shop\\<PC>.json per PC: PC, Windows user, version, last seen; written by that PC on opening the program, under the write lock",
+  "value": "Shop\\<PC>-<key of the whole name>.json per PC: PC, Windows user, version, last seen; written by that PC on opening the program, under the write lock; a PC that can't add itself is told so and can Add this PC",
   "source": "SH4; own design"
  },
  {

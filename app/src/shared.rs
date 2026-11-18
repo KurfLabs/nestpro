@@ -538,7 +538,7 @@ impl WriteLock {
         h.renewed += 1;
         let text = serde_json::to_vec(&h).map_err(|e| e.to_string())?;
         let (since, wall) = (Instant::now(), SystemTime::now());
-        replace(&l.file, &text, || self.still_held())?;
+        replace_in(&l.file, &text, || self.still_held(), false)?;
         let (file, token) = (l.file.clone(), l.token.clone());
         HELD.with(|held| {
             for (x, _) in held.borrow_mut().iter_mut().filter(|(x, _)| x.file == file && x.token == token) {
@@ -645,10 +645,27 @@ pub fn write_file(path: &Path, bytes: &[u8], lock: Option<&WriteLock>) -> Result
     replace(path, bytes, || lock.map_or(Ok(()), WriteLock::still_held))
 }
 
+/// `write_file` into a folder that must already be there: the folder and
+/// those above it are never made, so a write into a Library that went away
+/// (the share dropped) fails instead of making an empty folder in its place
+/// (LB11). The shop's files are written this way (SH2).
+pub fn write_existing(path: &Path, bytes: &[u8], lock: &WriteLock) -> Result<(), String> {
+    replace_in(path, bytes, || lock.still_held(), false)
+}
+
 /// `write_file`, checking `fence` just before every try of the rename.
 fn replace(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>) -> Result<(), String> {
+    replace_in(path, bytes, fence, true)
+}
+
+/// `replace`, making the file's folder first only when `make_parent`.
+fn replace_in(path: &Path, bytes: &[u8], fence: impl Fn() -> Result<(), String>, make_parent: bool) -> Result<(), String> {
     if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        if make_parent {
+            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        } else if !d.is_dir() {
+            return Err(format!("{} can't be reached", d.display()));
+        }
     }
     let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
     let tmp = path.with_file_name(format!("{name}.{}.tmp", writer_tag()));
