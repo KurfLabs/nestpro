@@ -392,6 +392,26 @@ pub fn create(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// SH16: make a new, empty Library in `dir`, a folder that is there (a
+/// shop's folder on the share, checked and confirmed): neither it nor the
+/// folders above it are ever made, so a share that went away after it was
+/// checked is never made again in its place (LB11).
+pub fn create_in_existing(dir: &Path) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(format!("{} can't be reached any more. Nothing was made; check the network or the server and try again.", dir.display()));
+    }
+    if holds_library(dir) {
+        return Ok(());
+    }
+    let lib = Library::at(dir, &Who::this_pc(), &Clock::pc());
+    let lock = lib.lock()?;
+    if !holds_library(dir) {
+        let i = Index { format: FORMAT.into(), version: VERSION, entries: vec![] };
+        shared::write_existing(&dir.join(INDEX), shared::stamped(&i, &lib.version)?.as_bytes(), &lock)?;
+    }
+    Ok(())
+}
+
 impl Library {
     /// The Library in `dir`, as `who` going by `clock`, without setting
     /// anything up (reading).

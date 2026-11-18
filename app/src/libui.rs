@@ -327,7 +327,9 @@ impl App {
     /// Read the material list again from where it lives (MA14); while it
     /// can't be read the list in use stays (`first`: this PC's settings seed
     /// it, MA15).
-    pub fn reload_materials(&mut self, first: bool) {
+    /// Returns why the list couldn't be read, or this PC's materials couldn't
+    /// join it, when so (SH10 shows it after joining a shop).
+    pub fn reload_materials(&mut self, first: bool) -> Option<String> {
         let pc_dir = crate::settings::AppSettings::file().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         let dir = self.library_dir();
         let lib = crate::library::Library::at(&dir, &self.who, &self.clock);
@@ -335,10 +337,18 @@ impl App {
         let by = || lib.saved();
         let shot = self.shot_mode_now();
         let cfg = self.cfg.clone();
-        let joined = self.install_materials(|| crate::engine::load_materials(&dir, &pc_dir, &cfg, first, (!shot).then_some(&by as &dyn Fn() -> crate::shared::Saved)).ok().flatten());
+        let mut failed = None;
+        let joined = self.install_materials(|| match crate::engine::load_materials(&dir, &pc_dir, &cfg, first, (!shot).then_some(&by as &dyn Fn() -> crate::shared::Saved)) {
+            Ok(j) => j,
+            Err(e) => {
+                failed = Some(e);
+                None
+            }
+        });
         if let Some(n) = &joined {
             self.status = n.note();
         }
+        failed
     }
 
     /// Every new material list this window answers from goes in through
@@ -447,9 +457,11 @@ impl App {
         }
     }
 
-    pub fn library_folder_changed(&mut self) {
+    /// Returns why the new Library's material list couldn't be read or
+    /// joined, when so.
+    pub fn library_folder_changed(&mut self) -> Option<String> {
         // The materials are the new Library's (MA14).
-        self.reload_materials(false);
+        let failed = self.reload_materials(false);
         self.setui.mat_recheck = true;
         // The holds belong to the old Library: let go of them there (CU5).
         self.release_holds();
@@ -476,6 +488,7 @@ impl App {
         self.libui.edit = None;
         self.libui.reveal.clear();
         self.libui.parts = Default::default();
+        failed
     }
 
     /// Where the open job saves to in the Library: over its record as it was

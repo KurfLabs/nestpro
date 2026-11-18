@@ -256,3 +256,232 @@ pub fn records(dir: &Path) -> Result<Vec<PcRecord>, String> {
     out.sort_by_key(|r| r.pc.to_lowercase());
     Ok(out)
 }
+
+// ---------------------------------------------------------------------------
+// The shop folder as a PC names it (SH13): every PC should name the same
+// folder the same way, so a folder typed or picked is tidied, and one picked
+// through a mapped drive letter is named by the `\\server\share` path behind
+// it, where Windows gives one.
+// ---------------------------------------------------------------------------
+
+/// A folder as typed or pasted, tidied (SH13): no spaces or quotes around it
+/// (Explorer's Copy as path adds quotes), no doubled separators, and no
+/// separator at its end (but a drive's or the system's root keeps its own).
+/// With `windows`, `/` and `\` are both separators and it is written with
+/// `\`; a `\\server\share` path keeps its two leading backslashes.
+pub fn tidy_folder(typed: &str, windows: bool) -> String {
+    let t = typed.trim();
+    let t = t.strip_prefix('"').and_then(|t| t.strip_suffix('"')).unwrap_or(t).trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let sep = if windows { '\\' } else { '/' };
+    let is_sep = |c: char| c == '/' || (windows && c == '\\');
+    let unc = windows && t.chars().take(2).all(is_sep) && t.chars().count() > 2;
+    let mut out = String::new();
+    let mut last_sep = false;
+    for c in t.chars() {
+        if is_sep(c) {
+            if !last_sep {
+                out.push(sep);
+            }
+            last_sep = true;
+        } else {
+            out.push(c);
+            last_sep = false;
+        }
+    }
+    if unc {
+        out.insert(0, '\\');
+    }
+    // No separator at the end, but `C:\` and `/` stay roots.
+    while out.ends_with(sep) && out.len() > 1 && !(windows && out.len() == 3 && out.as_bytes()[1] == b':') {
+        out.pop();
+    }
+    out
+}
+
+/// The drive letter a Windows path starts with, and the rest after it
+/// (`Z:\Nesting` → `('Z', "\Nesting")`); None for any other path.
+pub fn drive_of(path: &str) -> Option<(char, &str)> {
+    let mut cs = path.chars();
+    let (l, colon) = (cs.next()?, cs.next()?);
+    let rest = &path[2..];
+    (l.is_ascii_alphabetic() && colon == ':' && (rest.is_empty() || rest.starts_with('\\'))).then(|| (l.to_ascii_uppercase(), rest))
+}
+
+/// The folder on the share: the share behind a drive letter and the rest of
+/// the path after the letter (`\\srv\Nesting` + `\Jobs`).
+pub fn on_share(share: &str, rest: &str) -> String {
+    format!("{}{rest}", share.trim_end_matches('\\'))
+}
+
+/// What Windows says about a drive letter (SH13).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Drive {
+    /// Mapped to this `\\server\share`.
+    Share(String),
+    /// A drive of this PC's own (not mapped).
+    Local,
+    /// It couldn't be told (the lookup failed): the letter is kept, and
+    /// joining says so.
+    Unknown(String),
+}
+
+/// SH13: what a drive lookup's answer means. `code` is the Windows error
+/// (0: none) and `remote` the name it gave. A remembered mapping that isn't
+/// connected just now (1201) still names its share; "not a network drive"
+/// (2250) is a drive of this PC's own; anything else can't be told.
+pub fn drive_answer(code: u32, remote: Option<String>) -> Drive {
+    match (code, remote.filter(|r| r.starts_with("\\\\"))) {
+        (0 | 1201, Some(r)) => Drive::Share(r),
+        (2250, _) => Drive::Local,
+        (0, None) => Drive::Unknown("it gave no \\\\server\\share name".into()),
+        (c, _) => Drive::Unknown(format!("Windows error {c}")),
+    }
+}
+
+/// SH13: a tidied folder as every PC should name it, and what was changed:
+/// on Windows, a folder on a mapped drive letter becomes the `\\server\share`
+/// path behind it ("Z: is \\srv\Nesting on this PC…"); a letter that can't be
+/// looked up is kept, and that is said. A local drive, or any folder on
+/// other systems, stays as it is.
+pub fn full_folder(tidy: &str) -> (String, Option<String>) {
+    full_folder_with(tidy, mapped_share)
+}
+
+/// `full_folder`, asking `lookup` what a drive letter is.
+pub fn full_folder_with(tidy: &str, lookup: impl Fn(char) -> Drive) -> (String, Option<String>) {
+    let Some((letter, rest)) = drive_of(tidy) else { return (tidy.to_string(), None) };
+    match lookup(letter) {
+        Drive::Share(share) => {
+            let full = on_share(&share, rest);
+            let note = format!("{letter}: is {} on this PC: using {full}, so every PC names the same Library.", share.trim_end_matches('\\'));
+            (full, Some(note))
+        }
+        Drive::Local => (tidy.to_string(), None),
+        Drive::Unknown(why) => (tidy.to_string(), Some(format!("What {letter}: stands for on this PC couldn't be looked up ({why}), so {tidy} is kept as it is. Use the full \\\\server\\share path instead if other PCs name this folder that way."))),
+    }
+}
+
+/// SH10: a folder given relative to where the program runs (`.`) as the
+/// full path, so the setting saved names it from anywhere.
+pub fn absolute_folder(tidy: &str) -> String {
+    let p = Path::new(tidy);
+    if p.is_absolute() || tidy.starts_with("\\\\") {
+        return tidy.to_string();
+    }
+    std::path::absolute(p).map_or_else(|_| tidy.to_string(), |a| tidy_folder(&a.display().to_string(), cfg!(windows)))
+}
+
+/// The `\\server\share` a drive letter is mapped to on this PC (Windows).
+#[cfg(windows)]
+fn mapped_share(letter: char) -> Drive {
+    #[link(name = "mpr")]
+    unsafe extern "system" {
+        fn WNetGetConnectionW(local: *const u16, remote: *mut u16, len: *mut u32) -> u32;
+    }
+    const ERROR_MORE_DATA: u32 = 234;
+    let local: Vec<u16> = format!("{letter}:").encode_utf16().chain([0]).collect();
+    let mut len: u32 = 260;
+    // Asked again with the size Windows says it needs (once is enough; a
+    // second "more data" is taken as an answer that can't be told).
+    for _ in 0..2 {
+        let mut buf = vec![0u16; len as usize];
+        // SAFETY: `local` ends with a 0; `buf` holds `len` u16s and lives
+        // through the call, which writes at most that many (or sets `len`).
+        let r = unsafe { WNetGetConnectionW(local.as_ptr(), buf.as_mut_ptr(), &mut len) };
+        if r == ERROR_MORE_DATA && len as usize > buf.len() {
+            continue;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let remote = (end > 0).then(|| String::from_utf16_lossy(&buf[..end]));
+        return drive_answer(r, remote);
+    }
+    drive_answer(ERROR_MORE_DATA, None)
+}
+
+/// Other systems have no drive letters.
+#[cfg(not(windows))]
+fn mapped_share(_letter: char) -> Drive {
+    Drive::Local
+}
+
+/// Two names of the same folder (SH14): the same once tidied (without case
+/// on Windows), or the same folder on disk.
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    let w = cfg!(windows);
+    let (x, y) = (tidy_folder(&a.display().to_string(), w), tidy_folder(&b.display().to_string(), w));
+    (if w { x.eq_ignore_ascii_case(&y) } else { x == y }) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    /// SH13: what a person types or pastes is tidied the same way each time.
+    #[test]
+    fn a_folder_is_tidied_the_same_however_it_is_typed() {
+        let w = |s| tidy_folder(s, true);
+        assert_eq!(w(r"\\srv\Nesting"), r"\\srv\Nesting");
+        assert_eq!(w(r"\\srv\Nesting\"), r"\\srv\Nesting");
+        assert_eq!(w("//srv/Nesting/"), r"\\srv\Nesting");
+        assert_eq!(w(r"\\srv/Nesting\\Jobs//"), r"\\srv\Nesting\Jobs");
+        assert_eq!(w(r#"  "\\srv\Nesting"  "#), r"\\srv\Nesting");
+        assert_eq!(w(r"Z:\Nesting\"), r"Z:\Nesting");
+        assert_eq!(w("Z:/Nesting"), r"Z:\Nesting");
+        assert_eq!(w(r"C:\"), r"C:\");
+        assert_eq!(w("C:/"), r"C:\");
+        assert_eq!(w("   "), "");
+        let u = |s| tidy_folder(s, false);
+        assert_eq!(u("/srv/nesting/"), "/srv/nesting");
+        assert_eq!(u("/srv//nesting///"), "/srv/nesting");
+        assert_eq!(u("/"), "/");
+        assert_eq!(u("'quoted'"), "'quoted'");
+    }
+
+    /// SH13: a mapped drive's folder is named on the share behind it.
+    #[test]
+    fn a_folder_on_a_mapped_drive_is_named_on_its_share() {
+        assert_eq!(drive_of(r"Z:\Nesting"), Some(('Z', r"\Nesting")));
+        assert_eq!(drive_of("z:"), Some(('Z', "")));
+        assert_eq!(drive_of(r"Z:Nesting"), None);
+        assert_eq!(drive_of(r"\\srv\Nesting"), None);
+        assert_eq!(drive_of("/srv/nesting"), None);
+        assert_eq!(on_share(r"\\srv\Nesting", r"\Library"), r"\\srv\Nesting\Library");
+        assert_eq!(on_share(r"\\srv\Nesting\", ""), r"\\srv\Nesting");
+        // Nothing to convert on other systems, nor for a share path.
+        if !cfg!(windows) {
+            assert_eq!(full_folder(r"Z:\Nesting"), (r"Z:\Nesting".to_string(), None));
+        }
+        assert_eq!(full_folder(r"\\srv\Nesting"), (r"\\srv\Nesting".to_string(), None));
+    }
+
+    /// SH13: what Windows answers about a drive letter, and what joining
+    /// then uses and says.
+    #[test]
+    fn a_drive_letter_that_cant_be_looked_up_is_kept_and_said() {
+        assert_eq!(drive_answer(0, Some(r"\\srv\Nesting".into())), Drive::Share(r"\\srv\Nesting".into()));
+        assert_eq!(drive_answer(1201, Some(r"\\srv\Nesting".into())), Drive::Share(r"\\srv\Nesting".into()));
+        assert_eq!(drive_answer(2250, None), Drive::Local);
+        assert!(matches!(drive_answer(1222, None), Drive::Unknown(w) if w.contains("1222")));
+        assert!(matches!(drive_answer(0, Some("Z:".into())), Drive::Unknown(_)));
+        let (f, note) = full_folder_with(r"Z:\Nesting", |_| Drive::Share(r"\\srv\Nesting\".into()));
+        assert_eq!(f, r"\\srv\Nesting\Nesting");
+        assert!(note.unwrap().starts_with(r"Z: is \\srv\Nesting on this PC: using \\srv\Nesting\Nesting"));
+        assert_eq!(full_folder_with(r"C:\Nesting", |_| Drive::Local), (r"C:\Nesting".to_string(), None));
+        let (f, note) = full_folder_with(r"Z:\Nesting", |_| Drive::Unknown("Windows error 1222".into()));
+        assert_eq!(f, r"Z:\Nesting");
+        assert!(note.unwrap().contains("couldn't be looked up (Windows error 1222), so Z:\\Nesting is kept"));
+    }
+
+    /// SH10: a folder given relative to where the program runs is saved as
+    /// its full path.
+    #[test]
+    fn a_relative_folder_becomes_its_full_path() {
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(absolute_folder("."), tidy_folder(&here.display().to_string(), cfg!(windows)));
+        assert_eq!(absolute_folder("shop"), tidy_folder(&here.join("shop").display().to_string(), cfg!(windows)));
+        assert_eq!(absolute_folder(r"\\srv\Nesting"), r"\\srv\Nesting");
+    }
+}

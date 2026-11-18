@@ -96,16 +96,8 @@ fn run_op(name: &str, rest: &[String]) -> i32 {
     match s.call(name, job.as_deref(), &args) {
         Ok(r) => {
             if text {
-                say!("{}", r.json["message"].as_str().unwrap_or(""));
-                match &r.json["data"] {
-                    Value::Null => {}
-                    Value::String(t) => say!("{t}"),
-                    d => say!("{}", serde_json::to_string_pretty(d).unwrap_or_default()),
-                }
-                if let Some(f) = r.json["files"].as_array() {
-                    for f in f {
-                        say!("  {}", f.as_str().unwrap_or(""));
-                    }
+                for line in text_lines(&r.json) {
+                    say!("{line}");
                 }
             } else {
                 say!("{}", serde_json::to_string_pretty(&r.json).unwrap_or_default());
@@ -121,6 +113,27 @@ fn run_op(name: &str, rest: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// What `--text` prints for an answer: its message, what joining the
+/// Library's material list did or why it couldn't (SH10, MA28), its data,
+/// and the files it wrote.
+pub fn text_lines(json: &Value) -> Vec<String> {
+    let mut out = vec![json["message"].as_str().unwrap_or("").to_string()];
+    for k in ["materials_joined", "materials_not_joined"] {
+        if let Some(t) = json[k].as_str() {
+            out.push(t.to_string());
+        }
+    }
+    match &json["data"] {
+        Value::Null => {}
+        Value::String(t) => out.push(t.clone()),
+        d => out.push(serde_json::to_string_pretty(d).unwrap_or_default()),
+    }
+    if let Some(f) = json["files"].as_array() {
+        out.extend(f.iter().map(|f| format!("  {}", f.as_str().unwrap_or(""))));
+    }
+    out
 }
 
 /// `[job] --a=1 --b 2 --flag --args '{json}' --text` → (job, args, text).
@@ -190,7 +203,8 @@ fn usage() -> String {
          nestpro <operation> <job.snjob> [--arg=value …] [--text]\n  nestpro mcp                     MCP server on stdin/stdout (for AI agents)\n  \
          nestpro ops [--json|--gui]      list every operation (--gui: the GUI command each stands for)\n  nestpro help <operation>        one operation's arguments\n  \
          nestpro library-check <folder> --minutes 10 --text   the two-PC Library check (start it on two PCs at once)\n  \
-         nestpro setup --start <folder> --name <name>         start a shop in that Library folder (`nestpro shop` shows it)\n\n\
+         nestpro setup --join <folder> [--leave]              join the shop in that folder: prints each check (`nestpro shop` shows it)\n  \
+         nestpro setup --start <folder> --name <name>         start a shop in that Library folder\n\n\
          A typical job:\n  nestpro new jobs/frames.snjob --w=3000 --h=1500 --material=steel --thickness=5\n  \
          nestpro import-dxf jobs/frames.snjob --path=\"bracket.dxf\" --qty=20\n  nestpro add-shape jobs/frames.snjob --shape=disc --w=300 --qty=8\n  \
          nestpro nest jobs/frames.snjob\n  nestpro leads jobs/frames.snjob --mode=machine\n  nestpro remnant jobs/frames.snjob --mode=auto --sheet=1\n  \
