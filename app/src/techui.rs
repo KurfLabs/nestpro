@@ -705,6 +705,7 @@ fn count_cell(ui: &mut egui::Ui, pair: &mut [i32; 2], general: &crate::nest::Aut
 impl App {
     /// Cut quality by contour size (CT1): each contour's equivalent radius √(area / π) picks the first
     /// matching row; contours outside every row take the part's quality or the machine's size band (CQ1).
+    /// Says what the rows are for, what Auto does without them and what each quality means (CQ8).
     pub fn cut_ranges_window(&mut self, ctx: &egui::Context) {
         if !self.show_cut_ranges {
             return;
@@ -715,10 +716,15 @@ impl App {
         let mut edit = cur;
         // The first target's contours, to show the quality each one takes.
         let mt = self.machine_tech();
+        let guide = crate::engine::qualityguide::guide(&self.spec, &mt, &self.cfg.machine());
+        let u = self.cfg.nesting.units;
+        let ex = crate::cutpanel::Explain { guide: &guide, unit: u };
         // With the qualities set on its contours by hand (CQ6).
         let geo = targets.first().map(|&i| (self.parts[i].geometry(), self.parts[i].cut_qualities()));
-        egui::Window::new("Cut technology by size").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.label(RichText::new("A contour's size here is the radius (r) of a circle with the same area. The first ticked row it fits sets the quality it is cut at.").size(12.0));
+        egui::Window::new("Quality by size").open(&mut open).collapsible(false).resizable(false).default_width(420.0).show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            ui.add(egui::Label::new(RichText::new("Pick a quality by contour size for this part. Size is the radius (r) of a circle with the same area as the contour.").size(12.0)).wrap());
+            ui.add(egui::Label::new(RichText::new("These rows beat Auto for this part. A quality painted on a contour by hand beats the rows.").size(11.5).color(th().text_dim)).wrap());
             ui.add_space(6.0);
             ui.add_enabled_ui(!targets.is_empty(), |ui| {
                 egui::Grid::new("cut_ranges").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
@@ -731,31 +737,55 @@ impl App {
                         ui.checkbox(&mut row.on, format!("Row {}", k + 1));
                         crate::units::drag_len_in(ui, &mut row.min_r, self.cfg.nesting.units, 0.0, 99999.0);
                         crate::units::drag_len_in(ui, &mut row.max_r, self.cfg.nesting.units, 0.0, 99999.0);
-                        egui::ComboBox::from_id_salt(("cut_q", k)).width(120.0).selected_text(quality_text(ui, &mt.qualities, row.quality)).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt(("cut_q", k)).width(150.0).selected_text(quality_text(ui, &mt.qualities, row.quality)).show_ui(ui, |ui| {
                             for q in offered_qualities(&mt.qualities) {
-                                ui.selectable_value(&mut row.quality, q, quality_text(ui, &mt.qualities, q));
+                                ui.selectable_value(&mut row.quality, q, quality_text(ui, &mt.qualities, q)).on_hover_ui(|ui| quality_card(ui, ex, &mt.qualities, q));
                             }
                         });
                         ui.end_row();
                     }
                 });
             });
+            if let Some(why) = rows_overlap(&edit.cut_ranges, u) {
+                ui.label(RichText::new(format!("⚠ {why}")).size(11.5).color(th().warn_fg));
+            }
             if let Some((g, hand)) = &geo {
                 ui.separator();
+                ui.label(RichText::new("This part's contours").strong().size(12.0));
+                // Equal contours that get the same quality the same way show as one line.
+                let mut lines: Vec<(String, crate::nest::CutQuality, String, bool, usize)> = vec![];
                 for (k, (hole, pts)) in g.holes.iter().map(|h| (true, h)).chain(std::iter::once((false, &g.outline))).enumerate() {
                     let (q, from) = crate::cnc::contour_quality(&edit, &mt, pts, hand.get(k).copied().flatten());
+                    let r = crate::cnc::contour_radius(pts);
+                    let what = format!("{} r {}", if hole { "Hole" } else { "Outside" }, u.len(r, 1));
+                    let why = from_words(from, &edit.cut_ranges, r);
                     let by_row = from == crate::cnc::QualityFrom::SizeRange;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.label(RichText::new(format!("{} r {:.1} mm →", if hole { "Hole" } else { "Outside" }, crate::cnc::contour_radius(pts))).size(11.5).color(th().text_dim));
-                        ui.label(RichText::new("●").size(11.5).color(quality_colour(&mt.qualities, q)));
-                        ui.label(RichText::new(format!("{} ({})", mt.qualities.label(q), from.label())).size(11.5).color(if by_row { th().text_strong } else { th().text_dim }));
-                    });
+                    match lines.iter_mut().find(|l| l.0 == what && l.1 == q && l.2 == why) {
+                        Some(l) => l.4 += 1,
+                        None => lines.push((what, q, why, by_row, 1)),
+                    }
                 }
+                egui::ScrollArea::vertical().max_height(180.0).id_salt("cut_ranges_contours").show(ui, |ui| {
+                    for (what, q, why, by_row, n) in lines {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let count = if n > 1 { format!("{n} × ") } else { String::new() };
+                            ui.label(RichText::new(format!("{count}{what} →")).size(11.5).color(th().text_dim));
+                            ui.label(RichText::new("●").size(11.5).color(quality_colour(&mt.qualities, q)));
+                            ui.label(RichText::new(mt.qualities.label(q)).size(11.5).color(if by_row { th().text_strong } else { th().text }))
+                                .on_hover_ui(|ui| quality_card(ui, ex, &mt.qualities, q));
+                            ui.label(RichText::new(format!("({why})")).size(11.5).color(th().text_dim));
+                        });
+                    }
+                });
             }
+            ui.separator();
+            ui.add(egui::Label::new(RichText::new(guide.auto_sentence(u, &mt.qualities)).size(11.5).color(th().text_dim)).wrap());
+            ui.add_space(4.0);
+            crate::cutpanel::about_qualities(ui, ex, &mt.qualities, "cut_ranges_about");
             ui.add_space(4.0);
             let slowest = mt.qualities.label(crate::nest::CutQuality::new(1).unwrap_or(crate::nest::CutQuality::FALLBACK));
-            if ui.button(format!("Example: small holes at {slowest}")).on_hover_text(format!("Fill in row 1: holes up to r {} mm are cut at {slowest}.", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
+            if ui.button(format!("Example: small holes at {slowest}")).on_hover_text(format!("Fill in row 1: holes up to r {} are cut at {slowest}.", u.show(crate::nest::SMALL_HOLE_RADIUS_EXAMPLE))).clicked() {
                 edit.cut_ranges = Default::default();
                 edit.cut_ranges[0].on = true;
             }
@@ -774,10 +804,56 @@ impl App {
     }
 }
 
+/// Why a contour is cut at its quality, in the words of the Quality by size
+/// window (CQ1): which of this part's rows, by hand, the part's quality,
+/// the machine's size band, or nothing.
+fn from_words(from: crate::cnc::QualityFrom, rows: &[crate::nest::CutRange], r: f64) -> String {
+    use crate::cnc::QualityFrom as F;
+    match from {
+        F::Hand => "painted by hand".into(),
+        F::SizeRange => match rows.iter().position(|c| c.on && c.min_r <= r && r < c.max_r) {
+            Some(k) => format!("row {}", k + 1),
+            None => "a size row".into(),
+        },
+        F::Part => "part's quality".into(),
+        F::SizeBand => "Auto by size".into(),
+        F::Fallback => "Auto's default".into(),
+    }
+}
+
+/// When two ticked rows cover the same sizes: which, and that the first one
+/// wins there (CT1). None when they don't.
+fn rows_overlap(rows: &[crate::nest::CutRange], u: crate::units::LenUnit) -> Option<String> {
+    for a in 0..rows.len() {
+        for b in a + 1..rows.len() {
+            let (x, y) = (&rows[a], &rows[b]);
+            if x.on && y.on && x.min_r < y.max_r && y.min_r < x.max_r {
+                let (from, to) = (x.min_r.max(y.min_r), x.max_r.min(y.max_r));
+                return Some(format!("Rows {} and {} overlap (r {}–{}): row {} is used.", a + 1, b + 1, u.num(from), u.show(to), a + 1));
+            }
+        }
+    }
+    None
+}
+
+/// A quality's hover card in the pickers: its name, then what it means for
+/// the sheet in hand (CQ8).
+pub fn quality_card(ui: &mut egui::Ui, ex: crate::cutpanel::Explain, names: &crate::qualities::CutQualities, q: crate::nest::CutQuality) {
+    ui.set_max_width(290.0);
+    ui.label(RichText::new(names.label(q)).strong().size(13.0).color(th().text_strong));
+    let row = ex.guide.row(q);
+    for s in row.explain(ex.guide, ex.unit) {
+        ui.add(egui::Label::new(RichText::new(s).size(12.0)).wrap());
+    }
+    if !row.known() {
+        ui.add(egui::Label::new(RichText::new("Not set up yet: name it in Settings → Machines → Cut qualities.").size(11.5).color(th().text_dim)).wrap());
+    }
+}
+
 /// A part's own cut quality on screen: the machine's name for it (CQ4), or
-/// "Auto (size bands)" when the machine's size bands decide (CQ1; agents' `auto`).
+/// "Auto" when the machine picks by contour size (CQ1; agents' `auto`).
 pub fn part_quality_label(q: Option<crate::nest::CutQuality>, names: &crate::qualities::CutQualities) -> String {
-    q.map_or_else(|| "Auto (size bands)".to_string(), |q| names.label(q))
+    q.map_or_else(|| "Auto".to_string(), |q| names.label(q))
 }
 
 /// A cut quality's colour on screen (CQ5).

@@ -334,6 +334,41 @@
    "estimated": true
   },
   {
+   "name": "the shop's own name for a cut quality wins over the machine file's; an empty one keeps the file's",
+   "group": "part technology",
+   "value": true,
+   "source": "CQ7",
+   "estimated": true
+  },
+  {
+   "name": "longest shop name and note for a cut quality, characters",
+   "group": "part technology",
+   "value": [40, 200],
+   "source": "CQ7",
+   "estimated": true
+  },
+  {
+   "name": "what is shown for each cut quality of the sheet in hand",
+   "group": "part technology",
+   "value": ["name", "shop note", "table speed", "pierce type", "sizes Auto gives it", "Auto's default", "etching quality (LC5)"],
+   "source": "CQ8",
+   "estimated": true
+  },
+  {
+   "name": "the shop's pick-quality-by-size rows that fit a sheet replace the machine file's size bands; the first row a contour's size fits wins",
+   "group": "part technology",
+   "value": true,
+   "source": "CQ9",
+   "estimated": true
+  },
+  {
+   "name": "thickness tolerance of a pick-quality-by-size row, mm",
+   "group": "part technology",
+   "value": 0.005,
+   "source": "CQ9",
+   "estimated": true
+  },
+  {
    "name": "cut technology panel rows",
    "group": "part technology",
    "value": ["Cut · quality by size", "each quality the machine offers", "Mark", "No cut", "Bend line", "Leave out"],

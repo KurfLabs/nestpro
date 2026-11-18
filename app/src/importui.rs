@@ -1561,7 +1561,9 @@ impl App {
     /// DX3), then the rows that paint contours (CS6) and what the last change
     /// did.
     fn import_cut_panel(&mut self, ui: &mut egui::Ui, w: f32, h: f32) {
-        let names = crate::ct1::for_spec(&self.spec).qualities;
+        let mt = crate::ct1::for_spec(&self.spec);
+        let names = mt.qualities.clone();
+        let guide = crate::engine::qualityguide::guide(&self.spec, &mt, &self.cfg.machine());
         let cur = self.importui.current(&self.cfg, &self.spec);
         let frame = egui::Frame::new().fill(th().panel).stroke(Stroke::new(1.0, th().border)).corner_radius(4.0);
         let mut set: Option<(String, LayerRole)> = None;
@@ -1627,7 +1629,8 @@ impl App {
                     Some(c) if c.made.is_err() => Some("No part can be made from this drawing with these layers: set the layers above."),
                     _ => None,
                 };
-                cutpanel::rows_ui(ui, &mut self.importui.panel, &names, locked);
+                let ex = cutpanel::Explain { guide: &guide, unit: self.cfg.nesting.units };
+                cutpanel::rows_ui(ui, &mut self.importui.panel, &names, ex, locked);
             });
         });
         if let Some((layer, role)) = set {
