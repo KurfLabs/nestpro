@@ -735,8 +735,9 @@ pub fn overview(library: &Path, own: &Settings) -> Result<Overview, String> {
     Ok(Overview { last: all.first().cloned(), count: all.len(), folder: p.dir, settings: p.settings, shop: p.shop })
 }
 
-/// This Library's backups in `dir`, newest first (tests and agents): none
-/// before its first backup.
+/// This Library's backups in `dir`, newest first (tests): none before its
+/// first backup.
+#[cfg(test)]
 pub fn backups_in(library: &Path, dir: &Path) -> Result<Vec<Entry>, String> {
     match library_id(library)? {
         Some(id) => list(dir, &Ns { id, label: String::new() }),
