@@ -13,6 +13,32 @@ use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, S
 
 /// Placeholder for the active database name shown in the title and tree root.
 
+/// What the Open jobs tree's menus asked for, done after drawing.
+#[derive(Clone)]
+enum Act {
+    Open(usize),
+    NewJob(String),
+    NewFolder,
+    EditFolder(String),
+    DeleteFolder(String),
+    EditJob(usize),
+    AddNesting(usize),
+    CopyJob(usize),
+    SaveToLib(usize),
+    CloseJob(usize),
+    DeleteJob(usize),
+    CommitFolder(String, String),
+    CommitJob(usize, String),
+    CancelEdit,
+}
+
+/// What drawing an Open jobs folder needs from the tree around it.
+struct TreeCx<'a> {
+    needle: &'a str,
+    edit: &'a Option<crate::jobtree::TreeEdit>,
+    tips: &'a [String],
+}
+
 /// Draw a small picture of a part inside `r`.
 fn part_thumb(p: &egui::Painter, part: &Part, r: Rect) {
     let (w, h) = part.bbox();
@@ -143,6 +169,134 @@ impl App {
             .show(ui, |ui| self.product_list(ui));
     }
 
+    /// One Open jobs folder: its own name, the folders inside it (`kids`,
+    /// JX21), then its jobs; right-click for New, Change name, Delete.
+    fn open_jobs_folder(&mut self, ui: &mut egui::Ui, week: &str, kids: &[String], cx: &TreeCx, act: &mut Option<Act>) {
+        // Folder name being typed (New folder / Change name).
+        if let Some(crate::jobtree::TreeEdit::Folder { old, text }) = cx.edit {
+            if old == week {
+                let mut t = text.clone();
+                let r = ui.add(egui::TextEdit::singleline(&mut t).desired_width(160.0));
+                r.request_focus();
+                if r.changed() {
+                    self.tree_edit = Some(crate::jobtree::TreeEdit::Folder { old: old.clone(), text: t.clone() });
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    *act = Some(Act::CommitFolder(old.clone(), t));
+                } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    *act = Some(Act::CancelEdit);
+                }
+                return;
+            }
+        }
+        let resp = egui::CollapsingHeader::new(crate::jobtree::folder_label(week).to_string()).id_salt(("week", week)).default_open(true).show(ui, |ui| {
+            for k in kids {
+                self.open_jobs_folder(ui, k, &[], cx, act);
+            }
+            self.open_jobs_rows(ui, week, cx, act);
+        });
+        let inside = format!("{week}{}", crate::jobtree::SUBFOLDER);
+        let n = self.jobs.iter().filter(|j| j.week == week || j.week.starts_with(&inside)).count();
+        resp.header_response.on_hover_text(format!("{n} job(s) — right-click for New job, New folder, Change name, Delete")).context_menu(|ui| {
+            ui.menu_button("New", |ui| {
+                if ui.button("📁 Folder").clicked() {
+                    *act = Some(Act::NewFolder);
+                    ui.close();
+                }
+                if ui.button("Job").clicked() {
+                    *act = Some(Act::NewJob(week.to_string()));
+                    ui.close();
+                }
+            });
+            ui.separator();
+            if ui.button("Change name").clicked() {
+                *act = Some(Act::EditFolder(week.to_string()));
+                ui.close();
+            }
+            if ui.button("Delete").on_hover_text("Only an empty folder can be deleted").clicked() {
+                *act = Some(Act::DeleteFolder(week.to_string()));
+                ui.close();
+            }
+        });
+    }
+
+    /// The jobs in one Open jobs folder, with their right-click menus.
+    fn open_jobs_rows(&mut self, ui: &mut egui::Ui, week: &str, cx: &TreeCx, act: &mut Option<Act>) {
+        let needle = cx.needle;
+        for (i, j) in self.jobs.iter().enumerate() {
+            if j.week != week || (!needle.is_empty() && !j.name.to_lowercase().contains(needle) && !week.to_lowercase().contains(needle)) {
+                continue;
+            }
+            let name = if i == self.cur_job { &self.job_name } else { &j.name };
+            let sheets = if i == self.cur_job { self.result.sheets.len() } else { j.result.sheets.len() };
+            if let Some(crate::jobtree::TreeEdit::Job { index, text }) = cx.edit {
+                if *index == i {
+                    let mut t = text.clone();
+                    let r = ui.add(egui::TextEdit::singleline(&mut t).desired_width(160.0));
+                    r.request_focus();
+                    if r.changed() {
+                        self.tree_edit = Some(crate::jobtree::TreeEdit::Job { index: i, text: t.clone() });
+                    }
+                    if ui.input(|inp| inp.key_pressed(egui::Key::Enter)) {
+                        *act = Some(Act::CommitJob(i, t));
+                    } else if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
+                        *act = Some(Act::CancelEdit);
+                    }
+                    continue;
+                }
+            }
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
+                ui.painter().rect_stroke(r.shrink(2.0), CornerRadius::same(2), Stroke::new(1.3, th().accent_fg), egui::StrokeKind::Middle);
+                let txt = if i == self.cur_job { RichText::new(name).strong() } else { RichText::new(name) };
+                let row = ui.selectable_label(i == self.cur_job, txt).on_hover_text(&cx.tips[i]);
+                if row.clicked() {
+                    *act = Some(Act::Open(i));
+                }
+                if row.double_clicked() {
+                    *act = Some(Act::EditJob(i));
+                }
+                row.context_menu(|ui| {
+                    if ui.button("Open").clicked() {
+                        *act = Some(Act::Open(i));
+                        ui.close();
+                    }
+                    if ui.button("➕ Add nesting (new sheet)").on_hover_text("Open the job in Nesting on a new empty sheet").clicked() {
+                        *act = Some(Act::AddNesting(i));
+                        ui.close();
+                    }
+                    if ui.button("💾 Save to library").on_hover_text("Keep this job on disk under Saved jobs (Library)").clicked() {
+                        *act = Some(Act::SaveToLib(i));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Copy").clicked() {
+                        *act = Some(Act::CopyJob(i));
+                        ui.close();
+                    }
+                    if ui.button("Change name").clicked() {
+                        *act = Some(Act::EditJob(i));
+                        ui.close();
+                    }
+                    let saved = if i == self.cur_job { self.job_lib_id.is_some() } else { j.lib_id.is_some() };
+                    if ui.add_enabled(saved, egui::Button::new("Close")).on_hover_text("Take it out of Open jobs; it stays in Saved jobs (Library)").on_disabled_hover_text("Save it to the library first — or Delete it").clicked() {
+                        *act = Some(Act::CloseJob(i));
+                        ui.close();
+                    }
+                    if ui.button("Delete…").clicked() {
+                        *act = Some(Act::DeleteJob(i));
+                        ui.close();
+                    }
+                });
+                ui.label(RichText::new(format!("{sheets} sh")).size(11.0).color(th().text_dim));
+                let saved = if i == self.cur_job { self.job_lib_id.is_some() } else { j.lib_id.is_some() };
+                if saved {
+                    ui.label(RichText::new("✔").size(11.0).color(th().accent_fg)).on_hover_text("Saved in the library");
+                }
+            });
+        }
+    }
+
     pub fn job_tree_body(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add_space(6.0);
@@ -151,144 +305,31 @@ impl App {
         ui.add_space(4.0);
         let needle = self.job_search.to_lowercase();
         let weeks = self.job_folder_list();
-        // What the menus asked for, done after drawing.
-        #[derive(Clone)]
-        enum Act {
-            Open(usize),
-            NewJob(String),
-            NewFolder,
-            EditFolder(String),
-            DeleteFolder(String),
-            EditJob(usize),
-            AddNesting(usize),
-            CopyJob(usize),
-            SaveToLib(usize),
-            CloseJob(usize),
-            DeleteJob(usize),
-            CommitFolder(String, String),
-            CommitJob(usize, String),
-            CancelEdit,
-        }
         let mut act: Option<Act> = None;
         let edit = self.tree_edit.clone();
         let tips: Vec<String> = (0..self.jobs.len()).map(|i| self.job_tip(i)).collect();
+        // JX21: a folder "Fulcrum › WO-7" is drawn inside folder Fulcrum.
+        let mut tops: Vec<(String, Vec<String>)> = vec![];
+        for w in &weeks {
+            let top = crate::jobtree::folder_parent(w).unwrap_or(w).to_string();
+            let k = match tops.iter().position(|t| t.0 == top) {
+                Some(k) => k,
+                None => {
+                    tops.push((top.clone(), vec![]));
+                    tops.len() - 1
+                }
+            };
+            if &top != w {
+                tops[k].1.push(w.clone());
+            }
+        }
+        let cx = TreeCx { needle: &needle, edit: &edit, tips: &tips };
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             // The jobs open right now (examples, new, opened from files or the library).
             let root = egui::CollapsingHeader::new(RichText::new(format!("Open jobs ({}) — this window", self.jobs.len())).strong()).id_salt("jobs_root").default_open(true).show(ui, |ui| {
-                for week in &weeks {
-                    // Folder name being typed (New folder / Change name).
-                    if let Some(crate::jobtree::TreeEdit::Folder { old, text }) = &edit {
-                        if old == week {
-                            let mut t = text.clone();
-                            let r = ui.add(egui::TextEdit::singleline(&mut t).desired_width(160.0));
-                            r.request_focus();
-                            if r.changed() {
-                                self.tree_edit = Some(crate::jobtree::TreeEdit::Folder { old: old.clone(), text: t.clone() });
-                            }
-                            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                act = Some(Act::CommitFolder(old.clone(), t));
-                            } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                act = Some(Act::CancelEdit);
-                            }
-                            continue;
-                        }
-                    }
-                    let resp = egui::CollapsingHeader::new(week.to_string()).id_salt(("week", week)).default_open(true).show(ui, |ui| {
-                        for (i, j) in self.jobs.iter().enumerate() {
-                            if &j.week != week || (!needle.is_empty() && !j.name.to_lowercase().contains(&needle) && !week.to_lowercase().contains(&needle)) {
-                                continue;
-                            }
-                            let name = if i == self.cur_job { &self.job_name } else { &j.name };
-                            let sheets = if i == self.cur_job { self.result.sheets.len() } else { j.result.sheets.len() };
-                            if let Some(crate::jobtree::TreeEdit::Job { index, text }) = &edit {
-                                if *index == i {
-                                    let mut t = text.clone();
-                                    let r = ui.add(egui::TextEdit::singleline(&mut t).desired_width(160.0));
-                                    r.request_focus();
-                                    if r.changed() {
-                                        self.tree_edit = Some(crate::jobtree::TreeEdit::Job { index: i, text: t.clone() });
-                                    }
-                                    if ui.input(|inp| inp.key_pressed(egui::Key::Enter)) {
-                                        act = Some(Act::CommitJob(i, t));
-                                    } else if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
-                                        act = Some(Act::CancelEdit);
-                                    }
-                                    continue;
-                                }
-                            }
-                            ui.horizontal(|ui| {
-                                let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
-                                ui.painter().rect_stroke(r.shrink(2.0), CornerRadius::same(2), Stroke::new(1.3, th().accent_fg), egui::StrokeKind::Middle);
-                                let txt = if i == self.cur_job { RichText::new(name).strong() } else { RichText::new(name) };
-                                let row = ui.selectable_label(i == self.cur_job, txt).on_hover_text(&tips[i]);
-                                if row.clicked() {
-                                    act = Some(Act::Open(i));
-                                }
-                                if row.double_clicked() {
-                                    act = Some(Act::EditJob(i));
-                                }
-                                row.context_menu(|ui| {
-                                    if ui.button("Open").clicked() {
-                                        act = Some(Act::Open(i));
-                                        ui.close();
-                                    }
-                                    if ui.button("➕ Add nesting (new sheet)").on_hover_text("Open the job in Nesting on a new empty sheet").clicked() {
-                                        act = Some(Act::AddNesting(i));
-                                        ui.close();
-                                    }
-                                    if ui.button("💾 Save to library").on_hover_text("Keep this job on disk under Saved jobs (Library)").clicked() {
-                                        act = Some(Act::SaveToLib(i));
-                                        ui.close();
-                                    }
-                                    ui.separator();
-                                    if ui.button("Copy").clicked() {
-                                        act = Some(Act::CopyJob(i));
-                                        ui.close();
-                                    }
-                                    if ui.button("Change name").clicked() {
-                                        act = Some(Act::EditJob(i));
-                                        ui.close();
-                                    }
-                                    let saved = if i == self.cur_job { self.job_lib_id.is_some() } else { j.lib_id.is_some() };
-                                    if ui.add_enabled(saved, egui::Button::new("Close")).on_hover_text("Take it out of Open jobs; it stays in Saved jobs (Library)").on_disabled_hover_text("Save it to the library first — or Delete it").clicked() {
-                                        act = Some(Act::CloseJob(i));
-                                        ui.close();
-                                    }
-                                    if ui.button("Delete…").clicked() {
-                                        act = Some(Act::DeleteJob(i));
-                                        ui.close();
-                                    }
-                                });
-                                ui.label(RichText::new(format!("{sheets} sh")).size(11.0).color(th().text_dim));
-                                let saved = if i == self.cur_job { self.job_lib_id.is_some() } else { j.lib_id.is_some() };
-                                if saved {
-                                    ui.label(RichText::new("✔").size(11.0).color(th().accent_fg)).on_hover_text("Saved in the library");
-                                }
-                            });
-                        }
-                    });
-                    resp.header_response.on_hover_text(format!("{} job(s) — right-click for New job, New folder, Change name, Delete", self.jobs.iter().filter(|j| &j.week == week).count())).context_menu(|ui| {
-                        ui.menu_button("New", |ui| {
-                            if ui.button("📁 Folder").clicked() {
-                                act = Some(Act::NewFolder);
-                                ui.close();
-                            }
-                            if ui.button("Job").clicked() {
-                                act = Some(Act::NewJob(week.clone()));
-                                ui.close();
-                            }
-                        });
-                        ui.separator();
-                        if ui.button("Change name").clicked() {
-                            act = Some(Act::EditFolder(week.clone()));
-                            ui.close();
-                        }
-                        if ui.button("Delete").on_hover_text("Only an empty folder can be deleted").clicked() {
-                            act = Some(Act::DeleteFolder(week.clone()));
-                            ui.close();
-                        }
-                    });
+                for (top, kids) in &tops {
+                    self.open_jobs_folder(ui, top, kids, &cx, &mut act);
                 }
             });
             root.header_response.on_hover_text("Open jobs: the jobs loaded in this window now (examples, new jobs, opened files and programs, jobs opened from the library). ✔ = saved in the library; others are lost when the app closes unless you Save job or Save to library.\nRight-click: New ▸ Folder / Job").context_menu(|ui| {
@@ -309,7 +350,7 @@ impl App {
             Some(Act::Open(i)) => self.switch_to_job(i),
             Some(Act::NewJob(w)) => self.new_job_in_week(w),
             Some(Act::NewFolder) => self.new_folder(),
-            Some(Act::EditFolder(f)) => self.tree_edit = Some(crate::jobtree::TreeEdit::Folder { old: f.clone(), text: f }),
+            Some(Act::EditFolder(f)) => self.tree_edit = Some(crate::jobtree::TreeEdit::Folder { text: crate::jobtree::folder_label(&f).to_string(), old: f }),
             Some(Act::DeleteFolder(f)) => self.delete_folder(&f),
             Some(Act::EditJob(i)) => {
                 let n = if i == self.cur_job { self.job_name.clone() } else { self.jobs[i].name.clone() };

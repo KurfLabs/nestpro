@@ -3563,6 +3563,18 @@
   "source": "MECHANICS F34; observed on a live system"
  },
  {
+  "name": "ERP work-order step with several materials",
+  "group": "erp (fulcrum)",
+  "value": "one job per material, in folder '<system> › <work order>'",
+  "source": "MECHANICS F35; observed on a live system (2026-11-18)"
+ },
+ {
+  "name": "ERP send of a several-material step",
+  "group": "erp (fulcrum)",
+  "value": "every material's sheets in one nest; refused while one is missing or not nested",
+  "source": "MECHANICS F36; Fulcrum API (nesting-setup replaces the step's nest)"
+ },
+ {
   "name": "ERP units sent",
   "group": "erp (fulcrum)",
   "value": "inch (setting)",
@@ -6452,6 +6464,12 @@
   "group": "library",
   "value": "moves nothing and says so",
   "source": "MECHANICS JX20"
+ },
+ {
+  "name": "Open jobs folder inside a folder",
+  "group": "job explorer",
+  "value": "'Outer › Inner'; filed in the Library at both levels",
+  "source": "MECHANICS JX21; estimated"
  },
  {
   "name": "hand-moved leads per part (contours)",

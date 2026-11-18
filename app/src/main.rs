@@ -1322,27 +1322,7 @@ impl App {
     /// CopyIndx > 1 are hidden and Quantity counts the copies — MECHANICS.md #4).
     /// Returns (first sheet index, number of identical sheets).
     pub fn sheet_groups(&self) -> Vec<(usize, usize)> {
-        let sig = |s: &Vec<Placed>| {
-            let mut v: Vec<(usize, i64, i64, u8, bool, i64)> = s.iter().map(|p| (p.part, (p.x * 10.0).round() as i64, (p.y * 10.0).round() as i64, p.turns, p.mirror, (p.spin.deg * 100.0).round() as i64)).collect();
-            v.sort();
-            v
-        };
-        // Same parts in the same places on the same kind of sheet (a remnant
-        // or another stock size is a different sheet).
-        let fmt = |i: usize| {
-            let f = self.result.format(i, &self.spec);
-            ((f.w * 10.0).round() as i64, (f.h * 10.0).round() as i64, f.stock_ref)
-        };
-        let mut groups: Vec<(usize, usize, Vec<(usize, i64, i64, u8, bool, i64)>)> = vec![];
-        for (i, s) in self.result.sheets.iter().enumerate() {
-            let g = sig(s);
-            if let Some(e) = groups.iter_mut().find(|e| e.2 == g && fmt(e.0) == fmt(i)) {
-                e.1 += 1;
-            } else {
-                groups.push((i, 1, g));
-            }
-        }
-        groups.into_iter().map(|(i, n, _)| (i, n)).collect()
+        engine::sheet_groups(&self.result, &self.spec)
     }
 
     /// Add part drawings as parts (dropped on the window, picked in the
@@ -3536,6 +3516,13 @@ fn main() -> eframe::Result {
             // empty folder): a job whose material isn't in the list (MA30).
             if std::env::args().any(|a| a == "--unknown-material") {
                 app.demo_unknown_material();
+            }
+            // --erp-demo (screenshots, with --jobs): a made-up Fulcrum work
+            // order cut from two materials opened as jobs (F35, JX21).
+            // --erp-demo-tree: the same, with the window closed (the Job Explorer).
+            if std::env::args().any(|a| a == "--erp-demo" || a == "--erp-demo-tree") {
+                app.demo_erp_two_materials();
+                app.erp.open = !std::env::args().any(|a| a == "--erp-demo-tree");
             }
             // --refresh-minutes=N (screenshots): the auto-refresh setting (JX8).
             if let Some(m) = std::env::args().find_map(|a| a.strip_prefix("--refresh-minutes=").and_then(|v| v.parse::<i64>().ok())) {

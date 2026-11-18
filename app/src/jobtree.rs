@@ -31,6 +31,32 @@ pub enum TreeEdit {
     Job { index: usize, text: String },
 }
 
+/// Between the levels of an Open jobs folder's name (JX21): "Fulcrum › WO-7"
+/// is folder WO-7 inside folder Fulcrum. Not "/", which work order and
+/// customer names use.
+pub const SUBFOLDER: &str = " › ";
+
+/// The Open jobs folder `child` inside `parent` (JX21).
+pub fn subfolder(parent: &str, child: &str) -> String {
+    format!("{}{SUBFOLDER}{}", parent.trim(), child.trim())
+}
+
+/// The levels of an Open jobs folder's name, from the top (JX21): the
+/// Library folders a job in it is filed in when first saved there.
+pub fn folder_levels(week: &str) -> Vec<String> {
+    week.split(SUBFOLDER.trim()).map(str::trim).filter(|n| !n.is_empty()).map(String::from).collect()
+}
+
+/// The folder a subfolder is in ("Fulcrum" for "Fulcrum › WO-7"), if any.
+pub fn folder_parent(week: &str) -> Option<&str> {
+    week.split_once(SUBFOLDER).map(|(p, _)| p)
+}
+
+/// A folder's own name, as the tree shows it ("WO-7" for "Fulcrum › WO-7").
+pub fn folder_label(week: &str) -> &str {
+    week.split_once(SUBFOLDER).map_or(week, |(_, c)| c)
+}
+
 /// Is `name` used by another folder (case-insensitive, JX6)?
 pub fn folder_name_taken(folders: &[String], name: &str, except: Option<&str>) -> bool {
     let n = name.trim().to_lowercase();
@@ -84,6 +110,15 @@ impl App {
                 out.push(f.clone());
             }
         }
+        // The folder a subfolder is in is a folder too (JX21), even holding
+        // no job of its own: its name is taken.
+        for k in 0..out.len() {
+            if let Some(p) = folder_parent(&out[k]).map(String::from) {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
         out
     }
 
@@ -99,17 +134,29 @@ impl App {
         self.status = "New folder — type its name and press Enter.".into();
     }
 
+    /// Change a folder's name. `new` is its own name: a subfolder stays in
+    /// its folder, and the folders inside a folder go with it (JX21).
     pub fn rename_folder(&mut self, old: &str, new: &str) -> bool {
         let folders = self.job_folder_list();
-        match check_folder_name(&folders, new, Some(old)) {
+        let full = match folder_parent(old) {
+            Some(p) if !new.trim().is_empty() => subfolder(p, new),
+            _ => new.trim().to_string(),
+        };
+        match check_folder_name(&folders, &full, Some(old)) {
             Ok(n) => {
-                for j in self.jobs.iter_mut().filter(|j| j.week == old) {
-                    j.week = n.clone();
+                let inside = format!("{old}{SUBFOLDER}");
+                let moved = |w: &str| if w == old { Some(n.clone()) } else { w.strip_prefix(&inside).map(|rest| subfolder(&n, rest)) };
+                for j in self.jobs.iter_mut() {
+                    if let Some(w) = moved(&j.week) {
+                        j.week = w;
+                    }
                 }
-                for f in self.job_folders.iter_mut().filter(|f| f.as_str() == old) {
-                    *f = n.clone();
+                for f in self.job_folders.iter_mut() {
+                    if let Some(w) = moved(f) {
+                        *f = w;
+                    }
                 }
-                self.status = format!("Folder renamed to {n}.");
+                self.status = format!("Folder renamed to {}.", folder_label(&n));
                 true
             }
             Err(code) => {
@@ -121,13 +168,14 @@ impl App {
 
     /// Delete a folder: only when it holds no jobs (the jobs would be lost).
     pub fn delete_folder(&mut self, name: &str) {
-        let n = self.jobs.iter().filter(|j| j.week == name).count();
+        let inside = format!("{name}{SUBFOLDER}");
+        let n = self.jobs.iter().filter(|j| j.week == name || j.week.starts_with(&inside)).count();
         if n > 0 {
             self.status = format!("'{name}' still holds {n} job(s) — move or delete them first.");
             return;
         }
-        self.job_folders.retain(|f| f != name);
-        self.status = format!("Folder {name} deleted.");
+        self.job_folders.retain(|f| f != name && !f.starts_with(&inside));
+        self.status = format!("Folder {} deleted.", folder_label(name));
     }
 
     pub fn rename_job(&mut self, i: usize, new: &str) -> bool {
@@ -514,6 +562,40 @@ mod jobtree_tests {
             let c = close_frame(&ctx, &mut a, false);
             assert!(c.contains(&Close) && a.quit_wait.is_none(), "{w:?}: {c:?}");
         }
+    }
+
+    #[test]
+    fn a_folder_inside_a_folder_is_named_with_its_levels() {
+        // JX21: a work order's folder inside the system's.
+        let w = subfolder("Fulcrum", "DEMO-7/8 Acme, LLC");
+        assert_eq!(w, "Fulcrum › DEMO-7/8 Acme, LLC");
+        assert_eq!(folder_levels(&w), vec!["Fulcrum".to_string(), "DEMO-7/8 Acme, LLC".to_string()], "a / in a work order's name is no level");
+        assert_eq!((folder_parent(&w), folder_label(&w)), (Some("Fulcrum"), "DEMO-7/8 Acme, LLC"));
+        assert_eq!((folder_levels("W09_10"), folder_parent("W09_10"), folder_label("W09_10")), (vec!["W09_10".to_string()], None, "W09_10"));
+        assert!(folder_levels("  ").is_empty());
+
+        let mut a = crate::App::new(None);
+        a.shot = None;
+        a.store_job();
+        let first = a.jobs[0].week.clone();
+        a.jobs[0].week = w.clone();
+        a.job_folders.push("Fulcrum".into());
+        // Renaming the folder inside keeps it inside; the name typed is its own.
+        assert!(a.rename_folder(&w, "WO-9"));
+        assert_eq!(a.jobs[0].week, "Fulcrum › WO-9");
+        // Renaming the outer folder takes the folders inside along.
+        assert!(a.rename_folder("Fulcrum", "ERP"));
+        assert_eq!((a.jobs[0].week.as_str(), a.job_folders.contains(&"ERP".to_string())), ("ERP › WO-9", true));
+        // Holding no job of its own, the outer folder's name is still taken.
+        a.job_folders.retain(|f| f != "ERP");
+        let other = a.jobs.iter().map(|j| j.week.clone()).find(|w| !w.starts_with("ERP")).unwrap();
+        assert!(!a.rename_folder(&other, "erp"), "merged into ERP");
+        // A folder whose inner folder holds jobs isn't deleted.
+        a.delete_folder("ERP");
+        assert!(a.job_folder_list().contains(&"ERP".to_string()) && a.status.contains("still holds 1 job"), "{}", a.status);
+        a.jobs[0].week = first;
+        a.delete_folder("ERP");
+        assert!(!a.job_folder_list().contains(&"ERP".to_string()), "{}", a.status);
     }
 
     #[test]

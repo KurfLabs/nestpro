@@ -22,6 +22,8 @@ pub struct Imported {
     /// The machine that step is scheduled on, if any.
     pub equipment: erp::Ref,
     pub info: Option<erp::MaterialInfo>,
+    /// Every material on the work-order step's cut list, drawing or not (F36).
+    pub step_materials: Vec<erp::Ref>,
     /// Each part to make and its drawing's text (or why it couldn't be read).
     pub parts: Vec<(ImportPart, Result<String, String>)>,
     pub notes: Vec<String>,
@@ -31,6 +33,8 @@ pub struct Imported {
 struct SendFor {
     job: usize,
     name: String,
+    /// The other jobs of the same work-order step sent with it (F36).
+    also: Vec<(usize, String)>,
 }
 
 /// The window's two lists.
@@ -133,7 +137,7 @@ fn fetch(c: Box<dyn Connector>, group: Group, ops: Vec<(String, String, String)>
         let text = cache.entry(p.drawing.id.clone()).or_insert_with(|| c.download(&p.drawing).map(|b| String::from_utf8_lossy(&b).into_owned())).clone();
         parts.push((p, text));
     }
-    Ok(Imported { material: group.material, operation: group.operation, work_order: None, equipment: Default::default(), info, parts, notes })
+    Ok(Imported { material: group.material, operation: group.operation, work_order: None, equipment: Default::default(), info, parts, notes, step_materials: vec![] })
 }
 
 /// Fetch a work-order step's cut list and drawings (F23): the job
@@ -148,6 +152,7 @@ fn fetch_step(c: Box<dyn Connector>, group: Group, wo: erp::Ref, step_id: String
     let wp = c.work_package(&ops)?;
     let info = wp.parts.iter().find_map(|p| p.material.clone());
     let (plan, notes) = erp::plan_import(&wp, Some(&step.id));
+    let step_materials = erp::step_materials(&wp, &step.id, &group.material);
     let mut cache: std::collections::HashMap<String, Result<String, String>> = Default::default();
     let mut parts = vec![];
     for p in plan {
@@ -155,7 +160,7 @@ fn fetch_step(c: Box<dyn Connector>, group: Group, wo: erp::Ref, step_id: String
         parts.push((p, text));
     }
     let operation = if step.operation.id.is_empty() { group.operation } else { step.operation.clone() };
-    Ok(Imported { material: group.material, operation, work_order: Some(WorkOrderRef { id: wo.id, op_id: step.id, name: wo.name }), equipment: step.equipment, info, parts, notes })
+    Ok(Imported { material: group.material, operation, work_order: Some(WorkOrderRef { id: wo.id, op_id: step.id, name: wo.name }), equipment: step.equipment, info, parts, notes, step_materials })
 }
 
 /// Turn a drawing's text into a part for `ip`, in mm.
@@ -234,21 +239,32 @@ impl App {
         self.erp.stations_task = Some(Task::spawn("stations", move || Self::connector_for(&integ, &session)?.stations()));
     }
 
-    /// The job already open for a work-order step, if any.
-    pub fn erp_job_for_step(&self, step_id: &str) -> Option<usize> {
-        let on = |e: &Option<ErpJob>| e.as_ref().and_then(|l| l.work_order.as_ref()).is_some_and(|w| w.op_id == step_id);
+    /// The job already open for a work-order step's material, if any (F35:
+    /// one job per material; an empty `material_id` takes any of them).
+    pub fn erp_job_for_step(&self, step_id: &str, material_id: &str) -> Option<usize> {
+        let on = |e: &Option<ErpJob>| e.as_ref().is_some_and(|l| l.work_order.as_ref().is_some_and(|w| w.op_id == step_id) && (material_id.is_empty() || l.material_id == material_id));
         if on(&self.erp_job) {
             return Some(self.cur_job);
         }
-        self.jobs.iter().position(|j| on(&j.erp))
+        self.jobs.iter().enumerate().position(|(i, j)| i != self.cur_job && on(&j.erp))
     }
 
-    /// Open a planner's work-order step as a job (or switch to it when it is
-    /// open already).
+    /// The open jobs on a work-order step, one per material (F35), in job
+    /// order. Reads the job list: store the open job first.
+    pub fn erp_step_jobs(&self, step_id: &str) -> Vec<usize> {
+        if step_id.is_empty() {
+            return vec![];
+        }
+        (0..self.jobs.len()).filter(|&i| self.jobs[i].erp.as_ref().and_then(|l| l.work_order.as_ref()).is_some_and(|w| w.op_id == step_id)).collect()
+    }
+
+    /// Open a planner's work-order step's material as a job (or switch to it
+    /// when it is open already). The first time, every material on the step
+    /// becomes a job of its own (F35).
     pub fn erp_open_step(&mut self, group: usize, nest: usize) {
         let Some(g) = self.erp.groups.get(group).cloned() else { return };
         let Some(n) = g.nests.get(nest).cloned() else { return };
-        if let Some(i) = self.erp_job_for_step(&n.op_id) {
+        if let Some(i) = self.erp_job_for_step(&n.op_id, &g.material.id) {
             self.open_job(i);
             self.erp.msg = format!("Work order {} is open already as {} — switched to it.", n.work_order.name, self.job_name);
             self.erp.msg_ok = true;
@@ -276,7 +292,9 @@ impl App {
         self.erp.import = Some(Task::spawn(format!("Fetching the cut list and drawings for {n} job operation(s)…"), move || fetch(Self::connector_for(&integ, &session)?, g, ops)));
     }
 
-    /// Make a job from an import and open it.
+    /// Make a job from an import and open it. A work-order step's parts make
+    /// one job per material, in the work order's own folder under the
+    /// system's (F35); a material whose job is open already isn't made again.
     fn erp_make_job(&mut self, im: Imported) {
         let integ = self.integ();
         let provider = integ.provider;
@@ -286,43 +304,115 @@ impl App {
         let mapped = integ.machine_for(&im.operation.id, &im.equipment.id);
         let machine = mapped.as_ref().and_then(|m| self.cfg.machines.iter().position(|x| &x.name == m));
         let on = machine.map_or_else(|| self.cfg.machine(), |k| self.cfg.machines[k].clone());
-        let mut spec = crate::engine::with_prefs_for(&self.spec, &self.cfg, &on);
-        let mut notes = im.notes;
-        if let Some(m) = &im.info {
-            match erp::pick_material(&self.cfg, m) {
-                Some(k) => spec.material = k,
-                None => notes.push(format!("Material \"{}\" isn't one of the app's — kept {}; add it as an alias in Settings → Materials", if m.material_name.is_empty() { &m.name } else { &m.material_name }, crate::engine::material::name_or(spec.material, "?"))),
+        let mut notes = im.notes.clone();
+        let ips: Vec<ImportPart> = im.parts.iter().map(|(p, _)| p.clone()).collect();
+        let materials = match &im.work_order {
+            Some(_) => erp::split_by_material(&ips, &im.material),
+            None => vec![(im.material.clone(), im.info.clone(), (0..ips.len()).collect())],
+        };
+        let week = match &im.work_order {
+            Some(w) => crate::jobtree::subfolder(provider.name(), &w.name),
+            None => provider.name().to_string(),
+        };
+        self.store_job();
+        let first_new = self.jobs.len();
+        // (material, job index) of every material the step has a job for;
+        // every material on the step, with a job or not (F36).
+        let mut have: Vec<(erp::Ref, usize)> = vec![];
+        let mut expected: Vec<(String, String)> = im.step_materials.iter().map(|m| (m.id.clone(), m.name.clone())).collect();
+        for (mat, info, ix) in materials {
+            if !expected.iter().any(|e| e.0 == mat.id && (!mat.id.is_empty() || e.1 == mat.name)) {
+                expected.push((mat.id.clone(), mat.name.clone()));
             }
-            if let Some(t) = m.thickness_mm {
-                spec.thickness = (t * 1000.0).round() / 1000.0;
-            }
-        }
-        let mut parts = vec![];
-        for (ip, text) in &im.parts {
-            let made = text.clone().and_then(|t| part_from(ip, &t, integ.drawing_units, self.color_seq + parts.len()));
-            match made {
-                Ok((p, n)) => {
-                    notes.extend(n);
-                    parts.push(p);
+            if let Some(w) = &im.work_order {
+                if let Some(i) = self.erp_job_for_step(&w.op_id, &mat.id) {
+                    have.push((mat, i));
+                    continue;
                 }
-                Err(e) => notes.push(format!("{} ({}): {e}", ip.name, ip.drawing.file_name)),
+            }
+            let mut spec = crate::engine::with_prefs_for(&self.spec, &self.cfg, &on);
+            if let Some(m) = &info {
+                match erp::pick_material(&self.cfg, m) {
+                    Some(k) => spec.material = k,
+                    None => notes.push(format!("Material \"{}\" isn't one of the app's — kept {}; add it as an alias in Settings → Materials", if m.material_name.is_empty() { &m.name } else { &m.material_name }, crate::engine::material::name_or(spec.material, "?"))),
+                }
+                if let Some(t) = m.thickness_mm {
+                    spec.thickness = (t * 1000.0).round() / 1000.0;
+                }
+            }
+            let mut parts = vec![];
+            for &k in &ix {
+                let (ip, text) = &im.parts[k];
+                let made = text.clone().and_then(|t| part_from(ip, &t, integ.drawing_units, self.color_seq + parts.len()));
+                match made {
+                    Ok((p, n)) => {
+                        notes.extend(n);
+                        parts.push(p);
+                    }
+                    Err(e) => notes.push(format!("{} ({}): {e}", ip.name, ip.drawing.file_name)),
+                }
+            }
+            if parts.is_empty() {
+                if !mat.name.is_empty() {
+                    notes.push(format!("{}: no drawing could be read, so no job was made for it. Send nest waits for it: fix its drawings, then open the work order again", mat.name));
+                }
+                continue;
+            }
+            self.color_seq += parts.len();
+            let base = match (&im.work_order, mat.name.is_empty()) {
+                (Some(w), false) => format!("{} {}", w.name, mat.name),
+                (Some(w), true) => w.name.clone(),
+                (None, false) => format!("{} {}", mat.name, im.operation.name),
+                (None, true) => format!("{} job", provider.name()),
+            };
+            let name = self.unique_job_name(base.trim()).unwrap_or(base);
+            let link = ErpJob { provider, material_id: mat.id.clone(), material_name: mat.name.clone(), operation_id: im.operation.id.clone(), operation_name: im.operation.name.clone(), work_order: im.work_order.clone(), sent: None, sheet_item: String::new(), step_materials: vec![] };
+            self.jobs.push(Job {
+                week: week.clone(),
+                name,
+                parts,
+                spec,
+                result: Default::default(),
+                stale: true,
+                lib_id: None,
+                lib_read: Default::default(),
+                cut_lines: vec![],
+                manual_cuts: vec![],
+                cam_changed: None,
+                held: Default::default(),
+                erp: Some(link),
+                file: None,
+                saved: None,
+                lib_folder: None,
+                material_names: vec![],
+                read_only: None,
+            });
+            have.push((mat, self.jobs.len() - 1));
+        }
+        // F36: each job of the step knows every material on it, a material
+        // whose drawings couldn't be read too, so a send waits for them all.
+        // Every open job on the step, made before or now.
+        if let Some(w) = &im.work_order {
+            for i in self.erp_step_jobs(&w.op_id) {
+                if let Some(l) = self.jobs[i].erp.as_mut() {
+                    l.step_materials = expected.clone();
+                }
+                if i == self.cur_job {
+                    self.erp_job = self.jobs[i].erp.clone();
+                }
             }
         }
-        if parts.is_empty() {
-            self.erp.msg = "Nothing imported: no drawing could be read.".into();
+        if self.jobs.len() == first_new {
+            let without: Vec<&str> = expected.iter().filter(|e| !have.iter().any(|(m, _)| m.id == e.0 && (!e.0.is_empty() || m.name == e.1))).map(|e| e.1.as_str()).collect();
+            self.erp.msg = match (have.first(), without.is_empty()) {
+                (Some(_), true) => "Nothing new to make: every material of this work order is open already.".into(),
+                (Some(_), false) => format!("No job made for {}: see the details. Send nest waits for it.", without.join(", ")),
+                (None, _) => "Nothing imported: no drawing could be read.".into(),
+            };
             self.erp.msg_ok = false;
             self.erp.notes = notes;
             return;
         }
-        self.color_seq += parts.len();
-        let base = match (&im.work_order, im.material.name.is_empty()) {
-            (Some(w), false) => format!("{} {}", w.name, im.material.name),
-            (Some(w), true) => w.name.clone(),
-            (None, false) => format!("{} {}", im.material.name, im.operation.name),
-            (None, true) => format!("{} job", provider.name()),
-        };
-        let name = self.unique_job_name(base.trim()).unwrap_or(base);
-        let link = ErpJob { provider, material_id: im.material.id.clone(), material_name: im.material.name.clone(), operation_id: im.operation.id.clone(), operation_name: im.operation.name.clone(), work_order: im.work_order.clone(), sent: None, sheet_item: String::new() };
         let mut machine_note = String::new();
         if let Some(m) = mapped {
             match machine {
@@ -334,42 +424,71 @@ impl App {
                 None => notes.push(format!("{} maps to machine \"{m}\", which isn't in Settings → Machines any more", if im.equipment.name.is_empty() { &im.operation.name } else { &im.equipment.name })),
             }
         }
-        let (n, qty): (usize, u32) = (parts.len(), parts.iter().map(|p| p.qty).sum());
-        self.store_job();
-        self.jobs.push(Job {
-            week: provider.name().into(),
-            name,
-            parts,
-            spec,
-            result: Default::default(),
-            stale: true,
-            lib_id: None,
-            lib_read: Default::default(),
-            cut_lines: vec![],
-            manual_cuts: vec![],
-            cam_changed: None,
-            held: Default::default(),
-            erp: Some(link),
-            file: None,
-            saved: None,
-            lib_folder: None,
-            material_names: vec![],
-            read_only: None,
-        });
-        let i = self.jobs.len() - 1;
-        self.open_job(i);
+        let made: Vec<usize> = (first_new..self.jobs.len()).collect();
+        // The job of the row it was opened from, else the first one made.
+        let open = have.iter().find(|(m, _)| m.id == im.material.id && m.name == im.material.name).or_else(|| have.iter().find(|(m, _)| m.id == im.material.id)).map_or(first_new, |(_, i)| *i);
+        self.open_job(open);
         self.job_path = None;
         self.erp.picked.clear();
         let from = im.work_order.as_ref().map_or(String::new(), |w| format!(" from work order {}", w.name));
-        self.erp.msg = format!("Made job {}{from}: {n} part kind(s), {qty} parts, {} {} mm.{machine_note} Set the sheet size, then Nest all.", self.job_name, crate::engine::material::name_or(self.spec.material, ""), self.spec.thickness);
+        if expected.len() > 1 {
+            let names: Vec<String> = made.iter().map(|&i| if i == self.cur_job { self.job_name.clone() } else { self.jobs[i].name.clone() }).collect();
+            self.erp.msg = format!(
+                "Work order {} is cut from {} materials: made {} job(s) in folder {week}, one per material ({}). Opened {}.{machine_note} Nest each one; Send nest sends every material together.",
+                im.work_order.as_ref().map_or("", |w| w.name.as_str()),
+                expected.len(),
+                made.len(),
+                names.join(", "),
+                self.job_name
+            );
+        } else {
+            let (n, qty): (usize, u32) = (self.parts.len(), self.parts.iter().map(|p| p.qty).sum());
+            self.erp.msg = format!("Made job {}{from}: {n} part kind(s), {qty} parts, {} {} mm.{machine_note} Set the sheet size, then Nest all.", self.job_name, crate::engine::material::name_or(self.spec.material, ""), self.spec.thickness);
+        }
         self.erp.msg_ok = true;
         self.erp.notes = notes;
         self.status = self.erp.msg.clone();
     }
 
+    /// Screenshots (--erp-demo): a made-up planner's work order whose laser
+    /// step cuts two materials, opened as it would be from its 5052 row: the
+    /// jobs it makes, in its folder, and the window saying so (F35, JX21).
+    pub fn demo_erp_two_materials(&mut self) {
+        let plate = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n6\n20\n0\n10\n6\n20\n4\n10\n0\n20\n4\n0\nCIRCLE\n8\n0\n10\n3\n20\n2\n40\n1\n0\nENDSEC\n0\nEOF\n";
+        let mat = |id: &str, name: &str, grade: &str, inch: f64| erp::MaterialInfo { shape_id: id.into(), name: name.into(), material_name: name.into(), grade: grade.into(), thickness_mm: Some(inch * 25.4), ..Default::default() };
+        let part = |job: &str, item: &str, qty: u32, m: erp::MaterialInfo| {
+            let d = erp::Demand { provider: Provider::Fulcrum, job_id: format!("id-{job}"), job_name: job.into(), op_id: format!("op-{item}"), item_to_make_id: String::new(), item_id: item.into(), qty, customer: "Acme".into(), due: String::new(), drawing_id: item.into(), drawing_name: format!("{item}.dxf") };
+            (ImportPart { name: item.into(), drawing: erp::DrawingRef { id: item.into(), file_name: format!("{item}.dxf"), op_specific: false }, demands: vec![d], material: Some(m) }, Ok(plate.to_string()))
+        };
+        let al = mat("AL-5052-125", "Aluminum 5052-H32 Sheet 1/8\"", "5052", 0.125);
+        let al11 = mat("AL-5052-11GA", "Aluminum 5052-H32 Sheet 11GA (0.09\")", "5052", 0.09);
+        let im = Imported {
+            material: erp::Ref { id: al.shape_id.clone(), name: al.name.clone() },
+            operation: erp::Ref { id: "op-laser".into(), name: "Laser Cutting".into() },
+            work_order: Some(WorkOrderRef { id: "wo-demo".into(), op_id: "step-demo".into(), name: "DEMO-7/8 Acme, LLC".into() }),
+            equipment: Default::default(),
+            info: Some(al.clone()),
+            parts: vec![part("DEMO-1", "BRK-1", 12, al11.clone()), part("DEMO-1", "PNL-2", 4, al.clone()), part("DEMO-2", "GUS-3", 20, al11)],
+            notes: vec![],
+            step_materials: vec![],
+        };
+        self.erp_make_job(im);
+        self.erp.open = true;
+        self.erp.loaded = true;
+    }
+
     /// The open job has parts for an ERP order and sheets to report.
     pub fn erp_can_send(&self) -> bool {
         !self.result.sheets.is_empty() && self.parts.iter().any(|p| !p.erp.is_empty())
+    }
+
+    /// The nest of open job `i` as the system wants it (the open job: store
+    /// it first).
+    fn erp_report_of(&self, provider: Provider, i: usize) -> erp::NestReport {
+        let j = &self.jobs[i];
+        let seconds: Vec<f64> = if i == self.cur_job { self.plans.iter().map(|p| p.seconds).collect() } else { crate::engine::plans(&j.parts, &j.result.sheets, &j.result.formats, &j.spec, &j.manual_cuts).iter().map(|p| p.seconds).collect() };
+        let groups = crate::engine::sheet_groups(&j.result, &j.spec);
+        erp::nest_report(provider, &j.name, &self.cfg.machine().name, &j.parts, &j.result.sheets, &j.result.formats, &groups, &seconds, &j.spec)
     }
 
     pub fn erp_send(&mut self) {
@@ -378,16 +497,66 @@ impl App {
         }
         self.store_job();
         let provider = self.parts.iter().find_map(|p| p.erp.first()).map_or(self.erp.provider, |d| d.provider);
-        let link = self.erp_job.clone().unwrap_or(ErpJob { provider, material_id: String::new(), material_name: String::new(), operation_id: String::new(), operation_name: String::new(), work_order: None, sent: None, sheet_item: String::new() });
-        let seconds: Vec<f64> = self.plans.iter().map(|p| p.seconds).collect();
-        let report = erp::nest_report(provider, &self.job_name, &self.cfg.machine().name, &self.parts, &self.result.sheets, &self.result.formats, &self.sheet_groups(), &seconds, &self.spec);
-        let ops = erp::job_ops(&self.parts, provider);
+        let mut link = self.erp_job.clone().unwrap_or(ErpJob { provider, material_id: String::new(), material_name: String::new(), operation_id: String::new(), operation_name: String::new(), work_order: None, sent: None, sheet_item: String::new(), step_materials: vec![] });
+        // F36: a work-order step cut from several materials has one job per
+        // material here; the system keeps one nest per step and a send
+        // replaces all of it, so every material's sheets go together.
+        let step = link.work_order.as_ref().map_or(String::new(), |w| w.op_id.clone());
+        let siblings = self.erp_step_jobs(&step);
+        let mut expected: Vec<(String, String)> = vec![];
+        for &i in &siblings {
+            for m in self.jobs[i].erp.as_ref().map_or(&[][..], |l| &l.step_materials[..]) {
+                if !expected.iter().any(|e| e.0 == m.0 && e.1 == m.1) {
+                    expected.push(m.clone());
+                }
+            }
+        }
+        let together = siblings.len() > 1 || expected.len() > 1;
+        let jobs: Vec<usize> = if together { siblings.clone() } else { vec![self.cur_job] };
+        let shares: Vec<erp::Share> = jobs.iter().map(|&i| erp::Share { job: self.jobs[i].name.clone(), sheet_item: self.jobs[i].erp.as_ref().map_or(String::new(), |l| l.sheet_item.clone()), report: self.erp_report_of(provider, i) }).collect();
+        if together {
+            // Nested = it reports a sheet with parts for the step.
+            let seen: Vec<erp::StepJob> = jobs
+                .iter()
+                .zip(&shares)
+                .map(|(&i, sh)| {
+                    let l = self.jobs[i].erp.as_ref();
+                    erp::StepJob { name: sh.job.clone(), material_id: l.map_or(String::new(), |l| l.material_id.clone()), material_name: l.map_or(String::new(), |l| l.material_name.clone()), nested: !sh.report.sheets.is_empty() }
+                })
+                .collect();
+            if let Some(why) = erp::step_not_ready(provider, &expected, &seen) {
+                self.erp.msg = why;
+                self.erp.msg_ok = false;
+                self.erp.notes.clear();
+                self.status = self.erp.msg.clone();
+                return;
+            }
+        }
+        let report = erp::combine_reports(&shares);
+        if together {
+            // Each sheet carries its own job's stock item: none taken from this one.
+            link.sheet_item.clear();
+        }
+        let mut ops: Vec<(String, String)> = vec![];
+        for &i in &jobs {
+            for o in erp::job_ops(&self.jobs[i].parts, provider) {
+                if !ops.contains(&o) {
+                    ops.push(o);
+                }
+            }
+        }
         let integ = self.cfg.integration(provider);
         let session = self.erp.session_token.clone();
         let name = self.job_name.clone();
         self.erp.notes = report.notes.clone();
-        if self.stale {
-            self.erp.notes.insert(0, "The parts changed since the last nesting — the sheets as they are now were sent.".into());
+        for &i in jobs.iter().rev() {
+            if self.jobs[i].stale {
+                let whose = if together { format!("{}: the", self.jobs[i].name) } else { "The".into() };
+                self.erp.notes.insert(0, format!("{whose} parts changed since the last nesting — the sheets as they are now were sent."));
+            }
+        }
+        if together {
+            self.erp.notes.insert(0, format!("Sent together, one nest for the work-order step: {}.", shares.iter().map(|s| s.job.as_str()).collect::<Vec<_>>().join(", ")));
         }
         let what = format!("Sending {} sheet(s) to {}…", report.sheets.iter().map(|s| s.count).sum::<u32>(), provider.name());
         let planner = integ.work_orders == WorkOrders::Planner;
@@ -415,7 +584,8 @@ impl App {
             r.issues.splice(0..0, found);
             Ok(r)
         });
-        self.erp.send = Some((task, SendFor { job: self.cur_job, name: self.job_name.clone() }));
+        let also = jobs.iter().filter(|&&i| i != self.cur_job).map(|&i| (i, self.jobs[i].name.clone())).collect();
+        self.erp.send = Some((task, SendFor { job: self.cur_job, name: self.job_name.clone(), also }));
     }
 
     fn erp_sent(&mut self, to: SendFor, r: Result<SendResult, String>) {
@@ -431,13 +601,23 @@ impl App {
                         l.sent = Some(erp::now());
                     }
                 } else if to.job == self.cur_job && to.name == self.job_name {
-                    self.erp_job = Some(ErpJob { provider, material_id: String::new(), material_name: String::new(), operation_id: String::new(), operation_name: String::new(), work_order: r.work_order.clone(), sent: r.error.is_none().then(erp::now), sheet_item: String::new() });
+                    self.erp_job = Some(ErpJob { provider, material_id: String::new(), material_name: String::new(), operation_id: String::new(), operation_name: String::new(), work_order: r.work_order.clone(), sent: r.error.is_none().then(erp::now), sheet_item: String::new(), step_materials: vec![] });
+                }
+                // The step's other materials went in the same nest (F36).
+                if r.error.is_none() {
+                    for (i, name) in &to.also {
+                        let l = if *i == self.cur_job && *name == self.job_name { self.erp_job.as_mut() } else { self.jobs.get_mut(*i).filter(|j| &j.name == name).and_then(|j| j.erp.as_mut()) };
+                        if let Some(l) = l {
+                            l.sent = Some(erp::now());
+                        }
+                    }
                 }
                 self.store_job();
                 let wo = r.work_order.as_ref().map_or(String::new(), |w| if w.name.is_empty() { w.id.clone() } else { w.name.clone() });
                 match &r.error {
                     None => {
-                        self.erp.msg = format!("{} {to_name}'s nest on work order {wo}{}.", if r.created { "Made a work order and stored" } else { "Stored" }, if r.issues.is_empty() { String::new() } else { format!(" — {} remark(s)", r.issues.len()) }, to_name = to.name);
+                        let whose = if to.also.is_empty() { format!("{}'s nest", to.name) } else { format!("one nest for {} materials ({}, {})", to.also.len() + 1, to.name, to.also.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", ")) };
+                        self.erp.msg = format!("{} {whose} on work order {wo}{}.", if r.created { "Made a work order and stored" } else { "Stored" }, if r.issues.is_empty() { String::new() } else { format!(" — {} remark(s)", r.issues.len()) });
                         self.erp.msg_ok = true;
                     }
                     Some(e) => {
@@ -722,7 +902,7 @@ impl App {
                     } else {
                         chip(ui, "to nest", t.accent_soft, t.accent_fg);
                     }
-                    let is_open = self.erp_job_for_step(&n.op_id).is_some();
+                    let is_open = self.erp_job_for_step(&n.op_id, &g.material.id).is_some();
                     let label = if is_open { "Switch to it" } else if n.nested { "Open (renest)" } else { "Open as job" };
                     let tip = if n.nested && !is_open { "It has a nest already: sending again replaces it" } else { "Fetch its parts and drawings and make a job of them" };
                     if ui.add_enabled(self.erp.import.is_none(), egui::Button::new(label)).on_hover_text(tip).clicked() {
@@ -874,12 +1054,16 @@ impl App {
                 }
                 let busy = self.erp.send.is_some();
                 let has_wo = self.erp_job.as_ref().is_some_and(|l| l.work_order.is_some());
-                let label = if has_wo { "Send nest to its work order" } else if planner { "Send nest — find the planner's work order" } else { "Send nest — make work order" };
+                // F36: a step cut from several materials is sent whole.
+                let materials = self.erp_job.as_ref().filter(|l| l.work_order.is_some()).map_or(0, |l| l.step_materials.len());
+                let label = if has_wo && materials > 1 { format!("Send all {materials} materials' nests to its work order") } else if has_wo { "Send nest to its work order".into() } else if planner { "Send nest — find the planner's work order".into() } else { "Send nest — make work order".into() };
                 if ui.add_enabled(self.erp_can_send() && !busy, egui::Button::new(RichText::new(label).strong())).on_hover_text(if self.result.sheets.is_empty() { "Nest the job first" } else { "Stores the sheets, the parts on each and how many go to each job operation" }).clicked() {
                     send = true;
                 }
                 let forget_tip = if planner { "The next send looks for the planner's work order again (use if it was replaced in the ERP)" } else { "The next send makes a new work order (use if it was deleted in the ERP)" };
-                if has_wo && ui.small_button("Forget work order").on_hover_text(forget_tip).clicked() {
+                if has_wo && materials > 1 {
+                    ui.add_enabled(false, egui::Button::new("Forget work order").small()).on_disabled_hover_text("This work order's step is cut from several materials, one job each, sent together. If the planner replaced it, open the new work order from the list instead");
+                } else if has_wo && ui.small_button("Forget work order").on_hover_text(forget_tip).clicked() {
                     forget = true;
                 }
                 if let Some(s) = self.erp_job.as_ref().and_then(|l| l.sent) {
@@ -1283,6 +1467,140 @@ mod tests {
         assert!(seen.iter().any(|s| s.0 == format!("PUT /api/work-orders/{WO_ID}/operations/{STEP_ID}/nesting-setup")));
     }
 
+    /// The 5052 panel's drawing: readable, not found, or none attached.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Drawing {
+        Fine,
+        Missing,
+        None,
+    }
+
+    /// The planner's work order WO-318 whose one laser step cuts two
+    /// materials: bracket BRK-1 from 304 1/4" (J-1001) and panel PNL-2 from
+    /// 5052 1/8" (J-1002). The waiting-work list shows the step under each.
+    fn mock_two_materials(al_drawing: Drawing) -> (String, std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>) {
+        let wo = format!(r#"[{{"workOrderOperationId":"{STEP_ID}","workOrder":{{"id":"{WO_ID}","name":"WO-318"}},"status":"scheduled","operationStatus":"Pending","isNested":false}}]"#);
+        let groups = format!(
+            r#"{{"data":[{{"material":{{"id":"SS-304-Sheet-0.25","name":"304 SS 1/4\""}},"operation":{{"id":"op-laser","name":"Laser Cut"}},"jobOperations":[],"workOrderOperations":{wo}}},
+            {{"material":{{"id":"AL-5052-Sheet-0.125","name":"5052 AL 1/8\""}},"operation":{{"id":"op-laser","name":"Laser Cut"}},"jobOperations":[],"workOrderOperations":{wo}}}],"hasNextPage":false}}"#
+        );
+        let steps = format!(
+            r#"[{{"id":"{STEP_ID}","order":1,"status":"ready","operation":{{"id":"op-laser","name":"Laser Cut"}},"isNested":false,"jobOperations":[
+            {{"jobId":"6650aaaaaaaaaaaaaaaaaaaa","jobName":"J-1001","itemToMakeId":"itm1","jobOperationId":"jo1"}},{{"jobId":"6650aaaaaaaaaaaaaaaaaaab","jobName":"J-1002","itemToMakeId":"itm2","jobOperationId":"jo2"}}]}}]"#
+        );
+        let manifest = r#"{"parts":[
+            {"jobOperationId":"jo1","job":{"id":"6650aaaaaaaaaaaaaaaaaaaa","name":"J-1001"},"item":{"id":"it1","name":"Bracket"},"itemNumber":"BRK-1","itemToMakeId":"itm1","quantityToMake":6,
+             "material":{"materialShapeId":"SS-304-Sheet-0.25","name":"304 SS 1/4\"","materialName":"Stainless Steel 304 Sheet","grade":"304","thickness":0.25,"dimensionUnits":"Inch"},
+             "drawings":[{"attachmentId":"6650bbbbbbbbbbbbbbbbbbbb","fileName":"BRK-1.dxf","ownerType":"item"}]},
+            {"jobOperationId":"jo2","job":{"id":"6650aaaaaaaaaaaaaaaaaaab","name":"J-1002"},"item":{"id":"it2","name":"Panel"},"itemNumber":"PNL-2","itemToMakeId":"itm2","quantityToMake":4,
+             "material":{"materialShapeId":"AL-5052-Sheet-0.125","name":"5052 AL 1/8\"","materialName":"Aluminum 5052-H32 Sheet","grade":"5052","thickness":0.125,"dimensionUnits":"Inch"},
+             "drawings":[{"attachmentId":"6650bbbbbbbbbbbbbbbbbbbc","fileName":"PNL-2.dxf","ownerType":"item"}]}],"skipped":[]}"#;
+        let manifest = if al_drawing == Drawing::None { manifest.replace(r#"[{"attachmentId":"6650bbbbbbbbbbbbbbbbbbbc","fileName":"PNL-2.dxf","ownerType":"item"}]"#, "[]") } else { manifest.to_string() };
+        crate::integrations::mock::mock(vec![
+            ("/api/nesting/nestable-jobs/list", 200, groups),
+            ("/api/nesting/work-package-manifest", 200, manifest),
+            ("/api/attachments/6650bbbbbbbbbbbbbbbbbbbb/download", 200, PLATE_IN.into()),
+            ("/api/attachments/6650bbbbbbbbbbbbbbbbbbbc/download", if al_drawing == Drawing::Fine { 200 } else { 404 }, if al_drawing == Drawing::Fine { PLATE_IN.into() } else { String::new() }),
+            ("/operations/list", 200, steps),
+            ("/api/items/list/v2", 200, r#"[{"id":"item-ss","number":"SHT-SS"},{"id":"item-al","number":"SHT-AL"}]"#.into()),
+            ("/nesting-setup", 200, r#"{"validationIssues":[]}"#.into()),
+            ("/api/work-orders", 500, String::new()),
+        ])
+    }
+
+    #[test]
+    fn a_work_order_cut_from_two_materials_makes_a_job_each_and_sends_one_nest() {
+        let (url, seen) = mock_two_materials(Drawing::Fine);
+        let mut a = planner_app(url);
+        let ctx = egui::Context::default();
+        a.erp_refresh();
+        wait(&mut a, &ctx, |a| a.erp.load.is_none());
+        let integ = a.integ();
+        assert_eq!(a.erp_wo_rows(&integ).len(), 2, "the step is listed under each material");
+        let before = a.jobs.len();
+        // Opened from its 5052 row: both materials become jobs (F35), in the
+        // work order's folder inside Fulcrum's (JX21), and the 5052 job opens.
+        a.erp_open_step(1, 0);
+        wait(&mut a, &ctx, |a| a.erp.import.is_none());
+        assert!(a.erp.msg_ok && a.erp.msg.contains("cut from 2 materials"), "{} {:?}", a.erp.msg, a.erp.notes);
+        assert_eq!(a.jobs.len(), before + 2);
+        a.store_job();
+        let made: Vec<&Job> = a.jobs[before..].iter().collect();
+        assert_eq!(made.iter().map(|j| (j.name.as_str(), j.week.as_str(), j.parts.len())).collect::<Vec<_>>(), vec![("WO-318 304 SS 1/4\"", "Fulcrum › WO-318", 1), ("WO-318 5052 AL 1/8\"", "Fulcrum › WO-318", 1)]);
+        assert_eq!((made[0].spec.material, made[0].spec.thickness, made[0].parts[0].name.as_str()), (1, 6.35, "BRK-1"), "304 stainless, 1/4 inch");
+        assert_eq!((made[1].spec.material, made[1].spec.thickness, made[1].parts[0].name.as_str()), (2, 3.175, "PNL-2"), "aluminium, 1/8 inch");
+        assert!(made.iter().all(|j| j.erp.as_ref().unwrap().step_materials.len() == 2));
+        assert_eq!(a.job_name, "WO-318 5052 AL 1/8\"", "the row it was opened from");
+        // Its 304 row switches to the 304 job instead of fetching again.
+        a.erp_open_step(0, 0);
+        assert!(a.erp.import.is_none() && a.jobs.len() == before + 2);
+        assert_eq!(a.job_name, "WO-318 304 SS 1/4\"");
+
+        // F36: nothing is sent while the 5052 job isn't nested.
+        a.erp_job.as_mut().unwrap().sheet_item = "SHT-SS".into();
+        a.run_nesting();
+        a.erp_send();
+        assert!(a.erp.send.is_none() && !a.erp.msg_ok && a.erp.msg.contains("WO-318 5052 AL 1/8\": not nested yet"), "{}", a.erp.msg);
+        assert!(!seen.lock().unwrap().iter().any(|s| s.0.starts_with("PUT ")));
+        let al = before + 1;
+        // An empty sheet added to the 5052 job isn't a nest of it.
+        a.add_nesting_to_job(al);
+        a.open_job(before);
+        a.erp_send();
+        assert!(a.erp.send.is_none() && a.erp.msg.contains("WO-318 5052 AL 1/8\": not nested yet"), "{}", a.erp.msg);
+        a.open_job(al);
+        a.erp_job.as_mut().unwrap().sheet_item = "SHT-AL".into();
+        a.run_nesting();
+        a.erp_send();
+        wait(&mut a, &ctx, |a| a.erp.send.is_none());
+        assert!(a.erp.msg_ok && a.erp.msg.contains("one nest for 2 materials"), "{} {:?}", a.erp.msg, a.erp.notes);
+        a.store_job();
+        assert!(a.jobs[before..].iter().all(|j| j.erp.as_ref().unwrap().sent.is_some()), "both jobs are marked sent");
+        let seen = seen.lock().unwrap();
+        let puts: Vec<_> = seen.iter().filter(|s| s.0.starts_with("PUT ")).collect();
+        assert_eq!(puts.len(), 1, "one nest for the step");
+        assert_eq!(puts[0].0, format!("PUT /api/work-orders/{WO_ID}/operations/{STEP_ID}/nesting-setup"));
+        let b: serde_json::Value = serde_json::from_str(&puts[0].2).unwrap();
+        let mut parts: Vec<(String, u64)> = b["parts"].as_array().unwrap().iter().map(|p| (p["partNumber"].as_str().unwrap().to_string(), p["quantity"].as_u64().unwrap())).collect();
+        parts.sort();
+        assert_eq!(parts, vec![("BRK-1".to_string(), 6), ("PNL-2".to_string(), 4)]);
+        let items: BTreeSet<&str> = b["plates"].as_array().unwrap().iter().map(|p| p["itemId"].as_str().unwrap_or("")).collect();
+        assert_eq!(items, BTreeSet::from(["item-al", "item-ss"]), "each material's sheets carry their own stock item");
+    }
+
+    #[test]
+    fn a_material_whose_drawing_cant_be_read_holds_the_send_back() {
+        // F36: the 5052 panel's drawing can't be fetched, so it gets no job;
+        // the 304 job alone would wipe 5052's sheets off the step: refused.
+        // The same when it has no drawing attached at all.
+        for d in [Drawing::Missing, Drawing::None] {
+            let (url, seen) = mock_two_materials(d);
+            let mut a = planner_app(url);
+            let ctx = egui::Context::default();
+            a.erp_refresh();
+            wait(&mut a, &ctx, |a| a.erp.load.is_none());
+            let before = a.jobs.len();
+            a.erp_open_step(0, 0);
+            wait(&mut a, &ctx, |a| a.erp.import.is_none());
+            assert_eq!(a.jobs.len(), before + 1);
+            let why = if d == Drawing::Missing { "no drawing could be read" } else { "no DXF drawing attached" };
+            assert!(a.erp.notes.iter().any(|n| n.contains(why)), "{:?}", a.erp.notes);
+            a.run_nesting();
+            a.erp_send();
+            assert!(a.erp.send.is_none() && a.erp.msg.contains("5052 AL 1/8\": its job isn't open here"), "{}", a.erp.msg);
+            // A 304 job made before jobs knew their step's materials learns
+            // them when the 5052 row is opened, though no job is made for it.
+            a.erp_job.as_mut().unwrap().step_materials.clear();
+            a.erp_open_step(1, 0);
+            wait(&mut a, &ctx, |a| a.erp.import.is_none());
+            assert_eq!(a.jobs.len(), before + 1);
+            assert!(a.erp.msg.contains("No job made for 5052 AL 1/8\""), "{}", a.erp.msg);
+            a.erp_send();
+            assert!(a.erp.send.is_none() && a.erp.msg.contains("5052 AL 1/8\": its job isn't open here"), "{}", a.erp.msg);
+            assert!(!seen.lock().unwrap().iter().any(|s| s.0.starts_with("PUT ")));
+        }
+    }
+
     #[test]
     fn work_imported_early_goes_to_the_planners_work_order_once_it_exists() {
         // F22: imported from Waiting (no work order), sent once the planner made one.
@@ -1428,7 +1746,7 @@ mod tests {
 0\nLINE\n8\n0\n10\n4\n20\n2\n11\n0\n21\n2\n0\nLINE\n8\n0\n10\n0\n20\n2\n11\n0\n21\n0\n\
 0\nLINE\n8\nDIM\n10\n0\n20\n-1\n11\n4\n21\n-1\n0\nENDSEC\n0\nEOF\n";
         let d = |job: &str, qty: u32| erp::Demand { provider: Provider::Fulcrum, job_id: job.into(), job_name: job.into(), op_id: "o".into(), item_to_make_id: String::new(), item_id: "i".into(), qty, customer: String::new(), due: String::new(), drawing_id: "a".into(), drawing_name: "p.dxf".into() };
-        let ip = ImportPart { name: "PLT-1".into(), drawing: erp::DrawingRef { id: "a".into(), file_name: "p.dxf".into(), op_specific: false }, demands: vec![d("j1", 3), d("j2", 4)] };
+        let ip = ImportPart { name: "PLT-1".into(), drawing: erp::DrawingRef { id: "a".into(), file_name: "p.dxf".into(), op_specific: false }, demands: vec![d("j1", 3), d("j2", 4)], material: None };
         let (p, notes) = part_from(&ip, dxf, Units::Millimeter, 0).unwrap();
         assert!((p.w - 101.6).abs() < 1e-6 && (p.h - 50.8).abs() < 1e-6, "{} × {}", p.w, p.h);
         assert_eq!((p.qty, p.erp.len(), p.name.as_str()), (7, 2, "PLT-1"));
