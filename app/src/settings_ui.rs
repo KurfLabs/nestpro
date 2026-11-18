@@ -21,6 +21,8 @@ use std::sync::mpsc::Receiver;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Section {
+    /// SH5: the shop this PC's Library belongs to, at the top of the list.
+    Shop,
     #[default]
     General,
     Appearance,
@@ -36,7 +38,8 @@ pub enum Section {
 
 impl Section {
     /// The navigation, in groups.
-    const GROUPS: [(&'static str, &'static [Section]); 4] = [
+    const GROUPS: [(&'static str, &'static [Section]); 5] = [
+        ("SHOP", &[Section::Shop]),
         ("APP", &[Section::General, Section::Appearance, Section::Shortcuts]),
         ("PRODUCTION", &[Section::Connections, Section::Machines, Section::Nesting, Section::Materials, Section::Folders]),
         ("INTEGRATIONS", &[Section::Integrations]),
@@ -44,6 +47,7 @@ impl Section {
     ];
     fn title(self) -> &'static str {
         match self {
+            Section::Shop => "Shop",
             Section::General => "General",
             Section::Appearance => "Appearance",
             Section::Shortcuts => "Shortcuts",
@@ -58,6 +62,7 @@ impl Section {
     }
     fn hint(self) -> &'static str {
         match self {
+            Section::Shop => "This shop and its PCs",
             Section::General => "Warnings and commands",
             Section::Appearance => "Light, dark or Windows",
             Section::Shortcuts => "Keys and mouse",
@@ -72,6 +77,7 @@ impl Section {
     }
     fn icon(self) -> &'static str {
         match self {
+            Section::Shop => "🏭",
             Section::General => "🔧",
             Section::Appearance => "◐",
             Section::Shortcuts => "⌨",
@@ -157,6 +163,207 @@ pub struct SettingsUi {
     pub order_file: Option<(String, crate::ct1::OrderSettings, bool, Option<String>)>,
     /// Scroll the Machines page down to the cut order (`--settings=machines-order`).
     pub show_order: bool,
+    /// Shop page (SH5): the shop as last read: Err when the Library can't
+    /// be reached, Ok(None) when it's no shop. None: read it when the page is
+    /// next drawn (on opening Settings and on Try again, never every frame:
+    /// a share that's down can take seconds to answer, LB11).
+    pub shop: Option<Result<Option<crate::engine::shop::Status>, String>>,
+    /// Shop page: Start a shop here was pressed, and the name typed for it.
+    pub shop_start: Option<String>,
+    /// Shop page: Make this PC the admin PC was pressed; the warning is open
+    /// (SH7), about the shop folder shown then and the admin PC it named.
+    /// Yes changes it only while both are still so.
+    pub shop_admin_ask: Option<(std::path::PathBuf, String)>,
+    /// Shop page: the last result of a change (true: done).
+    pub shop_note: Option<(bool, String)>,
+    /// Backups card (BK7): the backups as last read, with the shop (when
+    /// the page is opened, on Try again and when a backup ends).
+    pub backups: Option<Result<crate::backup::Overview, String>>,
+    /// Backups card: Keep and the second place as typed, before Save
+    /// backup settings.
+    pub backup_edit: Option<crate::backup::Settings>,
+    /// The backup running in the background, and how the last one went.
+    pub backup_run: std::sync::Arc<std::sync::Mutex<BackupRun>>,
+    /// The `BackupRun::ended` the card has seen.
+    pub backup_seen: u64,
+    /// BK8: Restore… was pressed: the list of backups is open, with the
+    /// one picked, and whether it asks once more.
+    pub restore: Option<RestoreAsk>,
+    /// SH4: this PC adding itself to its shop in the background (at
+    /// start-up, or Add this PC): the answer to come, and whether a person
+    /// pressed Add this PC.
+    pub shop_adding: Option<(Receiver<Result<bool, String>>, bool)>,
+    /// SH4: why this PC's last try to add itself to the shop failed; shown on
+    /// the PCs card with Add this PC until a try succeeds.
+    pub shop_unrecorded: Option<String>,
+    /// Updates on a PC of its own (UP11–UP14): the banner, What's new and
+    /// the Updates card.
+    pub upd: UpdateState,
+}
+
+/// UP11–UP14: what this window knows about releases.
+#[derive(Default)]
+pub struct UpdateState {
+    /// Where releases come from. None: this window never checks (tests, and
+    /// screenshots without a made-up list).
+    pub source: Option<crate::updates::Source>,
+    /// A check running off the window's thread.
+    pub checking: Option<Receiver<crate::updates::Found>>,
+    /// When the last check started (UP11: again a day later).
+    pub checked_at: Option<std::time::Instant>,
+    /// What the last check found.
+    pub found: Option<crate::updates::Found>,
+    /// UP12: the release offered, from the latest check.
+    pub offer: Option<crate::engine::updates::Offer>,
+    /// UP14: Update when I close.
+    pub fetch: Fetch,
+    /// The release chosen with Update when I close (the banner shows it
+    /// while it downloads and waits for the program to close).
+    pub chosen: Option<crate::engine::updates::Offer>,
+    /// The Library folder this was found for: another one withdraws it all
+    /// (S2).
+    pub library: Option<std::path::PathBuf>,
+    /// The banner was put away for this version (Later): it comes back for a
+    /// newer one.
+    pub later: Option<String>,
+    /// What's new is open, with the notes of this release (the one the
+    /// banner or the card showed when it was pressed).
+    pub whats_new: Option<crate::engine::updates::Offer>,
+    /// Screenshots: (press Update when I close, open What's new) once the
+    /// check has answered.
+    pub demo: (bool, bool),
+}
+
+impl UpdateState {
+    /// S2: the Library folder these updates are for. When it changes (Settings
+    /// → Folders, or joining a shop) everything found, offered and chosen
+    /// for the other one is withdrawn, and this one is checked anew.
+    pub fn follow_library(&mut self, dir: &std::path::Path, h: &crate::updates::Handoff) {
+        if self.library.as_deref() == Some(dir) {
+            return;
+        }
+        if self.library.is_some() {
+            self.withdraw(h);
+        }
+        self.library = Some(dir.to_path_buf());
+    }
+
+    /// S2: forget what was found, offered and chosen (the Library changed or
+    /// became a shop's): a running check's or download's answer is dropped,
+    /// nothing installs on close, and the next frame checks again.
+    pub fn withdraw(&mut self, h: &crate::updates::Handoff) {
+        // S1: only a public release chosen here; a trial's or the shop's
+        // (rolloutui) stays.
+        h.withdraw_for(crate::updates::Why::Public);
+        self.checking = None;
+        self.checked_at = None;
+        self.found = None;
+        self.offer = None;
+        self.fetch = Fetch::No;
+        self.chosen = None;
+        self.later = None;
+        self.whats_new = None;
+    }
+
+    /// UP11, UP12: a check answered. A PC whose Library is a shop's now
+    /// withdraws a release it chose from the public ones (S2).
+    pub fn receive(&mut self, found: crate::updates::Found, h: &crate::updates::Handoff) {
+        use crate::updates::Found;
+        self.checking = None;
+        self.offer = match &found {
+            Found::Releases(l) => crate::engine::updates::offer(crate::updates::VERSION, l, None),
+            _ => None,
+        };
+        // A public release chosen is withdrawn; the shop's own (UP21) is
+        // left alone.
+        if matches!(found, Found::InShop(_)) && self.chosen.is_some() {
+            h.withdraw_for(crate::updates::Why::Public);
+            self.fetch = Fetch::No;
+            self.chosen = None;
+            self.whats_new = None;
+        }
+        self.found = Some(found);
+    }
+
+    /// UP13: the release the banner is about: the chosen one while it
+    /// downloads or waits for the program to close (even when a later check
+    /// couldn't answer), else the one offered.
+    pub fn banner_release(&self) -> Option<crate::engine::updates::Offer> {
+        let fetching = !matches!(self.fetch, Fetch::No);
+        (if fetching { self.chosen.clone() } else { None }).or_else(|| self.offer.clone())
+    }
+
+    /// S6: the newest release in the latest check.
+    pub fn newest(&self) -> Option<&str> {
+        match &self.found {
+            Some(crate::updates::Found::Releases(l)) => crate::engine::updates::newest(l).map(|r| r.version.as_str()),
+            _ => None,
+        }
+    }
+
+    /// UP14: Update when I close: download the offered release in the
+    /// background (`own`: this PC's own Library folder). It installs when the
+    /// program closes, never before.
+    pub fn choose(&mut self, own: std::path::PathBuf, h: &'static crate::updates::Handoff) {
+        let (Some(src), Some(o), Some(dir)) = (self.source.clone(), self.offer.clone(), self.library.clone()) else { return };
+        if matches!(self.fetch, Fetch::Running(..) | Fetch::Ready(_)) {
+            return;
+        }
+        let c = crate::updates::Chosen { version: o.version.clone(), dir, own, src, why: crate::updates::Why::Public };
+        self.fetch = Fetch::Running(o.version.clone(), crate::updates::download_in_background(h, c));
+        self.chosen = Some(o);
+    }
+
+    /// UP14: pick up the download's answer. True while it runs.
+    pub fn poll_fetch(&mut self) -> bool {
+        let Fetch::Running(v, rx) = &self.fetch else { return false };
+        match rx.try_recv() {
+            Ok(Ok(())) => self.fetch = Fetch::Ready(v.clone()),
+            Ok(Err(e)) => self.fetch = Fetch::Failed(v.clone(), e),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.fetch = Fetch::Failed(v.clone(), format!("Couldn't download version {v}.")),
+        }
+        false
+    }
+}
+
+/// UP14: the release chosen with Update when I close.
+#[derive(Default)]
+pub enum Fetch {
+    #[default]
+    No,
+    /// Being downloaded, in the background.
+    Running(String, Receiver<Result<(), String>>),
+    /// Downloaded: it installs when the program closes.
+    Ready(String),
+    Failed(String, String),
+}
+
+/// A backup taken in the background (BK3, BK7): it's never taken on the
+/// window's own thread, so a big Library never holds the window up.
+#[derive(Default)]
+pub struct BackupRun {
+    /// Running since then (this PC's clock).
+    pub since: Option<u64>,
+    /// Counts the backups that ended.
+    pub ended: u64,
+    /// How the last one went (true: taken, or today's was there).
+    pub note: Option<(bool, String)>,
+    /// Save backup settings is waiting for the write lock (BK7).
+    pub saving: bool,
+    /// A restore running in the background since then (BK8).
+    pub restoring: Option<u64>,
+    /// What saving gave, for the window to take: whether they were the
+    /// shop's, and this PC's own settings after it.
+    pub saved: Option<(Result<bool, String>, crate::backup::Settings)>,
+}
+
+/// BK8: the Restore window: the backup picked, and whether the person
+/// was asked once more (Restore pressed).
+#[derive(Clone, Debug, Default)]
+pub struct RestoreAsk {
+    pub pick: Option<String>,
+    pub sure: bool,
 }
 
 /// "lower left" → "Lower left".
@@ -275,6 +482,8 @@ impl App {
         self.setui.order_file = None;
         // The Materials page looks again whether the list can be changed (MA21).
         self.setui.mat_recheck = true;
+        // The Shop page reads the shop again (SH5).
+        self.setui.shop = None;
     }
 
     /// Apply the settings: the active machine's post library and BLM post
@@ -317,6 +526,17 @@ impl App {
     }
 
     pub fn settings_window(&mut self, ctx: &egui::Context) {
+        // SH4: this PC adding itself to its shop, whether Settings is open
+        // or not (it starts when the program opens).
+        if self.poll_add_this_pc() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        // BK7: Save backup settings' answer, whatever page is open or with
+        // Settings closed, so this PC's own settings are always stored.
+        self.backup_settings_saved();
+        if self.setui.backup_run.lock().is_ok_and(|r| r.saving) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
         if let Some(rx) = &self.setui.pending {
             if let Ok(r) = rx.try_recv() {
                 self.setui.test = r;
@@ -367,6 +587,7 @@ impl App {
                             if resp.clicked() {
                                 self.setui.section = s;
                                 self.setui.mat_recheck = true;
+                                self.setui.shop = None;
                             }
                             ui.add_space(2.0);
                         }
@@ -383,6 +604,7 @@ impl App {
                     let out = egui::ScrollArea::vertical().id_salt("settings_body").auto_shrink([false, false]).show(ui, |ui| ui.vertical(|ui| {
                         ui.set_max_width(ui.available_width() - 8.0);
                         match self.setui.section {
+                            Section::Shop => self.settings_shop(ui),
                             Section::General => self.settings_general(ui),
                             Section::Appearance => self.settings_appearance(ui),
                             Section::Shortcuts => self.settings_shortcuts(ui),
@@ -638,6 +860,15 @@ impl App {
         ui.label(RichText::new("About").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
         card(ui, "Sheet nesting", "A rebuild of a sheet-metal CAD/CAM nesting system.", |ui| {
+            // UP3: the version is the package version a release is tagged with.
+            row(ui, "Version", |ui| {
+                ui.label(RichText::new(crate::updates::VERSION).strong());
+            });
+            if let Some(note) = crate::updates::install_note() {
+                row(ui, "Installer", |ui| {
+                    ui.label(RichText::new(note).color(th().text_dim));
+                });
+            }
             row(ui, "Settings file", |ui| {
                 ui.label(RichText::new(AppSettings::file().display().to_string()).monospace().size(11.5));
             });
@@ -1534,6 +1765,125 @@ impl App {
 mod settings_ui_tests {
     use super::*;
 
+    /// SH16: Join a shop… is offered on a PC whose Library is no shop, and
+    /// on one whose Library can't be reached or used, not only on a working
+    /// one.
+    #[test]
+    fn join_a_shop_is_offered_when_this_pcs_library_cant_be_used() {
+        assert!(join_offered(&Err("The Library on \\\\srv\\Nesting can't be reached.".into())).contains("asked first whether to join instead"));
+        assert!(join_offered(&Ok(None)).contains("left as it is"));
+    }
+
+    /// SH14, SH16: a PC in a shop is offered Join a shop… too, which asks
+    /// first whether to leave its shop.
+    #[test]
+    fn join_a_shop_is_offered_on_a_pc_in_a_shop() {
+        use crate::shared::{Clock, Who};
+        let d = std::env::temp_dir().join(format!("nestpro_join_offered_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        crate::library::create(&d).unwrap();
+        crate::engine::shop::start(&d, "Other", &Who::new("kim", "PC-B"), &Clock::at(1_794_216_000), "0.1.0").unwrap();
+        let st = crate::engine::shop::status(&d);
+        assert!(matches!(st, Ok(Some(_))), "no shop");
+        assert!(join_offered(&st).contains("asked first whether to leave Other"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Wait for the made-up download to answer.
+    fn wait_fetch(u: &mut UpdateState) {
+        for _ in 0..500 {
+            if !u.poll_fetch() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the download never answered");
+    }
+
+    fn rel(v: &str) -> crate::engine::updates::Release {
+        crate::engine::updates::Release { version: v.into(), notes: String::new() }
+    }
+
+    /// A PC of its own on a test Library, with 0.2.0 chosen and downloaded
+    /// (a made-up list: nothing is fetched).
+    fn chosen_and_ready(d: &std::path::Path) -> (UpdateState, &'static crate::updates::Handoff, std::path::PathBuf) {
+        let lib = d.join("Library");
+        crate::library::create(&lib).unwrap();
+        let h: &'static crate::updates::Handoff = Box::leak(Box::new(crate::updates::Handoff::new()));
+        let mut u = UpdateState { source: Some(crate::updates::Source::Fake(d.join("releases.json"))), ..Default::default() };
+        u.follow_library(&lib, h);
+        u.receive(crate::updates::Found::Releases(vec![rel("9.2.0")]), h);
+        u.choose(d.join("own"), h);
+        wait_fetch(&mut u);
+        assert!(matches!(&u.fetch, Fetch::Ready(v) if v == "9.2.0"));
+        (u, h, lib)
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("nestpro_upd_state_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// S2: pointing the Library elsewhere withdraws the release chosen for
+    /// the old one: nothing installs on close, and it is checked anew.
+    #[test]
+    fn another_library_withdraws_the_chosen_update() {
+        let d = tmp("library");
+        let (mut u, h, lib) = chosen_and_ready(&d);
+        u.follow_library(&lib, h);
+        assert!(matches!(u.fetch, Fetch::Ready(_)), "the same Library changed nothing");
+        u.follow_library(&d.join("Other"), h);
+        assert!(matches!(u.fetch, Fetch::No) && u.offer.is_none() && u.chosen.is_none() && u.checked_at.is_none());
+        assert_eq!(h.take_ready(std::time::Duration::ZERO), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S2: a check that finds the Library is a shop's now withdraws it too.
+    #[test]
+    fn a_library_that_became_a_shops_withdraws_the_chosen_update() {
+        let d = tmp("shop");
+        let (mut u, h, _) = chosen_and_ready(&d);
+        u.receive(crate::updates::Found::InShop("Acme".into()), h);
+        assert!(matches!(u.fetch, Fetch::No) && u.offer.is_none());
+        assert_eq!(h.take_ready(std::time::Duration::ZERO), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S6: a newer release found while one is ready: "Newest release" is
+    /// the newer one, and the chosen one keeps its own line.
+    #[test]
+    fn the_newest_release_follows_the_latest_check() {
+        let d = tmp("newest");
+        let (mut u, h, _) = chosen_and_ready(&d);
+        u.receive(crate::updates::Found::Releases(vec![rel("9.3.0"), rel("9.2.0")]), h);
+        assert_eq!(u.newest(), Some("9.3.0"));
+        assert_eq!(u.offer.as_ref().map(|o| o.version.as_str()), Some("9.3.0"));
+        assert!(matches!(&u.fetch, Fetch::Ready(v) if v == "9.2.0"));
+        assert_eq!(u.chosen.as_ref().map(|o| o.version.as_str()), Some("9.2.0"));
+        // A check that couldn't answer withdraws nothing chosen.
+        u.receive(crate::updates::Found::NotChecked("Couldn't check for updates".into()), h);
+        assert!(matches!(&u.fetch, Fetch::Ready(v) if v == "9.2.0"));
+        // N1: the banner still shows the chosen release, so its What's new
+        // has that release's notes even with nothing offered now.
+        assert!(u.offer.is_none());
+        assert_eq!(u.banner_release().map(|o| o.version), Some("9.2.0".to_string()));
+        // The dialog opened from that banner shows those notes.
+        let mut app = crate::App::new(None);
+        app.setui.upd = u;
+        app.setui.upd.whats_new = app.setui.upd.banner_release();
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_pass(egui::RawInput::default(), |c| app.whats_new_window(c));
+            out.textures_delta.clear();
+            text = crate::ui_parts::shown_text(&out);
+        }
+        assert!(text.contains("What's new in 9.2.0"), "{text}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn connection_string_masks_the_password() {
         let mut c = Connection { server: "srv".into(), database: "DB".into(), windows: false, user: "u".into(), password_enc: "0100abc".into(), ..Default::default() };
@@ -1580,4 +1930,1163 @@ mod settings_ui_tests {
         assert_eq!(stored.get(1).unwrap().name, "DEMO Inox");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// BK7, review S9: Save backup settings waits for the Library's write
+    /// lock in the background (a backup can hold it a while): the window
+    /// carries on, says it's saving, and takes the result when it's done.
+    #[test]
+    fn saving_backup_settings_never_holds_the_window_up() {
+        use crate::libui::libui_tests::window;
+        use crate::shared::{Clock, Who, WriteLock};
+        let root = std::env::temp_dir().join(format!("nestpro_backup_save_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lib = root.join("Library");
+        crate::library::create(&lib).unwrap();
+        crate::engine::shop::start(&lib, "Acme", &Who::new("sam", "PC-A"), &Clock::pc(), "0.1.0").unwrap();
+        let mut a = window(&lib, "sam", "PC-A", &Clock::pc());
+        // Another writer (a backup) holds the lock.
+        let lock = WriteLock::take(&lib).unwrap();
+        let t = std::time::Instant::now();
+        a.save_backup_settings(&lib, &crate::backup::Settings { keep_days: 14, second_place: String::new() });
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "the window waited for the lock");
+        assert!(a.setui.backup_run.lock().unwrap().saving, "the card doesn't say it's saving");
+        drop(lock);
+        let t = std::time::Instant::now();
+        while a.setui.backup_run.lock().unwrap().saved.is_none() {
+            assert!(t.elapsed() < std::time::Duration::from_secs(20), "never saved");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        a.backup_settings_saved();
+        assert_eq!(crate::shop::read(&lib).unwrap().unwrap().backups.keep_days, 14);
+        assert!(matches!(&a.setui.shop_note, Some((true, _))), "{:?}", a.setui.shop_note);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// BK7, review round 2 (N2): on a PC of its own, backup settings saved
+    /// and then Settings closed are still stored: the window takes the
+    /// answer every frame, whatever page is open.
+    #[test]
+    fn backup_settings_saved_with_settings_closed_are_kept() {
+        use crate::libui::libui_tests::window;
+        use crate::shared::Clock;
+        let root = std::env::temp_dir().join(format!("nestpro_backup_save_closed_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lib = root.join("Library");
+        crate::library::create(&lib).unwrap();
+        let mut a = window(&lib, "sam", "PC-A", &Clock::pc());
+        a.save_backup_settings(&lib, &crate::backup::Settings { keep_days: 9, second_place: String::new() });
+        let t = std::time::Instant::now();
+        while a.setui.backup_run.lock().unwrap().saved.is_none() {
+            assert!(t.elapsed() < std::time::Duration::from_secs(20), "never saved");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        a.setui.open = false;
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_pass(egui::RawInput::default(), |c| a.settings_window(c));
+        out.textures_delta.clear();
+        assert_eq!(a.cfg.backups.keep_days, 9, "the save was lost with Settings closed");
+        assert_eq!(a.cfg_saved.backups.keep_days, 9, "not stored in this PC's settings");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settings → Shop (spec #178, SH5–SH8): this shop and its PCs. Short lines,
+// details on hover. The rules are in engine::shop; agents have `shop` and
+// `setup`.
+// ---------------------------------------------------------------------------
+
+impl App {
+    fn settings_shop(&mut self, ui: &mut egui::Ui) {
+        let dir = self.library_dir();
+        // A backup that ended: read the shop and its backups again (BK7).
+        let ended = self.setui.backup_run.lock().map_or(0, |r| r.ended);
+        if ended != self.setui.backup_seen {
+            self.setui.backup_seen = ended;
+            self.setui.shop = None;
+        }
+        if self.setui.shop.is_none() {
+            self.setui.backups = Some(crate::engine::shop::backups(&dir, &self.cfg.backups));
+            // A Library that is no shop must be one to start a shop in
+            // (LB12): read once with the shop, not at every frame.
+            self.setui.shop = Some(crate::engine::shop::status(&dir).and_then(|s| match s {
+                None => crate::library::usable(&dir).map(|()| None),
+                s => Ok(s),
+            }));
+        }
+        ui.label(RichText::new("Shop").size(18.0).strong().color(th().text_strong));
+        ui.add_space(8.0);
+        let t = th();
+        match self.setui.shop.clone().unwrap_or(Ok(None)) {
+            // SH8 (LB11): said, naming the folder; nothing is offered that
+            // would make a shop or a Library in its place.
+            Err(e) => {
+                let join_hover = join_offered(&Err(e.clone()));
+                card(ui, "This shop", "This PC's Library can't be used just now.", |ui| {
+                    ui.label(RichText::new(format!("⚠ {e}")).size(12.0).color(t.warn_fg));
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if page_button(ui, "Shop", "Try again", true).clicked() {
+                            self.setui.shop = None;
+                        }
+                        // SH16: a PC whose Library is gone (or never was)
+                        // can still join a shop, after the checks; nothing is
+                        // made in place of the folder it can't reach.
+                        if page_button(ui, "Shop", "Join a shop…", true).on_hover_text(join_hover).clicked() {
+                            self.firstrun = Some(crate::startup::FirstRun::join_from_settings());
+                            self.setui.shop_note = None;
+                        }
+                    });
+                });
+            }
+            Ok(None) => {
+                self.shop_not_started(ui, &dir);
+                ui.add_space(10.0);
+                self.backups_card(ui, &dir, None);
+            }
+            Ok(Some(st)) => {
+                self.shop_cards(ui, &dir, &st);
+                ui.add_space(10.0);
+                self.backups_card(ui, &dir, Some(&st.shop));
+            }
+        }
+        ui.add_space(10.0);
+        // UP15: a PC in a shop updates from the shop folder: its own card.
+        match self.setui.shop.clone() {
+            Some(Ok(Some(st))) => self.shop_updates_card(ui, &st),
+            _ => self.updates_card(ui),
+        }
+        if let Some((ok, note)) = &self.setui.shop_note {
+            ui.add_space(6.0);
+            ui.label(RichText::new(note).size(11.5).color(if *ok { t.ok_fg } else { t.warn_fg }));
+        }
+    }
+
+    /// SH1: a Library that is no shop yet, with Start a shop here.
+    fn shop_not_started(&mut self, ui: &mut egui::Ui, dir: &std::path::Path) {
+        card(ui, "This shop", "This PC's Library isn't in a shop.", |ui| {
+            row(ui, "Library folder", |ui| {
+                ui.label(RichText::new(dir.display().to_string()).monospace().size(11.5));
+            });
+            let start_hover = "The Library's folder becomes the shop folder where it is: the shop file and the Shop, Updates and Backups folders are added in it. Nothing moves, and every PC keeps its path. This PC becomes the admin PC.";
+            match self.setui.shop_start.clone() {
+                None => {
+                    ui.horizontal(|ui| {
+                        if page_button(ui, "Shop", "Start a shop here…", true).on_hover_text(start_hover).clicked() {
+                            self.setui.shop_start = Some(String::new());
+                            self.setui.shop_note = None;
+                        }
+                        // SH16: join a shop started on another PC; its
+                        // folder becomes this PC's Library, after the checks.
+                        if page_button(ui, "Shop", "Join a shop…", true).on_hover_text(join_offered(&Ok(None))).clicked() {
+                            self.firstrun = Some(crate::startup::FirstRun::join_from_settings());
+                            self.setui.shop_note = None;
+                        }
+                    });
+                }
+                Some(mut name) => {
+                    row(ui, "Shop name", |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut name).desired_width(220.0).hint_text("Acme"));
+                        let go = page_button(ui, "Shop", "Start the shop", !name.trim().is_empty()).on_hover_text(start_hover).clicked();
+                        let cancel = ui.button("Cancel").clicked();
+                        if go {
+                            self.start_shop_here(name.trim());
+                        } else if cancel {
+                            self.setui.shop_start = None;
+                        } else {
+                            self.setui.shop_start = Some(name.clone());
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    /// SH1: start a shop in this PC's Library folder, this PC its admin PC.
+    /// When this PC can't be added to the PCs list, the shop is started and
+    /// the PCs card says why, with Add this PC (SH4).
+    pub(crate) fn start_shop_here(&mut self, name: &str) {
+        let dir = self.library_dir();
+        self.setui.shop_note = Some(match crate::engine::shop::start_shop(&dir, name, &self.who, &self.clock, crate::updates::VERSION) {
+            Ok(st) => {
+                self.setui.shop_start = None;
+                self.setui.shop_unrecorded = st.unrecorded;
+                // S2: a PC in a shop never takes a public release: whatever
+                // was offered or chosen from them is withdrawn.
+                self.setui.upd.withdraw(self.handoff);
+                (true, format!("Started shop {} in {}. This PC is its admin PC.", st.shop.name, dir.display()))
+            }
+            Err(e) => (false, e),
+        });
+        self.setui.shop = None;
+    }
+
+    /// SH5: This shop, and PCs in this shop.
+    fn shop_cards(&mut self, ui: &mut egui::Ui, dir: &std::path::Path, st: &crate::engine::shop::Status) {
+        let t = th();
+        let s = &st.shop;
+        let this_admin = s.admin.pc == self.who.pc;
+        card(ui, "This shop", "The PCs that share this Library.", |ui| {
+            row(ui, "Name", |ui| {
+                ui.label(RichText::new(&s.name).strong());
+            });
+            row(ui, "Folder", |ui| {
+                ui.label(RichText::new(dir.display().to_string()).monospace().size(11.5))
+                    .on_hover_text("The shop folder is the Library's folder. It also holds the shop file and the Shop, Updates and Backups folders.");
+            });
+            row(ui, "Admin PC", |ui| {
+                let me = if this_admin { " (this PC)" } else { "" };
+                ui.label(format!("{}{me}", s.admin.pc)).on_hover_text(format!("{}. The admin PC rolls out updates and restores backups.", st.admin_note(&self.clock)));
+                if !this_admin && page_button(ui, "Shop", "Make this PC the admin PC", true).on_hover_text("For when the admin PC is gone or replaced. Asks first, and records who did it and when.").clicked() {
+                    self.setui.shop_admin_ask = Some((dir.to_path_buf(), s.admin.pc.clone()));
+                }
+            });
+            row(ui, "Shop settings", |ui| {
+                ui.label(cap(s.settings_by.words())).on_hover_text("Who may change the settings every PC in the shop shares: only on the admin PC, or from any PC. A new shop: only the admin PC.");
+            });
+            // SH14, SH16: joining another shop from here asks first whether
+            // to leave this one.
+            if page_button(ui, "Shop", "Join a shop…", true).on_hover_text(join_offered(&Ok(Some(st.clone())))).clicked() {
+                self.firstrun = Some(crate::startup::FirstRun::join_from_settings());
+                self.setui.shop_note = None;
+            }
+        });
+        ui.add_space(10.0);
+        card(ui, "PCs in this shop", "Each PC adds itself when the program opens.", |ui| {
+            egui::Grid::new("shop_pcs").num_columns(4).spacing([28.0, 6.0]).show(ui, |ui| {
+                for h in ["PC", "Who", "Version", "Last seen"] {
+                    ui.label(RichText::new(h).size(11.5).strong().color(t.text_dim));
+                }
+                ui.end_row();
+                for p in &st.pcs {
+                    let mut tags = vec![];
+                    if p.pc == self.who.pc {
+                        tags.push("this PC");
+                    }
+                    if p.pc == s.admin.pc {
+                        tags.push("admin");
+                    }
+                    let tag = if tags.is_empty() { String::new() } else { format!("  ({})", tags.join(", ")) };
+                    let hover = format!("{} opened the program on {} {} with version {}.", p.user, p.pc, self.clock.when(p.last_seen), p.version);
+                    ui.label(RichText::new(format!("{}{tag}", p.pc)).color(t.text_strong)).on_hover_text(&hover);
+                    ui.label(&p.user).on_hover_text(&hover);
+                    // UP22: the PCs behind the shop version are marked.
+                    match crate::engine::shop::against(&p.version, s.shop_version()) {
+                        (true, _) => ui.label(RichText::new(format!("{}  ⬇ behind", p.version)).color(t.warn_fg)).on_hover_text(format!("{hover} The shop is on {}: it installs that from the shop folder when its program closes.", s.shop_version().unwrap_or_default())),
+                        (_, true) => ui.label(RichText::new(format!("{}  ahead", p.version)).color(t.warn_fg)).on_hover_text(format!("{hover} Newer than the shop version {}: the shop is read-only on it until it goes back, when its program closes.", s.shop_version().unwrap_or_default())),
+                        _ => ui.label(&p.version).on_hover_text(&hover),
+                    };
+                    ui.label(self.clock.shown(p.last_seen)).on_hover_text(&hover);
+                    ui.end_row();
+                }
+            });
+            if st.pcs.is_empty() {
+                ui.label(RichText::new("No PC has opened the program in this shop yet.").size(11.5).color(t.text_dim));
+            }
+            // SH4: this PC couldn't add itself (the share was busy or
+            // read-only when the program opened, or its row couldn't be
+            // brought up to date): one line saying so, and Add this PC.
+            let adding = self.setui.shop_adding.is_some();
+            let listed = st.pcs.iter().any(|p| p.pc == self.who.pc);
+            if adding || !listed || self.setui.shop_unrecorded.is_some() {
+                let _ = dir;
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let (line, hover) = match &self.setui.shop_unrecorded {
+                        _ if adding => (format!("Adding {}…", self.who.pc), String::new()),
+                        Some(e) => (format!("{} couldn't be added to the PCs list just now.", self.who.pc), e.clone()),
+                        None => (format!("{} isn't in the list yet.", self.who.pc), String::new()),
+                    };
+                    let l = ui.label(RichText::new(line).size(11.5).color(if adding { t.text_dim } else { t.warn_fg }));
+                    if !hover.is_empty() {
+                        l.on_hover_text(hover);
+                    }
+                    if page_button(ui, "Shop", "Add this PC", !adding).on_hover_text("Adds this PC, its user and version to the shop's PCs list. Each PC adds itself when the program opens; this tries again.").clicked() {
+                        self.add_this_pc(true);
+                    }
+                });
+            }
+        });
+    }
+
+    /// SH7: the warning before this PC becomes the admin PC. Yes records who
+    /// did it and when; agents can't do this.
+    pub fn shop_admin_window(&mut self, ctx: &egui::Context) {
+        let Some((dir, replacing)) = self.setui.shop_admin_ask.clone() else { return };
+        let Some(Ok(Some(st))) = self.setui.shop.clone() else {
+            // Not read yet: asked once the page has read the shop. No shop,
+            // or it can't be reached: nothing to ask.
+            if self.setui.shop.is_some() {
+                self.setui.shop_admin_ask = None;
+            }
+            return;
+        };
+        let me = self.who.pc.clone();
+        let (mut yes, mut no) = (false, false);
+        let mut open = true;
+        egui::Window::new(RichText::new("Make this PC the admin PC?").size(16.0).strong())
+            .id(egui::Id::unique("shop_admin_question"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_max_width(480.0);
+                ui.label(RichText::new(format!("{me} becomes the admin PC of {} in place of {replacing}.", st.shop.name)).color(th().text_strong));
+                ui.add_space(6.0);
+                ui.label(RichText::new("The admin PC rolls out updates and restores backups. Do this only when the admin PC is gone or replaced.").color(th().text));
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("The shop records that {} did it, and when.", self.who.label())).size(11.5).color(th().text_dim));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    yes = ui.add(egui::Button::new(RichText::new("Make this PC the admin PC").color(egui::Color32::WHITE)).fill(th().accent).min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                    no = ui.add(egui::Button::new(format!("Cancel — keep {replacing}")).min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                });
+            });
+        if yes {
+            self.setui.shop_admin_ask = None;
+            // SH7: about the shop folder and admin PC the question named,
+            // checked again under the lock; if either changed, nothing is
+            // changed and the page shows the shop as it is now.
+            let r = if self.library_dir() != dir {
+                Err(format!("This PC's Library folder changed while you were asking (now {}). Nothing was changed. Look again and ask again if this PC should still be the admin PC.", self.library_dir().display()))
+            } else {
+                crate::engine::shop::replace_admin(&dir, &self.who, &self.clock, &replacing)
+            };
+            self.setui.shop_note = Some(match r {
+                Ok(s) => (true, format!("{} is now the admin PC of {}.", s.admin.pc, s.name)),
+                Err(e) => (false, e),
+            });
+            self.setui.shop = None;
+        } else if no || !open {
+            self.setui.shop_admin_ask = None;
+        }
+    }
+
+    /// SH4: this PC records itself in the shop when the program opens, in
+    /// the background (a share can be slow to answer); a failure is kept and
+    /// shown on Settings → Shop.
+    pub fn record_in_shop(&mut self) {
+        self.add_this_pc(false);
+    }
+
+    /// SH4: add this PC to its shop's PCs list in the background: the write
+    /// lock can be busy for up to 2 minutes, and the window never waits for
+    /// it. `asked`: a person pressed Add this PC (its result is said).
+    pub fn add_this_pc(&mut self, asked: bool) {
+        if self.setui.shop_adding.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (dir, who, clock) = (self.library_dir(), self.who.clone(), self.clock.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::engine::shop::record_pc(&dir, &who, &clock, crate::updates::VERSION));
+        });
+        self.setui.shop_adding = Some((rx, asked));
+    }
+
+    /// Takes in the answer of adding this PC once it has come. True while
+    /// it is still on its way.
+    pub fn poll_add_this_pc(&mut self) -> bool {
+        let Some((rx, asked)) = &self.setui.shop_adding else { return false };
+        let asked = *asked;
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(format!("{} couldn't be added to the shop's PCs list: the try stopped. Try again.", self.who.pc)),
+        };
+        self.setui.shop_adding = None;
+        let (unrecorded, note) = added_note(&self.who.pc, r, asked);
+        self.setui.shop_unrecorded = unrecorded;
+        if note.is_some() {
+            self.setui.shop_note = note;
+        }
+        // The page shows the list as it is now.
+        self.setui.shop = None;
+        false
+    }
+
+    /// `--shop-demo` (screenshot runs only): a made-up shop Acme with three
+    /// PCs in a temporary Library of its own (`shop_demo_dir`), this window
+    /// on PC-B (not the admin PC). `--shop-demo=none`: a Library that isn't a
+    /// shop yet, with Start a shop here pressed; `--shop-demo=unrecorded`:
+    /// PC-B isn't in the PCs list. Never the configured Library or one named
+    /// with `--library-dir`, and nothing at all outside a screenshot run, so
+    /// no real Library or shop ever gets made-up PCs.
+    pub fn demo_shop(&mut self, what: &str) {
+        use crate::shared::{Clock, Who};
+        // Only the folder allocated for this run, fresh and empty; nothing
+        // is ever deleted to make room for it.
+        let Some(dir) = shop_demo_dir() else { return };
+        if !self.shot_mode_now() || self.library_dir() != dir {
+            return;
+        }
+        if crate::library::create(&dir).is_err() {
+            return;
+        }
+        self.who = Who::new("kim", "PC-B");
+        if what == "none" {
+            self.setui.shop_start = Some("Acme".into());
+            return;
+        }
+        let now = self.clock.now();
+        let at = |ago: u64| Clock::at(now - ago);
+        let _ = crate::engine::shop::start(&dir, "Acme", &Who::new("sam", "PC-A"), &at(40 * 86400), "0.1.0");
+        let _ = crate::engine::shop::record_pc(&dir, &Who::new("sam", "PC-A"), &at(25 * 60), "0.1.0");
+        if what != "unrecorded" {
+            let _ = crate::engine::shop::record_pc(&dir, &Who::new("kim", "PC-B"), &at(0), crate::updates::VERSION);
+        } else {
+            self.setui.shop_unrecorded = Some("PC-B couldn't be added to the shop's PCs list (Permission denied). It adds itself again when the program next opens, or with Add this PC on Settings → Shop.".into());
+        }
+        let _ = crate::engine::shop::record_pc(&dir, &Who::new("lee", "PC-C"), &at(2 * 86400 + 3 * 3600), "0.0.9");
+        // Backups (BK7): the day's backups of the last days, the newest
+        // taken on this PC, and a second place that can't be reached.
+        let own = crate::backup::Settings::default();
+        for (who, ago) in [("PC-A", 3 * 86400), ("PC-C", 2 * 86400 + 3 * 3600), ("PC-A", 86400 + 1800)] {
+            let _ = crate::engine::shop::daily_backup(&dir, &own, &Who::new("sam", who), &at(ago));
+        }
+        if let Ok(Some(mut s)) = crate::shop::read(&dir)
+            && let Ok(lock) = crate::shared::WriteLock::take(&dir)
+        {
+            s.backups.second_place = r"\\nas\Backups".into();
+            let _ = crate::shop::write(&dir, &s, &lock, crate::updates::VERSION);
+        }
+        if let Ok(d) = crate::engine::shop::backup_now(&dir, &own, &self.who, &at(25 * 60))
+            && let Ok(mut r) = self.setui.backup_run.lock()
+        {
+            r.note = Some(backup_note(&d));
+        }
+        self.setui.shop = None;
+        if std::env::args().any(|a| a == "--settings=shop-admin") {
+            self.setui.shop_admin_ask = Some((dir.clone(), "PC-A".into()));
+        }
+        // `--shop-demo=restore` (BK8): this window on the admin PC, PC-A,
+        // with the Restore list open on the backup of two days ago;
+        // `--shop-demo=restore-ask`: asking once more.
+        if what == "restore" || what == "restore-ask" {
+            self.who = Who::new("sam", "PC-A");
+            let all = crate::backup::overview(&dir, &own).map(|o| o.all).unwrap_or_default();
+            let pick = all.iter().find(|e| e.pc == "PC-C").or(all.first()).map(|e| e.name.clone());
+            self.setui.restore = Some(RestoreAsk { pick, sure: what == "restore-ask" });
+        }
+        // `--shop-demo=restore-stopped` (BK13): the admin PC's restore of the
+        // backup of two days ago stopped halfway 20 minutes ago; the Backups
+        // card says so from the shop file.
+        if what == "restore-stopped" {
+            self.who = Who::new("sam", "PC-A");
+            let all = crate::backup::overview(&dir, &own).map(|o| o.all).unwrap_or_default();
+            if let (Some(e), Ok(Some(mut s)), Ok(lock)) = (all.iter().find(|e| e.pc == "PC-C"), crate::shop::read(&dir), crate::shared::WriteLock::take(&dir)) {
+                let id8 = e.name.split(' ').nth(2).unwrap_or_default();
+                let before = format!("Backup Acme {id8} {} PC-A before restore.zip", self.clock.stamp(now - 20 * 60).replace(':', ""));
+                s.restored = Some(crate::shop::Restore { backup: e.name.clone(), backup_when: e.stamp(), before, by: Who::new("sam", "PC-A"), at: now - 20 * 60, finished: false, revision_floor: 0, generation: 1, lock: String::new() });
+                let _ = crate::shop::write(&dir, &s, &lock, crate::updates::VERSION);
+            }
+            self.setui.shop = None;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Backups (BK1–BK7): the rules are in crate::backup and engine::shop.
+    // -----------------------------------------------------------------------
+
+    /// BK7: the Backups card: the last backup (when, which PC), where they
+    /// go, Keep, the second place and Back up now. `shop`: the shop file
+    /// when the Library is a shop.
+    fn backups_card(&mut self, ui: &mut egui::Ui, dir: &std::path::Path, shop: Option<&crate::shop::ShopFile>) {
+        let t = th();
+        let (since, note, saving, restoring) = self.setui.backup_run.lock().map(|r| (r.since, r.note.clone(), r.saving, r.restoring)).unwrap_or_default();
+        // Who may change Keep and the second place (SH3).
+        let may = match shop {
+            Some(s) if s.settings_by == crate::shop::SettingsBy::AdminPc && s.admin.pc != self.who.pc => Err(format!("Shop settings are changed only on the admin PC ({}).", s.admin.pc)),
+            _ => Ok(()),
+        };
+        let sub = if shop.is_some() { "One zip of the shop a day, by the first PC to open the program." } else { "One zip of this PC's Library a day, kept beside it." };
+        card(ui, "Backups", sub, |ui| {
+            let ov = match self.setui.backups.clone() {
+                Some(Ok(o)) => o,
+                Some(Err(e)) => {
+                    ui.label(RichText::new(format!("⚠ {e}")).size(12.0).color(t.warn_fg));
+                    return;
+                }
+                None => return,
+            };
+            row(ui, "Last backup", |ui| {
+                if let Some(at) = since {
+                    ui.spinner();
+                    ui.label(RichText::new(format!("Backing up… (since {})", self.clock.shown(at)))).on_hover_text("The program takes it in the background: carry on working. Saves from other PCs wait until it's done.");
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
+                } else if let Some(e) = &ov.last {
+                    let hover = format!("{} — {:.1} MB. {} backup{} kept.", e.name, e.bytes as f64 / 1e6, ov.count, if ov.count == 1 { "" } else { "s" });
+                    ui.label(RichText::new(format!("{} on {}", e.shown(), e.pc)).color(t.text_strong)).on_hover_text(hover);
+                } else {
+                    ui.label(RichText::new("None yet").color(t.text_dim));
+                }
+            });
+            // BK12, BK13: the shop's last restore, as the shop file says,
+            // whatever this window saw: running, stopped halfway (with the
+            // backup that holds the Library as it was), or done.
+            if let Some(r) = shop.and_then(|s| s.restored.as_ref()) {
+                let state = crate::engine::shop::restore_state(dir, r);
+                let (warn, line) = restore_line(r, state, &self.clock);
+                row(ui, "Last restore", |ui| {
+                    ui.label(RichText::new(line).size(11.5).color(if warn { t.warn_fg } else { t.text })).on_hover_text(format!("{} — restored from {} by {}. The Library as it was before is in {}.", backup_day(r), r.backup, r.by.label(), r.before));
+                });
+            }
+            row(ui, "Folder", |ui| match &ov.folder {
+                Ok(f) => {
+                    ui.label(RichText::new(f.display().to_string()).monospace().size(11.5)).on_hover_text("Each backup is one zip, named by its day and the PC that took it. Other files kept here are never touched.");
+                }
+                Err(e) => {
+                    ui.label(RichText::new(format!("⚠ {e}")).size(11.5).color(t.warn_fg));
+                }
+            });
+            let mut edit = self.setui.backup_edit.clone().unwrap_or_else(|| ov.settings.clone());
+            let lock_hover = may.as_ref().err().cloned();
+            row(ui, "Keep", |ui| {
+                ui.add_enabled_ui(may.is_ok(), |ui| {
+                    let r = ui.add(egui::DragValue::new(&mut edit.keep_days).range(1..=crate::backup::MOST_KEEP).suffix(" days"));
+                    r.on_hover_text(lock_hover.clone().unwrap_or_else(|| "Older backups are removed after each new one. The newest is always kept.".into()));
+                });
+            });
+            row(ui, "Second place", |ui| {
+                ui.add_enabled_ui(may.is_ok(), |ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut edit.second_place).desired_width(260.0).hint_text("None (e.g. \\\\nas\\Backups)"));
+                    r.on_hover_text(lock_hover.clone().unwrap_or_else(|| "Another drive or a NAS: each backup is copied there too, so a dead server doesn't take the backups with it. If it can't be reached, it's said here.".into()));
+                });
+            });
+            let changed = edit != ov.settings;
+            self.setui.backup_edit = changed.then_some(edit.clone());
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if page_button(ui, "Shop", "Back up now", since.is_none() && restoring.is_none()).on_hover_text("Take a backup now, whatever was taken today: before a big change, say.").clicked() {
+                    self.start_backup(crate::backup::Why::Now);
+                }
+                // BK8: offered only on the admin PC, whatever the shop says
+                // about who changes shop settings.
+                if shop.is_some_and(|s| s.admin.pc == self.who.pc)
+                    && page_button(ui, "Shop", "Restore…", since.is_none() && restoring.is_none() && ov.count > 0)
+                        .on_hover_text("Put the shop back as it was in an earlier backup. The Library as it is now is kept first, as a backup named \"before restore\".")
+                        .clicked()
+                {
+                    self.setui.restore = Some(RestoreAsk { pick: ov.all.first().map(|e| e.name.clone()), sure: false });
+                }
+                if let Some(at) = restoring {
+                    ui.spinner();
+                    ui.label(RichText::new(format!("Restoring… (since {})", self.clock.shown(at)))).on_hover_text("The Library is being put back from the backup. Other PCs wait until it's done.");
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
+                }
+                if changed && page_button(ui, "Shop", "Save backup settings", may.is_ok() && !saving).clicked() {
+                    self.save_backup_settings(dir, &edit);
+                }
+                if saving {
+                    ui.spinner();
+                    ui.label(RichText::new("Saving…").color(t.text_dim)).on_hover_text("Waiting for the Library: another PC, or a backup, is writing to it.");
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
+                }
+            });
+            if let Some((ok, n)) = note {
+                ui.add_space(4.0);
+                ui.label(RichText::new(n).size(11.5).color(if ok { t.ok_fg } else { t.warn_fg }));
+            }
+        });
+    }
+
+    /// BK4, BK5: save Keep and the second place: in the shop file, or this
+    /// PC's settings for a PC of its own.
+    /// In the background: a shop's settings wait for the write lock, which
+    /// a backup can hold for a while; the card says it's saving meanwhile.
+    pub(crate) fn save_backup_settings(&mut self, dir: &std::path::Path, edit: &crate::backup::Settings) {
+        let run = self.setui.backup_run.clone();
+        {
+            let Ok(mut r) = run.lock() else { return };
+            if r.saving {
+                return;
+            }
+            r.saving = true;
+        }
+        let (dir, who, edit, mut own) = (dir.to_path_buf(), self.who.clone(), edit.clone(), self.cfg.backups.clone());
+        std::thread::spawn(move || {
+            let got = crate::engine::shop::set_backup_settings(&dir, &mut own, &who, &edit, crate::updates::VERSION);
+            if let Ok(mut r) = run.lock() {
+                r.saving = false;
+                r.saved = Some((got, own));
+            }
+        });
+    }
+
+    /// Take what saving backup settings gave, once it's done (BK7): this
+    /// PC's own settings go in its settings file.
+    pub(crate) fn backup_settings_saved(&mut self) {
+        let Some((got, own)) = self.setui.backup_run.lock().ok().and_then(|mut r| r.saved.take()) else { return };
+        match got {
+            Ok(in_shop) => {
+                if !in_shop {
+                    self.cfg.backups = own;
+                    self.apply_settings(false);
+                }
+                self.setui.backup_edit = None;
+                self.setui.shop_note = Some((true, "Saved the backup settings.".into()));
+            }
+            Err(e) => self.setui.shop_note = Some((false, e)),
+        }
+        self.setui.shop = None;
+    }
+
+    /// BK2, BK3: take a backup in the background: the day's when the program
+    /// opens, or Back up now. One at a time.
+    pub fn start_backup(&self, why: crate::backup::Why) {
+        let run = self.setui.backup_run.clone();
+        // S9: a PC newer than the shop version writes nothing in the shop:
+        // no daily backup (said only when asked for one).
+        if let Some(ahead) = crate::engine::shop::ahead_of_shop(&self.library_dir(), crate::updates::VERSION) {
+            if why == crate::backup::Why::Now
+                && let Ok(mut r) = run.lock()
+            {
+                r.note = Some((false, format!("No backup was taken: the shop is read-only on this PC. {ahead}")));
+                r.ended += 1;
+            }
+            return;
+        }
+        {
+            let Ok(mut r) = run.lock() else { return };
+            if r.since.is_some() {
+                return;
+            }
+            r.since = Some(self.clock.now());
+        }
+        let (dir, who, clock, own) = (self.library_dir(), self.who.clone(), self.clock.clone(), self.cfg.backups.clone());
+        // S2: closing the program waits for it.
+        let working = self.handoff.begin(crate::updates::Work::Backup);
+        std::thread::spawn(move || {
+            let _working = working;
+            use crate::backup::Daily;
+            let got = match why {
+                crate::backup::Why::Daily => crate::engine::shop::daily_backup(&dir, &own, &who, &clock),
+                crate::backup::Why::Now => crate::engine::shop::backup_now(&dir, &own, &who, &clock).map(Daily::Taken),
+            };
+            let note = match got {
+                Ok(Daily::Taken(d)) => Some(backup_note(&d)),
+                // Today's was there: said only when its copy to the second
+                // place can't be made (BK5).
+                Ok(Daily::AlreadyToday { second: Some(Err(e)), .. }) => Some((false, e)),
+                Ok(Daily::AlreadyToday { .. }) => None,
+                // No Library on this PC yet: nothing to back up, nothing said.
+                Err(_) if why == crate::backup::Why::Daily && !dir.is_dir() => None,
+                Err(e) => Some((false, e)),
+            };
+            if let Ok(mut r) = run.lock() {
+                r.since = None;
+                r.ended += 1;
+                r.note = note;
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Restore (BK8–BK13): the rules are in crate::backup and engine::shop.
+// ---------------------------------------------------------------------------
+
+impl App {
+    /// BK8: the Restore window: the backups by date, newest first, one
+    /// picked; Restore asks once more, then restores in the background.
+    pub fn restore_window(&mut self, ctx: &egui::Context) {
+        let Some(mut ask) = self.setui.restore.clone() else { return };
+        let all = match &self.setui.backups {
+            Some(Ok(o)) => o.all.clone(),
+            _ => vec![],
+        };
+        let shop = match &self.setui.shop {
+            Some(Ok(Some(st))) => st.shop.name.clone(),
+            _ => String::new(),
+        };
+        let t = th();
+        let mut open = true;
+        let (mut go, mut cancel) = (false, false);
+        egui::Window::new(RichText::new("Restore a backup").size(16.0).strong())
+            .id(egui::Id::unique("restore_window"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_max_width(520.0);
+                let picked = all.iter().find(|e| Some(&e.name) == ask.pick.as_ref()).cloned();
+                if ask.sure {
+                    let Some(e) = picked else {
+                        ask.sure = false;
+                        return;
+                    };
+                    ui.label(RichText::new(format!("Restore {shop} to {}?", e.shown())).size(14.0).strong().color(t.text_strong));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Every job, part and sheet saved since then is taken out of the Library, on every PC. Programmers should save and close their jobs first.").color(t.text));
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("The Library as it is now is kept first, as a backup named \"before restore\", so this can be undone.").size(11.5).color(t.text_dim));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        go = ui.add(egui::Button::new(RichText::new(format!("Restore to {}", e.shown())).color(egui::Color32::WHITE)).fill(t.warn_fg).min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                        cancel = ui.add(egui::Button::new("Cancel — change nothing").min_size(egui::Vec2::new(0.0, 30.0))).clicked();
+                    });
+                    return;
+                }
+                ui.label(RichText::new("Pick the day to put the shop back to. Nothing changes until you confirm.").color(t.text));
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for e in &all {
+                        let mut text = format!("{}   on {}", e.shown(), e.pc);
+                        if e.before_restore {
+                            text.push_str("   (before restore)");
+                        }
+                        let on = ask.pick.as_ref() == Some(&e.name);
+                        let r = ui.add(egui::Button::selectable(on, RichText::new(text).monospace().size(12.5)).min_size(egui::Vec2::new(480.0, 24.0)));
+                        if r.on_hover_text(format!("{} — {:.1} MB", e.name, e.bytes as f64 / 1e6)).clicked() {
+                            ask.pick = Some(e.name.clone());
+                        }
+                    }
+                    if all.is_empty() {
+                        ui.label(RichText::new("No backups yet.").color(t.text_dim));
+                    }
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let label = picked.as_ref().map_or_else(|| "Restore…".to_string(), |e| format!("Restore {}…", e.shown()));
+                    if ui.add_enabled(picked.is_some(), egui::Button::new(label).min_size(egui::Vec2::new(0.0, 28.0))).clicked() {
+                        ask.sure = true;
+                    }
+                    cancel = ui.add(egui::Button::new("Cancel").min_size(egui::Vec2::new(0.0, 28.0))).clicked();
+                });
+            });
+        if go {
+            self.setui.restore = None;
+            if let Some(name) = ask.pick {
+                self.start_restore(&name);
+            }
+        } else if cancel || !open {
+            self.setui.restore = None;
+        } else {
+            self.setui.restore = Some(ask);
+        }
+    }
+
+    /// BK8: restore the backup named `name`, in the background (it zips and
+    /// unpacks the whole Library). The card says how it went, and the page
+    /// reads the shop and its backups again when it's done.
+    pub(crate) fn start_restore(&self, name: &str) {
+        let run = self.setui.backup_run.clone();
+        {
+            let Ok(mut r) = run.lock() else { return };
+            if r.since.is_some() || r.restoring.is_some() {
+                return;
+            }
+            r.restoring = Some(self.clock.now());
+        }
+        let (dir, who, clock, name) = (self.library_dir(), self.who.clone(), self.clock.clone(), name.to_string());
+        // S2: closing the program waits for it.
+        let working = self.handoff.begin(crate::updates::Work::Restore);
+        std::thread::spawn(move || {
+            let _working = working;
+            let got = crate::engine::shop::restore(&dir, &name, &who, &clock, crate::updates::VERSION);
+            if let Ok(mut r) = run.lock() {
+                r.restoring = None;
+                r.ended += 1;
+                r.note = Some(restore_note(got));
+            }
+        });
+    }
+}
+
+/// "9 Nov 09:20": the day of the backup a restore put back.
+fn backup_day(r: &crate::shop::Restore) -> String {
+    crate::backup::shown_stamp(&r.backup_when)
+}
+
+/// BK12, BK13: the Backups card's line for the shop's last restore, from
+/// the shop file (true: a warning).
+pub(crate) fn restore_line(r: &crate::shop::Restore, state: crate::engine::shop::RestoreState, clock: &crate::shared::Clock) -> (bool, String) {
+    use crate::engine::shop::RestoreState::*;
+    match state {
+        Finished => (false, format!("Back to {}, by {}, {}", backup_day(r), r.by.pc, clock.shown(r.at))),
+        Running => (false, format!("Restoring to {} on {} (since {})…", backup_day(r), r.by.pc, clock.shown(r.at))),
+        Stopped => (true, format!("⚠ Restore to {} stopped halfway ({}, {}): restore its \"before restore\" backup", backup_day(r), r.by.pc, clock.shown(r.at))),
+    }
+}
+
+/// BK8, BK9: what the Backups card says of a restore this PC made.
+pub(crate) fn restore_note(got: Result<crate::engine::shop::RestoreDone, String>) -> (bool, String) {
+    match got {
+        Ok(r) => {
+            let d = &r.done;
+            let mut n = format!("Restored the shop to {}: {} file{} put back, {} taken out. The Library as it was is kept in {}.", d.from.shown(), d.files, if d.files == 1 { "" } else { "s" }, d.removed, d.before.name);
+            let mut ok = true;
+            if let Some(Err(e)) = &r.second {
+                n.push_str(&format!(" {e}"));
+                ok = false;
+            }
+            (ok, n)
+        }
+        Err(e) => (false, e),
+    }
+}
+
+/// BK5, BK7: what the Backups card says of a backup this PC took: what it
+/// is, and a second place that let it down (true: nothing did).
+fn backup_note(d: &crate::backup::Done) -> (bool, String) {
+    let mut n = format!("Backup taken: {}.", d.entry.name);
+    let mut ok = true;
+    if let Some(Err(e)) = &d.second {
+        n.push_str(&format!(" {e}"));
+        ok = false;
+    }
+    (ok, n)
+}
+
+// ---------------------------------------------------------------------------
+// Updates on a PC of its own (spec #178, UP11–UP14): the check against the
+// public releases, the banner, What's new and the Updates card. The rules
+// are in engine::updates; the installer's calls in crate::updates. Agents
+// have `shop mode=updates`; installing stays a person's choice, here.
+// ---------------------------------------------------------------------------
+
+impl App {
+    /// UP11: start a check when the program opens and once a day after, and
+    /// pick up its answer and a download's, never holding up the window.
+    pub fn update_tick(&mut self, ctx: &egui::Context) {
+        if self.setui.upd.source.is_none() {
+            return;
+        }
+        let dir = self.library_dir();
+        let h = self.handoff;
+        let u = &mut self.setui.upd;
+        let Some(src) = u.source.clone() else { return };
+        u.follow_library(&dir, h);
+        if let Some(rx) = &u.checking {
+            match rx.try_recv() {
+                Ok(found) => {
+                    u.receive(found, h);
+                    let (chosen, whats) = std::mem::take(&mut u.demo);
+                    if whats && u.offer.is_some() {
+                        u.whats_new = u.offer.clone();
+                    }
+                    if chosen {
+                        self.update_when_closed();
+                    }
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(250)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    u.found = Some(crate::updates::Found::NotChecked(crate::updates::COULDNT_CHECK.into()));
+                    u.checking = None;
+                }
+            }
+        } else if u.checked_at.is_none_or(|t| t.elapsed() >= crate::updates::CHECK_EVERY) {
+            u.checked_at = Some(std::time::Instant::now());
+            u.checking = Some(crate::updates::check_in_background(dir, crate::library::default_dir(), src));
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        } else if let Some(t) = u.checked_at {
+            // Wake for the next day's check even if nobody touches the window.
+            ctx.request_repaint_after(crate::updates::CHECK_EVERY.saturating_sub(t.elapsed()));
+        }
+        if u.poll_fetch() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
+
+    /// UP14: Update when I close: download the offered release in the
+    /// background; it installs when the program closes, never before.
+    fn update_when_closed(&mut self) {
+        self.setui.upd.choose(crate::library::default_dir(), self.handoff);
+    }
+
+    /// UP13: the banner under the ribbon while a newer release is offered.
+    pub fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let u = &self.setui.upd;
+        let fetching = !matches!(u.fetch, Fetch::No);
+        // While a chosen release downloads or waits, the banner is about it.
+        let Some(o) = u.banner_release() else { return };
+        if !fetching && u.later.as_deref() == Some(o.version.as_str()) {
+            return;
+        }
+        let t = th();
+        egui::Panel::top("update_banner")
+            .frame(egui::Frame::new().fill(t.accent_soft).stroke(Stroke::new(1.0, t.accent_border)).inner_margin(egui::Margin::symmetric(10, 5)))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let v = &o.version;
+                    match &self.setui.upd.fetch {
+                        Fetch::No => {
+                            ui.label(RichText::new(format!("⬆ Version {v} is out.")).strong().color(t.text_strong));
+                        }
+                        Fetch::Running(..) => {
+                            ui.spinner();
+                            ui.label(RichText::new(format!("Downloading version {v}…")).strong().color(t.text_strong)).on_hover_text("It installs when you close the program, never while it's open.");
+                        }
+                        Fetch::Ready(_) => {
+                            ui.label(RichText::new(format!("✔ Version {v} is ready: it installs when you close the program.")).strong().color(t.ok_fg))
+                                .on_hover_text("Finish your work and close the program when you're done. The update installs then; the program doesn't restart by itself.");
+                        }
+                        Fetch::Failed(_, e) => {
+                            ui.label(RichText::new(format!("⚠ {e}")).color(t.warn_fg));
+                        }
+                    }
+                    if !o.machine_changes.is_empty() {
+                        let n = o.machine_changes.len();
+                        ui.label(RichText::new(format!("It changes machine programs ({n}): test-cut before using it.")).color(t.warn_fg))
+                            .on_hover_text(o.machine_changes.join("\n"));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if matches!(self.setui.upd.fetch, Fetch::No) && ui.button("Later").on_hover_text("Hide this until the next version, or until the program opens again.").clicked() {
+                            self.setui.upd.later = Some(v.clone());
+                        }
+                        let again = matches!(self.setui.upd.fetch, Fetch::Failed(..));
+                        if matches!(self.setui.upd.fetch, Fetch::No | Fetch::Failed(..)) {
+                            let label = if again { "Try again" } else { "Update when I close" };
+                            let b = egui::Button::new(RichText::new(label).color(egui::Color32::WHITE)).fill(t.accent);
+                            if ui.add(b).on_hover_text("Downloads it now, in the background. It installs when you close the program, never while a job is open.").clicked() {
+                                self.setui.upd.fetch = Fetch::No;
+                                self.update_when_closed();
+                            }
+                        }
+                        // N1: the notes of the release this banner shows.
+                        if ui.button("What's new").clicked() {
+                            self.setui.upd.whats_new = Some(o.clone());
+                        }
+                    });
+                });
+            });
+    }
+
+    /// UP13: What's new: the release's notes, its changes to machine programs
+    /// first.
+    pub fn whats_new_window(&mut self, ctx: &egui::Context) {
+        let Some(o) = self.setui.upd.whats_new.clone() else { return };
+        let t = th();
+        let mut open = true;
+        let mut update = false;
+        egui::Window::new(RichText::new(format!("What's new in {}", o.version)).size(16.0).strong())
+            .id(egui::Id::unique("whats_new"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_max_width(560.0);
+                ui.label(RichText::new(format!("This PC runs {}.", crate::updates::VERSION)).size(12.0).color(t.text_dim));
+                ui.add_space(6.0);
+                if !o.machine_changes.is_empty() {
+                    egui::Frame::new().fill(t.warn_bg).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(format!("⚠ {}", crate::engine::updates::MACHINE_SECTION)).strong().color(t.warn_fg));
+                        ui.label(RichText::new("Test-cut before using this release on the machine.").size(12.0).color(t.text));
+                        for e in &o.machine_changes {
+                            ui.label(RichText::new(format!("• {e}")).size(12.0).color(t.text_strong));
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    notes_text(ui, &o.notes);
+                });
+                ui.add_space(8.0);
+                // Only for the public release offered to a PC of its own: in a
+                // shop the admin PC tries and rolls out (UP15).
+                let offered = self.setui.upd.offer.as_ref().is_some_and(|x| x.version == o.version);
+                if offered && matches!(self.setui.upd.fetch, Fetch::No | Fetch::Failed(..)) {
+                    let b = egui::Button::new(RichText::new("Update when I close").color(egui::Color32::WHITE)).fill(t.accent);
+                    update = ui.add(b).clicked();
+                }
+            });
+        if update {
+            self.setui.upd.fetch = Fetch::No;
+            self.update_when_closed();
+        }
+        if !open || update {
+            self.setui.upd.whats_new = None;
+        }
+    }
+
+    /// UP11, UP14: Settings → Shop → Updates: this PC's version and the
+    /// newest release.
+    fn updates_card(&mut self, ui: &mut egui::Ui) {
+        use crate::updates::{Found, Source};
+        let t = th();
+        let (mut check, mut update, mut whats) = (false, false, false);
+        card(ui, "Updates", "This PC's version and the newest release.", |ui| {
+            row(ui, "This PC", |ui| {
+                ui.label(RichText::new(crate::updates::VERSION).strong());
+            });
+            let u = &self.setui.upd;
+            row(ui, "Newest release", |ui| match (&u.source, &u.found) {
+                (Some(Source::Off(why)), _) => {
+                    ui.label(RichText::new(*why).color(t.text_dim));
+                }
+                _ if u.checking.is_some() => {
+                    ui.spinner();
+                    ui.label(RichText::new("Checking…").color(t.text_dim));
+                }
+                (_, Some(Found::Releases(_))) => match (&u.offer, u.newest()) {
+                    (Some(_), Some(n)) => {
+                        ui.label(RichText::new(n).strong().color(t.accent_fg));
+                        ui.label(RichText::new("is out").color(t.text));
+                    }
+                    (_, n) => {
+                        ui.label(cap(&crate::engine::updates::up_to_date(crate::updates::VERSION, n)));
+                    }
+                },
+                (_, Some(Found::InShop(name))) => {
+                    ui.label(RichText::new(format!("From the shop folder: {name}'s admin PC rolls out releases.")).color(t.text_dim))
+                        .on_hover_text("A PC in a shop never checks GitHub: it installs the release the admin PC rolled out, from the shop folder.");
+                }
+                (_, Some(Found::NotChecked(e))) => {
+                    // UP11: no connection is said here only: no banner, no dialog.
+                    let short = if e.starts_with(crate::updates::COULDNT_CHECK) { crate::updates::COULDNT_CHECK } else { e.as_str() };
+                    ui.label(RichText::new(short).color(t.warn_fg)).on_hover_text(e);
+                }
+                (None, None) => {
+                    ui.label(RichText::new("Not checked").color(t.text_dim));
+                }
+                (Some(_), None) => {
+                    ui.label(RichText::new("Checking…").color(t.text_dim));
+                }
+            });
+            if let Some(o) = &u.offer {
+                if !o.machine_changes.is_empty() {
+                    ui.label(RichText::new(format!("⚠ It changes machine programs ({}): test-cut before using it.", o.machine_changes.len())).size(11.5).color(t.warn_fg))
+                        .on_hover_text(o.machine_changes.join("\n"));
+                }
+                if matches!(u.fetch, Fetch::No | Fetch::Failed(..)) {
+                    row(ui, "", |ui| {
+                        update = page_button(ui, "Shop", "Update when I close", true).on_hover_text("Downloads it now, in the background. It installs when you close the program, never while a job is open.").clicked();
+                        whats = page_button(ui, "Shop", "What's new", true).clicked();
+                    });
+                }
+            }
+            // S6: the chosen release keeps its own line; "Newest release"
+            // above is the latest check's.
+            match &u.fetch {
+                Fetch::No => {}
+                Fetch::Failed(_, e) => {
+                    ui.label(RichText::new(format!("⚠ {e}")).size(11.5).color(t.warn_fg));
+                }
+                Fetch::Running(v, _) => {
+                    ui.label(RichText::new(format!("Downloading version {v}…")).size(11.5).color(t.text_dim));
+                }
+                Fetch::Ready(v) => {
+                    ui.label(RichText::new(format!("Version {v} installs when you close the program.")).size(11.5).color(t.ok_fg));
+                }
+            }
+            let can_check = matches!(u.source, Some(Source::Github | Source::Fake(_))) && u.checking.is_none();
+            if can_check {
+                ui.add_space(4.0);
+                check = page_button(ui, "Shop", "Check now", true).on_hover_text("This PC checks by itself when the program opens and once a day.").clicked();
+            }
+        });
+        if check {
+            self.setui.upd.checked_at = None;
+        }
+        if whats {
+            self.setui.upd.whats_new = self.setui.upd.offer.clone();
+        }
+        if update {
+            self.setui.upd.fetch = Fetch::No;
+            self.update_when_closed();
+        }
+    }
+
+    /// `--fake-releases=<file>` (screenshots) or `NESTPRO_FAKE_RELEASES`: a
+    /// made-up release list in place of GitHub, on any system. Without one, a
+    /// screenshot never checks.
+    pub fn start_update_checks(&mut self, fake: Option<std::path::PathBuf>) {
+        let src = crate::updates::source(fake.clone());
+        if fake.is_none() && self.shot_mode_now() && src == crate::updates::Source::Github {
+            return;
+        }
+        self.setui.upd.source = Some(src);
+    }
+}
+
+/// UP13: release notes as written (UP1): headings, list lines and text.
+fn notes_text(ui: &mut egui::Ui, notes: &str) {
+    let t = th();
+    let mut skip = false;
+    for line in notes.lines() {
+        let l = line.trim();
+        if let Some(h) = l.strip_prefix('#') {
+            let h = h.trim_start_matches('#').trim();
+            // The machine-program changes are shown above, on their own.
+            skip = h.eq_ignore_ascii_case(crate::engine::updates::MACHINE_SECTION);
+            if !skip {
+                ui.add_space(4.0);
+                ui.label(RichText::new(h).strong().color(t.text_strong));
+            }
+            continue;
+        }
+        if skip || l.is_empty() {
+            continue;
+        }
+        let text = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")).map_or(l.to_string(), |e| format!("• {e}"));
+        ui.label(RichText::new(text).size(12.0).color(t.text));
+    }
+}
+
+/// SH16: Settings → Shop offers Join a shop… whatever this PC's Library is:
+/// no shop, a shop (joining another asks first whether to leave it, SH14),
+/// or a folder that can't be reached or used (gone, or never made). Its
+/// hover text for each.
+pub fn join_offered(shop: &Result<Option<crate::engine::shop::Status>, String>) -> String {
+    let base = "Use the shop's folder on the share, e.g. \\\\srv\\Nesting. The folder is checked first";
+    match shop {
+        Ok(Some(st)) => format!("Join another shop instead of {}: {base}, and this PC is asked first whether to leave {}.", st.shop.name, st.shop.name),
+        Ok(None) => format!("{base}; this PC's own Library is left as it is."),
+        Err(_) => format!("{base}. This PC's Library can't be reached just now, so you are asked first whether to join instead."),
+    }
+}
+
+/// `--shop-demo[=…]` on the command line.
+pub fn shop_demo_arg() -> Option<String> {
+    std::env::args().find(|a| a == "--shop-demo" || a.starts_with("--shop-demo=")).map(|a| a.strip_prefix("--shop-demo=").unwrap_or("").to_string())
+}
+
+/// SH4: what to keep and say after this PC tried to add itself to its shop:
+/// why it failed (kept for the PCs card until a try succeeds), and the note
+/// for a person who pressed Add this PC. Only a record written counts:
+/// `Ok(false)` (the folder was no shop when it looked) is no success.
+pub fn added_note(pc: &str, r: Result<bool, String>, asked: bool) -> (Option<String>, Option<(bool, String)>) {
+    match r {
+        Ok(true) => (None, asked.then(|| (true, format!("{pc} is in the shop's PCs list.")))),
+        Ok(false) => (None, asked.then(|| (false, format!("{pc} wasn't added: this PC's Library isn't a shop any more.")))),
+        Err(e) => (Some(e), None),
+    }
+}
+
+/// The temporary Library `--shop-demo` works in: `Nesting` inside a folder
+/// made fresh for this run in the system's temporary folder (never one that
+/// was there before, and never a real Library). Made once, the first time
+/// it is asked for; None when no folder could be made.
+pub fn shop_demo_dir() -> Option<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| new_temp_folder("nestpro-shop-demo").map(|d| d.join("Nesting"))).clone()
+}
+
+/// A folder made just now in the system's temporary folder, under a name no
+/// folder had: made with create-dir, so a folder already there (another
+/// run's, whatever it holds) is never used, and nothing is deleted.
+pub fn new_temp_folder(stem: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::temp_dir();
+    for n in 0..1000u32 {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        let d = base.join(format!("{stem}-{}-{nanos:09}-{n}", std::process::id()));
+        match std::fs::create_dir(&d) {
+            Ok(()) => return Some(d),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }

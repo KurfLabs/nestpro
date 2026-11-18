@@ -403,18 +403,29 @@ fn of_kind(lib: &Library, kind: Kind) -> Vec<Entry> {
     lib.entries().into_iter().filter(|e| e.kind == kind).collect()
 }
 
+/// Write the tree, under the write lock (LB1). The shop's versions are
+/// read here, under it, as every other shop write reads them: a PC ahead of
+/// the shop version, a trial copy aiming at the shop, or a shop file that
+/// can't be read writes nothing (UP7, UP16, UP21).
 fn write(lib: &Library, kind: Kind, t: &Tree, lock: &WriteLock) -> Result<(), String> {
+    let path = lib.dir.join(file_name(kind));
+    shared::may_write_over(&path, &lib.versions(), &format!("The Library's {} folder tree", if kind == Kind::Job { "job" } else { "part" }))?;
     let text = serde_json::to_string_pretty(t).map_err(|e| e.to_string())?;
-    shared::write_file(&lib.dir.join(file_name(kind)), text.as_bytes(), Some(lock))
+    shared::write_file(&path, text.as_bytes(), Some(lock))
 }
 
 /// A Library opened for the first time since folders came gets its tree
 /// from the folder names written on its records (JX11), once: made under the
 /// write lock, so two PCs opening it at once make one tree. A tree that is
-/// there but can't be read is left alone.
+/// there but can't be read is left alone. A PC that may write nothing in the
+/// shop (UP21) leaves it to the others: until then its tree is made from the
+/// names each time it is read (`load`).
 pub fn ensure(lib: &Library, kind: Kind) -> Result<(), String> {
     let p = lib.dir.join(file_name(kind));
     if p.exists() {
+        return Ok(());
+    }
+    if shared::may_write_over(&p, &lib.versions(), "").is_err() {
         return Ok(());
     }
     let lock = lib.lock()?;
