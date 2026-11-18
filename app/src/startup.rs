@@ -153,7 +153,9 @@ pub enum Asked {
     /// and holds none) and start the shop there.
     MakeLibrary(std::path::PathBuf),
     /// SH14: this PC is in shop `name` (folder `from`): leave it and join.
-    Leave { name: String, from: std::path::PathBuf },
+    /// No name: its Library folder `from` can't be reached, so which shop it
+    /// is in can't be told: join this one instead.
+    Leave { name: Option<String>, from: std::path::PathBuf },
 }
 
 /// The first-run screen's state, or the Join a shop window's from Settings
@@ -285,15 +287,24 @@ impl crate::App {
                         Some(Asked::Leave { name, from }) => Some((name.clone(), from.clone())),
                         _ => None,
                     };
-                    ui.horizontal(|ui| {
-                        if let Some((name, from)) = &leave {
-                            // SH14: leaving the shop this PC is in is asked first.
-                            ui.label(RichText::new(format!("This PC is in shop {name} ({}). Leave it and join this shop?", from.display())).color(t.text));
+                    ui.horizontal_wrapped(|ui| {
+                        // SH14: leaving the shop this PC is in is asked first,
+                        // and so is joining while this PC's own shop folder
+                        // can't be reached (which shop it is in can't be told).
+                        match &leave {
+                            Some((Some(name), from)) => {
+                                ui.label(RichText::new(format!("This PC is in shop {name} ({}). Leave it and join this shop?", from.display())).color(t.text));
+                            }
+                            Some((None, from)) => {
+                                ui.label(RichText::new(format!("This PC's shop folder {} can't be reached. Join this shop instead?", from.display())).color(t.text));
+                            }
+                            None => {}
                         }
                     });
                     ui.horizontal(|ui| {
-                        if leave.is_some() {
-                            if ui.add_enabled_ui(!busy, |ui| ui.button("Leave that shop and join")).inner.clicked() {
+                        if let Some((name, _)) = &leave {
+                            let yes = if name.is_some() { ui.add_enabled_ui(!busy, |ui| ui.button("Leave that shop and join")).inner } else { ui.add_enabled_ui(!busy, |ui| ui.button("Join this shop instead")).inner };
+                            if yes.clicked() {
                                 self.first_run_join(&mut fr, true);
                             }
                         } else if ui.add_enabled_ui(!busy && !fr.folder.trim().is_empty(), |ui| ui.button("Join the shop")).inner.clicked() {
@@ -418,10 +429,22 @@ impl crate::App {
             save(&staged)?;
         }
         self.cfg = staged;
-        crate::engine::stockflow::forget_booking(&mut self.result.formats, &mut self.held);
+        // The open jobs' sheets taken from stock, what they hold and the
+        // remnants they stored are the old Library's stock: forgotten, so a
+        // save never books them against the new Library's, and the undo
+        // steps that could bring them back go too.
+        let forget = |formats: &mut [crate::nest::SheetFormat], held: &mut std::collections::BTreeMap<String, i32>| {
+            crate::engine::stockflow::forget_booking(formats, held);
+            for f in formats.iter_mut() {
+                f.stock_ref.clear();
+            }
+        };
+        forget(&mut self.result.formats, &mut self.held);
         for j in &mut self.jobs {
-            crate::engine::stockflow::forget_booking(&mut j.result.formats, &mut j.held);
+            forget(&mut j.result.formats, &mut j.held);
         }
+        self.undo.clear();
+        self.redo.clear();
         // S2: a PC in a shop never takes a public release: whatever was
         // offered or chosen from them is withdrawn.
         self.setui.upd.withdraw(&crate::updates::HANDOFF);
@@ -631,6 +654,49 @@ mod first_run_tests {
         assert_eq!(a.cfg, saved);
         assert!(a.held.is_empty() && a.jobs.iter().all(|j| j.held.is_empty()), "the old Library's booking was kept");
         assert!(a.result.formats.iter().all(|f| f.made.is_empty()));
+    }
+
+    /// SH10 (S6): on switching Library the open jobs' sheets taken from
+    /// stock and the remnants they stored are forgotten, and the undo steps
+    /// that could bring the old Library's stock back go too.
+    #[test]
+    fn switching_library_forgets_the_old_librarys_stock_and_undo() {
+        let mut a = crate::App::new(None);
+        if a.result.formats.is_empty() {
+            a.result.formats.push(crate::nest::SheetFormat::rect(2000.0, 1000.0));
+        }
+        for f in &mut a.result.formats {
+            f.stock_ref = "S1".into();
+            f.made = vec!["R1".into()];
+        }
+        for j in &mut a.jobs {
+            for f in &mut j.result.formats {
+                f.stock_ref = "S2".into();
+            }
+        }
+        let snap = a.snapshot();
+        a.undo.push(snap.clone());
+        a.redo.push(snap);
+        a.use_library(std::path::Path::new("/srv/Nesting"), &mut |_| Ok(())).unwrap();
+        assert!(a.result.formats.iter().chain(a.jobs.iter().flat_map(|j| &j.result.formats)).all(|f| f.stock_ref.is_empty() && f.made.is_empty()), "a sheet kept the old Library's stock");
+        assert!(a.undo.is_empty() && a.redo.is_empty(), "undo could bring the old Library's stock back");
+    }
+
+    /// SH14: a join refused because this PC is in another shop, or because
+    /// its own shop folder can't be reached, opens the question about that
+    /// folder (Settings → Shop's Join a shop… leads here too).
+    #[test]
+    fn a_join_that_would_leave_a_shop_asks_first() {
+        let mut a = crate::App::new(None);
+        let mut fr = FirstRun::join_from_settings();
+        fr.folder = "/srv/Nesting".into();
+        for name in [Some("Other".to_string()), None] {
+            let r = crate::engine::shop::Refused { why: "Not joined".into(), checks: vec![], leaving: Some((name.clone(), "/srv/Other".into())) };
+            let typed = fr.folder.clone();
+            a.first_run_answer(&mut fr, Answer::Refused(r, typed));
+            assert_eq!(fr.asked(), Some(&Asked::Leave { name, from: "/srv/Other".into() }));
+            assert!(fr.refused.is_none(), "the agents' wording was shown to a person");
+        }
     }
 
     /// SH9: each choice has a title and one short line.

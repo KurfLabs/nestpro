@@ -1753,8 +1753,23 @@ mod settings_ui_tests {
     /// one.
     #[test]
     fn join_a_shop_is_offered_when_this_pcs_library_cant_be_used() {
-        assert!(join_offered(&Err("The Library on \\\\srv\\Nesting can't be reached.".into())));
-        assert!(join_offered(&Ok(None)));
+        assert!(join_offered(&Err("The Library on \\\\srv\\Nesting can't be reached.".into())).contains("asked first whether to join instead"));
+        assert!(join_offered(&Ok(None)).contains("left as it is"));
+    }
+
+    /// SH14, SH16: a PC in a shop is offered Join a shop… too, which asks
+    /// first whether to leave its shop.
+    #[test]
+    fn join_a_shop_is_offered_on_a_pc_in_a_shop() {
+        use crate::shared::{Clock, Who};
+        let d = std::env::temp_dir().join(format!("nestpro_join_offered_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        crate::library::create(&d).unwrap();
+        crate::engine::shop::start(&d, "Other", &Who::new("kim", "PC-B"), &Clock::at(1_794_216_000), "0.1.0").unwrap();
+        let st = crate::engine::shop::status(&d);
+        assert!(matches!(st, Ok(Some(_))), "no shop");
+        assert!(join_offered(&st).contains("asked first whether to leave Other"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Wait for the made-up download to answer.
@@ -1989,7 +2004,7 @@ impl App {
             // SH8 (LB11): said, naming the folder; nothing is offered that
             // would make a shop or a Library in its place.
             Err(e) => {
-                let join = join_offered(&Err(e.clone()));
+                let join_hover = join_offered(&Err(e.clone()));
                 card(ui, "This shop", "This PC's Library can't be used just now.", |ui| {
                     ui.label(RichText::new(format!("⚠ {e}")).size(12.0).color(t.warn_fg));
                     ui.add_space(4.0);
@@ -2000,7 +2015,7 @@ impl App {
                         // SH16: a PC whose Library is gone (or never was)
                         // can still join a shop, after the checks; nothing is
                         // made in place of the folder it can't reach.
-                        if join && page_button(ui, "Shop", "Join a shop…", true).on_hover_text("Use the shop's folder on the share, e.g. \\\\srv\\Nesting. The folder is checked first.").clicked() {
+                        if page_button(ui, "Shop", "Join a shop…", true).on_hover_text(join_hover).clicked() {
                             self.firstrun = Some(crate::startup::FirstRun::join_from_settings());
                             self.setui.shop_note = None;
                         }
@@ -2042,7 +2057,7 @@ impl App {
                         }
                         // SH16: join a shop started on another PC; its
                         // folder becomes this PC's Library, after the checks.
-                        if page_button(ui, "Shop", "Join a shop…", true).on_hover_text("Use the shop's folder on the share, e.g. \\\\srv\\Nesting. The folder is checked first; this PC's own Library is left as it is.").clicked() {
+                        if page_button(ui, "Shop", "Join a shop…", true).on_hover_text(join_offered(&Ok(None))).clicked() {
                             self.firstrun = Some(crate::startup::FirstRun::join_from_settings());
                             self.setui.shop_note = None;
                         }
@@ -2108,6 +2123,12 @@ impl App {
             row(ui, "Shop settings", |ui| {
                 ui.label(cap(s.settings_by.words())).on_hover_text("Who may change the settings every PC in the shop shares: only on the admin PC, or from any PC. A new shop: only the admin PC.");
             });
+            // SH14, SH16: joining another shop from here asks first whether
+            // to leave this one.
+            if page_button(ui, "Shop", "Join a shop…", true).on_hover_text(join_offered(&Ok(Some(st.clone())))).clicked() {
+                self.firstrun = Some(crate::startup::FirstRun::join_from_settings());
+                self.setui.shop_note = None;
+            }
         });
         ui.add_space(10.0);
         card(ui, "PCs in this shop", "Each PC adds itself when the program opens.", |ui| {
@@ -2777,10 +2798,17 @@ fn notes_text(ui: &mut egui::Ui, notes: &str) {
     }
 }
 
-/// SH16: Settings → Shop offers Join a shop… on a PC that isn't in a shop:
-/// its Library is no shop, or can't be reached or used (gone, or never made).
-pub fn join_offered(shop: &Result<Option<crate::engine::shop::Status>, String>) -> bool {
-    !matches!(shop, Ok(Some(_)))
+/// SH16: Settings → Shop offers Join a shop… whatever this PC's Library is:
+/// no shop, a shop (joining another asks first whether to leave it, SH14),
+/// or a folder that can't be reached or used (gone, or never made). Its
+/// hover text for each.
+pub fn join_offered(shop: &Result<Option<crate::engine::shop::Status>, String>) -> String {
+    let base = "Use the shop's folder on the share, e.g. \\\\srv\\Nesting. The folder is checked first";
+    match shop {
+        Ok(Some(st)) => format!("Join another shop instead of {}: {base}, and this PC is asked first whether to leave {}.", st.shop.name, st.shop.name),
+        Ok(None) => format!("{base}; this PC's own Library is left as it is."),
+        Err(_) => format!("{base}. This PC's Library can't be reached just now, so you are asked first whether to join instead."),
+    }
 }
 
 /// `--shop-demo[=…]` on the command line.

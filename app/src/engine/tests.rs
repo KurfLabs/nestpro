@@ -10973,6 +10973,13 @@ fn a_library_a_newer_version_wrote_is_backed_up_as_it_is() {
 // this PC's Library setting, and what is left as it was.
 // ---------------------------------------------------------------------------
 
+/// A session as `who` on a PC whose Library folder is `lib`, made empty:
+/// a PC that can be reached and is in no shop.
+fn pc_session(lib: &Path, who: Who, clock: &Clock) -> Session {
+    std::fs::create_dir_all(lib).unwrap();
+    shop_session(lib, who, clock)
+}
+
 /// A shop Acme started by PC-A in `d/library`, a used Library.
 fn acme_shop(d: &Path, clock: &Clock) -> (Session, PathBuf) {
     let mut a = used_library(d, Who::new("sam", "PC-A").as_agent(), clock);
@@ -11116,7 +11123,7 @@ fn joining_a_shop_folder_this_pc_cant_write_to_is_refused_and_nothing_is_made() 
     let d = dir("join_read_only");
     let clock = Clock::at(1_794_216_000);
     let (_a, shop) = acme_shop(&d, &clock);
-    let mut b = shop_session(&d.join("pc-b-none"), Who::new("kim", "PC-B").as_agent(), &clock);
+    let mut b = pc_session(&d.join("pc-b-none"), Who::new("kim", "PC-B").as_agent(), &clock);
     let before = files_under(&shop);
     std::fs::set_permissions(&shop, std::fs::Permissions::from_mode(0o555)).unwrap();
     // (Someone allowed to write anyway, as root, can't play this PC.)
@@ -11145,7 +11152,7 @@ fn joining_compares_this_pcs_version_with_the_shops() {
         ("0.9.0", "This PC runs the shop version, 0.9.0.", None),
         ("0.10.0", "This PC runs 0.10.0, newer than the shop version 0.9.0. The admin PC decides", None),
     ] {
-        let mut b = shop_session(&d.join(format!("pc-{mine}")), Who::new("kim", "PC-B").as_agent(), &clock);
+        let mut b = pc_session(&d.join(format!("pc-{mine}")), Who::new("kim", "PC-B").as_agent(), &clock);
         b.ctx.version = mine.into();
         let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap()}));
         let m = r["message"].as_str().unwrap();
@@ -11161,7 +11168,7 @@ fn joining_compares_this_pcs_version_with_the_shops() {
     assert_eq!(crate::shared::version_order("0.10.0-rc1", "0.9.0"), Some(std::cmp::Ordering::Greater));
     // A version that can't be read is not compared, and that is said.
     set_shop_version(&shop, "next");
-    let mut b = shop_session(&d.join("pc-odd"), Who::new("kim", "PC-B").as_agent(), &clock);
+    let mut b = pc_session(&d.join("pc-odd"), Who::new("kim", "PC-B").as_agent(), &clock);
     let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap()}));
     assert!(r["message"].as_str().unwrap().contains("The shop version next and this PC's 0.") && r["data"]["update"].is_null(), "{r}");
     let _ = std::fs::remove_dir_all(&d);
@@ -11216,7 +11223,7 @@ fn two_pcs_joining_at_once_both_get_in() {
         for pc in ["PC-B", "PC-C"] {
             let (shop, clock, go, d) = (&shop, &clock, go.clone(), &d);
             t.spawn(move || {
-                let mut s = shop_session(&d.join(pc), Who::new("kim", pc).as_agent(), clock);
+                let mut s = pc_session(&d.join(pc), Who::new("kim", pc).as_agent(), clock);
                 go.wait();
                 let r = call(&mut s, "setup", None, json!({"join": shop.to_str().unwrap()}));
                 assert_eq!(r["data"]["this_pc_recorded"], true, "{r}");
@@ -11274,7 +11281,7 @@ fn a_refused_join_names_what_it_couldnt_remove() {
             let _ = std::fs::remove_dir_all(&d);
             return;
         }
-        let mut b = shop_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+        let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
         let ro = shop.clone();
         crate::shared::hooks::set(move |step| {
             if step == at {
@@ -11310,7 +11317,7 @@ fn joining_checks_the_shop_folder_where_this_pcs_record_goes() {
     let pcs = shop.join(crate::shop::PCS);
     std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o555)).unwrap();
     if std::fs::write(pcs.join("probe"), "").is_err() {
-        let mut b = shop_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+        let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
         let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
         assert!(e.contains(&format!("This PC can't write in {}", pcs.display())) && e.contains("nothing was made"), "{e}");
         assert_eq!(saved_library_setting(&b), None);
@@ -11318,7 +11325,7 @@ fn joining_checks_the_shop_folder_where_this_pcs_record_goes() {
     std::fs::set_permissions(&pcs, std::fs::Permissions::from_mode(0o755)).unwrap();
     // This PC's record can't be written (something else has its name).
     std::fs::create_dir_all(crate::shop::record_file(&shop, "PC-C").join("in-the-way")).unwrap();
-    let mut c = shop_session(&d.join("pc-c"), Who::new("lee", "PC-C").as_agent(), &clock);
+    let mut c = pc_session(&d.join("pc-c"), Who::new("lee", "PC-C").as_agent(), &clock);
     let r = call(&mut c, "setup", None, json!({"join": shop.to_str().unwrap()}));
     let m = r["message"].as_str().unwrap();
     assert!(m.starts_with("Joined shop Acme") && m.contains("[!!] PC-C couldn't be added to the shop's PCs list") && m.contains("Add this PC"), "{m}");
@@ -11359,7 +11366,7 @@ fn a_join_whose_settings_cant_be_saved_takes_this_pc_off_the_list() {
     let d = dir("join_settings_fail");
     let clock = Clock::at(1_794_216_000);
     let (mut a, shop) = acme_shop(&d, &clock);
-    let mut b = shop_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+    let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
     // Its settings folder is a file: nothing can be saved in it.
     b.ctx.pc_dir = d.join("settings-is-a-file");
     std::fs::write(&b.ctx.pc_dir, "").unwrap();
@@ -11417,7 +11424,7 @@ fn a_refused_join_writes_nothing_in_this_pcs_own_library() {
 #[test]
 fn a_relative_folder_is_joined_by_its_full_path() {
     let d = dir("join_relative");
-    let mut s = shop_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &Clock::at(1_794_216_000));
+    let mut s = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &Clock::at(1_794_216_000));
     let here = std::env::current_dir().unwrap();
     let e = err(&mut s, "setup", json!({"join": "."}));
     assert!(e.contains(&format!("{} ", here.display())) && !e.contains(" . "), "{e}");
@@ -11432,7 +11439,7 @@ fn joining_compares_the_shop_version_read_under_the_lock() {
     let clock = Clock::at(1_794_216_000);
     let (_a, shop) = acme_shop(&d, &clock);
     set_shop_version(&shop, "0.1.0");
-    let mut b = shop_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+    let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
     b.ctx.version = "0.4.0".into();
     let s2 = shop.clone();
     crate::shared::hooks::set(move |step| {
@@ -11444,5 +11451,66 @@ fn joining_compares_the_shop_version_read_under_the_lock() {
     crate::shared::hooks::clear();
     let r = r.unwrap().json;
     assert_eq!((r["data"]["shop_version"].as_str(), r["data"]["update"].as_str()), (Some("0.9.0"), Some("Update this PC: the shop is on 0.9.0.")), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+
+// ---------------------------------------------------------------------------
+// Joining a shop, review round 2 (ticket #182).
+// ---------------------------------------------------------------------------
+
+/// SH11: a `Shop` that isn't a folder this PC can read (a file of that
+/// name) fails the check, naming it; nothing is made.
+#[test]
+fn a_shop_folder_that_isnt_a_folder_fails_the_check() {
+    let d = dir("join_shop_not_folder");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    let pcs = shop.join(crate::shop::PCS);
+    std::fs::remove_dir_all(&pcs).unwrap();
+    std::fs::write(&pcs, "not a folder").unwrap();
+    let before = files_under(&shop);
+    let mut b = pc_session(&d.join("pc-b"), Who::new("kim", "PC-B").as_agent(), &clock);
+    let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
+    assert!(e.contains(&format!("{} isn't a folder this PC can read", pcs.display())) && e.contains("[no]"), "{e}");
+    assert_eq!(files_under(&shop), before);
+    assert_eq!(saved_library_setting(&b), None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SH15: `--text` prints why this PC's materials couldn't join the shop's
+/// list, and what joining it did, beside the message.
+#[test]
+fn the_text_answer_says_what_happened_to_the_materials() {
+    let lines = crate::cli::text_lines(&json!({"message": "Joined shop Acme.", "materials_not_joined": "This PC's materials couldn't join the shop's material list just now (denied).", "data": null}));
+    assert_eq!(lines, ["Joined shop Acme.", "This PC's materials couldn't join the shop's material list just now (denied)."]);
+    let lines = crate::cli::text_lines(&json!({"message": "Joined shop Acme.", "materials_joined": "This PC's materials joined the Library's material list: added DEMO 316.", "data": null}));
+    assert_eq!(lines[1], "This PC's materials joined the Library's material list: added DEMO 316.");
+}
+
+/// SH14: a PC whose own shop folder can't be reached can't tell whether it
+/// is in a shop: joining another is refused unless leave=true, naming that
+/// folder, and nothing is written; with it, the PC joins and says where its
+/// Library was. A PC that never had a Library (its own default place, never
+/// made) is in no shop and isn't asked.
+#[test]
+fn a_pc_whose_shop_cant_be_reached_joins_another_only_when_asked() {
+    let d = dir("join_current_offline");
+    let clock = Clock::at(1_794_216_000);
+    let (_a, shop) = acme_shop(&d, &clock);
+    let gone = d.join("srv").join("Other");
+    let mut b = shop_session(&gone, Who::new("kim", "PC-B").as_agent(), &clock);
+    let before = files_under(&shop);
+    let e = err(&mut b, "setup", json!({"join": shop.to_str().unwrap()}));
+    assert!(e.contains(&format!("This PC's Library folder {} can't be reached, so whether it is in another shop can't be told", gone.display())) && e.contains("leave=true"), "{e}");
+    assert_eq!((files_under(&shop), saved_library_setting(&b), b.ctx.library_dir.clone()), (before, None, gone.clone()));
+    let r = call(&mut b, "setup", None, json!({"join": shop.to_str().unwrap(), "leave": true}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.starts_with("Joined shop Acme") && m.contains(&format!("Its Library was {}, which couldn't be reached", gone.display())), "{m}");
+    assert!(r["data"]["left_shop"]["name"].is_null() && r["data"]["left_shop"]["folder"] == gone.display().to_string(), "{r}");
+    // A PC that never had a Library joins without being asked.
+    let mut c = pc_without_library(&d);
+    c.ctx.who = Who::new("lee", "PC-C").as_agent();
+    call(&mut c, "setup", None, json!({"join": shop.to_str().unwrap()}));
     let _ = std::fs::remove_dir_all(&d);
 }

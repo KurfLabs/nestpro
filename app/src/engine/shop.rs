@@ -500,10 +500,11 @@ pub fn check_lines(checks: &[Check]) -> String {
 pub struct Refused {
     pub why: String,
     pub checks: Vec<Check>,
-    /// SH14: this PC is in another shop (its name and folder), and leaving
-    /// it wasn't asked for: all that stopped the join. The window asks the
-    /// person; agents give leave=true.
-    pub leaving: Option<(String, std::path::PathBuf)>,
+    /// SH14: this PC is in another shop (its name and folder; no name when
+    /// its folder can't be reached, so which shop it is in can't be told),
+    /// and leaving it wasn't asked for: all that stopped the join. The window
+    /// asks the person; agents give leave=true.
+    pub leaving: Option<(Option<String>, std::path::PathBuf)>,
 }
 
 impl Refused {
@@ -528,9 +529,9 @@ pub struct Joined {
     pub update: Option<String>,
     /// This PC's Library was already that folder (SH14).
     pub already: bool,
-    /// The shop this PC left, and its folder, when it was in another one
-    /// (SH14).
-    pub left: Option<(String, std::path::PathBuf)>,
+    /// The shop this PC left, and its folder, when it was in another one, or
+    /// its Library folder that couldn't be reached (no name) (SH14).
+    pub left: Option<(Option<String>, std::path::PathBuf)>,
     /// Why this PC couldn't be added to the PCs list, when it couldn't: the
     /// shop is joined all the same, and Add this PC tries again (SH4).
     pub unrecorded: Option<String>,
@@ -639,9 +640,21 @@ pub fn join(typed: &str, current: &Path, who: &Who, clock: &Clock, version: &str
     checks.push(Check::new("shop", Mark::Ok, format!("It is the folder of shop {} (admin PC {}).", named.name, named.admin.pc)));
     // SH14: leaving another shop is asked for, before anything is written.
     let already = shop::same_folder(current, &dir);
-    let left = if already { None } else { shop::read(current).ok().flatten().map(|o| (o.name, current.to_path_buf())) };
+    // A Library folder that can't be reached (or whose shop file can't be
+    // read) can't tell whether this PC is in a shop: asked as for leaving
+    // one. Only this PC's own default place, never made, is no shop at all.
+    let never_made = !current.is_dir() && shop::same_folder(current, &crate::library::default_dir());
+    let left = match (already || never_made, shop::read(current)) {
+        (true, _) | (false, Ok(None)) => None,
+        (false, Ok(Some(o))) => Some((Some(o.name), current.to_path_buf())),
+        (false, Err(_)) => Some((None, current.to_path_buf())),
+    };
     if let (Some((name, from)), false) = (&left, leave) {
-        let why = format!("This PC is in shop {name} ({}). Joining {} leaves it: give leave=true (`nestpro setup --join {} --leave`), or confirm in the window.", from.display(), named.name, dir.display());
+        let how = format!("give leave=true (`nestpro setup --join {} --leave`), or confirm in the window.", dir.display());
+        let why = match name {
+            Some(name) => format!("This PC is in shop {name} ({}). Joining {} leaves it: {how}", from.display(), named.name),
+            None => format!("This PC's Library folder {} can't be reached, so whether it is in another shop can't be told. To join {} instead: {how}", from.display(), named.name),
+        };
         checks.push(Check::new("leave", Mark::No, why.clone()));
         return Err(Refused { why: format!("Not joined: {why} Nothing was changed."), checks, leaving: left.clone() });
     }
@@ -676,9 +689,15 @@ pub fn join(typed: &str, current: &Path, who: &Who, clock: &Clock, version: &str
     // and its own record go.
     let pcs = dir.join(shop::PCS);
     for folder in [dir.as_path(), pcs.as_path()] {
-        if folder == pcs && !pcs.is_dir() {
-            // Made again with this PC's record, as starting a shop made it.
-            continue;
+        if folder == pcs {
+            match std::fs::read_dir(&pcs) {
+                Ok(_) => {}
+                // Made again with this PC's record, as starting a shop made it.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(&pcs).is_err() => continue,
+                // Something that isn't a folder this PC can read (a file of
+                // that name, or a folder it may not list) fails the check.
+                Err(e) => return fail(checks, "write", format!("{} isn't a folder this PC can read ({e}). The shop's PCs list is kept there: it must be a folder the shop's group may change.", pcs.display()), vec![], lock),
+            }
         }
         if let Err((why, left)) = probe(folder, &lock) {
             return fail(checks, "write", why, left, lock);
@@ -731,8 +750,10 @@ impl Joined {
         } else {
             format!("Joined shop {} in {} (admin PC {}). This PC's Library is now that folder; its own Library is left as it was, and its materials join the shop's list.", s.name, self.folder.display(), s.admin.pc)
         };
-        if let Some((name, dir)) = &self.left {
-            msg.push_str(&format!(" It left shop {name} ({}); join it again with `nestpro setup --join {} --leave`.", dir.display(), dir.display()));
+        match &self.left {
+            Some((Some(name), dir)) => msg.push_str(&format!(" It left shop {name} ({}); join it again with `nestpro setup --join {} --leave`.", dir.display(), dir.display())),
+            Some((None, dir)) => msg.push_str(&format!(" Its Library was {}, which couldn't be reached; point it back there with `nestpro setup --join {} --leave` once it can be.", dir.display(), dir.display())),
+            None => {}
         }
         if let Some(u) = &self.update {
             msg.push_str(&format!(" {u}"));

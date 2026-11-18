@@ -96,16 +96,8 @@ fn run_op(name: &str, rest: &[String]) -> i32 {
     match s.call(name, job.as_deref(), &args) {
         Ok(r) => {
             if text {
-                say!("{}", r.json["message"].as_str().unwrap_or(""));
-                match &r.json["data"] {
-                    Value::Null => {}
-                    Value::String(t) => say!("{t}"),
-                    d => say!("{}", serde_json::to_string_pretty(d).unwrap_or_default()),
-                }
-                if let Some(f) = r.json["files"].as_array() {
-                    for f in f {
-                        say!("  {}", f.as_str().unwrap_or(""));
-                    }
+                for line in text_lines(&r.json) {
+                    say!("{line}");
                 }
             } else {
                 say!("{}", serde_json::to_string_pretty(&r.json).unwrap_or_default());
@@ -121,6 +113,27 @@ fn run_op(name: &str, rest: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// What `--text` prints for an answer: its message, what joining the
+/// Library's material list did or why it couldn't (SH10, MA28), its data,
+/// and the files it wrote.
+pub fn text_lines(json: &Value) -> Vec<String> {
+    let mut out = vec![json["message"].as_str().unwrap_or("").to_string()];
+    for k in ["materials_joined", "materials_not_joined"] {
+        if let Some(t) = json[k].as_str() {
+            out.push(t.to_string());
+        }
+    }
+    match &json["data"] {
+        Value::Null => {}
+        Value::String(t) => out.push(t.clone()),
+        d => out.push(serde_json::to_string_pretty(d).unwrap_or_default()),
+    }
+    if let Some(f) = json["files"].as_array() {
+        out.extend(f.iter().map(|f| format!("  {}", f.as_str().unwrap_or(""))));
+    }
+    out
 }
 
 /// `[job] --a=1 --b 2 --flag --args '{json}' --text` → (job, args, text).

@@ -7556,7 +7556,7 @@
  {
   "name": "join a shop",
   "group": "shop",
-  "value": "settings saved first (active job cleared), then the switch; a failed save refuses and takes the PC record back; old stock bookings forgotten, an agent's open job closed; own Library untouched; materials join (MA28) or say why not; record failure: joined, Add this PC; relative folder saved as full path",
+  "value": "settings saved first (active job cleared), then the switch; a failed save refuses and takes the PC record back; old stock sheets, bookings, remnants and undo steps forgotten, an agent's open job closed; own Library untouched; materials join (MA28) or say why not; record failure: joined, Add this PC; relative folder saved as full path",
   "source": "SH10; own design"
  },
  {
@@ -7580,7 +7580,7 @@
  {
   "name": "already in a shop",
   "group": "shop",
-  "value": "the same folder: told so, setting kept; another shop's folder: refused unless leave=true (window: asks, naming the shop), then left, named, record kept there",
+  "value": "the same folder: told so, setting kept; another shop's folder, or a Library folder that can't be reached: refused unless leave=true (window: asks, naming it), then left, named, record kept there",
   "source": "SH14; own design"
  },
  {
@@ -7592,7 +7592,7 @@
  {
   "name": "first-run start and this PC",
   "group": "shop",
-  "value": "Start a shop: folder + name; a folder with no Library asked about (the folder checked only), made only while it is there; Just this PC: Library in Documents\\Sheet Nesting\\Library; Join a shop… also when the Library can't be reached",
+  "value": "Start a shop: folder + name; a folder with no Library asked about (the folder checked only), made only while it is there; Just this PC: Library in Documents\\Sheet Nesting\\Library; Join a shop… on every Settings → Shop page",
   "source": "SH16; own design"
  },
  {

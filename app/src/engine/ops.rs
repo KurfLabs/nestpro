@@ -3596,6 +3596,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("startup.rs/Browse…", "view: picks the folder for the box; agents give it (setup join= or start=)"),
     ("startup.rs/Join the shop", "setup"),
     ("startup.rs/Leave that shop and join", "setup"),
+    ("startup.rs/Join this shop instead", "setup"),
     ("startup.rs/Start the shop", "setup"),
     ("startup.rs/Make a Library there and start the shop", "gui: a new Library is made only after a person says yes (LB12); setup start= needs a Library there"),
     ("startup.rs/Use this PC only", "gui: this PC keeps its own Library, in the default place; agents work in the Library this PC's settings name"),
