@@ -406,6 +406,13 @@ fn claim() -> (String, String) {
     (token, text)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test seam: locks this thread takes may replace files for this long
+    /// only (a long job must renew them), instead of HOLD_FOR.
+    pub(crate) static HOLD_FOR_TEST: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
 /// A lock this writer holds: which, its token, and its time.
 #[derive(Clone)]
 struct Lease {
@@ -432,6 +439,10 @@ impl WriteLock {
     /// Take the write lock of the Library in `dir`, waiting while another
     /// writer has it (LB1) and taking over one that was abandoned (LB2).
     pub fn take(dir: &Path) -> Result<WriteLock, String> {
+        #[cfg(test)]
+        if let Some(hold) = HOLD_FOR_TEST.with(std::cell::Cell::get) {
+            return Self::take_for(dir, ABANDONED_AFTER, hold, LONGEST_WAIT);
+        }
         Self::take_for(dir, ABANDONED_AFTER, HOLD_FOR, LONGEST_WAIT)
     }
 
@@ -512,6 +523,12 @@ impl WriteLock {
     /// every file is replaced.
     pub fn still_held(&self) -> Result<(), String> {
         held_by(&self.lease())
+    }
+
+    /// The token this writer's lock carries (BK12: a restore records it, so
+    /// PCs can tell it's still running).
+    pub fn token(&self) -> String {
+        self.0.token.clone()
     }
 
     /// This writer's lease as it is now: renewed through another handle on
@@ -670,6 +687,17 @@ pub fn write_file(path: &Path, bytes: &[u8], lock: Option<&WriteLock>) -> Result
 /// is harmless: no one reads it).
 pub fn write_existing(path: &Path, bytes: &[u8], lock: &WriteLock) -> Result<(), String> {
     replace_in(path, bytes, || lock.still_held(), false)
+}
+
+/// Which writer holds the Library's write lock in `dir` now (its token), and how long ago
+/// its lock file last changed (taken or renewed), by the file's time and
+/// this PC's clock. For what the window and agents show only (BK13): who
+/// may write is never judged so (LB2). None: nobody holds it.
+pub fn lock_holder(dir: &Path) -> Option<(String, Option<Duration>)> {
+    let file = dir.join(LOCK_FILE);
+    let h: Holder = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+    let age = std::fs::metadata(&file).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok().or(Some(Duration::ZERO)));
+    Some((h.token, age))
 }
 
 /// Move a whole file `from` (a file of this writer's own, on the same

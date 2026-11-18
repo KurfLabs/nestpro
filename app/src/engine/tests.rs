@@ -3322,7 +3322,7 @@ fn an_agents_save_part_is_refused_when_the_library_part_was_saved_since() {
     let pf = window.load_product(first).unwrap();
     let mut p = pf.part.clone();
     p.w = 450.0;
-    window.save_product(&p, "Acme", pf.material, pf.thickness, SaveTo::Read(crate::library::Record { id: first, revision: pf.revision })).unwrap();
+    window.save_product(&p, "Acme", pf.material, pf.thickness, SaveTo::Read(crate::library::Record { id: first, revision: pf.revision, restore: 0 })).unwrap();
     let e = err(&mut s, "library", json!({"mode": "save-part", "folder": "Acme"}));
     assert!(e.contains("DEMO-P1") && e.contains("kim on PROG-1 at 2026-11-09 09:30") && e.contains("Nothing was saved"), "{e}");
     assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
@@ -5574,7 +5574,7 @@ fn files_with_only_a_material_number_open_with_the_same_material() {
     let pid = lib.read_index().unwrap().iter().find(|e| e.kind == crate::library::Kind::Product).unwrap().id;
     let pf = lib.load_product(pid).unwrap();
     assert_eq!((pf.material, pf.material_name.as_str()), (2, ""), "a library part read before names keeps its number");
-    lib.save_product(&pf.part, &pf.folder, pf.material, pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id: pid, revision: pf.revision })).unwrap();
+    lib.save_product(&pf.part, &pf.folder, pf.material, pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id: pid, revision: pf.revision, restore: 0 })).unwrap();
     let v: Value = serde_json::from_str(&std::fs::read_to_string(lib.path(crate::library::Kind::Product, pid)).unwrap()).unwrap();
     assert_eq!((v["material"].as_u64(), v["material_name"].as_str()), (Some(2), Some("Aluminium")));
 
@@ -8461,7 +8461,7 @@ fn a_library_part_from_a_job_whose_material_cant_be_told_keeps_its_number_and_na
     let pf = l.load_product(id).unwrap();
     assert!(!material::exists(pf.material), "unresolved when read back");
     // Saved again over itself, as read.
-    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
+    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision, restore: 0 }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
     assert_eq!(stored_material(&on_disk()), (Some(3), Some("DEMO Shared")));
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -8545,7 +8545,7 @@ fn a_joining_pcs_name_the_library_shows_now_still_leaves_a_renamed_number_unknow
     let list = call(&mut s2, "library", Some(jp), json!({"mode": "list"}));
     assert!(list["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "?"), "{list}");
     let pf = l.load_product(id).unwrap();
-    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
+    l.save_product_in(&pf.part, &pf.folder, (pf.material, &pf.material_name), pf.thickness, crate::library::SaveTo::Read(crate::library::Record { id, revision: pf.revision, restore: 0 }), &crate::folders::PartsFolder::Path(pf.folder.clone())).unwrap();
     assert_eq!(part_on_disk(), kept);
     // A remnant it stores, read back in a fresh session and saved again by
     // an unrelated stock change.
@@ -11055,7 +11055,7 @@ fn restoring_a_backup_brings_back_its_jobs_and_stock_and_keeps_what_was_there() 
     let shop_name = crate::shop::read(&lib).unwrap().unwrap().name;
 
     // An agent can't: refused with the reason, nothing changed.
-    let e = err(&mut s, "shop", json!({"mode": "restore", "backup": chosen}));
+    let e = err(&mut s, "shop", json!({"mode": "restore"}));
     assert!(e.contains("refused for agents") && e.contains("admin PC") && e.contains("Nothing was changed"), "{e}");
     assert_eq!(library_files(&lib), now);
 
@@ -11132,7 +11132,7 @@ fn restore_is_refused_on_other_pcs_and_for_agents() {
     let e = restore_as(&lib, "PC-B", &chosen, &clock).err().unwrap();
     assert!(e.contains("only on the admin PC (PC-A)") && e.contains("Nothing was restored"), "{e}");
     let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
-    let e = err(&mut b, "shop", json!({"mode": "restore", "backup": chosen}));
+    let e = err(&mut b, "shop", json!({"mode": "restore"}));
     assert!(e.contains("refused for agents"), "{e}");
     // An agent on the admin PC itself, through the engine too.
     let e = super::shop::restore(&lib, &chosen, &Who::new("sam", "PC-A").as_agent(), &clock, crate::updates::VERSION).err().unwrap();
@@ -11336,5 +11336,388 @@ fn the_before_restore_backup_counts_and_stays_its_first_day() {
     // Back up now the same day, Keep 1: both of today's stay.
     let third = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
     assert_eq!(backup_names(&lib, &lib.join("Backups")), vec![chosen, done.done.before.name.clone(), third]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Review round 1 of the restore (PR #205): each finding's test fails
+// without its fix.
+
+/// A test shop with one backup of today, and the backup's file name.
+fn restore_shop(tag: &str, clock: &Clock) -> (PathBuf, Session, PathBuf, String) {
+    let d = dir(tag);
+    let (mut s, lib) = backup_shop(&d, clock);
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    (d, s, lib, chosen)
+}
+
+/// Make the Library's lock another PC's, as a PC that took it over would.
+fn steal_lock(lib: &Path) {
+    std::fs::write(lib.join(crate::shared::LOCK_FILE), r#"{"user":"lee","pc":"PC-Z","process":1,"since":0,"token":"PC-Z-1-0"}"#).unwrap();
+}
+
+/// S1: a "before restore" backup whose payload is damaged after it was
+/// written (its directory still opens, with as many files) is caught: every
+/// entry is read through its check sum before anything is changed.
+#[test]
+fn a_damaged_before_restore_backup_restores_nothing() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r1_damaged", &clock);
+    std::fs::write(lib.join("Notes from today.txt"), b"made after the backup").unwrap();
+    let before = library_files(&lib);
+    let backups = lib.join("Backups");
+    crate::shared::hooks::set(move |step| {
+        if step != "restore: before restore taken" {
+            return;
+        }
+        let zip = std::fs::read_dir(&backups).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with("before restore.zip")).unwrap();
+        let (at, len) = {
+            let mut z = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+            let e = z.by_name("index.json").unwrap();
+            (e.data_start().unwrap(), e.compressed_size())
+        };
+        let mut b = std::fs::read(&zip).unwrap();
+        for k in 0..len.min(8) {
+            b[(at + k) as usize] ^= 0x5a;
+        }
+        std::fs::write(&zip, b).unwrap();
+    });
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("restored over a damaged before restore backup");
+    assert!(e.contains("Nothing was restored") && e.contains("can't be trusted"), "{e}");
+    assert_eq!(library_files(&lib), before);
+    assert!(crate::shop::read(&lib).unwrap().unwrap().restored.is_none());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S1: a Library holding a file a newer version wrote isn't restored: the
+/// "before restore" backup couldn't be put back on this PC.
+#[test]
+fn a_library_holding_newer_files_is_not_restored_on_an_older_pc() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r1_newer_live", &clock);
+    let t = std::fs::read_to_string(lib.join(crate::library::INDEX)).unwrap();
+    let mut v: serde_json::Map<String, Value> = serde_json::from_str(&t).unwrap();
+    v.insert(crate::shared::VERSION_FIELD.into(), json!("9.0.0"));
+    std::fs::write(lib.join(crate::library::INDEX), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err().expect("restored over newer files");
+    assert!(e.contains("Update this PC first") && e.contains("index.json") && e.contains("9.0.0") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before, "a refused restore changed something (a before restore backup?)");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S2: names Windows would read as another (trailing dots or spaces, short
+/// names), device names (superscript digits too) and two names differing
+/// only in capitals are refused before anything changes.
+#[test]
+fn a_backup_with_names_windows_reads_as_others_is_refused() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_alias", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let before = files_under(&lib);
+    let cases: &[&[(&str, &[u8])]] = &[
+        &[("Shop./PC-Z.json", b"{}")],
+        &[("Shop /PC-Z.json", b"{}")],
+        &[("SHOP~1/PC-Z.json", b"{}")],
+        &[("shop.json.", b"{}")],
+        &[("Jobs/COM\u{b9}.dxf", b"x")],
+        &[("Jobs/LPT\u{b2}", b"x")],
+        &[("Drawings/a.dxf", b"1"), ("drawings/A.DXF", b"2")],
+    ];
+    for files in cases {
+        let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
+        all.extend_from_slice(files);
+        let name = crafted_backup(&lib, &clock, &all);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap_or_else(|| panic!("{files:?} was restored"));
+        assert!(e.contains("Nothing was restored"), "{files:?}: {e}");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+        assert_eq!(files_under(&lib), before, "{files:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S2, S3: a place the backup goes that is a link in the Library (a folder
+/// that leads outside, or a file link) is refused before anything changes,
+/// and what it links to is left as it is.
+#[cfg(unix)]
+#[test]
+fn a_restore_never_goes_through_or_replaces_a_link() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_links", &clock);
+    let outside = d.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), b"not the Library's").unwrap();
+    std::os::unix::fs::symlink(&outside, lib.join("Drawings")).unwrap();
+    std::os::unix::fs::symlink(outside.join("keep.txt"), lib.join("Note.txt")).unwrap();
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    for files in [vec![("Drawings/x.dxf", b"0\nEOF\n" as &[u8])], vec![("Note.txt", b"from the backup" as &[u8])]] {
+        let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
+        all.extend(files.clone());
+        let name = crafted_backup(&lib, &clock, &all);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap_or_else(|| panic!("{files:?} was restored through a link"));
+        assert!(e.contains("is a link") && e.contains("Nothing was restored"), "{e}");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+    }
+    assert_eq!(std::fs::read(outside.join("keep.txt")).unwrap(), b"not the Library's");
+    assert!(!outside.join("x.dxf").exists());
+    assert!(std::fs::symlink_metadata(lib.join("Note.txt")).unwrap().file_type().is_symlink());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S3: a folder where the backup has a file is taken out file by file, and
+/// the files in it aren't visited again (it's a file now). One holding a
+/// link no backup holds is refused, and the link stays.
+#[test]
+fn a_folder_the_backup_has_a_file_in_place_of() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_dir_to_file", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    std::fs::create_dir_all(lib.join("Notes").join("Old")).unwrap();
+    for f in ["a.txt", "b.txt"] {
+        std::fs::write(lib.join("Notes").join(f), f).unwrap();
+    }
+    std::fs::write(lib.join("Notes").join("Old").join("c.txt"), b"c").unwrap();
+    #[cfg(unix)]
+    {
+        std::fs::create_dir_all(lib.join("Links")).unwrap();
+        std::os::unix::fs::symlink(d.join("nowhere"), lib.join("Links").join("away")).unwrap();
+        let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("Links", b"a file now")]);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().expect("a folder holding a link was replaced");
+        assert!(e.contains("Nothing was restored") && e.contains("no backup holds"), "{e}");
+        assert!(std::fs::symlink_metadata(lib.join("Links").join("away")).is_ok(), "the link was removed");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+        std::fs::remove_file(lib.join("Links").join("away")).unwrap();
+        std::fs::remove_dir(lib.join("Links")).unwrap();
+    }
+    clock.advance(std::time::Duration::from_secs(60));
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("Notes", b"a file now")]);
+    let done = restore_as(&lib, "PC-A", &name, &clock).unwrap();
+    assert_eq!(std::fs::read(lib.join("Notes")).unwrap(), b"a file now");
+    let kept = zip_files(&done.done.before.path);
+    assert_eq!(kept.get("Notes/Old/c.txt").map(Vec::as_slice), Some(&b"c"[..]), "{:?}", kept.keys());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S4: a restore that loses the write lock while it takes a folder out
+/// stops at once: nothing more is removed after the lock isn't its own.
+#[test]
+fn a_restore_that_loses_the_lock_stops_removing_at_once() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_fence", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    std::fs::create_dir_all(lib.join("Old")).unwrap();
+    for f in ["1.txt", "2.txt", "3.txt"] {
+        std::fs::write(lib.join("Old").join(f), f).unwrap();
+    }
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("Old", b"a file now")]);
+    let first = std::rc::Rc::new(std::cell::Cell::new(true));
+    let (l2, f2) = (lib.clone(), first.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: removing" && f2.replace(false) {
+            steal_lock(&l2);
+        }
+    });
+    let e = restore_as(&lib, "PC-A", &name, &clock).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("a restore that lost its lock went on");
+    assert!(e.contains("stopped halfway") && e.contains("took over"), "{e}");
+    let left = std::fs::read_dir(lib.join("Old")).unwrap().count();
+    assert_eq!(left, 2, "files were removed after the lock was lost");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S5: a job read before a restore asks before saving even when the
+/// restored job has the very revision it read.
+#[test]
+fn a_job_read_before_a_restore_asks_even_at_the_same_revision() {
+    let clock = Clock::at(1_794_216_000);
+    let d = dir("restore_r1_same_revision");
+    let (mut a, lib) = backup_shop(&d, &clock);
+    let job_id = call(&mut a, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().find(|e| e["kind"] == "job").unwrap()["id"].as_u64().unwrap();
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let bp = d.join("PC-B frames.snjob");
+    call(&mut b, "new", Some(bp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "library", None, json!({"mode": "open", "id": job_id}));
+    let chosen = file_of(&call(&mut a, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(60));
+    restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    let record = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, job_id);
+    let restored = std::fs::read(&record).unwrap();
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 90, "h": 90, "qty": 1, "name": "DEMO-PX"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("since this job file read it"), "{e}");
+    assert_eq!(std::fs::read(&record).unwrap(), restored);
+    // Read again after the restore, it saves.
+    let mut c = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let cp = d.join("PC-B again.snjob");
+    call(&mut c, "new", Some(cp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut c, "library", None, json!({"mode": "open", "id": job_id}));
+    call(&mut c, "library", None, json!({"mode": "save-job"}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S6: with Keep 1 day, restoring yesterday's only backup works: the
+/// "before restore" backup removes none past Keep.
+#[test]
+fn restoring_yesterdays_only_backup_with_keep_one_day() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r1_keep1", &clock);
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        let mut f = crate::shop::read(&lib).unwrap().unwrap();
+        f.backups.keep_days = 1;
+        crate::shop::write(&lib, &f, &lock, crate::updates::VERSION).unwrap();
+    }
+    clock.advance(std::time::Duration::from_secs(86400 + 60));
+    let done = restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    assert_eq!(backup_names(&lib, &lib.join("Backups")), vec![chosen, done.done.before.name.clone()]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S7: a backup whose shop file a newer version wrote is refused, though
+/// the shop file is never taken from a backup.
+#[test]
+fn a_backup_whose_shop_file_a_newer_version_wrote_is_refused() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_newer_shop", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("shop.json", br#"{"program_version": "9.0.0", "name": "Acme"}"#)]);
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &name, &clock).err().expect("restored a backup with a newer shop file");
+    assert!(e.contains("shop.json") && e.contains("9.0.0") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S8: a zip naming one file twice (its reader keeps only one) is refused.
+#[test]
+fn a_backup_naming_a_file_twice_is_refused() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_twice", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("DUPA.txt", b"first"), ("DUPB.txt", b"second")]);
+    let p = lib.join("Backups").join(&name);
+    let mut b = std::fs::read(&p).unwrap();
+    for i in 0..b.len() - 8 {
+        if &b[i..i + 8] == b"DUPB.txt" {
+            b[i + 3] = b'A';
+        }
+    }
+    std::fs::write(&p, b).unwrap();
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &name, &clock).err().expect("restored a zip naming a file twice");
+    assert!(e.contains("more than once") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S9: reading a big backup over a slow share renews the lock as it goes,
+/// so the restore keeps its lease (here 300 ms, every read 120 ms).
+#[test]
+fn reading_a_big_backup_keeps_the_lock() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r1_lease", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let files: Vec<(String, Vec<u8>)> = (0..6).map(|i| (format!("Notes/{i}.json"), b"{}".to_vec())).collect();
+    let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
+    all.extend(files.iter().map(|(n, b)| (n.as_str(), b.as_slice())));
+    let name = crafted_backup(&lib, &clock, &all);
+    crate::shared::HOLD_FOR_TEST.with(|h| h.set(Some(std::time::Duration::from_millis(300))));
+    crate::shared::hooks::set(|step| {
+        if step == "restore: entry read" {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+    });
+    let r = restore_as(&lib, "PC-A", &name, &clock);
+    crate::shared::hooks::clear();
+    crate::shared::HOLD_FOR_TEST.with(|h| h.set(None));
+    r.unwrap();
+    assert!(lib.join("Notes").join("5.json").is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S10: the number of a record the restore takes out is kept taken before
+/// it is taken out, and a deleted record's mark that is there now stays.
+#[test]
+fn the_numbers_of_records_a_restore_takes_out_are_kept_first() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, mut s, lib, chosen) = restore_shop("restore_r1_marks", &clock);
+    let jp = d.join("DEMO-002 brackets.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 4, "name": "DEMO-P2"}));
+    let new_id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    let rec = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, new_id);
+    let mark = PathBuf::from(format!("{}.deleted", rec.display()));
+    // A mark that's there now, of a record the backup holds.
+    let old_mark = lib.join("Jobs").join("0").join("1.snjob.deleted");
+    std::fs::write(&old_mark, b"").unwrap();
+    let marked_first = std::rc::Rc::new(std::cell::Cell::new(None));
+    let (m2, r2, seen) = (mark.clone(), rec.clone(), marked_first.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: removing" && r2.exists() && seen.get().is_none() {
+            seen.set(Some(m2.exists()));
+        }
+    });
+    let r = restore_as(&lib, "PC-A", &chosen, &clock);
+    crate::shared::hooks::clear();
+    r.unwrap();
+    assert_eq!(marked_first.get(), Some(true), "a record was taken out before its number was kept taken");
+    assert!(mark.exists() && !rec.exists());
+    assert!(old_mark.exists(), "a deleted record's mark was removed");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S11: while a restore puts files back, other PCs are told it's running
+/// (not that it stopped); once it stops halfway they're told so, with the
+/// backup that holds the Library as it was; the Backups card says the same
+/// from the shop file.
+#[test]
+fn other_pcs_tell_a_running_restore_from_one_that_stopped() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r1_running", &clock);
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (l2, c2, s2) = (lib.clone(), clock.clone(), seen.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: file put back" && s2.borrow().is_none() {
+            let (l3, c3) = (l2.clone(), c2.clone());
+            let got = std::thread::spawn(move || {
+                let r = crate::shop::read(&l3).unwrap().unwrap().restored.unwrap();
+                let st = super::shop::restore_state(&l3, &r);
+                (st, super::shop::restore_notice(&r, st, &c3))
+            })
+            .join()
+            .unwrap();
+            *s2.borrow_mut() = Some(got);
+        }
+    });
+    crate::backup::RESTORE_STOP_AFTER.with(|x| x.set(Some(2)));
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err();
+    crate::backup::RESTORE_STOP_AFTER.with(|x| x.set(None));
+    crate::shared::hooks::clear();
+    assert!(e.is_some_and(|e| e.contains("stopped halfway")));
+    let (st, note) = seen.borrow().clone().expect("never looked mid-restore");
+    assert_eq!(st, super::shop::RestoreState::Running, "{note}");
+    assert!(note.contains("is being restored") && note.contains("PC-A"), "{note}");
+    let r = crate::shop::read(&lib).unwrap().unwrap().restored.unwrap();
+    let st = super::shop::restore_state(&lib, &r);
+    assert_eq!(st, super::shop::RestoreState::Stopped);
+    let note = super::shop::restore_notice(&r, st, &clock);
+    assert!(note.contains("stopped halfway") && note.contains(&r.before), "{note}");
+    let (warn, line) = crate::settings_ui::restore_line(&r, st, &clock);
+    assert!(warn && line.contains("stopped halfway") && line.contains(&r.before), "{line}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S13: agents' `shop` takes no backup name: restoring is refused whatever
+/// it names.
+#[test]
+fn agents_shop_takes_no_backup_name() {
+    let op = super::ops::find("shop").unwrap();
+    assert!(op.args.iter().all(|a| a.name != "backup"), "shop still takes a backup name");
+    let clock = Clock::at(1_794_216_000);
+    let (d, mut s, _lib, _) = restore_shop("restore_r1_no_arg", &clock);
+    let e = err(&mut s, "shop", json!({"mode": "restore"}));
+    assert!(e.contains("refused for agents"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }

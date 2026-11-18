@@ -258,14 +258,45 @@ fn may_restore(s: &ShopFile, who: &Who) -> Result<(), String> {
     Ok(())
 }
 
-/// BK13: what other PCs say of the shop's last restore, by `clock`: "The
-/// shop was restored to 9 Nov 09:20. Reopen your job", or that one stopped
-/// halfway. None when the shop was never restored.
-pub fn restore_notice(r: &shop::Restore, clock: &Clock) -> String {
+/// BK13: what the shop's last restore is now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestoreState {
+    Finished,
+    /// Still putting files back: the PC restoring holds the write lock, and
+    /// renewed it lately.
+    Running,
+    /// It stopped halfway (its PC crashed or lost the share).
+    Stopped,
+}
+
+/// BK13: is the unfinished restore `r` running or stopped? Running while the
+/// lock it holds is still the Library's write lock and its file changed
+/// within the abandon time (a restore renews it every few seconds), by the
+/// file's time and this PC's clock: for what is shown only.
+pub fn restore_state(dir: &Path, r: &shop::Restore) -> RestoreState {
     if r.finished {
-        format!("The shop was restored to {}. Reopen your job", backup::shown_stamp(&r.backup_when))
-    } else {
-        format!("A restore of the shop on {} stopped halfway ({}). Save nothing until it is finished on the admin PC", r.by.pc, clock.shown(r.at))
+        return RestoreState::Finished;
+    }
+    match crate::shared::lock_holder(dir) {
+        Some((token, age)) if !r.lock.is_empty() && token == r.lock && age.is_some_and(|a| a < crate::shared::ABANDONED_AFTER) => RestoreState::Running,
+        _ => RestoreState::Stopped,
+    }
+}
+
+/// BK13: what PCs say of the shop's last restore, by `clock`: "The shop was
+/// restored to 9 Nov 09:20. Reopen your job", that one is running now, or
+/// that one stopped halfway and what holds the Library as it was.
+pub fn restore_notice(r: &shop::Restore, state: RestoreState, clock: &Clock) -> String {
+    match state {
+        RestoreState::Finished => format!("The shop was restored to {}. Reopen your job", backup::shown_stamp(&r.backup_when)),
+        RestoreState::Running => format!("The shop is being restored to {} on {} (since {}). Save nothing until it's done", backup::shown_stamp(&r.backup_when), r.by.pc, clock.shown(r.at)),
+        RestoreState::Stopped => format!(
+            "A restore of the shop to {} on {} stopped halfway ({}). Save nothing: on the admin PC, restore {} to put the Library back as it was",
+            backup::shown_stamp(&r.backup_when),
+            r.by.pc,
+            clock.shown(r.at),
+            r.before
+        ),
     }
 }
 
@@ -381,7 +412,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         "updates" => Ok(super::updates::run(ctx)),
         // Agents never restore a backup (BK8): the engine's own rule
         // refuses it, whoever the session says it works for.
-        "restore" => restore(dir, &a.str("backup").unwrap_or_default(), &ctx.who.clone().as_agent(), &ctx.clock, &ctx.version).map(|_| unreachable!("an agent restored a backup")),
+        "restore" => restore(dir, "", &ctx.who.clone().as_agent(), &ctx.clock, &ctx.version).map(|_| unreachable!("an agent restored a backup")),
         _ => {
             // Using the program on this PC records it (SH4). When it can't,
             // the shop is still shown, with why this PC isn't in it (SH6).
@@ -429,7 +460,8 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                         "at": ctx.clock.stamp(r.at),
                         "finished": r.finished,
                         "before_restore_backup": r.before,
-                        "notice": restore_notice(r, &ctx.clock),
+                        "running": restore_state(dir, r) == RestoreState::Running,
+                        "notice": restore_notice(r, restore_state(dir, r), &ctx.clock),
                     })),
                 }),
             ))

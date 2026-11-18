@@ -95,6 +95,15 @@ pub struct Restore {
     /// LB7).
     #[serde(default)]
     pub revision_floor: u64,
+    /// How many restores the shop has had, this one included: a job or
+    /// library part read before it was read in an earlier generation, so
+    /// saving it asks first whatever its revision (BK12, LB7).
+    #[serde(default)]
+    pub generation: u64,
+    /// The write lock's token the restore holds: while that lock is held
+    /// and renewed, the restore is running (BK13).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lock: String,
 }
 
 /// BK12: saves after a restore give records revisions above this.
@@ -102,6 +111,12 @@ pub struct Restore {
 /// can't be read just now).
 pub fn revision_floor(dir: &Path) -> u64 {
     read(dir).ok().flatten().and_then(|s| s.restored).map_or(0, |r| r.revision_floor)
+}
+
+/// BK12: how many restores the shop has had (0: none, or no shop). What a
+/// PC reads from the Library is read in this generation (LB7).
+pub fn restore_generation(dir: &Path) -> u64 {
+    read(dir).ok().flatten().and_then(|s| s.restored).map_or(0, |r| r.generation)
 }
 
 /// One PC's record in `Shop` (SH4): written by that PC when it opens the

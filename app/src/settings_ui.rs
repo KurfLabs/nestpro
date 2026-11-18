@@ -2349,6 +2349,16 @@ impl App {
                     ui.label(RichText::new("None yet").color(t.text_dim));
                 }
             });
+            // BK12, BK13: the shop's last restore, as the shop file says,
+            // whatever this window saw: running, stopped halfway (with the
+            // backup that holds the Library as it was), or done.
+            if let Some(r) = shop.and_then(|s| s.restored.as_ref()) {
+                let state = crate::engine::shop::restore_state(dir, r);
+                let (warn, line) = restore_line(r, state, &self.clock);
+                row(ui, "Last restore", |ui| {
+                    ui.label(RichText::new(line).size(12.0).color(if warn { t.warn_fg } else { t.text })).on_hover_text(format!("{} — restored from {} by {}. The Library as it was before is in {}.", backup_day(r), r.backup, r.by.label(), r.before));
+                });
+            }
             row(ui, "Folder", |ui| match &ov.folder {
                 Ok(f) => {
                     ui.label(RichText::new(f.display().to_string()).monospace().size(11.5)).on_hover_text("Each backup is one zip, named by its day and the PC that took it. Other files kept here are never touched.");
@@ -2594,6 +2604,22 @@ impl App {
                 r.note = Some(restore_note(got));
             }
         });
+    }
+}
+
+/// "9 Nov 09:20": the day of the backup a restore put back.
+fn backup_day(r: &crate::shop::Restore) -> String {
+    crate::backup::shown_stamp(&r.backup_when)
+}
+
+/// BK12, BK13: the Backups card's line for the shop's last restore, from
+/// the shop file (true: a warning).
+pub(crate) fn restore_line(r: &crate::shop::Restore, state: crate::engine::shop::RestoreState, clock: &crate::shared::Clock) -> (bool, String) {
+    use crate::engine::shop::RestoreState::*;
+    match state {
+        Finished => (false, format!("Back to {}, by {}, {}", backup_day(r), r.by.pc, clock.shown(r.at))),
+        Running => (false, format!("Restoring to {} on {} (since {})…", backup_day(r), r.by.pc, clock.shown(r.at))),
+        Stopped => (true, format!("⚠ The restore to {} on {} stopped halfway ({}). {} holds the Library as it was: restore it.", backup_day(r), r.by.pc, clock.shown(r.at), r.before)),
     }
 }
 

@@ -51,9 +51,10 @@ pub struct AutoRefresh {
     /// While it can't be reached: a look in the background whether it's
     /// back, so a share that's down never holds the window up.
     pub probe: Option<std::thread::JoinHandle<bool>>,
-    /// BK13: the shop's last restore at the last look (when, and whether it
-    /// had finished); None: not looked yet.
-    pub restore_seen: Option<Option<(u64, bool)>>,
+    /// BK13: the shop's last restore at the last look (when, and what it
+    /// was then); None: not looked yet. Taken when the window first shows a
+    /// Library, whatever the auto-refresh setting.
+    pub restore_seen: Option<Option<(u64, crate::engine::shop::RestoreState)>>,
     /// BK13: "The shop was restored to 9 Nov 09:20. Reopen your job", shown
     /// until closed.
     pub restore_note: Option<String>,
@@ -85,6 +86,12 @@ impl App {
     /// few seconds, at once when the window came back to the front, and the
     /// full reload once per period (LB14). Nothing while the option is off.
     pub fn refresh_tick(&mut self, front_again: bool) {
+        // BK13: what the shop's last restore is when this window first shows
+        // this Library, so a restore made while auto-refresh is off is still
+        // told when it's turned on.
+        if self.autorefresh.restore_seen.is_none() {
+            self.autorefresh.restore_seen = Some(self.restore_now(&self.library_dir()).unwrap_or(None));
+        }
         match self.autorefresh.timer.due(self.cfg.refresh_minutes, self.clock.now(), front_again) {
             Due::Nothing => {}
             due => self.refresh_check(due == Due::Full),
@@ -144,19 +151,24 @@ impl App {
     /// 09:20. Reopen your job". At the first look only what's there is
     /// noted; a shop file that can't be read now is looked at next time.
     fn refresh_restored(&mut self, dir: &Path) -> bool {
-        let Ok(shop) = crate::shop::read(dir) else { return false };
-        let r = shop.and_then(|s| s.restored);
-        let now = r.as_ref().map(|r| (r.at, r.finished));
+        let Ok(now) = self.restore_now(dir) else { return false };
         let seen = self.autorefresh.restore_seen.replace(now);
-        match (seen, r) {
-            (Some(seen), Some(r)) if seen != now => {
-                let note = crate::engine::shop::restore_notice(&r, &self.clock);
+        let r = crate::shop::read(dir).ok().flatten().and_then(|s| s.restored);
+        match (seen, r, now) {
+            (Some(seen), Some(r), Some((_, state))) if seen != now => {
+                let note = crate::engine::shop::restore_notice(&r, state, &self.clock);
                 self.status = format!("{note}.");
                 self.autorefresh.restore_note = Some(note);
                 true
             }
             _ => false,
         }
+    }
+
+    /// BK13: the shop's last restore now: when, and whether it finished, is
+    /// running or stopped. Err: the shop file can't be read just now.
+    fn restore_now(&self, dir: &Path) -> Result<Option<(u64, crate::engine::shop::RestoreState)>, String> {
+        Ok(crate::shop::read(dir)?.and_then(|s| s.restored).map(|r| (r.at, crate::engine::shop::restore_state(dir, &r))))
     }
 
     /// BK13: the note on every window after the shop was restored, until
@@ -304,7 +316,7 @@ impl App {
             if !full && line.is_some() && self.autorefresh.lines.get(&id) == line.as_ref() {
                 continue;
             }
-            let since = lib.since(Kind::Job, Record { id, revision: self.jobs[i].lib_read.revision });
+            let since = lib.since(Kind::Job, Record { id, revision: self.jobs[i].lib_read.revision, restore: self.jobs[i].lib_read.restore });
             if !matches!(since, crate::library::Since::Gone) {
                 self.autorefresh.gone.remove(&id);
             }
@@ -874,6 +886,32 @@ mod refreshui_tests {
         later(&clock, QUICK_S);
         pc3.refresh_tick(false);
         assert!(pc3.autorefresh.restore_note.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// BK13, review S12: a window open with auto-refresh off when the shop
+    /// is restored is still told once auto-refresh is on: what the shop's
+    /// last restore was is taken when the window first shows the Library.
+    #[test]
+    fn a_restore_made_while_auto_refresh_was_off_is_told_when_it_is_on() {
+        let dir = new_library("refresh_restore_off");
+        let clock = Clock::at(NOV_9_0920);
+        let sam = Who::new("sam", "PROG-1");
+        crate::engine::shop::start(&dir, "Acme", &sam, &clock, crate::updates::VERSION).unwrap();
+        let _pc1 = demo7(&dir, &clock);
+        let backup = crate::engine::shop::backup_now(&dir, &Default::default(), &sam, &clock).unwrap().entry.name;
+        let mut pc2 = window(&dir, "kim", "PROG-2", &clock);
+        pc2.cfg.refresh_minutes = 0;
+        pc2.refresh_tick(false);
+        later(&clock, 60);
+        crate::engine::shop::restore(&dir, &backup, &sam, &clock, crate::updates::VERSION).unwrap();
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert!(pc2.autorefresh.restore_note.is_none(), "told with auto-refresh off");
+        pc2.cfg.refresh_minutes = 5;
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert_eq!(pc2.autorefresh.restore_note.as_deref(), Some("The shop was restored to 9 Nov 09:20. Reopen your job"), "{}", pc2.status);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
