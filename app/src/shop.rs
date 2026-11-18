@@ -65,10 +65,43 @@ pub struct ShopFile {
     /// Keep and the second place of the shop's backups (BK4, BK5).
     #[serde(default)]
     pub backups: crate::backup::Settings,
+    /// The last restore of a backup (BK12): other PCs see it at their next
+    /// quick check (BK13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored: Option<Restore>,
     /// What later versions keep in the shop file, kept as it was when this
     /// version writes it again.
     #[serde(flatten)]
     pub other: Map<String, Value>,
+}
+
+/// A restore of a backup, as the shop file records it (BK12).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restore {
+    /// The backup put back: its file name, and its day and time
+    /// ("2026-11-09 09:20", the local time of the PC that took it).
+    pub backup: String,
+    pub backup_when: String,
+    /// The backup of the Library as it was, taken first (BK9).
+    pub before: String,
+    /// Who restored it (the admin PC), and when.
+    pub by: Who,
+    pub at: u64,
+    /// False while the files are put back, and when that stopped halfway.
+    #[serde(default)]
+    pub finished: bool,
+    /// Every revision a record had before the restore is at most this, so
+    /// a save after it never gives a record a revision it had before (BK12,
+    /// LB7).
+    #[serde(default)]
+    pub revision_floor: u64,
+}
+
+/// BK12: saves after a restore give records revisions above this.
+/// 0 when the shop has never been restored (or isn't a shop, or its file
+/// can't be read just now).
+pub fn revision_floor(dir: &Path) -> u64 {
+    read(dir).ok().flatten().and_then(|s| s.restored).map_or(0, |r| r.revision_floor)
 }
 
 /// One PC's record in `Shop` (SH4): written by that PC when it opens the

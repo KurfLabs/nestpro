@@ -51,6 +51,12 @@ pub struct AutoRefresh {
     /// While it can't be reached: a look in the background whether it's
     /// back, so a share that's down never holds the window up.
     pub probe: Option<std::thread::JoinHandle<bool>>,
+    /// BK13: the shop's last restore at the last look (when, and whether it
+    /// had finished); None: not looked yet.
+    pub restore_seen: Option<Option<(u64, bool)>>,
+    /// BK13: "The shop was restored to 9 Nov 09:20. Reopen your job", shown
+    /// until closed.
+    pub restore_note: Option<String>,
 }
 
 impl AutoRefresh {
@@ -104,6 +110,11 @@ impl App {
             Ok(s) => s,
             Err(e) => return self.refresh_unreachable(e),
         };
+        // BK13: the shop was restored since the last look: said, and
+        // everything is read again, so open jobs reload or ask (LB15).
+        if self.refresh_restored(&dir) {
+            full = true;
+        }
         crate::shared::pause("refresh stamp taken");
         let lib = Library::at(&dir, &self.who, &self.clock);
         let seen = self.autorefresh.seen.clone();
@@ -126,6 +137,47 @@ impl App {
             self.autorefresh.recheck = !self.refresh_open_jobs(&lib, list.as_deref(), full);
         }
         self.autorefresh.seen = if ok { Some(stamp) } else { None };
+    }
+
+    /// BK13: has the shop been restored (or a restore finished) since the
+    /// last look? Then the note says so: "The shop was restored to 9 Nov
+    /// 09:20. Reopen your job". At the first look only what's there is
+    /// noted; a shop file that can't be read now is looked at next time.
+    fn refresh_restored(&mut self, dir: &Path) -> bool {
+        let Ok(shop) = crate::shop::read(dir) else { return false };
+        let r = shop.and_then(|s| s.restored);
+        let now = r.as_ref().map(|r| (r.at, r.finished));
+        let seen = self.autorefresh.restore_seen.replace(now);
+        match (seen, r) {
+            (Some(seen), Some(r)) if seen != now => {
+                let note = crate::engine::shop::restore_notice(&r, &self.clock);
+                self.status = format!("{note}.");
+                self.autorefresh.restore_note = Some(note);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// BK13: the note on every window after the shop was restored, until
+    /// it's closed.
+    pub fn restore_note_card(&mut self, ctx: &egui::Context) {
+        let Some(note) = self.autorefresh.restore_note.clone() else { return };
+        let mut close = false;
+        let top = 70.0 + crate::ui_parts::RIBBON_H;
+        egui::Area::new(egui::Id::unique("restore_note")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, [0.0, top]).show(ctx, |ui| {
+            egui::Frame::new().fill(th().warn_bg).stroke(egui::Stroke::new(1.0, th().warn_fg)).corner_radius(6).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("↺ {note}.")).strong().color(th().text_strong));
+                    ui.label(RichText::new("What you have open may be from before it: saving it asks first.").color(th().text));
+                    ui.add_space(6.0);
+                    close = ui.small_button("✖").on_hover_text("Close this note").clicked();
+                });
+            });
+        });
+        if close {
+            self.autorefresh.restore_note = None;
+        }
     }
 
     /// The Library can't be reached (LB11): the lists say so in its words,
@@ -382,7 +434,8 @@ impl App {
             return;
         }
         let mut close = false;
-        let top = 70.0 + crate::ui_parts::RIBBON_H;
+        // Below the note of a restore (BK13) when there is one.
+        let top = 70.0 + crate::ui_parts::RIBBON_H + if self.autorefresh.restore_note.is_some() { 44.0 } else { 0.0 };
         egui::Area::new(egui::Id::unique("reload_note")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_TOP, [0.0, top]).show(ctx, |ui| {
             egui::Frame::new().fill(th().accent_soft).stroke(egui::Stroke::new(1.0, th().accent_border)).corner_radius(6).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -441,6 +494,46 @@ impl App {
         })();
         if let Err(e) = r {
             self.status = format!("--reload-note: {e}");
+        }
+    }
+
+    /// Screenshots (`--restore-note` with `--library-dir=` a new, empty
+    /// folder): shop Acme, admin PC PC-A (sam). Job DEMO-7 is open on this
+    /// window, PC-B (kim); PC-A restores the backup of 9 Nov 08:00 at 09:20,
+    /// and this window's next quick check says so (BK13). Made-up shop, users
+    /// and PCs on a clock set to 9 Nov.
+    pub fn demo_restore_note(&mut self) {
+        let dir = self.library_dir();
+        if self.cfg.library_dir.is_empty() || dir == crate::library::default_dir() || crate::library::holds_library(&dir) {
+            self.status = "--restore-note needs --library-dir= set to a new, empty folder".into();
+            return;
+        }
+        let clock = crate::shared::Clock::at(1_794_216_000 - 80 * 60);
+        self.clock = clock.clone();
+        let sam = crate::shared::Who::new("sam", "PC-A");
+        self.who = crate::shared::Who::new("kim", "PC-B");
+        self.cfg.refresh_minutes = 1;
+        let r = (|| -> Result<(), String> {
+            crate::library::create(&dir)?;
+            crate::engine::shop::start(&dir, "Acme", &sam, &clock, crate::updates::VERSION)?;
+            let lib = Library::open(&dir, &sam, &clock)?;
+            let mut j = self.current_jobfile();
+            j.name = "DEMO-7".into();
+            j.week = "Acme".into();
+            j.library = None;
+            j.held.clear();
+            let rec = lib.save_job(&j, crate::library::SaveTo::New)?;
+            let backup = crate::engine::shop::backup_now(&dir, &Default::default(), &sam, &clock)?.entry.name;
+            clock.advance(std::time::Duration::from_secs(70 * 60));
+            self.open_library_job(rec.id);
+            self.refresh_tick(false);
+            clock.advance(std::time::Duration::from_secs(10 * 60));
+            crate::engine::shop::restore(&dir, &backup, &sam, &clock, crate::updates::VERSION)?;
+            self.refresh_tick(true);
+            Ok(())
+        })();
+        if let Err(e) = r {
+            self.status = format!("--restore-note: {e}");
         }
     }
 }
@@ -729,6 +822,59 @@ mod refreshui_tests {
         assert!(pc2.job_unsaved(pc2.cur_job));
         let stock = stock_file(&dir);
         Asked { dir, clock, pc1, pc2, id, stock }
+    }
+
+    /// BK13, acceptance 3: the admin PC restores the shop while PC 2 has
+    /// DEMO-7 open with a change it hasn't saved. PC 2's next quick check
+    /// says "The shop was restored to 9 Nov 09:20. Reopen your job" and asks
+    /// about its job (someone saved it since: the restore); keeping its own
+    /// changes, its save still asks (LB7) and the restored job stays as it
+    /// is. A window that opened after the restore isn't told.
+    #[test]
+    fn another_pc_is_told_of_a_restore_and_its_open_job_asks_before_saving() {
+        let dir = new_library("refresh_restore");
+        let clock = Clock::at(NOV_9_0920);
+        let sam = Who::new("sam", "PROG-1");
+        crate::engine::shop::start(&dir, "Acme", &sam, &clock, crate::updates::VERSION).unwrap();
+        let mut pc1 = demo7(&dir, &clock);
+        let id = pc1.job_lib_id.unwrap();
+        let backup = crate::engine::shop::backup_now(&dir, &Default::default(), &sam, &clock).unwrap().entry.name;
+        later(&clock, 10 * 60);
+        pc1.parts[0].qty = 25;
+        pc1.run_nesting();
+        pc1.save_job_to_library();
+        let mut pc2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        pc2.cfg.refresh_minutes = 5;
+        pc2.open_library_job(id);
+        pc2.refresh_tick(false);
+        assert!(pc2.autorefresh.restore_note.is_none());
+        pc2.parts[0].qty = 40;
+        pc2.run_nesting();
+        later(&clock, 60);
+        crate::engine::shop::restore(&dir, &backup, &sam, &clock, crate::updates::VERSION).unwrap();
+        let restored = std::fs::read(pc2.library().unwrap().path(Kind::Job, id)).unwrap();
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert_eq!(pc2.autorefresh.restore_note.as_deref(), Some("The shop was restored to 9 Nov 09:20. Reopen your job"), "{}", pc2.status);
+        assert!(matches!(pc2.libui.question, Some(SaveQuestion::Theirs(_))), "its job isn't asked about: {:?}", pc2.libui.question);
+        assert_eq!(pc2.parts[0].qty, 40, "nothing dropped");
+        pc2.keep_mine();
+        pc2.save_job_to_library();
+        assert!(matches!(&pc2.libui.question, Some(SaveQuestion::Job(c)) if c.id == id), "the save didn't ask: {}", pc2.status);
+        assert_eq!(std::fs::read(pc2.library().unwrap().path(Kind::Job, id)).unwrap(), restored, "the old job saved over the restored one");
+        assert_eq!(pc2.library().unwrap().load_job(id).unwrap().parts[0].qty, 20);
+        // Told once; a window opened after the restore isn't told.
+        pc2.autorefresh.restore_note = None;
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert!(pc2.autorefresh.restore_note.is_none(), "told again");
+        let mut pc3 = stock_window(&dir, "lee", "PROG-3", &clock);
+        pc3.cfg.refresh_minutes = 5;
+        pc3.refresh_tick(false);
+        later(&clock, QUICK_S);
+        pc3.refresh_tick(false);
+        assert!(pc3.autorefresh.restore_note.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// LB15 Reload theirs: the job becomes the job as PC 1 saved it, PC 2's

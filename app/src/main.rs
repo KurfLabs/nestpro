@@ -2867,6 +2867,7 @@ impl eframe::App for App {
         self.settings_window(&ctx);
         self.new_library_window(&ctx);
         self.shop_admin_window(&ctx);
+        self.restore_window(&ctx);
         // UP11: releases for a PC of its own, checked off the window's thread.
         self.update_tick(&ctx);
         self.whats_new_window(&ctx);
@@ -2889,6 +2890,7 @@ impl eframe::App for App {
             self.hold_frame(&ctx);
         }
         self.reload_note_card(&ctx);
+        self.restore_note_card(&ctx);
         self.unknown_material_card(&ctx);
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
@@ -3431,6 +3433,11 @@ fn main() -> eframe::Result {
             // --reload-note=ask: it has unsaved changes here, so it asks.
             if let Some(a) = std::env::args().find(|a| a == "--reload-note" || a == "--reload-note=ask") {
                 app.demo_reload_note(a.ends_with("=ask"));
+            }
+            // --restore-note (screenshots, with --library-dir= a new, empty
+            // folder): another PC restored the shop; this one is told (BK13).
+            if std::env::args().any(|a| a == "--restore-note") {
+                app.demo_restore_note();
             }
             // --unknown-material (screenshots, with --library-dir= a new,
             // empty folder): a job whose material isn't in the list (MA30).

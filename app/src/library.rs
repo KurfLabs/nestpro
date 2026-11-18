@@ -647,7 +647,8 @@ impl Library {
         }
         shared::pause("revision checked");
         let read = if let SaveTo::Read(r) = to { r.revision } else { 0 };
-        let revision = now.as_ref().map_or(0, |d| d.revision()).max(read) + 1;
+        // BK12: after a restore, never a revision the record had before it.
+        let revision = now.as_ref().map_or(0, |d| d.revision()).max(read).max(crate::shop::revision_floor(&self.dir)) + 1;
         let prepared = prepare().map_err(nothing)?;
         let (id, new) = match to.id() {
             Some(i) => (i, false),

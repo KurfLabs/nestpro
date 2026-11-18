@@ -14,6 +14,9 @@ use std::path::Path;
 /// SH7: why an agent can't change the admin PC.
 pub const AGENT_ADMIN: &str = "Changing the admin PC is refused for agents: the admin PC rolls out updates and restores backups, so a person changes it, in the window (Settings → Shop → Make this PC the admin PC, on the PC that should be the admin PC). Nothing was changed.";
 
+/// BK8: why an agent can't restore a backup.
+pub const AGENT_RESTORE: &str = "Restoring a backup is refused for agents: it puts the whole shop back to an earlier day and takes out every PC's work since, so a person does it on the admin PC, in the window (Settings → Shop → Backups → Restore…). Nothing was changed.";
+
 /// A shop folder this PC can't write to.
 fn cant_write(dir: &Path, e: &str) -> String {
     format!("No shop was started: this PC can't write in {} ({e}). Check that this PC's user may change files there.", dir.display())
@@ -91,6 +94,7 @@ pub fn start_shop(dir: &Path, name: &str, who: &Who, clock: &Clock, version: &st
         settings_by: SettingsBy::AdminPc,
         started: Saved { by: who.clone(), at },
         backups: Default::default(),
+        restored: None,
         other: Map::new(),
     };
     if let Err(e) = shop::write(dir, &s, &lock, version) {
@@ -218,6 +222,53 @@ pub fn backup_now(dir: &Path, own: &backup::Settings, who: &Who, clock: &Clock) 
     }
 }
 
+/// BK8: what a person restoring a backup gets: what the restore did, and
+/// the copy of the "before restore" backup in the second place (None: no
+/// second place is set).
+pub struct RestoreDone {
+    pub done: backup::Restored,
+    pub second: Option<Result<std::path::PathBuf, String>>,
+}
+
+/// BK8–BK12: restore the backup named `name` over the shop folder `dir`.
+/// Only a person, on the admin PC, whatever the shop says about who changes
+/// shop settings (SH3): an agent, or another PC, is refused with the reason
+/// and nothing changes. Checked again once this PC holds the Library's
+/// write lock, which the whole restore is made under (LB1). The "before
+/// restore" backup goes to the second place after the lock is let go.
+pub fn restore(dir: &Path, name: &str, who: &Who, clock: &Clock, version: &str) -> Result<RestoreDone, String> {
+    if who.agent {
+        return Err(AGENT_RESTORE.into());
+    }
+    let not_shop = || format!("Nothing was restored: {} isn't a shop. Backups are restored on a shop's admin PC.", dir.display());
+    may_restore(&shop::read(dir)?.ok_or_else(not_shop)?, who)?;
+    let mut lock = WriteLock::take(dir).map_err(|e| format!("Nothing was restored: {e}"))?;
+    may_restore(&shop::read(dir)?.ok_or_else(not_shop)?, who)?;
+    let done = backup::restore(dir, name, who, clock, version, &mut lock)?;
+    drop(lock);
+    let second = backup::to_second_place(dir, &done.before);
+    Ok(RestoreDone { done, second })
+}
+
+/// BK8: backups are restored only on the admin PC.
+fn may_restore(s: &ShopFile, who: &Who) -> Result<(), String> {
+    if s.admin.pc != who.pc {
+        return Err(format!("Backups are restored only on the admin PC ({}), whatever the shop settings say. Nothing was restored.", s.admin.pc));
+    }
+    Ok(())
+}
+
+/// BK13: what other PCs say of the shop's last restore, by `clock`: "The
+/// shop was restored to 9 Nov 09:20. Reopen your job", or that one stopped
+/// halfway. None when the shop was never restored.
+pub fn restore_notice(r: &shop::Restore, clock: &Clock) -> String {
+    if r.finished {
+        format!("The shop was restored to {}. Reopen your job", backup::shown_stamp(&r.backup_when))
+    } else {
+        format!("A restore of the shop on {} stopped halfway ({}). Save nothing until it is finished on the admin PC", r.by.pc, clock.shown(r.at))
+    }
+}
+
 /// BK7: the backups of the Library in `dir`, for Settings → Shop and agents.
 pub fn backups(dir: &Path, own: &backup::Settings) -> Result<backup::Overview, String> {
     backup::overview(dir, own)
@@ -278,7 +329,7 @@ fn backups_json(o: &Result<backup::Overview, String>) -> Value {
     json!({
         "folder": o.folder.as_ref().map(|f| f.display().to_string()).ok(),
         "folder_problem": o.folder.as_ref().err(),
-        "last": o.last.as_ref().map(|e| json!({"file": e.name, "when": e.stamp(), "pc": e.pc})),
+        "last": o.last.as_ref().map(|e| json!({"file": e.name, "when": e.stamp(), "pc": e.pc, "before_restore": e.before_restore})),
         "count": o.count,
         "keep_days": o.settings.keep(),
         "second_place": (!o.settings.second_place.is_empty()).then_some(&o.settings.second_place),
@@ -328,6 +379,9 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             Ok(Outcome { message, data, changed: false, files: vec![d.entry.path.clone()] })
         }
         "updates" => Ok(super::updates::run(ctx)),
+        // Agents never restore a backup (BK8): the engine's own rule
+        // refuses it, whoever the session says it works for.
+        "restore" => restore(dir, &a.str("backup").unwrap_or_default(), &ctx.who.clone().as_agent(), &ctx.clock, &ctx.version).map(|_| unreachable!("an agent restored a backup")),
         _ => {
             // Using the program on this PC records it (SH4). When it can't,
             // the shop is still shown, with why this PC isn't in it (SH6).
@@ -368,6 +422,15 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     "this_pc_recorded": unrecorded.is_none(),
                     "this_pc_not_recorded": unrecorded,
                     "backups": backups_json(&backup::overview(dir, &ctx.cfg.backups)),
+                    "last_restore": s.restored.as_ref().map(|r| json!({
+                        "backup": r.backup,
+                        "restored_to": r.backup_when,
+                        "by": r.by.label(),
+                        "at": ctx.clock.stamp(r.at),
+                        "finished": r.finished,
+                        "before_restore_backup": r.before,
+                        "notice": restore_notice(r, &ctx.clock),
+                    })),
                 }),
             ))
         }

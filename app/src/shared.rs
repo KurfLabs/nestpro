@@ -511,18 +511,15 @@ impl WriteLock {
     /// own lock, and nobody has begun to take it over. Checked just before
     /// every file is replaced.
     pub fn still_held(&self) -> Result<(), String> {
+        held_by(&self.lease())
+    }
+
+    /// This writer's lease as it is now: renewed through another handle on
+    /// the same lock (one taken inside another, on this thread) too, so a
+    /// long job renewing it inside keeps the outer handle's time (BK11).
+    fn lease(&self) -> Lease {
         let l = &self.0;
-        within(l.since, l.wall, l.hold_for)?;
-        let now = std::fs::read(&l.file).ok();
-        let ours = now.as_deref().and_then(|t| serde_json::from_slice::<Holder>(t).ok()).is_some_and(|h| h.token == l.token);
-        let taking_over = now.as_deref().is_some_and(|t| mark_path(&l.file, t).exists());
-        pause("lock read");
-        if !ours || taking_over {
-            return Err("another PC took over the Library's write lock while this PC was writing. Nothing was saved — save again".into());
-        }
-        // Reading the lock can be slow on a share: still inside the time
-        // after it, so only the change itself is left to send (LB2).
-        within(l.since, l.wall, l.hold_for)
+        HELD.with(|h| h.borrow().iter().find(|(x, _)| x.file == l.file && x.token == l.token).map(|(x, _)| x.clone())).unwrap_or_else(|| l.clone())
     }
 
     /// Renew the lock for a long job (a backup, BK3): rewrite the lock file,
@@ -552,12 +549,28 @@ impl WriteLock {
     /// `renew` once a third of this writer's time has gone, so a long job
     /// that checks often keeps the lock without ever running out of time.
     pub fn renew_if_due(&mut self) -> Result<(), String> {
-        if self.0.since.elapsed() >= self.0.hold_for / 3 || self.0.wall.elapsed().map_or(false, |d| d >= self.0.hold_for / 3) {
+        let l = self.lease();
+        if l.since.elapsed() >= l.hold_for / 3 || l.wall.elapsed().map_or(false, |d| d >= l.hold_for / 3) {
             self.renew()
         } else {
             Ok(())
         }
     }
+}
+
+/// `still_held` for the lease `l` (LB2).
+fn held_by(l: &Lease) -> Result<(), String> {
+    within(l.since, l.wall, l.hold_for)?;
+    let now = std::fs::read(&l.file).ok();
+    let ours = now.as_deref().and_then(|t| serde_json::from_slice::<Holder>(t).ok()).is_some_and(|h| h.token == l.token);
+    let taking_over = now.as_deref().is_some_and(|t| mark_path(&l.file, t).exists());
+    pause("lock read");
+    if !ours || taking_over {
+        return Err("another PC took over the Library's write lock while this PC was writing. Nothing was saved — save again".into());
+    }
+    // Reading the lock can be slow on a share: still inside the time
+    // after it, so only the change itself is left to send (LB2).
+    within(l.since, l.wall, l.hold_for)
 }
 
 impl Lease {
@@ -613,6 +626,8 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
 
 impl Drop for WriteLock {
     fn drop(&mut self) {
+        // As renewed by any handle on it, before this one lets go of it.
+        let lease = self.lease();
         let last = HELD.with(|h| {
             let mut h = h.borrow_mut();
             match h.iter().position(|(l, _)| l.file == self.0.file && l.token == self.0.token) {
@@ -630,7 +645,7 @@ impl Drop for WriteLock {
         });
         // Removed only by its holder, and only inside its time (LB2): later,
         // it is left for another PC to take over.
-        if last && self.still_held().is_ok() {
+        if last && held_by(&lease).is_ok() {
             let _ = std::fs::remove_file(&self.0.file);
         }
     }
@@ -655,6 +670,14 @@ pub fn write_file(path: &Path, bytes: &[u8], lock: Option<&WriteLock>) -> Result
 /// is harmless: no one reads it).
 pub fn write_existing(path: &Path, bytes: &[u8], lock: &WriteLock) -> Result<(), String> {
     replace_in(path, bytes, || lock.still_held(), false)
+}
+
+/// Move a whole file `from` (a file of this writer's own, on the same
+/// share) over `to`, only while the write lock is still this writer's,
+/// checked just before every try (LB2), trying again for a moment when
+/// Windows says the file is busy. A restore puts its files back so (BK11).
+pub(crate) fn move_over(from: &Path, to: &Path, lock: &WriteLock) -> Result<(), String> {
+    rename(from, to, &|| lock.still_held())
 }
 
 /// `write_file`, checking `fence` just before every try of the rename.

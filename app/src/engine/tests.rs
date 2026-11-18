@@ -10963,3 +10963,378 @@ fn a_library_a_newer_version_wrote_is_backed_up_as_it_is() {
     assert_eq!(std::fs::read(lib.join(crate::shop::FILE)).unwrap(), before[crate::shop::FILE]);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Restore (spec #178, BK8–BK13): the admin PC puts a backup back; agents and
+// other PCs are refused; other sessions' old jobs never save over it.
+// ---------------------------------------------------------------------------
+
+/// The names of the Library's records as an agent lists them.
+fn record_names(s: &mut Session) -> Vec<String> {
+    let mut n: Vec<String> = call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| format!("{} {}", e["kind"].as_str().unwrap(), e["name"].as_str().unwrap())).collect();
+    n.sort();
+    n
+}
+
+/// The sheet stock's references as an agent lists them.
+fn stock_refs(s: &mut Session) -> Vec<String> {
+    let mut n: Vec<String> = call(s, "stock", None, json!({"mode": "list", "show_zero": true}))["data"]["sheets"].as_array().unwrap().iter().map(|e| e["ref"].as_str().unwrap().to_string()).collect();
+    n.sort();
+    n
+}
+
+/// Every file under the Library but what a restore keeps as it is (BK10).
+fn library_files(lib: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let kept = ["Updates", "Backups", "Shop", "Holds", "shop.json", "backup-id.txt", "library.lock"];
+    files_under(lib).into_iter().filter(|(k, _)| !kept.iter().any(|x| k.split(['/', '\\']).next() == Some(x))).collect()
+}
+
+/// A zip in the shop's Backups marked as this Library's backup of the day
+/// before `clock`'s, holding `files` (names as given, `/` ending a folder),
+/// made by hand: what another tool, or a damaged or made-up backup, holds.
+fn crafted_backup(lib: &Path, clock: &Clock, files: &[(&str, &[u8])]) -> String {
+    use std::io::Write as _;
+    let id = crate::backup::library_id(lib).unwrap().expect("the Library has no backup id yet");
+    let day = &clock.stamp(clock.now() - 86400)[..10];
+    let name = format!("Backup Acme {} {day} 0800 PC-A.zip", &id[..8]);
+    let mut z = zip::ZipWriter::new(std::fs::File::create(lib.join("Backups").join(&name)).unwrap());
+    for (n, b) in files {
+        if n.ends_with('/') {
+            z.add_directory(*n, zip::write::SimpleFileOptions::default()).unwrap();
+        } else {
+            z.start_file(*n, zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(b).unwrap();
+        }
+    }
+    z.set_comment(format!("nestpro-backup id={id}")).unwrap();
+    z.finish().unwrap();
+    name
+}
+
+/// What the admin PC's person does: restore the backup named `name`.
+fn restore_as(lib: &Path, pc: &str, name: &str, clock: &Clock) -> Result<super::shop::RestoreDone, String> {
+    super::shop::restore(lib, name, &Who::new("sam", pc), clock, crate::updates::VERSION)
+}
+
+/// AC 1 (BK8–BK12): restoring a backup brings back its jobs, library parts,
+/// stock and other files (names with spaces and accents too), takes out
+/// what was made since, and keeps the Library as it was first in a "before
+/// restore" backup of its own, which counts as one of its backups. What the
+/// shop is now stays: its file (with the restore recorded), each PC's
+/// record, Updates, the other backups and the backup id. Agents read it all
+/// through `Session::call`; the restore itself is the person's, on the
+/// admin PC.
+#[test]
+fn restoring_a_backup_brings_back_its_jobs_and_stock_and_keeps_what_was_there() {
+    let d = dir("restore_brings_back");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let (mut s, lib) = backup_shop(&d, &clock);
+    std::fs::create_dir_all(lib.join("Drawings").join("Größe 2 mm")).unwrap();
+    std::fs::write(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf"), b"0\nEOF\n").unwrap();
+    let r = call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let chosen = file_of(&r);
+    let then = library_files(&lib);
+    let id_before = std::fs::read(lib.join(crate::backup::ID_FILE)).unwrap();
+    assert_eq!(record_names(&mut s), ["job DEMO-001 frames", "product DEMO-P1"]);
+    assert_eq!(stock_refs(&mut s), ["S1"]);
+    // The next day: a new job, new stock, a drawing changed, a file added;
+    // and what the shop is now: PC-B joins, a release is rolled out.
+    clock.advance(std::time::Duration::from_secs(86400));
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let jp = d.join("DEMO-002 brackets.snjob");
+    call(&mut b, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 4, "name": "DEMO-P2"}));
+    let new_id = call(&mut b, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S2", "w": 1000, "h": 500, "thickness": 3, "qty": 5}));
+    call(&mut b, "shop", None, json!({}));
+    std::fs::write(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf"), b"0\nSECTION\n0\nEOF\n").unwrap();
+    std::fs::write(lib.join("Notes from today.txt"), b"made after the backup").unwrap();
+    std::fs::write(lib.join("Updates").join("nestpro-0.2.0-full.nupkg"), b"a release").unwrap();
+    let now = library_files(&lib);
+    assert_eq!(record_names(&mut s), ["job DEMO-001 frames", "job DEMO-002 brackets", "product DEMO-P1"]);
+    let shop_name = crate::shop::read(&lib).unwrap().unwrap().name;
+
+    // An agent can't: refused with the reason, nothing changed.
+    let e = err(&mut s, "shop", json!({"mode": "restore", "backup": chosen}));
+    assert!(e.contains("refused for agents") && e.contains("admin PC") && e.contains("Nothing was changed"), "{e}");
+    assert_eq!(library_files(&lib), now);
+
+    // The person on the admin PC restores it.
+    clock.advance(std::time::Duration::from_secs(3600));
+    let done = restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    assert_eq!(done.done.from.name, chosen);
+    assert!(done.second.is_none(), "no second place is set");
+    // Its jobs, library parts, stock and files are back, byte for byte;
+    // what was made since is gone.
+    assert_eq!(record_names(&mut s), ["job DEMO-001 frames", "product DEMO-P1"]);
+    assert_eq!(stock_refs(&mut s), ["S1"]);
+    let after = library_files(&lib);
+    for (k, v) in &then {
+        assert_eq!(after.get(k), Some(v), "{k} isn't as it was in the backup");
+    }
+    let extra: Vec<&String> = after.keys().filter(|k| !then.contains_key(*k)).collect();
+    assert!(extra.iter().all(|k| k.ends_with(".deleted")), "files that aren't in the backup: {extra:?}");
+    assert!(!lib.join("Notes from today.txt").exists());
+    assert_eq!(std::fs::read(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf")).unwrap(), b"0\nEOF\n");
+    // What the shop is now is kept.
+    assert_eq!(std::fs::read(lib.join(crate::backup::ID_FILE)).unwrap(), id_before, "the backup id changed");
+    assert_eq!(std::fs::read(lib.join("Updates").join("nestpro-0.2.0-full.nupkg")).unwrap(), b"a release");
+    let st = call(&mut s, "shop", None, json!({}));
+    let pcs: Vec<&str> = st["data"]["pcs"].as_array().unwrap().iter().map(|p| p["pc"].as_str().unwrap()).collect();
+    assert_eq!(pcs, ["PC-A", "PC-B"], "{st}");
+    assert_eq!(st["data"]["name"], shop_name.as_str());
+    let lr = &st["data"]["last_restore"];
+    assert_eq!(lr["backup"], chosen.as_str(), "{st}");
+    assert_eq!(lr["restored_to"], "2026-11-09 09:20", "{st}");
+    assert_eq!(lr["by"], "sam on PC-A", "{st}");
+    assert_eq!(lr["finished"], true, "{st}");
+    assert_eq!(lr["notice"], "The shop was restored to 9 Nov 09:20. Reopen your job", "{st}");
+    // The Library as it was is in the "before restore" backup, which is one
+    // of its backups (Keep counts it), and holds the job and stock made since.
+    let before = &done.done.before;
+    assert!(before.name.ends_with(" PC-A before restore.zip") && before.before_restore, "{}", before.name);
+    assert_eq!(lr["before_restore_backup"], before.name.as_str());
+    assert_eq!(backup_names(&lib, &lib.join("Backups")), vec![chosen.clone(), before.name.clone()]);
+    let kept = zip_files(&before.path);
+    for (k, v) in &now {
+        assert_eq!(kept.get(&k.replace('\\', "/")), Some(v), "{k} isn't in the before restore backup as it was");
+    }
+    // The job made since keeps its number taken (LB16): a job saved now gets
+    // another, never the one PC-B's job file still points at.
+    let jp3 = d.join("DEMO-003 hinges.snjob");
+    call(&mut s, "new", Some(jp3.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 150, "h": 150, "qty": 1, "name": "DEMO-P3"}));
+    let third = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    assert_ne!(third, new_id, "a job saved after the restore took the number of a job it took out");
+    // Nothing is left of the restore's own working folder.
+    let left: Vec<String> = std::fs::read_dir(lib.join("Backups")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| !n.ends_with(".zip")).collect();
+    assert!(left.is_empty(), "{left:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// AC 2 (BK8): a restore from another PC, even a person's and even when
+/// shop settings are changed from any PC, or from an agent on the admin PC,
+/// is refused with the reason. Nothing changes and no backup is taken.
+#[test]
+fn restore_is_refused_on_other_pcs_and_for_agents() {
+    let d = dir("restore_refused");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    // Shop settings from any PC: restoring still isn't.
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        let mut f = crate::shop::read(&lib).unwrap().unwrap();
+        f.settings_by = crate::shop::SettingsBy::AnyPc;
+        crate::shop::write(&lib, &f, &lock, crate::updates::VERSION).unwrap();
+    }
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-B", &chosen, &clock).err().unwrap();
+    assert!(e.contains("only on the admin PC (PC-A)") && e.contains("Nothing was restored"), "{e}");
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let e = err(&mut b, "shop", json!({"mode": "restore", "backup": chosen}));
+    assert!(e.contains("refused for agents"), "{e}");
+    // An agent on the admin PC itself, through the engine too.
+    let e = super::shop::restore(&lib, &chosen, &Who::new("sam", "PC-A").as_agent(), &clock, crate::updates::VERSION).err().unwrap();
+    assert_eq!(e, super::shop::AGENT_RESTORE);
+    assert_eq!(files_under(&lib), before, "a refused restore changed the shop folder");
+    // A Library that is no shop has no admin PC: nothing is restored there.
+    let own = d.join("own");
+    std::fs::create_dir_all(&own).unwrap();
+    crate::library::create(&own.join("Library")).unwrap();
+    let e = restore_as(&own.join("Library"), "PC-A", &chosen, &clock).err().unwrap();
+    assert!(e.contains("isn't a shop"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// AC 3 (BK12, BK13, LB7): another session sees the restore, and a job it
+/// had open from before can't save over the Library silently: the save is
+/// refused saying someone saved it since, even after a third PC has saved
+/// that job again after the restore (its revision never repeats one the old
+/// job file read). A job made after the backup, still open on that PC,
+/// saves again under its own number, never over another job.
+#[test]
+fn another_session_sees_the_restore_and_its_old_job_cant_overwrite() {
+    let d = dir("restore_old_job");
+    let clock = Clock::at(1_794_216_000);
+    let (mut a, lib) = backup_shop(&d, &clock);
+    let job_id = call(&mut a, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().find(|e| e["kind"] == "job").unwrap()["id"].as_u64().unwrap();
+    let chosen = file_of(&call(&mut a, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(3600));
+    // After the backup, PC-A saves the job again; PC-B then opens it, and
+    // makes a job of its own.
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 1, "name": "DEMO-PA"}));
+    call(&mut a, "library", None, json!({"mode": "save-job"}));
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let bp = d.join("PC-B frames.snjob");
+    call(&mut b, "new", Some(bp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "library", None, json!({"mode": "open", "id": job_id}));
+    let mut b2 = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let bp2 = d.join("PC-B new.snjob");
+    call(&mut b2, "new", Some(bp2.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b2, "add-shape", None, json!({"shape": "rectangle", "w": 120, "h": 80, "qty": 2, "name": "DEMO-PB"}));
+    let made_since = call(&mut b2, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    // The admin PC restores the backup; PC-C opens the job and saves it.
+    clock.advance(std::time::Duration::from_secs(600));
+    restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    let st = call(&mut b, "shop", None, json!({}));
+    assert_eq!(st["data"]["last_restore"]["notice"], "The shop was restored to 9 Nov 09:20. Reopen your job", "{st}");
+    let mut c = shop_session(&lib, Who::new("lee", "PC-C").as_agent(), &clock);
+    let cp = d.join("PC-C frames.snjob");
+    call(&mut c, "new", Some(cp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut c, "library", None, json!({"mode": "open", "id": job_id}));
+    call(&mut c, "library", None, json!({"mode": "save-job"}));
+    let record = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, job_id);
+    let theirs = std::fs::read(&record).unwrap();
+    // PC-B's job file from before the restore: refused, nothing changed.
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 90, "h": 90, "qty": 1, "name": "DEMO-PX"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("since this job file read it"), "{e}");
+    assert_eq!(std::fs::read(&record).unwrap(), theirs, "the old job file saved over the restored job");
+    // PC-B's job made since the backup saves again under its own number.
+    let again = call(&mut b2, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    assert_eq!(again, made_since);
+    assert_eq!(std::fs::read(&record).unwrap(), theirs);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK11, UP7: a backup holding a file a newer version wrote can't be
+/// restored on this PC (it couldn't read it), and nothing is changed: no
+/// "before restore" backup either.
+#[test]
+fn a_backup_a_newer_version_wrote_is_refused() {
+    let d = dir("restore_newer");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let name = crafted_backup(&lib, &clock, &[("index.json", br#"{"program_version": "9.0.0", "format": "nestpro-library", "version": 1, "entries": []}"#)]);
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap();
+    assert!(e.contains("9.0.0") && e.contains("Update this PC") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK11: a backup with a name that would go outside the shop folder, or a
+/// link, is refused before anything changes, and nothing is written
+/// outside the shop folder.
+#[test]
+fn a_backup_with_names_outside_the_shop_folder_is_refused() {
+    let d = dir("restore_outside");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let before = files_under(&lib);
+    for bad in ["../outside.txt", "Jobs/../../outside.txt", "/tmp/outside.txt", "\\outside.txt", "C:\\outside.txt", "C:outside.txt", "..\\outside.txt", "Jobs\\..\\..\\outside.txt", "\\\\srv\\Nesting\\outside.txt"] {
+        let name = crafted_backup(&lib, &clock, &[("index.json", b"{}"), (bad, b"x")]);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap();
+        assert!(e.contains("outside the shop folder") && e.contains("Nothing was restored"), "{bad}: {e}");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+        assert_eq!(files_under(&lib), before, "{bad}");
+    }
+    assert!(!d.join("outside.txt").exists() && !lib.parent().unwrap().join("outside.txt").exists());
+    // A link in the zip.
+    let id = crate::backup::library_id(&lib).unwrap().unwrap();
+    let name = format!("Backup Acme {} 2026-11-08 0800 PC-A.zip", &id[..8]);
+    {
+        let mut z = zip::ZipWriter::new(std::fs::File::create(lib.join("Backups").join(&name)).unwrap());
+        z.add_symlink("Jobs", "/etc", zip::write::SimpleFileOptions::default()).unwrap();
+        z.set_comment(format!("nestpro-backup id={id}")).unwrap();
+        z.finish().unwrap();
+    }
+    let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap();
+    assert!(e.contains("link") && e.contains("Nothing was restored"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK11: a backup made by another tool on Windows (`\` between folders),
+/// with names with spaces and accents, is put back in its folders.
+#[test]
+fn a_backup_with_windows_paths_and_accents_is_put_back_in_its_folders() {
+    let d = dir("restore_windows_paths");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    call(&mut s, "shop", None, json!({"mode": "backup"}));
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let name = crafted_backup(&lib, &clock, &[("index.json", &index), ("Drawings\\Größe 2 mm\\", b""), ("Drawings\\Größe 2 mm\\Flansch ø40.dxf", b"0\nEOF\n"), ("Kunden Ä/Notiz é.txt", b"hello")]);
+    restore_as(&lib, "PC-A", &name, &clock).unwrap();
+    assert_eq!(std::fs::read(lib.join("Drawings").join("Größe 2 mm").join("Flansch ø40.dxf")).unwrap(), b"0\nEOF\n");
+    assert_eq!(std::fs::read(lib.join("Kunden Ä").join("Notiz é.txt")).unwrap(), b"hello");
+    assert!(!lib.join("Sheets").exists(), "the stock isn't in this backup, but stayed");
+    let records: Vec<String> = files_under(&lib).into_keys().filter(|k| k.ends_with(".snjob") || k.starts_with("Products")).collect();
+    assert!(records.iter().all(|k| k.ends_with(".deleted")), "records that aren't in the backup stayed: {records:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK9: when the "before restore" backup can't be taken, nothing is
+/// restored and the Library is as it was.
+#[test]
+fn a_restore_whose_before_restore_backup_fails_restores_nothing() {
+    let d = dir("restore_before_fails");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(3600));
+    std::fs::write(lib.join("Notes from today.txt"), b"made after the backup").unwrap();
+    let before = files_under(&lib);
+    crate::backup::STOP_AFTER.with(|x| x.set(Some(1)));
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err().unwrap();
+    crate::backup::STOP_AFTER.with(|x| x.set(None));
+    assert!(e.contains("Nothing was restored") && e.contains("backed up first") && e.contains("The Library is as it was"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    assert!(crate::shop::read(&lib).unwrap().unwrap().restored.is_none(), "a restore that didn't happen was recorded");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK11, BK12: a restore that stops halfway says what state the Library is
+/// in, other PCs are told it stopped halfway, and restoring the "before
+/// restore" backup puts the Library back as it was.
+#[test]
+fn a_restore_that_stops_halfway_says_so_and_its_before_backup_puts_it_back() {
+    let d = dir("restore_halfway");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(3600));
+    let jp = d.join("DEMO-002 brackets.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 4, "name": "DEMO-P2"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    let was = library_files(&lib);
+    crate::backup::RESTORE_STOP_AFTER.with(|x| x.set(Some(1)));
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err().unwrap();
+    crate::backup::RESTORE_STOP_AFTER.with(|x| x.set(None));
+    assert!(e.contains("stopped halfway") && e.contains("before restore.zip") && e.contains("restore it to put the Library back"), "{e}");
+    let st = call(&mut s, "shop", None, json!({}));
+    assert_eq!(st["data"]["last_restore"]["finished"], false, "{st}");
+    assert!(st["data"]["last_restore"]["notice"].as_str().unwrap().contains("stopped halfway"), "{st}");
+    let before = st["data"]["last_restore"]["before_restore_backup"].as_str().unwrap().to_string();
+    clock.advance(std::time::Duration::from_secs(60));
+    restore_as(&lib, "PC-A", &before, &clock).unwrap();
+    assert_eq!(library_files(&lib).into_iter().filter(|(k, _)| !k.ends_with(".deleted")).collect::<std::collections::BTreeMap<_, _>>(), was, "the before restore backup didn't put the Library back as it was");
+    assert_eq!(record_names(&mut s), ["job DEMO-001 frames", "job DEMO-002 brackets", "product DEMO-P1"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK1, BK4, BK9: the "before restore" backup is one of the Library's
+/// backups: Keep counts it and never removes it the day it's made; the
+/// day's backup isn't taken again on that day.
+#[test]
+fn the_before_restore_backup_counts_and_stays_its_first_day() {
+    let d = dir("restore_keep");
+    let clock = Clock::at(1_794_216_000);
+    let (mut s, lib) = backup_shop(&d, &clock);
+    {
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        let mut f = crate::shop::read(&lib).unwrap().unwrap();
+        f.backups.keep_days = 1;
+        crate::shop::write(&lib, &f, &lock, crate::updates::VERSION).unwrap();
+    }
+    let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    clock.advance(std::time::Duration::from_secs(600));
+    let done = restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    // Back up now the same day, Keep 1: both of today's stay.
+    let third = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));
+    assert_eq!(backup_names(&lib, &lib.join("Backups")), vec![chosen, done.done.before.name.clone(), third]);
+    let _ = std::fs::remove_dir_all(&d);
+}

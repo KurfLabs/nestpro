@@ -80,20 +80,36 @@ pub struct Entry {
     /// 1, or 2, 3… for a second backup in the same minute.
     pub seq: u32,
     pub bytes: u64,
+    /// Taken by a restore just before it changed the Library (BK9).
+    pub before_restore: bool,
 }
 
 impl Entry {
     /// "9 Nov 09:20".
     pub fn shown(&self) -> String {
-        let (_, m, d) = self.day;
-        let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(m as usize).clamp(1, 12) - 1];
-        format!("{d} {month} {:02}:{:02}", self.time.0, self.time.1)
+        shown_at(self.day, self.time)
     }
 
     /// "2026-11-09 09:20" (agents).
     pub fn stamp(&self) -> String {
         let (y, m, d) = self.day;
         format!("{y}-{m:02}-{d:02} {:02}:{:02}", self.time.0, self.time.1)
+    }
+}
+
+/// "9 Nov 09:20".
+fn shown_at((_, m, d): (i64, u32, u32), (hh, mm): (u32, u32)) -> String {
+    let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(m as usize).clamp(1, 12) - 1];
+    format!("{d} {month} {hh:02}:{mm:02}")
+}
+
+/// A backup's "2026-11-09 09:20" (`Entry::stamp`) as "9 Nov 09:20"; as it
+/// is when it isn't one.
+pub fn shown_stamp(stamp: &str) -> String {
+    let n = |a: usize, b: usize| stamp.get(a..b).filter(|x| x.bytes().all(|c| c.is_ascii_digit())).and_then(|x| x.parse::<u32>().ok());
+    match (n(5, 7), n(8, 10), n(11, 13), n(14, 16)) {
+        (Some(m), Some(d), Some(hh), Some(mm)) if stamp.len() == 16 && (1..=12).contains(&m) => shown_at((0, m, d), (hh, mm)),
+        _ => stamp.to_string(),
     }
 }
 
@@ -113,13 +129,18 @@ impl Ns {
 }
 
 /// A backup's file name: `Backup Acme 1a2b3c4d 2026-11-09 0920 PC-A.zip`,
-/// with ` 2`, ` 3`… after the PC when that name is taken (BK1).
-fn name_for(ns: &Ns, day: (i64, u32, u32), time: (u32, u32), pc: &str, n: u32) -> String {
+/// with ` 2`, ` 3`… after the PC when that name is taken (BK1), and
+/// ` before restore` at the end for the one a restore takes first (BK9).
+fn name_for(ns: &Ns, day: (i64, u32, u32), time: (u32, u32), pc: &str, n: u32, before_restore: bool) -> String {
     let (y, m, d) = day;
     let more = if n > 1 { format!(" {n}") } else { String::new() };
     let label: String = shared::file_safe(&ns.label).chars().take(24).collect();
-    format!("{PREFIX}{label} {} {y:04}-{m:02}-{d:02} {:02}{:02} {}{more}.zip", ns.short(), time.0, time.1, shared::file_safe(pc))
+    let why = if before_restore { BEFORE_RESTORE } else { "" };
+    format!("{PREFIX}{label} {} {y:04}-{m:02}-{d:02} {:02}{:02} {}{more}{why}.zip", ns.short(), time.0, time.1, shared::file_safe(pc))
 }
+
+/// The end of the name of a backup a restore takes first (BK9).
+const BEFORE_RESTORE: &str = " before restore";
 
 /// What a backup's file name says.
 #[derive(Debug, PartialEq)]
@@ -129,12 +150,17 @@ struct Named {
     time: (u32, u32),
     pc: String,
     seq: u32,
+    before_restore: bool,
 }
 
 /// What a backup's file name says; None for any other name. Only ASCII
 /// digits are read as numbers (a name with other signs is no backup's).
 fn parse(name: &str) -> Option<Named> {
     let rest = name.strip_prefix(PREFIX)?.strip_suffix(".zip")?;
+    let (rest, before_restore) = match rest.strip_suffix(BEFORE_RESTORE) {
+        Some(r) => (r, true),
+        None => (rest, false),
+    };
     let t: Vec<&str> = rest.split(' ').collect();
     if !(5..=6).contains(&t.len()) {
         return None;
@@ -162,7 +188,7 @@ fn parse(name: &str) -> Option<Named> {
         Some(_) => return None,
         None => 1,
     };
-    Some(Named { short: short.into(), day: (y, m, d), time: (hh, mm), pc: pc.into(), seq })
+    Some(Named { short: short.into(), day: (y, m, d), time: (hh, mm), pc: pc.into(), seq, before_restore })
 }
 
 /// A half-written backup of this Library's own
@@ -225,7 +251,7 @@ fn list(dir: &Path, ns: &Ns) -> Result<Vec<Entry>, String> {
         if !meta.is_file() || meta.len() == 0 || !marked(&path, &ns.id) {
             continue;
         }
-        out.push(Entry { path, bytes: meta.len(), name, day: n.day, time: n.time, pc: n.pc, seq: n.seq });
+        out.push(Entry { path, bytes: meta.len(), name, day: n.day, time: n.time, pc: n.pc, seq: n.seq, before_restore: n.before_restore });
     }
     out.sort_by(|a, b| (b.day, b.time, b.seq, &b.name).cmp(&(a.day, a.time, a.seq, &a.name)));
     Ok(out)
@@ -442,6 +468,12 @@ thread_local! {
 /// backup: nothing is published and nothing removed. A Library that can't
 /// be reached is refused, naming it, and nothing is made (LB11).
 pub fn take(library: &Path, own: &Settings, who: &Who, clock: &Clock, why: Why) -> Result<Daily, String> {
+    take_as(library, own, who, clock, why, false)
+}
+
+/// `take`; `before_restore`: the backup a restore takes first, named so
+/// (BK9).
+fn take_as(library: &Path, own: &Settings, who: &Who, clock: &Clock, why: Why, before_restore: bool) -> Result<Daily, String> {
     crate::library::usable(library)?;
     let (today, now) = local(clock, clock.now());
     if why == Why::Daily {
@@ -495,7 +527,7 @@ pub fn take(library: &Path, own: &Settings, who: &Who, clock: &Clock, why: Why) 
     }
     let mut n = 1;
     let name = loop {
-        let name = name_for(&ns, today, now, &who.pc, n);
+        let name = name_for(&ns, today, now, &who.pc, n, before_restore);
         if std::fs::symlink_metadata(dir.join(&name)).is_err() {
             break name;
         }
@@ -521,7 +553,13 @@ pub fn take(library: &Path, own: &Settings, who: &Who, clock: &Clock, why: Why) 
     let removed = prune(&dir, &ns, p.settings.keep(), today, Some(&mut lock));
     drop(lock);
     let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
-    let entry = Entry { name, path, day: today, time: now, pc: shared::file_safe(&who.pc), seq: n, bytes };
+    let entry = Entry { name, path, day: today, time: now, pc: shared::file_safe(&who.pc), seq: n, bytes, before_restore };
+    // The one a restore takes first goes to the second place once the
+    // restore lets go of the lock (`to_second_place`, BK9): a slow copy never
+    // holds the restore up.
+    if before_restore {
+        return Ok(Daily::Taken(Done { entry, files, removed, second: None }));
+    }
     let second = p.second_place().map(|place| {
         copy_to_second(&entry, &place, library, &dir, &ns).map(|(to, _)| {
             prune_second(library, own, &place, &ns, today);
@@ -747,6 +785,8 @@ pub struct Overview {
     pub count: usize,
     pub settings: Settings,
     pub shop: bool,
+    /// Every backup of this Library there, newest first (Restore, BK8).
+    pub all: Vec<Entry>,
 }
 
 /// The backups of the Library in `library`, `own` being this PC's settings
@@ -758,7 +798,480 @@ pub fn overview(library: &Path, own: &Settings) -> Result<Overview, String> {
         (Ok(d), Some(ns)) => list(d, &ns)?,
         _ => vec![],
     };
-    Ok(Overview { last: all.first().cloned(), count: all.len(), folder: p.dir, settings: p.settings, shop: p.shop })
+    Ok(Overview { last: all.first().cloned(), count: all.len(), folder: p.dir, settings: p.settings, shop: p.shop, all })
+}
+
+// ---------------------------------------------------------------------------
+// Restore (BK8–BK13): a backup put back over the shop folder. Who may (the
+// admin PC, a person) is in `engine::shop`; this is how it is done.
+// ---------------------------------------------------------------------------
+
+/// The Library's top-level folders and files a restore never takes from a
+/// backup, and never changes or removes (BK10): the shop's releases and
+/// backups, each PC's record, the holds on jobs in use, the shop file (it
+/// records the restore), the backup id and the write lock's own files. They
+/// say what the shop and its PCs are now, not what the Library held.
+fn kept_live(top: &str) -> bool {
+    let lock = shared::LOCK_FILE;
+    [crate::shop::UPDATES, crate::shop::BACKUPS, crate::shop::PCS, crate::engine::inuse::FOLDER, crate::shop::FILE, ID_FILE, lock].iter().any(|k| top.eq_ignore_ascii_case(k))
+        || top.get(..lock.len()).is_some_and(|h| h.eq_ignore_ascii_case(lock)) && top[lock.len()..].starts_with('.')
+}
+
+/// The name Windows keeps for a device (`CON`, `NUL`, `COM1`…), with or
+/// without an extension: never a file there.
+fn is_device(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let numbered = stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.as_bytes()[3], b'1'..=b'9');
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered
+}
+
+/// A zip entry's name as the folders and file it goes to inside the Library
+/// (BK11), split at `/` or `\` (a zip another tool made on Windows). A name
+/// that could reach outside the Library (`..`, starting with `/` or `\`, a
+/// drive or anything with `:`) is refused, naming it.
+fn entry_parts(raw: &str) -> Result<Vec<String>, String> {
+    let outside = || format!("it holds a file named \"{raw}\", which would go outside the shop folder");
+    if raw.starts_with(['/', '\\']) {
+        return Err(outside());
+    }
+    let mut out = vec![];
+    for part in raw.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => return Err(outside()),
+            p if p.contains(':') || p.chars().any(char::is_control) => return Err(outside()),
+            p if cfg!(windows) && is_device(p) => return Err(format!("it holds a file named \"{raw}\", which Windows can't keep as a file")),
+            p => out.push(p.to_string()),
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("it holds an entry with no name (\"{raw}\")"));
+    }
+    Ok(out)
+}
+
+/// A path's parts as one key: the same file on this system (names differing
+/// only in capitals are one file on Windows).
+fn key(parts: &[String]) -> String {
+    let j = parts.join("/");
+    if cfg!(windows) { j.to_lowercase() } else { j }
+}
+
+fn join(base: &Path, parts: &[String]) -> PathBuf {
+    parts.iter().fold(base.to_path_buf(), |p, x| p.join(x))
+}
+
+/// A Library record (LB7): `Jobs\<n>\<id>.snjob` or `Products\<n>\<id>.json`,
+/// or with `.deleted` after it, the mark a deleted record leaves (LB16).
+/// Gives the record's own parts and whether these are the mark's.
+fn record_of(parts: &[String]) -> Option<(Vec<String>, bool)> {
+    let [top, sub, file] = parts else { return None };
+    let ext = match top.as_str() {
+        "Jobs" => crate::jobfile::EXT,
+        "Products" => "json",
+        _ => return None,
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let (stem, mark) = match file.strip_suffix(".deleted") {
+        Some(f) => (f.strip_suffix(&format!(".{ext}"))?, true),
+        None => (file.strip_suffix(&format!(".{ext}"))?, false),
+    };
+    (digits(sub) && digits(stem)).then(|| (vec![top.clone(), sub.clone(), format!("{stem}.{ext}")], mark))
+}
+
+/// A Library record's revision (LB7): jobs keep it with their record,
+/// library parts at the top. 0 for anything else.
+fn record_revision(bytes: &[u8]) -> u64 {
+    #[derive(Deserialize)]
+    struct Rec {
+        #[serde(default)]
+        revision: u64,
+    }
+    #[derive(Deserialize)]
+    struct OnDisk {
+        #[serde(default)]
+        library: Option<Rec>,
+        #[serde(default)]
+        revision: u64,
+    }
+    serde_json::from_slice::<OnDisk>(bytes).map_or(0, |d| d.library.map_or(d.revision, |r| r.revision))
+}
+
+/// What a backup puts back (BK10, BK11): its folders and files by their
+/// parts inside the Library (each file with its place in the zip), and the
+/// highest revision of a record in it (BK12).
+struct Held {
+    dirs: Vec<Vec<String>>,
+    files: Vec<(usize, Vec<String>)>,
+    top_revision: u64,
+}
+
+/// Read a backup through before anything changes (BK11): every name inside
+/// the Library, no links, no name twice, every file whole (its check sum),
+/// and none written by a program newer than this one (`versions`, UP7): it
+/// couldn't read them or save them again. What a restore never takes from a
+/// backup (BK10) is left out.
+fn read_backup(path: &Path, versions: &shared::Versions) -> Result<Held, String> {
+    let f = std::fs::File::open(path).map_err(|e| format!("it can't be read ({e})"))?;
+    let mut z = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| format!("it isn't a whole zip ({e})"))?;
+    let mut held = Held { dirs: vec![], files: vec![], top_revision: 0 };
+    let mut seen = std::collections::HashSet::new();
+    for i in 0..z.len() {
+        let mut e = z.by_index(i).map_err(|e| format!("it can't be read ({e})"))?;
+        let raw = e.name().to_string();
+        if e.is_symlink() {
+            return Err(format!("it holds a link (\"{raw}\"); a restore puts back only files and folders"));
+        }
+        let parts = entry_parts(&raw)?;
+        if kept_live(&parts[0]) {
+            continue;
+        }
+        if !seen.insert(key(&parts)) {
+            return Err(format!("it holds \"{raw}\" twice"));
+        }
+        if raw.ends_with(['/', '\\']) {
+            held.dirs.push(parts);
+            continue;
+        }
+        let mut b = Vec::new();
+        e.read_to_end(&mut b).map_err(|x| format!("\"{raw}\" in it is damaged ({x})"))?;
+        if let Some(n) = versions.newer(shared::recorded_version(&b).as_deref()) {
+            return Err(format!("\"{raw}\" in it was written by version {}, newer than this program ({}), which couldn't read it. Update this PC first", n.written, versions.this));
+        }
+        if record_of(&parts).is_some_and(|(_, mark)| !mark) {
+            held.top_revision = held.top_revision.max(record_revision(&b));
+        }
+        held.files.push((i, parts));
+    }
+    Ok(held)
+}
+
+/// A backup just taken is whole and this Library's (BK9): marked with its
+/// id, and a zip that opens with as many files as were put in it.
+fn verify(path: &Path, id: &str, files: usize) -> Result<(), String> {
+    if !marked(path, id) {
+        return Err(format!("{} isn't marked as this Library's backup", path.display()));
+    }
+    let f = std::fs::File::open(path).map_err(|e| format!("{} can't be read ({e})", path.display()))?;
+    let z = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| format!("{} isn't a whole zip ({e})", path.display()))?;
+    let n = z.file_names().filter(|n| !n.ends_with('/')).count();
+    if n != files {
+        return Err(format!("{} holds {n} files, not the {files} put in it", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test seam: a restore stops with an error after putting back this many
+    /// files, as one whose share dropped halfway does.
+    pub static RESTORE_STOP_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Unpack the backup's files into `stage`, a new folder of this restore's
+/// own in the shop's `Backups` (BK11), renewing the lock as it goes. Every
+/// file is read whole: one whose check sum is wrong stops it.
+fn unpack(zip_path: &Path, held: &Held, stage: &Path, lock: &mut WriteLock) -> Result<(), String> {
+    let f = std::fs::File::open(zip_path).map_err(|e| format!("it can't be read ({e})"))?;
+    let mut z = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| format!("it isn't a whole zip ({e})"))?;
+    let werr = |p: &Path, e: &dyn std::fmt::Display| format!("{} can't be written ({e})", p.display());
+    for d in &held.dirs {
+        let p = join(stage, d);
+        std::fs::create_dir_all(&p).map_err(|e| werr(&p, &e))?;
+    }
+    let mut buf = vec![0u8; 256 * 1024];
+    for (i, parts) in &held.files {
+        lock.renew_if_due()?;
+        let to = join(stage, parts);
+        if let Some(d) = to.parent() {
+            std::fs::create_dir_all(d).map_err(|e| werr(d, &e))?;
+        }
+        let mut e = z.by_index(*i).map_err(|e| format!("it can't be read ({e})"))?;
+        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&to).map_err(|e| werr(&to, &e))?;
+        loop {
+            lock.renew_if_due()?;
+            match e.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.write_all(&buf[..n]).map_err(|x| werr(&to, &x))?,
+                Err(x) if x.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(x) => return Err(format!("\"{}\" in it is damaged ({x})", parts.join("/"))),
+            }
+        }
+        out.sync_all().map_err(|x| werr(&to, &x))?;
+    }
+    Ok(())
+}
+
+/// The Library's folders and files now, by their parts, but those a
+/// restore keeps as they are (BK10), links (never in a backup, left as they
+/// are) and names that aren't text. A folder that can't be read stops it.
+fn live(library: &Path) -> Result<(Vec<Vec<String>>, Vec<Vec<String>>), String> {
+    let (mut dirs, mut files) = (vec![], vec![]);
+    let mut todo = vec![Vec::<String>::new()];
+    while let Some(rel) = todo.pop() {
+        let at = join(library, &rel);
+        for e in std::fs::read_dir(&at).map_err(|e| format!("{} can't be read ({e})", at.display()))? {
+            let e = e.map_err(|e| format!("{} can't be read ({e})", at.display()))?;
+            let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
+            if rel.is_empty() && kept_live(&name) {
+                continue;
+            }
+            let t = e.file_type().map_err(|x| format!("{} can't be read ({x})", e.path().display()))?;
+            let mut parts = rel.clone();
+            parts.push(name);
+            if t.is_dir() {
+                dirs.push(parts.clone());
+                todo.push(parts);
+            } else if t.is_file() {
+                files.push(parts);
+            }
+        }
+    }
+    Ok((dirs, files))
+}
+
+/// What a restore did (BK8–BK12).
+#[derive(Clone, Debug)]
+pub struct Restored {
+    /// The backup put back.
+    pub from: Entry,
+    /// The backup of the Library as it was, taken first (BK9).
+    pub before: Entry,
+    /// Files put back from the backup, and files removed (made since it).
+    pub files: usize,
+    pub removed: usize,
+}
+
+/// Put the backup named `name` back over the shop folder `library` (BK8–
+/// BK12), as `who` on a program of `version`, under `lock`, the Library's
+/// write lock the caller holds (renewed while it works). Who may restore is
+/// the caller's to check (`engine::shop::restore`).
+///
+/// 1. The backup is read through (BK11): nothing is changed for one with a
+///    name that would go outside the Library, a link, a damaged file, or a
+///    file a newer version wrote.
+/// 2. The Library as it is now is backed up ("… before restore", BK9) and
+///    that backup checked; if it can't be, nothing is restored.
+/// 3. The backup is unpacked into a folder of its own in `Backups`, the
+///    restore is recorded in the shop file, unfinished, and the files are
+///    moved into place one by one; then what isn't in the backup is removed
+///    (BK10). The shop file then says it finished.
+///
+/// An error says what state the Library is in: as it was, or partly
+/// restored with the "before restore" backup holding what was there.
+pub fn restore(library: &Path, name: &str, who: &Who, clock: &Clock, version: &str, lock: &mut WriteLock) -> Result<Restored, String> {
+    let nothing = |e: String| format!("Nothing was restored: {e}. The Library is as it was.");
+    let p = plan(library, &Settings::default()).map_err(nothing)?;
+    if !p.shop {
+        return Err(nothing(format!("{} isn't a shop", library.display())));
+    }
+    let dir = p.dir.clone().map_err(nothing)?;
+    let ns = p.ns().ok_or_else(|| nothing("this Library has no backups yet".into()))?;
+    let from = list(&dir, &ns).map_err(nothing)?.into_iter().find(|e| e.name == name).ok_or_else(|| nothing(format!("there's no backup of this Library named {name} in {}", dir.display())))?;
+    let versions = crate::shop::versions(library, version);
+    let held = read_backup(&from.path, &versions).map_err(|e| nothing(format!("the backup of {} can't be restored: {e}", from.shown())))?;
+    // The shop file stays and records the restore: never over one a newer
+    // version wrote (UP7).
+    shared::may_write_over(&crate::shop::file(library), &versions, "The shop file").map_err(nothing)?;
+    lock.still_held().map_err(nothing)?;
+    // BK9: the Library as it is now, first, checked whole.
+    let before = match take_as(library, &Settings::default(), who, clock, Why::Now, true) {
+        Ok(Daily::Taken(d)) => d,
+        Ok(Daily::AlreadyToday { .. }) => return Err(nothing("the backup of the Library as it is now wasn't taken".into())),
+        Err(e) => return Err(nothing(format!("the Library as it is now couldn't be backed up first ({e})"))),
+    };
+    shared::pause("restore: before restore taken");
+    verify(&before.entry.path, &ns.id, before.files).map_err(|e| nothing(format!("the backup of the Library as it is now ({}) can't be trusted: {e}", before.entry.name)))?;
+    let kept_before = |e: String| nothing(format!("{e}. The backup {} of the Library as it was is kept", before.entry.name));
+    // Unpacked into a folder of its own first (BK11). One a restore left
+    // when its PC stopped goes first.
+    lock.renew_if_due().map_err(kept_before)?;
+    let stem = format!("Restoring {} ", ns.short());
+    for e in std::fs::read_dir(&dir).map_err(|e| kept_before(format!("{} can't be read ({e})", dir.display())))?.flatten() {
+        if e.file_name().to_str().is_some_and(|n| n.starts_with(&stem)) && e.file_type().is_ok_and(|t| t.is_dir()) {
+            lock.still_held().map_err(kept_before)?;
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+    let stage = dir.join(format!("{stem}{}", shared::writer_tag()));
+    std::fs::create_dir(&stage).map_err(|e| kept_before(format!("{} can't be made ({e})", stage.display())))?;
+    let clear = |lock: &WriteLock| {
+        if lock.still_held().is_ok() {
+            let _ = std::fs::remove_dir_all(&stage);
+        }
+    };
+    if let Err(e) = unpack(&from.path, &held, &stage, lock) {
+        clear(lock);
+        return Err(kept_before(format!("the backup of {} couldn't be unpacked ({e})", from.shown())));
+    }
+    shared::pause("restore: unpacked");
+    // BK12: every revision a record has now, or had in the backup, stays
+    // below the floor, so no save after the restore repeats one (LB7).
+    let (live_dirs, live_files) = match live(library) {
+        Ok(l) => l,
+        Err(e) => {
+            clear(lock);
+            return Err(kept_before(e));
+        }
+    };
+    let mut shop = match crate::shop::read(library) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            clear(lock);
+            return Err(kept_before(format!("{} isn't a shop any more", library.display())));
+        }
+        Err(e) => {
+            clear(lock);
+            return Err(kept_before(e));
+        }
+    };
+    let mut floor = shop.restored.as_ref().map_or(0, |r| r.revision_floor).max(held.top_revision);
+    for f in &live_files {
+        if record_of(f).is_some_and(|(_, mark)| !mark) {
+            if let Ok(b) = std::fs::read(join(library, f)) {
+                floor = floor.max(record_revision(&b));
+            }
+        }
+    }
+    shop.restored = Some(crate::shop::Restore { backup: from.name.clone(), backup_when: from.stamp(), before: before.entry.name.clone(), by: who.clone(), at: clock.now(), finished: false, revision_floor: floor });
+    if let Err(e) = lock.renew_if_due().and_then(|()| crate::shop::write(library, &shop, lock, version)) {
+        clear(lock);
+        return Err(kept_before(format!("the shop file couldn't record the restore ({e})")));
+    }
+    // From here a failure leaves the Library partly restored.
+    let halfway = |e: String| {
+        format!(
+            "The restore stopped halfway: {e}. Some of the Library's files are from the backup of {}, the rest are as they were. The backup {} holds the whole Library as it was before: restore it to put the Library back as it was.",
+            from.shown(),
+            before.entry.name
+        )
+    };
+    let swapped = swap(library, &stage, &held, &live_dirs, &live_files, lock);
+    clear(lock);
+    let (files, removed) = swapped.map_err(halfway)?;
+    if let Some(r) = shop.restored.as_mut() {
+        r.finished = true;
+    }
+    lock.renew_if_due().and_then(|()| crate::shop::write(library, &shop, lock, version)).map_err(|e| halfway(format!("every file was put back, but the shop file couldn't record that the restore finished ({e})")))?;
+    Ok(Restored { from, before: before.entry, files, removed })
+}
+
+/// Make the folder at `parts` in the Library, where it isn't one: a file
+/// standing in its place goes (it isn't in the backup; the "before
+/// restore" backup holds it). A link there stops the restore.
+fn make_dir(library: &Path, parts: &[String], lock: &WriteLock) -> Result<(), String> {
+    let p = join(library, parts);
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.is_dir() => return Ok(()),
+        Ok(m) if m.file_type().is_symlink() => return Err(format!("{} is a link", p.display())),
+        Ok(_) => {
+            lock.still_held()?;
+            std::fs::remove_file(&p).map_err(|e| format!("{} can't be removed ({e})", p.display()))?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{} can't be read ({e})", p.display())),
+    }
+    lock.still_held()?;
+    std::fs::create_dir(&p).map_err(|e| format!("{} can't be made ({e})", p.display()))
+}
+
+/// Move the unpacked backup into the Library, file by file under the lock
+/// (renewed, and checked before each), then remove the files and empty
+/// folders that aren't in the backup (BK10, BK11). A record removed leaves
+/// its mark, so its number is never given to another record (LB16). Gives
+/// the files put back and removed.
+fn swap(library: &Path, stage: &Path, held: &Held, live_dirs: &[Vec<String>], live_files: &[Vec<String>], lock: &mut WriteLock) -> Result<(usize, usize), String> {
+    // Everything in the backup, and every folder its files are in.
+    let mut keep = std::collections::HashSet::new();
+    let mut dirs: Vec<Vec<String>> = vec![];
+    let mut add_dir = |d: &[String], keep: &mut std::collections::HashSet<String>| {
+        for n in 1..=d.len() {
+            if keep.insert(key(&d[..n])) {
+                dirs.push(d[..n].to_vec());
+            }
+        }
+    };
+    for d in &held.dirs {
+        add_dir(d, &mut keep);
+    }
+    for (_, f) in &held.files {
+        add_dir(&f[..f.len() - 1], &mut keep);
+        keep.insert(key(f));
+    }
+    dirs.sort_by_key(Vec::len);
+    for d in &dirs {
+        lock.renew_if_due()?;
+        make_dir(library, d, lock)?;
+    }
+    let mut put = 0;
+    for (_, f) in &held.files {
+        lock.renew_if_due()?;
+        let to = join(library, f);
+        if std::fs::symlink_metadata(&to).is_ok_and(|m| m.is_dir()) {
+            // A folder where the backup has a file: it isn't in the backup.
+            lock.still_held()?;
+            std::fs::remove_dir_all(&to).map_err(|e| format!("{} can't be removed ({e})", to.display()))?;
+        }
+        shared::move_over(&join(stage, f), &to, lock).map_err(|e| format!("{} can't be put back ({e})", to.display()))?;
+        put += 1;
+        shared::pause("restore: file put back");
+        #[cfg(test)]
+        if RESTORE_STOP_AFTER.with(|s| s.get()).is_some_and(|n| put >= n) {
+            return Err("the test stopped it halfway".into());
+        }
+    }
+    let mut removed = 0;
+    let mut gone_records = vec![];
+    for f in live_files.iter().filter(|f| !keep.contains(&key(f))) {
+        lock.renew_if_due()?;
+        lock.still_held()?;
+        let p = join(library, f);
+        match std::fs::remove_file(&p) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{} can't be removed ({e})", p.display())),
+        }
+        if let Some((rec, _)) = record_of(f) {
+            gone_records.push(rec);
+        }
+    }
+    // A record (or a deleted record's mark) that was here and isn't in the
+    // backup keeps its number taken (LB16).
+    for rec in gone_records {
+        if keep.contains(&key(&rec)) {
+            continue;
+        }
+        let mut mark = rec.clone();
+        if let Some(last) = mark.last_mut() {
+            last.push_str(".deleted");
+        }
+        let p = join(library, &mark);
+        lock.still_held()?;
+        if p.parent().is_some_and(Path::is_dir) {
+            let _ = std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
+        }
+    }
+    let mut old: Vec<&Vec<String>> = live_dirs.iter().filter(|d| !keep.contains(&key(d))).collect();
+    old.sort_by_key(|d| std::cmp::Reverse(d.len()));
+    for d in old {
+        lock.still_held()?;
+        // Only when empty: a folder holding a record's mark stays.
+        let _ = std::fs::remove_dir(join(library, d));
+    }
+    Ok((put, removed))
+}
+
+/// BK9: copy the "before restore" backup to the second place, once the
+/// restore has let go of the lock. None: no second place is set.
+pub fn to_second_place(library: &Path, entry: &Entry) -> Option<Result<PathBuf, String>> {
+    let p = plan(library, &Settings::default()).ok()?;
+    let place = p.second_place()?;
+    let ns = p.ns()?;
+    let dir = p.dir.clone().ok()?;
+    Some(copy_to_second(entry, &place, library, &dir, &ns).map(|(to, _)| {
+        prune_second(library, &Settings::default(), &place, &ns, entry.day);
+        to
+    }))
 }
 
 /// This Library's backups in `dir`, newest first (tests): none before its
@@ -801,8 +1314,14 @@ mod backup_tests {
         assert!(!is_own_part("Backup Acme 9a2b3c4d 2026-11-09 0920 PC-A.zip.PC-A-1-2.part", &ns()), "another Library's");
         assert!(!is_own_part("Backup Acme 1a2b3c4d 2026-11-09 0920 PC-A.zip", &ns()));
         assert!(!is_own_part("Report.zip.x.part", &ns()));
-        assert_eq!(name_for(&ns(), (2026, 11, 9), (9, 5), "PC-Ä 1", 1), "Backup Acme 1a2b3c4d 2026-11-09 0905 PC-__1.zip");
-        assert_eq!(parse(&name_for(&ns(), (2026, 11, 9), (9, 5), "PC-Ä 1", 3)).map(|p| (p.pc, p.seq)), Some(("PC-__1".into(), 3)));
+        assert_eq!(name_for(&ns(), (2026, 11, 9), (9, 5), "PC-Ä 1", 1, false), "Backup Acme 1a2b3c4d 2026-11-09 0905 PC-__1.zip");
+        assert_eq!(parse(&name_for(&ns(), (2026, 11, 9), (9, 5), "PC-Ä 1", 3, false)).map(|p| (p.pc, p.seq)), Some(("PC-__1".into(), 3)));
+        // BK9: the one a restore takes first says so, and is a backup too.
+        let b = name_for(&ns(), (2026, 11, 9), (9, 5), "PC-A", 2, true);
+        assert_eq!(b, "Backup Acme 1a2b3c4d 2026-11-09 0905 PC-A 2 before restore.zip");
+        assert_eq!(parse(&b).map(|p| (p.seq, p.before_restore)), Some((2, true)));
+        assert_eq!(parse("Backup Acme 1a2b3c4d 2026-11-09 0905 PC-A.zip").map(|p| p.before_restore), Some(false));
+        assert_eq!(parse("Backup Acme 1a2b3c4d 2026-11-09 0905 PC-A after restore.zip"), None);
     }
 
     /// Review S10: names with other signs where the numbers go are no
@@ -852,6 +1371,40 @@ mod backup_tests {
         assert!(e.contains("the Library itself"), "{e}");
         // In a shop: the shop folder's own Backups.
         assert_eq!(folder(Path::new("/srv/Nesting"), true).unwrap(), Path::new("/srv/Nesting").join("Backups"));
+    }
+
+    /// BK11: a zip entry's name, `/` or `\` between folders, never outside
+    /// the Library; BK10: what a restore keeps as it is.
+    #[test]
+    fn a_restore_puts_files_only_inside_the_library() {
+        let p = |s: &str| entry_parts(s).map(|v| v.join("|"));
+        assert_eq!(p("Jobs/0/7.snjob").unwrap(), "Jobs|0|7.snjob");
+        assert_eq!(p("Jobs\\0\\7.snjob").unwrap(), "Jobs|0|7.snjob");
+        assert_eq!(p("Drawings/Größe 2 mm/Flansch ø40.dxf").unwrap(), "Drawings|Größe 2 mm|Flansch ø40.dxf");
+        assert_eq!(p("Empty folder/").unwrap(), "Empty folder");
+        assert_eq!(p("./Jobs//0/7.snjob").unwrap(), "Jobs|0|7.snjob");
+        for bad in ["../x", "a/../../x", "/etc/x", "\\x", "C:\\x", "C:x", "a/b:c", "\\\\srv\\Nesting\\x", "..", "a/\u{7}b"] {
+            assert!(p(bad).is_err(), "{bad}");
+        }
+        assert!(p("/").is_err() && p("").is_err());
+        assert!(is_device("CON") && is_device("nul.txt") && is_device("COM1.dxf") && is_device("lpt9") && !is_device("COM0") && !is_device("Console.txt") && !is_device("CONTOUR.dxf"));
+        for k in ["Updates", "backups", "Shop", "Holds", "shop.json", "backup-id.txt", "library.lock", "library.lock.abc.taken"] {
+            assert!(kept_live(k), "{k}");
+        }
+        for k in ["Jobs", "Products", "Sheets", "index.json", "library.locked", "Shopping", "materials.json", "ä"] {
+            assert!(!kept_live(k), "{k}");
+        }
+        let r = |s: &str| record_of(&s.split('/').map(String::from).collect::<Vec<_>>()).map(|(p, m)| (p.join("/"), m));
+        assert_eq!(r("Jobs/0/7.snjob"), Some(("Jobs/0/7.snjob".into(), false)));
+        assert_eq!(r("Jobs/0/7.snjob.deleted"), Some(("Jobs/0/7.snjob".into(), true)));
+        assert_eq!(r("Products/1/1004.json"), Some(("Products/1/1004.json".into(), false)));
+        assert_eq!(r("Jobs/0/notes.txt"), None);
+        assert_eq!(r("Jobs/7.snjob"), None);
+        assert_eq!(record_revision(br#"{"library": {"id": 7, "revision": 5}}"#), 5);
+        assert_eq!(record_revision(br#"{"revision": 3, "part": {}}"#), 3);
+        assert_eq!(record_revision(b"0\nEOF"), 0);
+        assert_eq!(shown_stamp("2026-11-09 09:20"), "9 Nov 09:20");
+        assert_eq!(shown_stamp("soon"), "soon");
     }
 
     #[test]

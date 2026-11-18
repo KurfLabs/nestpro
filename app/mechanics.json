@@ -7624,6 +7624,42 @@
   "group": "shop",
   "value": "Settings → Shop → Backups: last backup, folder, Keep, second place, Back up now; settings saved in the background, read under the lock by each backup; agents shop mode=backup",
   "source": "BK7; own design"
+ },
+ {
+  "name": "restore on the admin PC",
+  "group": "shop",
+  "value": "Restore… on Settings → Shop → Backups, admin PC only (whatever SH3 says), in a shop; lists backups by date, asks once more; other PCs and agents refused with the reason",
+  "source": "BK8; own design"
+ },
+ {
+  "name": "before restore backup",
+  "group": "shop",
+  "value": "the Library as it is now zipped first under the lock (… before restore.zip), checked; failing that nothing is restored; one of the Library's backups, kept its first day",
+  "source": "BK9; own design"
+ },
+ {
+  "name": "what a restore puts back",
+  "group": "shop",
+  "value": "the Library made to match the backup; kept as they are: Updates, Backups, Shop, Holds, the shop file, the backup id, lock files, links; records taken out keep their numbers (.deleted)",
+  "source": "BK10; own design"
+ },
+ {
+  "name": "restore unpacking",
+  "group": "shop",
+  "value": "names outside the shop folder, links, twins, damaged files and files a newer version wrote refuse the backup; unpacked into Backups first, moved in one by one under the renewed lock; a failure says what state the Library is in",
+  "source": "BK11; own design"
+ },
+ {
+  "name": "restore record",
+  "group": "shop",
+  "value": "shop file: backup, its day, before restore backup, PC, when, finished; revision floor so no save after it repeats a revision",
+  "source": "BK12; own design"
+ },
+ {
+  "name": "restore notice",
+  "group": "shop",
+  "value": "other windows' next quick check: The shop was restored to <day>. Reopen your job; open jobs reload or ask; old job saves ask; agents shop last_restore",
+  "source": "BK13; own design"
  }
 ]
 }
