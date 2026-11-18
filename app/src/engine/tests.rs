@@ -11386,14 +11386,37 @@ fn a_trial_works_on_a_copy_and_never_changes_the_shop_folder() {
     call(&mut s, "shop", None, json!({}));
     call(&mut s, "shop", None, json!({"mode": "backup"}));
     assert_eq!(files_under(&lib), shop_now, "the trial changed the shop folder");
+    // S2: nothing the trial writes may land in the real shop folder: a job
+    // file, a program, a picture.
+    let in_shop = lib.join("DEMO-009 in the shop.snjob");
+    let e = s.call("new", Some(in_shop.to_str().unwrap()), &json!({"w": 2000, "h": 1000, "thickness": 3})).map(|r| r.json.to_string()).unwrap_err();
+    assert!(e.contains("this PC is trying a release on a copy of the shop"), "{e}");
+    call(&mut s, "nest", None, json!({}));
+    let e = err(&mut s, "export", json!({"dir": lib.join("Programs").to_str().unwrap()}));
+    assert!(e.contains("this PC is trying a release on a copy of the shop"), "{e}");
+    let e = err(&mut s, "render", json!({"out": lib.join("sheet.png").to_str().unwrap()}));
+    assert!(e.contains("this PC is trying a release on a copy of the shop"), "{e}");
+    assert_eq!(files_under(&lib), shop_now, "the trial changed the shop folder");
     // The same PC on the shop itself (not a trial), newer than the shop
-    // version: the shop is read-only on it (UP21).
+    // version: the shop folder is read-only on it (UP21); a job file
+    // elsewhere (the desktop) is its own and saves.
     let mut on_shop = pc_running(&lib, sam.clone().as_agent(), "0.5.0");
     let job3 = d.join("DEMO-003.snjob");
-    let e = on_shop.call("new", Some(job3.to_str().unwrap()), &json!({"w": 2000, "h": 1000, "thickness": 3})).map(|r| r.json.to_string()).unwrap_err();
+    call(&mut on_shop, "new", Some(job3.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let e = err(&mut on_shop, "library", json!({"mode": "save-job"}));
     assert!(e.contains("This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0."), "{e}");
+    let e = on_shop.call("new", Some(lib.join("DEMO-004.snjob").to_str().unwrap()), &json!({"w": 2000, "h": 1000, "thickness": 3})).map(|r| r.json.to_string()).unwrap_err();
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
     let e = err(&mut on_shop, "stock", json!({"mode": "create", "ref": "S3", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
     assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    // S9: it starts no backup in the shop either; its own record is kept,
+    // so the PCs list shows it ahead.
+    let e = err(&mut on_shop, "shop", json!({"mode": "backup"}));
+    assert!(e.contains("Restart to go back to 0.4.0") && e.contains("No backup was taken"), "{e}");
+    let st = call(&mut on_shop, "shop", None, json!({}));
+    assert_eq!(st["data"]["this_pc_recorded"], true, "{st}");
+    let me = st["data"]["pcs"].as_array().unwrap().iter().find(|p| p["pc"] == "PC-A").cloned().unwrap();
+    assert_eq!((me["version"].as_str(), me["ahead"].as_bool()), (Some("0.5.0"), Some(true)), "{me}");
     let r = call(&mut on_shop, "shop", None, json!({"mode": "updates"}));
     assert_eq!((r["data"]["from_shop"]["version"].as_str(), r["data"]["from_shop"]["back"].as_bool()), (Some("0.4.0"), Some(true)), "{r}");
     // Rolling 0.5.0 out makes the change on the shop itself, and ends the
@@ -11403,7 +11426,6 @@ fn a_trial_works_on_a_copy_and_never_changes_the_shop_folder() {
     assert!(lib.join("machines-moved.txt").is_file());
     assert!(matches!(rollout::trial_now(&t.copy, "0.5.0"), TrialNow::Over { said, .. } if said.contains("rolled out 0.5.0")));
     // Now on the shop version, the same PC saves in the shop again.
-    call(&mut on_shop, "new", Some(job3.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
     call(&mut on_shop, "library", None, json!({"mode": "save-job"}));
     let _ = std::fs::remove_dir_all(&d);
 }

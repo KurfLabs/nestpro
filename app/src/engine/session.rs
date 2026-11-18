@@ -62,7 +62,9 @@ impl Session {
             return Ok(());
         }
         let (j, written) = jobfile::load_versioned(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
-        self.read_only = self.ctx.versions().newer(written.as_deref());
+        // UP21: a job file outside the shop folder is never read-only for
+        // being in the shop.
+        self.read_only = self.ctx.versions().at(path).newer(written.as_deref());
         // Changed on disk by someone else (the window, another agent):
         // undoing to a copy from before that would drop their change. A job
         // a newer version saved is only read here (UP9): its undo copy is

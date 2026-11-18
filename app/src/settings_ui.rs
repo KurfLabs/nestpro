@@ -249,7 +249,9 @@ impl UpdateState {
     /// became a shop's): a running check's or download's answer is dropped,
     /// nothing installs on close, and the next frame checks again.
     pub fn withdraw(&mut self, h: &crate::updates::Handoff) {
-        h.withdraw();
+        // S1: only a public release chosen here; a trial's or the shop's
+        // (rolloutui) stays.
+        h.withdraw_for(crate::updates::Why::Public);
         self.checking = None;
         self.checked_at = None;
         self.found = None;
@@ -272,7 +274,7 @@ impl UpdateState {
         // A public release chosen is withdrawn; the shop's own (UP21) is
         // left alone.
         if matches!(found, Found::InShop(_)) && self.chosen.is_some() {
-            h.withdraw();
+            h.withdraw_for(crate::updates::Why::Public);
             self.fetch = Fetch::No;
             self.chosen = None;
             self.whats_new = None;
@@ -2064,7 +2066,7 @@ impl App {
                 self.setui.shop_unrecorded = st.unrecorded;
                 // S2: a PC in a shop never takes a public release: whatever
                 // was offered or chosen from them is withdrawn.
-                self.setui.upd.withdraw(&crate::updates::HANDOFF);
+                self.setui.upd.withdraw(self.handoff);
                 (true, format!("Started shop {} in {}. This PC is its admin PC.", st.shop.name, dir.display()))
             }
             Err(e) => (false, e),
@@ -2436,6 +2438,17 @@ impl App {
     /// opens, or Back up now. One at a time.
     pub fn start_backup(&self, why: crate::backup::Why) {
         let run = self.setui.backup_run.clone();
+        // S9: a PC newer than the shop version writes nothing in the shop:
+        // no daily backup (said only when asked for one).
+        if let Some(ahead) = crate::engine::shop::ahead_of_shop(&self.library_dir(), crate::updates::VERSION) {
+            if why == crate::backup::Why::Now
+                && let Ok(mut r) = run.lock()
+            {
+                r.note = Some((false, format!("No backup was taken: the shop is read-only on this PC. {ahead}")));
+                r.ended += 1;
+            }
+            return;
+        }
         {
             let Ok(mut r) = run.lock() else { return };
             if r.since.is_some() {
@@ -2496,7 +2509,7 @@ impl App {
             return;
         }
         let dir = self.library_dir();
-        let h = &crate::updates::HANDOFF;
+        let h = self.handoff;
         let u = &mut self.setui.upd;
         let Some(src) = u.source.clone() else { return };
         u.follow_library(&dir, h);
@@ -2535,7 +2548,7 @@ impl App {
     /// UP14: Update when I close: download the offered release in the
     /// background; it installs when the program closes, never before.
     fn update_when_closed(&mut self) {
-        self.setui.upd.choose(crate::library::default_dir(), &crate::updates::HANDOFF);
+        self.setui.upd.choose(crate::library::default_dir(), self.handoff);
     }
 
     /// UP13: the banner under the ribbon while a newer release is offered.

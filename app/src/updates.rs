@@ -133,7 +133,7 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// place, so a fetch that stops halfway never counts. A made-up list makes
 /// a made-up release (screenshots and tests).
 pub fn fetch_release(src: &Source, version: &str, into: &Path) -> Result<(), String> {
-    if crate::engine::rollout::pack_in(into, version).is_ok() {
+    if crate::engine::rollout::pack_in(into, version).and_then(|p| crate::engine::rollout::verify(into, &p)).is_ok() {
         return Ok(());
     }
     let part = into.with_file_name(format!(".{}.{}.part", into.file_name().map_or_else(|| "release".into(), |n| n.to_string_lossy().into_owned()), crate::shared::writer_tag()));
@@ -144,7 +144,7 @@ pub fn fetch_release(src: &Source, version: &str, into: &Path) -> Result<(), Str
         Source::Off(why) => Err(why.to_string()),
         Source::Folder(p) => Err(format!("{} is a release folder already", p.display())),
     }
-    .and_then(|()| crate::engine::rollout::pack_in(&part, version).map(|_| ()))
+    .and_then(|()| crate::engine::rollout::pack_in(&part, version).and_then(|p| crate::engine::rollout::verify(&part, &p)))
     .and_then(|()| {
         if into.exists() {
             std::fs::remove_dir_all(into).map_err(|e| format!("{} can't be replaced ({e})", into.display()))?;
@@ -161,8 +161,10 @@ pub fn fetch_release(src: &Source, version: &str, into: &Path) -> Result<(), Str
 /// that are no program.
 fn fake_release(into: &Path, version: &str) -> Result<(), String> {
     let pkg = format!("KurfLabs.nestpro-{version}-full.nupkg");
-    std::fs::write(into.join(&pkg), format!("made-up package {version}")).map_err(|e| e.to_string())?;
-    let idx = serde_json::json!({"Assets": [{"PackageId": "KurfLabs.nestpro", "Version": version, "Type": "Full", "FileName": pkg, "NotesMarkdown": ""}]});
+    let body = format!("made-up package {version}");
+    std::fs::write(into.join(&pkg), &body).map_err(|e| e.to_string())?;
+    let sha: String = <sha2::Sha256 as sha2::Digest>::digest(body.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    let idx = serde_json::json!({"Assets": [{"PackageId": "KurfLabs.nestpro", "Version": version, "Type": "Full", "FileName": pkg, "SHA256": sha, "Size": body.len(), "NotesMarkdown": ""}]});
     std::fs::write(into.join(crate::engine::rollout::INDEX), idx.to_string()).map_err(|e| e.to_string())
 }
 
@@ -369,6 +371,22 @@ impl Handoff {
         s.0 += 1;
         s.1 = Stage::Idle;
         self.changed.notify_all();
+    }
+
+    /// S1: withdraw the choice only when it is `why`'s (or there is none):
+    /// a PC of its own's public release is withdrawn without touching the
+    /// shop's or a trial's, and the other way round.
+    pub fn withdraw_for(&self, why: Why) {
+        let mut s = self.slot();
+        let owned = match &s.1 {
+            Stage::Fetching(c) | Stage::Ready(c) => c.why == why,
+            Stage::Idle => true,
+        };
+        if owned {
+            s.0 += 1;
+            s.1 = Stage::Idle;
+            self.changed.notify_all();
+        }
     }
 
     /// The program has closed: wait up to `limit` for a download still
@@ -828,6 +846,29 @@ mod tests {
         let n = h.start(chosen(&d, &l, "0.2.0"));
         h.withdraw();
         h.done(n, true);
+        assert_eq!(h.take_ready(Duration::ZERO), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S1: withdrawing a public choice leaves a trial's (or the shop's)
+    /// release to install, and the other way round.
+    #[test]
+    fn withdrawing_one_kind_of_update_leaves_the_other() {
+        let d = tmp("withdraw_for");
+        let l = lib(&d);
+        let h = handoff();
+        let mut c = chosen(&d, &l, "0.2.0");
+        c.why = Why::Trial;
+        let n = h.start(c);
+        h.withdraw_for(Why::Public);
+        h.done(n, true);
+        assert_eq!(h.take_ready(Duration::ZERO).map(|c| c.version), Some("0.2.0".into()));
+        let n = h.start(chosen(&d, &l, "0.3.0"));
+        h.withdraw_for(Why::Trial);
+        h.done(n, true);
+        assert_eq!(h.take_ready(Duration::ZERO).map(|c| c.version), Some("0.3.0".into()));
+        h.start(chosen(&d, &l, "0.3.0"));
+        h.withdraw_for(Why::Public);
         assert_eq!(h.take_ready(Duration::ZERO), None);
         let _ = std::fs::remove_dir_all(&d);
     }

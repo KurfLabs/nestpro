@@ -1530,7 +1530,17 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
 /// program records it wrote. An export of its own (PNG, DXF, CNC) is never
 /// refused by where it is: beside a Library job is fine. `out` is judged
 /// where it really is (a relative path, `..` or a link to a record counts).
+/// UP16: nothing written while this session's Library is a trial copy may
+/// land in the real shop folder: programs, pictures and drawings neither.
+pub(super) fn trial_guard(ctx: &Ctx, out: &Path, what: &str) -> Result<(), String> {
+    match ctx.versions().trial_of {
+        Some(shop) => crate::shared::trial_may_write(out, &shop, what),
+        None => Ok(()),
+    }
+}
+
 pub(super) fn refuse_protected(ctx: &Ctx, out: &Path) -> Result<(), String> {
+    trial_guard(ctx, out, &out.display().to_string())?;
     let refused = || Err(format!("{} is a job file or one of the Library's own files: pictures and drawings are never written over those. Pick another out. Nothing was written.", out.display()));
     let real = |p: &Path| std::fs::canonicalize(p).ok();
     let at = real(out).or_else(|| Some(real(out.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")))?.join(out.file_name()?))).unwrap_or_else(|| out.to_path_buf());
@@ -3400,6 +3410,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let mut o = Outcome::read(format!("Program for sheet {} ({} lines).{}{warn}", s + 1, text.lines().count(), on.note), json!(text));
             if let Some(out) = a.str("out") {
                 let out = PathBuf::from(out);
+                trial_guard(ctx, &out, "The program")?;
                 std::fs::write(&out, &text).map_err(|e| format!("Couldn't write {}: {e}", out.display()))?;
                 o.files.push(out);
             }
@@ -3407,6 +3418,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         }
         "export" => {
             let base = a.str("dir").map(PathBuf::from).unwrap_or_else(|| ctx.export_dir());
+            trial_guard(ctx, &base, "The programs")?;
             // AG4: the machine named for this call (before the plans: its technology file).
             let on = super::CallMachine::of(ctx, a.str("machine").as_deref(), job.spec.machine)?;
             let plans = job.plans();

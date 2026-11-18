@@ -64,6 +64,10 @@ pub struct OneTimeChange {
     /// What it does, in shop words ("Moves the machines into the shop").
     pub what: &'static str,
     /// Make it in the shop folder (or a trial copy), under the write lock.
+    /// It must be safe to run again: a change is recorded only after it has
+    /// run, so one stopped between its effects and its record (a lost lock,
+    /// a share that dropped, the program ended) runs again on the next try,
+    /// and must then find its own effects and finish, not repeat them.
     pub run: fn(&Path, &WriteLock) -> Result<(), String>,
 }
 
@@ -119,6 +123,47 @@ pub struct Pack {
     /// The index with only this release's full package in it.
     pub index: String,
     pub notes: String,
+    /// The package's size and checksums, as the index gives them.
+    pub size: Option<u64>,
+    pub sha256: Option<String>,
+    pub sha1: Option<String>,
+}
+
+/// A file's checksum, in lower-case hex.
+fn digest<D: sha2::Digest>(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("{} can't be read ({e})", path.display()))?;
+    let mut h = D::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => h.update(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(format!("{} can't be read ({e})", path.display())),
+        }
+    }
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// UP19: the package in `folder` is whole: its size and checksum are those
+/// the release's index gives (SHA-256, or SHA-1 when that is all it gives).
+/// An index that gives no checksum can't be checked, and is refused.
+pub fn verify(folder: &Path, pack: &Pack) -> Result<(), String> {
+    let p = folder.join(&pack.package);
+    let len = std::fs::metadata(&p).map_err(|e| format!("{} can't be read ({e})", p.display()))?.len();
+    if let Some(size) = pack.size.filter(|s| *s != len) {
+        return Err(format!("{} is {len} bytes, but its index says {size}: it is incomplete or damaged", p.display()));
+    }
+    let (want, got) = match (&pack.sha256, &pack.sha1) {
+        (Some(w), _) => (w, digest::<sha2::Sha256>(&p)?),
+        (None, Some(w)) => (w, digest::<sha1::Sha1>(&p)?),
+        (None, None) => return Err(format!("the index for {} gives no checksum, so the package can't be checked", pack.version)),
+    };
+    if !want.eq_ignore_ascii_case(&got) {
+        return Err(format!("{} doesn't match its index's checksum: it is incomplete or damaged", p.display()));
+    }
+    Ok(())
 }
 
 /// A field of an index entry, any letter case (the installer's own files
@@ -150,18 +195,43 @@ pub fn pack_in(folder: &Path, version: &str) -> Result<Pack, String> {
         return Err(format!("{} names no package file for version {version}", f.display()));
     }
     let p = folder.join(&package);
-    if !p.is_file() {
-        return Err(format!("{} isn't there", p.display()));
+    let len = match std::fs::metadata(&p) {
+        Ok(m) if m.is_file() => m.len(),
+        _ => return Err(format!("{} isn't there", p.display())),
+    };
+    let size = field(a, "Size").and_then(Value::as_u64);
+    // The size is cheap to look at every time; the checksum is `verify`'s.
+    if let Some(size) = size.filter(|s| *s != len) {
+        return Err(format!("{} is {len} bytes, but its index says {size}: it is incomplete or damaged", p.display()));
     }
+    let hex = |k: &str| field(a, k).and_then(Value::as_str).map(str::trim).filter(|h| !h.is_empty()).map(String::from);
     let notes = field(a, "NotesMarkdown").and_then(Value::as_str).unwrap_or_default().to_string();
     let index = serde_json::to_string_pretty(&json!({"Assets": [a]})).map_err(|e| e.to_string())?;
-    Ok(Pack { version: version.trim().trim_start_matches('v').to_string(), package, index, notes })
+    Ok(Pack { version: version.trim().trim_start_matches('v').to_string(), package, index, notes, size, sha256: hex("SHA256"), sha1: hex("SHA1") })
 }
 
 /// `Updates\<version>` in a shop folder: where the shop keeps a release it
 /// rolled out (UP19).
 pub fn release_dir(dir: &Path, version: &str) -> PathBuf {
     dir.join(shop::UPDATES).join(version)
+}
+
+/// The mark in every folder a roll out makes in `Updates` (UP19): only
+/// those are ever taken out again (S11).
+pub const MADE_HERE: &str = "nestpro-release.txt";
+
+/// A release folder's name: a plain version, no `v`.
+fn is_release_name(n: &str) -> bool {
+    plain_version(n).is_some() && !n.starts_with('v')
+}
+
+/// A folder a roll out stages a release in (`.0.5.0.<writer>.part`), or
+/// moves one aside in (`.old`).
+fn is_staging_name(n: &str) -> bool {
+    let Some(rest) = n.strip_prefix('.') else { return false };
+    let Some(body) = rest.strip_suffix(".part").or_else(|| rest.strip_suffix(".old")) else { return false };
+    let parts: Vec<&str> = body.splitn(4, '.').collect();
+    parts.len() == 4 && is_release_name(&parts[..3].join(".")) && !parts[3].is_empty()
 }
 
 /// UP19: the releases kept in the shop folder's `Updates`, oldest first:
@@ -173,7 +243,7 @@ pub fn in_updates(dir: &Path) -> Result<Vec<String>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir.is_dir() => return Ok(vec![]),
         r => r.map_err(|e| format!("{} can't be read ({e})", u.display()))?,
     };
-    let mut out: Vec<String> = rd.flatten().filter_map(|e| e.file_name().to_str().map(String::from)).filter(|n| plain_version(n).is_some() && n == n.trim_start_matches('v') && pack_in(&u.join(n), n).is_ok()).collect();
+    let mut out: Vec<String> = rd.flatten().filter_map(|e| e.file_name().to_str().map(String::from)).filter(|n| is_release_name(n) && pack_in(&u.join(n), n).is_ok()).collect();
     out.sort_by_key(|n| plain_version(n));
     Ok(out)
 }
@@ -253,6 +323,8 @@ pub struct RolledOut {
     pub removed: Vec<String>,
     /// The one-time changes made to the shop's files (UP18).
     pub changes: Vec<String>,
+    /// S8: only the shop version's own package was copied again.
+    pub repaired: bool,
 }
 
 /// UP19: what may be rolled out, as the shop is: by a person on the admin
@@ -265,7 +337,10 @@ fn may_roll_out(dir: &Path, s: &ShopFile, who: &Who, this: &str) -> Result<(), S
         return Err(format!("Rolling out is done on the admin PC ({}). Nothing was rolled out.", s.admin.pc));
     }
     match s.shop_version().map(|sv| (sv, shared::version_order(this, sv))) {
-        Some((sv, Some(Ordering::Equal))) => Err(format!("{sv} is already the shop version. Nothing was changed.")),
+        // S8: the shop version whose package in Updates is missing or
+        // damaged is copied again (a repair); one that is whole is left.
+        Some((sv, Some(Ordering::Equal))) if current_release_ok(dir, sv).is_ok() => Err(format!("{sv} is already the shop version, and its package in the shop folder is whole. Nothing was changed.")),
+        Some((_, Some(Ordering::Equal))) => Ok(()),
         Some((sv, Some(Ordering::Less))) => Err(format!("This PC runs {this}, older than the shop version {sv}: rolling out never goes back. Roll back (or restore a backup) does. Nothing was rolled out.")),
         _ => Ok(()),
     }
@@ -296,17 +371,38 @@ pub fn rollout_with(dir: &Path, release: &Path, who: &Who, this: &str, changes: 
     let not_shop = || format!("{} isn't a shop. Nothing was rolled out.", dir.display());
     let s = shop::read(dir)?.ok_or_else(not_shop)?;
     may_roll_out(dir, &s, who, this)?;
-    let pack = pack_in(release, this).map_err(|e| format!("The packages of {this} aren't ready to roll out: {e}. Nothing was rolled out."))?;
-    let lock = WriteLock::take(dir).map_err(|e| format!("Nothing was rolled out: {e}"))?;
+    let pack = pack_in(release, this).and_then(|p| verify(release, &p).map(|()| p)).map_err(|e| format!("The packages of {this} aren't ready to roll out: {e}. Nothing was rolled out."))?;
+    let still0 = || s.shop_version().map_or("The shop has no shop version yet.".to_string(), |v| format!("The shop version is still {v}."));
+    // S10: the package is copied before the lock is taken.
+    let staging = stage_release(dir, release, &pack).map_err(|e| format!("Nothing was rolled out: {e}. {}", still0()))?;
+    let lock = match WriteLock::take(dir) {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(format!("Nothing was rolled out: {e}"));
+        }
+    };
     shared::pause("rollout: locked");
     // Looked at again under the lock: another PC may have become the admin
     // PC, or the shop version changed.
-    let mut s = shop::read(dir)?.ok_or_else(not_shop)?;
-    may_roll_out(dir, &s, who, this)?;
+    let checked = shop::read(dir).and_then(|s| s.ok_or_else(not_shop)).and_then(|s| may_roll_out(dir, &s, who, this).map(|()| s));
+    let mut s = match checked {
+        Ok(s) => s,
+        Err(e) => {
+            if lock.still_held().is_ok() {
+                let _ = std::fs::remove_dir_all(&staging);
+            }
+            return Err(e);
+        }
+    };
     let before = s.shop_version().map(String::from);
     let still = || before.as_ref().map_or("The shop has no shop version yet.".to_string(), |v| format!("The shop version is still {v}."));
-    copy_release(dir, release, &pack, &lock).map_err(|e| format!("Nothing was rolled out: {e}. {}", still()))?;
+    publish_release(dir, &staging, &pack, &lock).map_err(|e| format!("Nothing was rolled out: {e}. {}", still()))?;
     shared::pause("rollout: copied");
+    // S8: a repair of the shop version's own package changes nothing else.
+    if before.as_deref() == Some(this) {
+        return Ok(RolledOut { version: this.to_string(), previous: s.previous_version().map(String::from), removed: vec![], changes: vec![], repaired: true });
+    }
     // The shop file is judged by its own version only: this PC runs a
     // newer release than the shop version it replaces (UP21 doesn't apply).
     let judged = Versions::this(this);
@@ -323,77 +419,109 @@ pub fn rollout_with(dir: &Path, release: &Path, who: &Who, this: &str, changes: 
     s.other.insert(shop::LAYOUTS.into(), json!(layouts()));
     shop::write_judged(dir, &s, &lock, this, &judged).map_err(|e| format!("Not rolled out: the shop file couldn't be written ({e}). {}", still()))?;
     let removed = prune_updates(dir, &[this, before.as_deref().unwrap_or(this)], &lock);
-    Ok(RolledOut { version: this.to_string(), previous: before, removed, changes: made })
+    Ok(RolledOut { version: this.to_string(), previous: before, removed, changes: made, repaired: false })
 }
 
-/// UP19: copy a release's packages into `Updates\<version>`: first into a
-/// folder of this writer's own beside it, then renamed into place, so a copy
-/// that stops halfway never counts as the release. The lock is checked
-/// before each step; what this copy made is taken away again when it fails
-/// while the lock is still this PC's.
-fn copy_release(dir: &Path, release: &Path, pack: &Pack, lock: &WriteLock) -> Result<(), String> {
+/// UP19: stage a release's package in `Updates`, before the Library's write
+/// lock is taken, so copying a big package over a slow share never holds up
+/// the other PCs' saves (S10): into a folder of this writer's own
+/// (`.0.5.0.<writer>.part`), marked as made here, then checked against the
+/// index. Nothing reads such a folder; a failed one is taken away again.
+fn stage_release(dir: &Path, release: &Path, pack: &Pack) -> Result<PathBuf, String> {
     if !dir.is_dir() {
         return Err(crate::library::unreachable(dir));
     }
     let updates = dir.join(shop::UPDATES);
     if !updates.is_dir() {
-        lock.still_held()?;
-        std::fs::create_dir(&updates).map_err(|e| format!("{} can't be made ({e})", updates.display()))?;
+        // Made under the lock, only inside a shop folder that is there.
+        let lock = WriteLock::take(dir)?;
+        if !updates.is_dir() {
+            lock.still_held()?;
+            std::fs::create_dir(&updates).map_err(|e| format!("{} can't be made ({e})", updates.display()))?;
+        }
     }
-    let tag = shared::writer_tag();
-    let part = updates.join(format!(".{}.{tag}.part", pack.version));
-    let target = release_dir(dir, &pack.version);
-    lock.still_held()?;
-    std::fs::create_dir(&part).map_err(|e| format!("{} can't be made ({e})", part.display()))?;
-    let copied = (|| -> Result<(), String> {
-        lock.still_held()?;
+    let staging = updates.join(format!(".{}.{}.part", pack.version, shared::writer_tag()));
+    std::fs::create_dir(&staging).map_err(|e| format!("{} can't be made ({e})", staging.display()))?;
+    let staged = (|| -> Result<(), String> {
+        std::fs::write(staging.join(MADE_HERE), format!("A release this program rolled out: {}.\n", pack.version)).map_err(|e| format!("{} can't be written ({e})", staging.display()))?;
         let from = release.join(&pack.package);
-        std::fs::copy(&from, part.join(&pack.package)).map_err(|e| format!("{} couldn't be copied into {} ({e})", from.display(), updates.display()))?;
+        std::fs::copy(&from, staging.join(&pack.package)).map_err(|e| format!("{} couldn't be copied into {} ({e})", from.display(), updates.display()))?;
         shared::pause("rollout: package copied");
-        shared::write_existing(&part.join(INDEX), pack.index.as_bytes(), lock)?;
-        // A release of the same version already there (an earlier roll out
-        // that stopped before the shop file) is replaced.
-        let old = updates.join(format!(".{}.{tag}.old", pack.version));
+        verify(&staging, pack)
+    })();
+    if let Err(e) = staged {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    Ok(staging)
+}
+
+/// UP19: publish a staged release as `Updates\<version>` under the lock:
+/// its index is written, a folder of the same version already there is
+/// moved aside and taken away. The staging folder is taken away when it
+/// fails while the lock is still this PC's.
+fn publish_release(dir: &Path, staging: &Path, pack: &Pack, lock: &WriteLock) -> Result<(), String> {
+    let target = release_dir(dir, &pack.version);
+    let published = (|| -> Result<(), String> {
+        if !dir.is_dir() {
+            return Err(crate::library::unreachable(dir));
+        }
+        shared::write_existing(&staging.join(INDEX), pack.index.as_bytes(), lock)?;
+        let old = dir.join(shop::UPDATES).join(format!(".{}.{}.old", pack.version, shared::writer_tag()));
         lock.still_held()?;
         if target.exists() {
             std::fs::rename(&target, &old).map_err(|e| format!("{} can't be replaced ({e})", target.display()))?;
         }
         lock.still_held()?;
-        std::fs::rename(&part, &target).map_err(|e| format!("{} can't be made ({e})", target.display()))?;
+        std::fs::rename(staging, &target).map_err(|e| format!("{} can't be made ({e})", target.display()))?;
         if old.exists() && lock.still_held().is_ok() {
             let _ = std::fs::remove_dir_all(&old);
         }
         Ok(())
     })();
-    if copied.is_err() && part.exists() && lock.still_held().is_ok() {
-        let _ = std::fs::remove_dir_all(&part);
+    if published.is_err() && staging.exists() && lock.still_held().is_ok() {
+        let _ = std::fs::remove_dir_all(staging);
     }
-    copied
+    published
 }
 
-/// UP19: take every release out of `Updates` but `keep` (the shop version
-/// and the one before), and copies left halfway; nothing else there is
-/// touched. Under the lock, checked before each.
+/// A staging folder left this long is taken for one whose roll out
+/// stopped (none takes this long).
+const STAGING_LEFT: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// UP19 (S11): take out of `Updates` the release folders a roll out made
+/// (marked so) but `keep` (the shop version and the one before), and
+/// staging folders a roll out made and left a day or more. Nothing else
+/// there is touched. Under the lock, checked before each.
 fn prune_updates(dir: &Path, keep: &[&str], lock: &WriteLock) -> Vec<String> {
     let u = dir.join(shop::UPDATES);
     let mut removed = vec![];
     let Ok(rd) = std::fs::read_dir(&u) else { return removed };
     for e in rd.flatten() {
         let Some(n) = e.file_name().to_str().map(String::from) else { continue };
-        let release = plain_version(&n).is_some() && n == n.trim_start_matches('v');
-        let left = n.starts_with('.') && (n.ends_with(".part") || n.ends_with(".old"));
-        if !(release || left) || keep.contains(&n.as_str()) || !e.path().is_dir() {
+        let p = e.path();
+        let ours = p.is_dir() && !p.is_symlink() && p.join(MADE_HERE).is_file();
+        let release = is_release_name(&n) && !keep.contains(&n.as_str());
+        let left = is_staging_name(&n) && e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= STAGING_LEFT);
+        if !ours || !(release || left) {
             continue;
         }
         if lock.still_held().is_err() {
             break;
         }
-        if std::fs::remove_dir_all(e.path()).is_ok() && release {
+        if std::fs::remove_dir_all(&p).is_ok() && release {
             removed.push(n);
         }
     }
     removed.sort_by_key(|n| plain_version(n));
     removed
+}
+
+/// UP19 (S8): the shop version's own release in `Updates` is whole: there,
+/// and matching its index's size and checksum.
+pub fn current_release_ok(dir: &Path, version: &str) -> Result<(), String> {
+    let f = release_dir(dir, version);
+    pack_in(&f, version).and_then(|p| verify(&f, &p))
 }
 
 // ---------------------------------------------------------------------------
@@ -427,9 +555,15 @@ pub fn start_trial(dir: &Path, root: &Path, version: &str, who: &Who, clock: &Cl
     if plain_version(version).is_none() {
         return Err(format!("{version} isn't a release (MAJOR.MINOR.PATCH). Nothing was tried."));
     }
-    if let Some(sv) = s.shop_version().filter(|sv| shared::version_order(version, sv) != Some(Ordering::Greater)) {
+    // S4: Stop trying goes back to the shop version: there must be one, and
+    // its package must be whole in the shop folder.
+    let Some(sv) = s.shop_version() else {
+        return Err(format!("Shop {} has no shop version yet, so a trial would have no release to go back to. Roll out the release this PC runs first. Nothing was tried.", s.name));
+    };
+    if shared::version_order(version, sv) != Some(Ordering::Greater) {
         return Err(format!("{version} isn't newer than the shop version {sv}: there's nothing to try. Nothing was tried."));
     }
+    current_release_ok(dir, sv).map_err(|e| format!("Nothing was tried: the shop version {sv} couldn't be gone back to ({e}). Roll it out again on this PC first (Roll out to the shop repairs it)."))?;
     let taken = backup::take(dir, own, who, clock, backup::Why::Now).map_err(|e| format!("Nothing was tried: a backup of the shop couldn't be taken first. {e}"))?;
     let zip = match taken {
         backup::Daily::Taken(d) => d.entry.path,
@@ -557,9 +691,11 @@ mod tests {
         let d = at.join(format!("release-{version}"));
         std::fs::create_dir_all(&d).unwrap();
         let pkg = format!("KurfLabs.nestpro-{version}-full.nupkg");
-        std::fs::write(d.join(&pkg), format!("made-up package {version}")).unwrap();
+        let body = format!("made-up package {version}");
+        std::fs::write(d.join(&pkg), &body).unwrap();
+        let sha: String = <sha2::Sha256 as sha2::Digest>::digest(body.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
         let idx = json!({"Assets": [
-            {"PackageId": "KurfLabs.nestpro", "Version": version, "Type": "Full", "FileName": pkg, "SHA1": "x", "Size": 1, "NotesMarkdown": format!("## Changes\n\n- Release {version}\n")},
+            {"PackageId": "KurfLabs.nestpro", "Version": version, "Type": "Full", "FileName": pkg, "SHA256": sha, "Size": body.len(), "NotesMarkdown": format!("## Changes\n\n- Release {version}\n")},
             {"PackageId": "KurfLabs.nestpro", "Version": version, "Type": "Delta", "FileName": format!("KurfLabs.nestpro-{version}-delta.nupkg")},
         ]});
         std::fs::write(d.join(INDEX), idx.to_string()).unwrap();
@@ -762,6 +898,146 @@ mod tests {
         );
         // The same layouts: no layout line.
         assert!(warning(&st, "0.5.0", &layouts()).newer_layouts.is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S10: the package is copied into Updates before the Library's write
+    /// lock is taken, so a slow copy never holds up the other PCs' saves.
+    #[test]
+    fn the_package_is_copied_before_the_lock_is_taken() {
+        let d = tmp("rollout_stage");
+        let lib = acme(&d, "0.4.0");
+        let locked = std::rc::Rc::new(std::cell::Cell::new(None));
+        let (l2, seen) = (lib.clone(), locked.clone());
+        shared::hooks::set(move |step| {
+            if step == "rollout: package copied" {
+                seen.set(Some(l2.join(shared::LOCK_FILE).exists()));
+            }
+        });
+        let r = rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0");
+        shared::hooks::clear();
+        r.unwrap();
+        assert_eq!(locked.get(), Some(false), "the package was copied under the write lock");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S8: a package that isn't whole never becomes the shop version; the
+    /// shop version's own package, damaged in Updates, is copied again.
+    #[test]
+    fn a_damaged_package_is_refused_and_the_current_one_can_be_repaired() {
+        let d = tmp("rollout_damaged");
+        let lib = acme(&d, "0.4.0");
+        rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap();
+        // The admin PC's copy of 0.5.0 stopped halfway.
+        let rel = fake_release(&d, "0.5.0");
+        let pkg = rel.join("KurfLabs.nestpro-0.5.0-full.nupkg");
+        std::fs::write(&pkg, "made-up").unwrap();
+        let e = rollout(&lib, &rel, &sam(), "0.5.0").unwrap_err();
+        assert!(e.contains("incomplete or damaged") && e.contains("Nothing was rolled out"), "{e}");
+        // The same length, other bytes: the checksum catches it.
+        std::fs::write(&pkg, "made-up package 0.5.X").unwrap();
+        assert!(rollout(&lib, &rel, &sam(), "0.5.0").unwrap_err().contains("checksum"));
+        assert_eq!(shop::read(&lib).unwrap().unwrap().shop_version(), Some("0.4.0"));
+        // The shop version's package in Updates got damaged: the other PCs
+        // are told, and rolling the same version out again repairs it.
+        std::fs::write(release_dir(&lib, "0.4.0").join("KurfLabs.nestpro-0.4.0-full.nupkg"), "x").unwrap();
+        assert!(matches!(crate::engine::updates::from_shop(&lib, "0.3.0"), Ok(crate::engine::updates::FromShop::Missing { .. })));
+        let r = rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap();
+        assert!(r.repaired && r.changes.is_empty(), "{r:?}");
+        current_release_ok(&lib, "0.4.0").unwrap();
+        assert_eq!(shop::read(&lib).unwrap().unwrap().shop_version(), Some("0.4.0"));
+        // Whole again: the same version is refused.
+        assert!(rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap_err().contains("already the shop version"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S11: a roll out takes out of Updates only the release folders and
+    /// staging folders it made; anything else there stays.
+    #[test]
+    fn a_roll_out_takes_out_only_what_it_made() {
+        let d = tmp("rollout_prune");
+        let lib = acme(&d, "0.3.0");
+        let u = lib.join(shop::UPDATES);
+        std::fs::create_dir_all(u.join("0.1.0")).unwrap();
+        std::fs::write(u.join("0.1.0").join("readme.txt"), "someone's").unwrap();
+        std::fs::create_dir_all(u.join(".0.2.0.other.part")).unwrap();
+        std::fs::create_dir_all(u.join("drivers")).unwrap();
+        for v in ["0.3.0", "0.4.0", "0.5.0"] {
+            rollout(&lib, &fake_release(&d, v), &sam(), v).unwrap();
+        }
+        let mut left: Vec<String> = std::fs::read_dir(&u).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, [".0.2.0.other.part", "0.1.0", "0.4.0", "0.5.0", "drivers"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A made-up one-time change that can run again: it moves the machines'
+    /// file into the shop's folder, and finds it moved when it runs again.
+    fn move_machines(dir: &Path, lock: &WriteLock) -> Result<(), String> {
+        let (from, to) = (dir.join("machines-old.json"), dir.join(shop::PCS).join("machines.json"));
+        if from.is_file() {
+            let text = std::fs::read(&from).map_err(|e| e.to_string())?;
+            shared::write_existing(&to, &text, lock)?;
+            lock.still_held()?;
+            std::fs::remove_file(&from).map_err(|e| e.to_string())?;
+        }
+        if !to.is_file() {
+            return Err("the machines' file is in neither place".into());
+        }
+        Ok(())
+    }
+
+    /// S7, UP18: a one-time change stopped between its effects and its
+    /// record (the lock was lost) runs again on the next roll out and
+    /// finishes, without doing its work twice; it is recorded once.
+    #[test]
+    fn a_change_stopped_before_its_record_finishes_on_the_next_roll_out() {
+        let d = tmp("rollout_change_resume");
+        let lib = acme(&d, "0.4.0");
+        rollout_with(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0", &[]).unwrap();
+        std::fs::write(lib.join("machines-old.json"), r#"{"machines": ["LC5"]}"#).unwrap();
+        const MOVE: &[OneTimeChange] = &[OneTimeChange { name: "machines-into-shop", release: "0.5.0", what: "Moves the machines into the shop", run: move_machines }];
+        let l2 = lib.clone();
+        shared::hooks::set(move |step| {
+            if step == "rollout: change made" {
+                // Another PC took the lock over: the record can't be written.
+                let _ = std::fs::remove_file(l2.join(shared::LOCK_FILE));
+            }
+        });
+        let e = rollout_with(&lib, &fake_release(&d, "0.5.0"), &sam(), "0.5.0", MOVE).unwrap_err();
+        shared::hooks::clear();
+        assert!(e.contains("The shop version is still 0.4.0"), "{e}");
+        let s = shop::read(&lib).unwrap().unwrap();
+        assert!(s.changes_made().is_empty() && s.shop_version() == Some("0.4.0"));
+        let r = rollout_with(&lib, &fake_release(&d, "0.5.0"), &sam(), "0.5.0", MOVE).unwrap();
+        assert_eq!(r.changes, ["Moves the machines into the shop"]);
+        assert_eq!(std::fs::read_to_string(lib.join(shop::PCS).join("machines.json")).unwrap(), r#"{"machines": ["LC5"]}"#);
+        assert!(!lib.join("machines-old.json").exists());
+        assert_eq!(shop::read(&lib).unwrap().unwrap().changes_made(), ["machines-into-shop"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S4: a trial needs a shop version to go back to, whole in Updates: a
+    /// new shop rolls the release this PC runs out first.
+    #[test]
+    fn a_first_trial_on_a_new_shop_needs_a_version_to_go_back_to() {
+        let d = tmp("rollout_first_trial");
+        let lib = acme(&d, "0.4.0");
+        let c = Clock::at(1_794_216_600);
+        let e = start_trial(&lib, &d.join("Trials"), "0.5.0", &sam(), &c, "0.4.0", &Default::default()).unwrap_err();
+        assert!(e.contains("no shop version yet") && e.contains("Roll out the release this PC runs first"), "{e}");
+        rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap();
+        // Its package damaged: nothing to go back to.
+        std::fs::write(release_dir(&lib, "0.4.0").join("KurfLabs.nestpro-0.4.0-full.nupkg"), "x").unwrap();
+        let e = start_trial(&lib, &d.join("Trials"), "0.5.0", &sam(), &c, "0.4.0", &Default::default()).unwrap_err();
+        assert!(e.contains("couldn't be gone back to"), "{e}");
+        rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap();
+        let t = start_trial(&lib, &d.join("Trials"), "0.5.0", &sam(), &c, "0.4.0", &Default::default()).unwrap();
+        // Stop trying after 0.5.0 installed: the shop has a version to go
+        // back to, and is read-only on this PC until then.
+        assert_eq!(t.mark.shop_version.as_deref(), Some("0.4.0"));
+        assert!(matches!(crate::engine::updates::from_shop(&lib, "0.5.0"), Ok(crate::engine::updates::FromShop::Update { back: true, ref version, .. }) if version == "0.4.0"));
+        assert!(shop::versions(&lib, "0.5.0").at(&lib.join("index.json")).ahead().is_some());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

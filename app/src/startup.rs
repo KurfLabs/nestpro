@@ -363,7 +363,7 @@ impl crate::App {
         if matches!(a, Answer::Joined(_) | Answer::Started { .. }) {
             // S2: a PC in a shop never takes a public release: whatever was
             // offered or chosen from them is withdrawn.
-            self.setui.upd.withdraw(&crate::updates::HANDOFF);
+            self.setui.upd.withdraw(self.handoff);
         }
         match a {
             Answer::Joined(j) => {

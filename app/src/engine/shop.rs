@@ -323,6 +323,9 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         // refuses it, whoever the session says it works for.
         "admin" => make_admin(dir, &ctx.who.clone().as_agent(), &ctx.clock).map(|_| unreachable!("an agent changed the admin PC")),
         "backup" => {
+            if let Some(why) = ahead_of_shop(dir, &ctx.version) {
+                return Err(format!("No backup was taken: the shop is read-only on this PC. {why}"));
+            }
             let d = backup_now(dir, &ctx.cfg.backups, &ctx.who, &ctx.clock)?;
             let (message, data) = backup_said(&d);
             Ok(Outcome { message, data, changed: false, files: vec![d.entry.path.clone()] })
@@ -389,6 +392,14 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             ))
         }
     }
+}
+
+/// UP21 (S9): why a PC on `version` writes nothing in the shop in `dir`:
+/// it runs a release newer than the shop version, outside a trial. Such a
+/// PC starts no backup and holds no job; only its own record in the PCs
+/// list is written (SH4), so the list shows it ahead.
+pub fn ahead_of_shop(dir: &Path, version: &str) -> Option<String> {
+    shop::versions(dir, version).ahead().map(|n| n.message())
 }
 
 /// UP22: a PC on `version` against the shop version `shop`: (behind,
