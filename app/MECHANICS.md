@@ -1506,6 +1506,149 @@ Not built (FEATURES MAC-94 – MAC-98): the 3D file (tilt data, bevel lead piece
 as slits (quality + 20), head-down traverses over short gaps, `.ord` files and the hand-off to
 OMAX's time calculation. A file not yet loaded on an OMAX: MAC-96.
 
+## ByStar Fiber laser (spec #122)
+
+A Bystronic ByStar Fiber doesn't run G-code. It reads a `.bvc`: a zip holding a cut program
+(`.ccp`, an XML list of commands), a job file and a preview picture. These are the rules the
+original's ByStar Fiber post follows, studied for spec #122 (#123) so the import (#124) and the
+writer (#126) are built to known rules. Nothing here is built yet (FEATURES MAC-74, JOB-73), and
+none of it has been checked against a `.bvc` the original wrote: "observed" means read in the
+original's code, "estimated" means inferred from it. Where the rebuild will differ on purpose it
+says so in FEATURES MAC-78.
+
+### ByStar Fiber laser — the program file (.bvc)
+
+| # | Rule | Source |
+|---|------|--------|
+| BV1 | A `.bvc` is a ZIP archive holding, at its root and in this order, `<NEST>.ccp` (the cut program), `JobInfo.xml` (the job) and, when the nesting has a preview picture, `<NEST>.png`. Nothing else. It is named after the sheet program: `<program folder>\<NEST>.bvc`. | Observed (order, names); root placement estimated |
+| BV2 | With B017 = 1 all nestings of a run go into the first nesting's `.bvc`: each adds its own `.ccp` and `.png`, but they all write the same `JobInfo.xml`, so the archive keeps only the **last** nesting's job file. With B017 = 0 (default) each nesting has its own `.bvc`. | Observed; the replaced job file estimated |
+| BV3 | The preview is the nesting's large preview picture, or `<program path without extension>-IMGB.png` when none is named; it is stored as `<NEST>.png`, and left out when the file doesn't exist. | Observed |
+| BV4 | The `.ccp` is a text file with one XML element per line, lines ending CR LF, no byte-order mark. Its bytes are in the PC's ANSI code page, although its first line says `utf-8`: only plain ASCII text (names, numbers) is safe. A reader should accept both UTF-8 and ANSI. | Observed (one per line, no BOM, ANSI conversion); CR LF and the code page estimated |
+| BV5 | The first line is `<?xml version="1.0" encoding="utf-8"?>`. No element has a namespace. | Observed |
+| BV6 | Each line is indented by **two spaces per open element**. Empty elements end with a space and `/>` (`<Technology />`). Attribute values are in double quotes and are written as they are, **not escaped** (a `&`, `<` or `"` in a name breaks the XML). No blank lines or comments. | Observed |
+| BV7 | Element tree, in order: `CuttingControlProgram` › `Technology` › `ApplicationFlat` › `SubPrograms` › one `SubProgram` per CAM subroutine (each with one `ControlCommands` holding its commands) › then, after `SubPrograms`, a main `ControlCommands` with `SetClamps Value="Off"` and one `CallSubProgram` per placed part. | Observed |
+| BV8 | `CuttingControlProgram` attributes, in order: `MeasurementSystem` (`Metric`, or `Imperial` with B001 = 1), `ToolArrangement="Vertical"` only with B041 = 1, `Thickness` (sheet thickness). | Observed |
+| BV9 | `ApplicationFlat` attributes, in order: `PlanWidth` and `PlanHeight` = the largest X and Y distance from zero that any move of the program reaches (arcs included), `SheetWidth` = the sheet's **length** (X), `SheetHeight` = the sheet's **width** (Y). | Observed; "as the CAM hands the coordinates over" estimated |
+| BV10 | `Id`: every command, `SubProgram`, `SetClamps` and `CallSubProgram` has an `Id`, always its first attribute, counting 1, 2, 3 … through the whole file in file order; containers (`CuttingControlProgram`, `Technology`, `ApplicationFlat`, `SubPrograms`, `ControlCommands`) have none. | Observed |
+| BV11 | The commands and their attributes, in order: `SetOperationMode Id Value`, `SetToolCorrection Id Value`, `SetPiercingMode Id Value`, `ExecPiercing Id`, `SetSensingSensor Id Value`, `MoveLineTo Id X Y` (rapid), `LineTo Id X Y`, `ArcTo Id X Y SweepAngle`, `BeginLeadIn Id`, `EndLeadIn Id`, `BeginLeadOut Id`, `EndLeadOut Id`, `BeginCutOut Id Contour`, `EndCutOut Id`, `ExecMicrojoint Id`, `ExecHighPositioning Id`, `ExecDwell Id`, `ExecOptionalStop Id`, `ExecOptionalStopWithoutLifting Id`, `SetClamps Id Value`, `CallSubProgram Id X Y Rotation SubProgramName`. | Observed |
+| BV12 | Values by name: `SetToolCorrection` `Left`, `Right`, `None`; `SetPiercingMode` `Normal`, `Fine`, `NoTime` (any text when it comes from the technology table, BV33); `BeginCutOut Contour` `Exterior`, `Interior`, `Unknown`; `SetSensingSensor` `On`, `Off`; `SetClamps` `Off`; `SetOperationMode Value` a whole number (0–7 by default, BV32). | Observed |
+| BV13 | Numbers: coordinates, `SweepAngle`, `Thickness` and the sizes have **up to 9 decimals with trailing zeros and a bare point dropped** (`12`, `12.5`, `0.000000001`); the point is always `.`; no `+`, no thousands separator; rounding is to the nearest last digit with an exact half going **toward zero**; a small negative value that rounds to nothing is written **`-0`**. `Id`, `SetOperationMode Value`, `Rotation` and — by default — `CallSubProgram X` and `Y` are **whole numbers** (same rounding); with B021 = 1 the call's X and Y keep up to 3 decimals. | Observed |
+| BV14 | `ArcTo X Y` is the arc's **end point**; it starts at the previous point; the centre isn't written. `SweepAngle` is the turned angle in degrees, **positive = counter-clockwise, negative = clockwise**; a full circle is one `ArcTo` back to its start with `360` or `-360` (unless B018, BV47). For an arc whose ends differ, a reader finds the centre from start, end and sweep. A **full circle written as one `ArcTo` carries no centre** (its start and end are the same point), so it can't be rebuilt from the file alone: how the machine reads it isn't known (MAC-78), and a writer should split full circles into two halves. | Observed; the centre formula is ours; the full-circle case unresolved |
+| BV15 | Inside a `SubProgram` the moves are in that part's own drawing frame; `CallSubProgram X Y` puts the frame on the sheet and `Rotation` (whole degrees) turns it. The post never scales or moves coordinates itself. | Observed (no transform); the frame estimated |
+| BV16 | `SubProgram` attributes, in order: `Id`, `Name`, then for a part `PartNumber` (the part's place 1…n in the nesting's part list, or the subprogram's name with B016 = 1), `PartWidth` and `PartHeight` (the part's length and width). `Name` = the C004 text + 1, 2, 3 … in the order the subprograms come (just `1`, `2` … with C004 empty), or `ResidualSheetCuts` for a remnant cut-off subprogram (BV38). A subprogram without a part has no `PartNumber`; with B027 = 1 it gets a `PartHeight` (10 when it has none). | Observed |
+| BV17 | `CallSubProgram`: one per placed part, in the CAM's order; `X`, `Y` = where the part's frame goes; `Rotation` = its angle; `SubProgramName` = C004 + the CAM's subroutine number (normally the same as the subprogram's `Name`). A remnant cut-off subprogram (B002, BV38) is called by its own name: `ResidualSheetCuts` by default, or C004 + its number when B016 or B028 numbers it like a part (the call following the numbered name is estimated). With the vaporize-all technology each part is called twice, its `Vaporization_<n>` copy first (BV54). | Observed; "same number" estimated |
+| BV18 | `JobInfo.xml`: root `JobInfo` with `Guid` (a new random GUID each time, capitals, no braces), `Name` (job), `Material` (material name), `Thickness`, `MeasurementSystem` (**always `Metric`**), `Parameter` (the technology's ByStar parameter-file name, only when set) and `ProcessGas` (the gas name, only together with `Parameter`); then `PartInfos` › `PartInfo Id Name Quantity [OrderInfo]` (Id 1…n in the nesting's part order, Quantity = count on this nesting); `MaterialInfos` › `MaterialInfo Id="1" Quantity SizeX SizeY FormatType="Sheet" ArticleInfo [ChargeInfo]` (Quantity = how many sheets, SizeX/SizeY = sheet length/width, ArticleInfo = sheet name, ChargeInfo = its tracking number); `PlanInfos` › `PlanInfo Multiplicity Name MaterialId="1" EstimatedCuttingTime SizeX SizeY` (Name = the program name, SizeX/SizeY = the nesting's used length and width) › `PlanPartInfos` › `PlanPartInfo PartId Quantity SubProgramName` (one per distinct part subprogram); an empty `SortInfos`; and an `EstimatedCuttingTime` element holding the time. | Observed |
+| BV19 | `JobInfo.xml` is a normal UTF-8 XML file written by an XML library (pretty-printed, declaration `<?xml version="1.0" encoding="utf-8"?>`); whole numbers are written as integers, sizes and times as decimals. A reader should not depend on its indentation or number spelling. | Observed (library, declaration); exact number text estimated |
+| BV20 | Example files built from these rules (made-up data) are in the study; a writer's test can rebuild the same shape. | Estimated |
+
+### ByStar Fiber laser — what the post writes
+
+| # | Rule | Source |
+|---|------|--------|
+| BV21 | The post works from the CAM's machining list (rapids, lines, arcs, point cycles, aux functions, part subroutines and calls) plus job data (job name, material, thickness, sheet name/size/count, nesting parts and quantities, preview). It never reads part drawings itself. | Observed |
+| BV22 | A switch missing from the post file is 0, except **B013 = 10** (the point-circle diameter); texts are empty and R000–R007 are 0. The original's shipped post file sets every switch 0 except B013 = 0.2. | Observed |
+| BV23 | Each program starts with the header (BV5, BV8, BV9) and forgets the operation mode, the tool correction (none) and the height sensor (off). B002 = 1 makes the CAM put **all** parts and cut-offs into subprograms, so remnant cut-offs get a subprogram of their own (BV38). | Observed; B002's effect estimated |
+| BV24 | `SubPrograms` opens at the first subroutine; each `SubProgram` (with its `ControlCommands`) is written at its first move and closed when the next one starts or the program ends; then come the main `ControlCommands`, `SetClamps Off`, the calls, and the closing tags. | Observed |
+| BV25 | A subprogram's part is the part the CAM names for that subroutine; its place, length and width come from the nesting's part list. No match → a subprogram without a part. | Observed |
+| BV26 | A rapid to a pierce point is written `MoveLineTo X Y`. Two of the CAM's moves aren't written as its rapids: the jump over a micro-joint gap by default (the cut runs on through the joint, BV44; with B038 the gap is a real rapid, BV45), and the CAM's approach to a remnant cut-off (the post writes its own rapids to the pierce, BV39). | Observed |
+| BV27 | **Lead-in:** right after the rapid come `BeginLeadIn`, `SetPiercingMode`, `ExecPiercing`, the lead-in moves, `EndLeadIn`, and then at once `BeginCutOut`. The lead-in is therefore **outside** the cut-out. A lead-in of one plain element may leave `EndLeadIn` unwritten in the original (its test never sees the end of a one-element lead-in of the first kind); not confirmed. | Observed; the one-element case estimated |
+| BV28 | **Lead-out:** `BeginLeadOut` before the first lead-out move, then the lead-out moves, `EndLeadOut`, and only then `EndCutOut`: the lead-out is **inside** the cut-out. | Observed |
+| BV29 | **Order for each contour** (default switches): `SetToolCorrection None` only when marking starts with B036 or ends with B012 (BV46); `SetOperationMode` when the mode changes or is forced (BV34); `SetSensingSensor` when the sensor must change (BV37); `SetToolCorrection Left` or `Right` (the side the CAM compensates to, away from the part) **before** the rapid; `MoveLineTo`; with a lead-in: `BeginLeadIn`, `SetPiercingMode`, `ExecPiercing`, lead-in moves, `EndLeadIn`; `BeginCutOut Contour=…` (straight after the rapid when there is no lead-in — **with no pierce command at all by default**, BV49); the contour's `LineTo` / `ArcTo` (with `ExecMicrojoint` at joints, BV44); `BeginLeadOut`, lead-out moves, `EndLeadOut`; `EndCutOut`; `SetToolCorrection None` when a correction was on (BV30). B011 = 1 moves the correction after the rapid; B040 = 1 moves it after the lead-in. | Observed |
+| BV30 | `EndCutOut` follows the contour's last move. With B038 = 1 it is written at the next rapid instead — at a micro-joint that is the rapid over the gap, so the joint reads `EndCutOut`, `SetToolCorrection None`, `MoveLineTo` to the gap's far end, `BeginCutOut` (BV45). B032 = 1 also closes an open cut-out at the end of each subprogram; any cut-out still open is closed at the end of the program. Every `EndCutOut` is followed by `SetToolCorrection None` when a correction was on. | Observed |
+| BV31 | `BeginCutOut Contour`: `Exterior` for a part's outer contour and for remnant cut-offs; `Interior` for holes (and for point cuts, BV42, and marking with B036); `Unknown` for anything else (open lines, the B026 marking quality). | Observed; "holes" is our reading of the CAM's contour class |
+| BV32 | **Cut quality → operation mode ("colour").** First quality 7 becomes B042 and quality 3 becomes B043 when those are set, and inside a remnant cut-off the quality is B045 when set. Then, with **B015 = 0 (default): quality 2 → 1, 3 → 3, 4 → 4, 5 → 5, 6 → 6, 7 → 7, every other quality (1, 8–12) → 0**; with B015 = 1 the mode is the number the technology table gives that quality. **Marking contours, and the quality equal to B026, always get mode 2.** | Observed |
+| BV33 | **Pierce mode.** With **B014 = 0 (default)**: `Fine` for cutting, `Normal` for marking; then quality = B007 → `Normal`, = B008 → `Fine`, = B009 → `NoTime`; the B026 marking quality → `Normal`; a pierce on a line already cut (common cut) → `NoTime` unless B037 = 1. With B014 = 1 the text comes from the technology table for that quality (or its marking entry) and B007–B009 are ignored. | Observed |
+| BV34 | **When `SetOperationMode` is written:** whenever the mode differs from the last one written, and also at the first contour of the program, at the first contour of **every subprogram**, when a rapid moves into a **different part** of the nest than the previous rapid, and always inside remnant cut-off and point-mark sequences. | Observed; "different part" (found by which part's outline holds the rapid's end) estimated |
+| BV35 | **Tool correction:** `Left` when the CAM compensates to the left, `Right` for any other side the CAM gives — which may include a contour it doesn't compensate (not confirmed, MAC-78); written once per cut-out, before the rapid (default), after it (B011) or after the lead-in (B040). B031 = 1 writes none for marking, the B026 quality and marked points. | Observed; the no-compensation case estimated |
+| BV36 | **`SetToolCorrection None`** after each `EndCutOut` that had a correction; when leaving marking with B012 = 1; with B036 when the marking mode is set and before each marking rapid; for point cuts (B050); at the start of each remnant cut-off and after its high positioning. | Observed |
+| BV37 | **Height sensor:** with B039 = 0 (default), at each rapid the post writes `SetSensingSensor Off` when the pierce point is on or beyond the sheet's edge (within 0.005) and `On` when it is inside, only when that changes; the sensor starts off, so the first inside pierce writes `On`. B039 = 1: never `On` for marking. B039 = 2: no sensor commands at rapids (remnant cut-offs still switch it). | Observed |
+| BV38 | **Remnant cut-offs** are the CAM's remnant/skeleton cut lines (B020 = 1 narrows this to the remnant class only). Their quality is B045 when set. In a subprogram (B002) they are named `ResidualSheetCuts`, or numbered like parts with B016 or B028. | Observed |
+| BV39 | **Remnant cut-off, default settings:** the pierce is where the cut-off line first crosses into the sheet (its start lies outside). The post writes `SetOperationMode`, `SetToolCorrection None`, the rapid block to the pierce, `BeginCutOut Contour="Exterior"`, the pierce (`SetPiercingMode` + `ExecPiercing`), a cut **back out over the edge** to the line's start with the sensor `Off`, `SetSensingSensor On`, `EndCutOut`, `ExecHighPositioning`, a rapid back to the pierce, `BeginCutOut Exterior`, **`SetPiercingMode NoTime`** + `ExecPiercing`, the cut across to the far end with the sensor `Off` over the far edge, `SetSensingSensor On`, `EndCutOut`, `ExecHighPositioning`, `SetToolCorrection None`. A cut-off that starts inside the sheet gets no rapid or pierce unless B025 = 1. | Observed (commands); the reading of the geometry estimated |
+| BV40 | **Remnant distances** B003 (past the far edge), B004 (inset from the sheet edge for the pierce) and B005 (length of the first short cut) are **rounded to whole millimetres** before use. B046 = 1 classifies the start and end edges (bottom, left, top, right) and uses only B004 for the pierce inset, unless B048 takes the distances per edge (BV41). | Observed (rounding, use); intent estimated |
+| BV41 | B035 = 1 writes a remnant cut-off as two separate cuts (edge part and rest) with the same commands. B048 = 1, with B035 = 1 and B046 = 1 (as the original's shipped post file notes), takes the distances per end edge instead of B004 and B003: inside the sheet from R000–R003, outside from R004–R007 (bottom, left, top, right). | Observed (structure); which switch wins estimated |
+| BV42 | **Point marks** (the CAM's point cycle): with B013 above 0.005 (shipped 0.2, built-in 10) each point becomes a **circle** of diameter B013 in operation mode 3 — rapid to the centre, `BeginLeadIn`, pierce, `LineTo` the circle's right point, `EndLeadIn`, `BeginCutOut`, two `ArcTo` of `SweepAngle="180"` — or with B034 a **cross** of size B034 in mode 2 (two strokes through the centre, each with lead-in markers and its own cut-out); B033 = 1 cuts the circle in mode 2 (marking). With B013 at or below 0.005 nothing is written for a point, **unless B050 = 1 and the cycle is a point cut**: mode 0, `SetToolCorrection None`, rapid, `BeginCutOut Contour="Interior"`, `SetPiercingMode Fine`, `ExecPiercing`, `LineTo` 0.05 to the left, `EndCutOut`. | Observed; which CAM cycles count as a point cut estimated |
+| BV43 | The job file's `Material` is the material's **name**; `Thickness` the sheet thickness; `Name` the job; `Parameter` and `ProcessGas` the technology's parameter file and gas. The `.ccp` carries only the thickness — no material or gas. | Observed |
+| BV44 | **Micro-joints (default):** the cut runs on **to the middle of the joint gap**, then `ExecMicrojoint`, and continues from the far end of the gap with no rapid and no new cut-out: the joint is a **marker the cut runs through**, and the machine leaves its own joint width there. A gap on an arc runs to the arc's middle with an `ArcTo`; a straight move and a gap in line are merged into one `LineTo`. | Observed (commands); the machine's joint width estimated |
+| BV45 | **Joint switches:** B038 = 1 writes joints as stop-and-restart (`EndCutOut` at the gap, rapid over it, new `BeginCutOut`, no `ExecMicrojoint`). B047 = 1 adds `ExecMicrojoint` on a contour's last element when it is a joint. B049 = 1 treats every gap as straight. For the CAM's joint lead-ins, `ExecMicrojoint` comes before the move (B019 = 1: just before the next rapid or end of cut instead), and B023 = 1 adds a pierce there. | Observed |
+| BV46 | **Marking:** mode 2 (BV32). B036 = 1 adds `SetToolCorrection None` when marking starts and a `SetPiercingMode Fine` (`Normal` with B036 = 2) + `ExecPiercing` after each marking `BeginCutOut`, and marks the contour `Interior`; B012 = 1 turns the correction off when marking ends; B031 = 1 writes no correction on marking. | Observed |
+| BV47 | B018 = 1 ("break arcs greater than 180") in fact only breaks arcs of **360° or more** (full circles) into 180° pieces; arcs between 180° and 360° stay whole. | Observed |
+| BV48 | B006 (rounded to whole mm) splits the first cut move after the pierce of a contour without lead-in at B006 (at most half the move), as an acceleration stretch. | Observed |
+| BV49 | **Pierce switches:** B044 = 1 adds `SetPiercingMode` + `ExecPiercing` before every cut-out that has had no pierce yet (all contours without a lead-in, open or closed). B024 = 1 writes `BeginLeadIn` + pierce after every rapid even without a lead-in, and `EndLeadIn` after the first move (its label says the opposite). B037 = 1 stops the `NoTime` pierce on common cuts. | Observed; B024's label contradiction noted |
+| BV50 | Subprogram names are the C004 text + a number (BV16, BV17); B016 = 1 makes `PartNumber` the name; B027 = 1 gives part-less subprograms a size. | Observed |
+| BV51 | After writing, the `.ccp`, `JobInfo.xml` and preview are zipped into the `.bvc`; B010 = 1 deletes the loose files afterwards. | Observed |
+| BV52 | **Units:** B001 = 1 only changes `MeasurementSystem` to `Imperial` in the `.ccp`; the post doesn't convert coordinates, and the job file always says `Metric`. Inch values come from the CAM side. | Observed; CAM-side inch handling estimated |
+| BV53 | **Aux functions:** the CAM's optional stop → `ExecOptionalStop`, optional stop without lifting → `ExecOptionalStopWithoutLifting`, dwell → `ExecDwell`. | Observed |
+| BV54 | **Vaporize-all technology:** each subprogram also gets a copy named `Vaporization_<n>` (operation mode and pierce text from the technology's vaporize entry) and each part is called twice, the vaporization first. | Observed |
+| BV55 | **Texts:** only **C004** (subprogram name prefix) reaches the files. C001–C003 and C005–C013 (UserInfo texts, Guid, JobInfo parameter, OrderInfo) are only used in a second job file the original builds but never writes. B029 = 1 adds an empty `ResidualSheetInfos` to `PlanInfo`, B030 = 1 an empty `BigPartInfos` to `JobInfo`; B022 = 1 turns a missing part number into the subprogram's number and a missing quantity into 1 in `PlanPartInfo`. | Observed |
+
+### ByStar Fiber laser — the post's switches
+
+"Default" is the original's built-in value when the switch is missing; the shipped post file
+has the same values except where noted. Switches are numbers (0 = off unless a value is meant);
+the original shows no limits for them.
+
+| Switch | What it does (shop words) | Values | Default |
+|---|---|---|---|
+| B001 | Measurement system written in the program | 0 metric, 1 imperial | 0 |
+| B002 | Put all parts and cut-offs in subprograms, so remnant cut-offs get their own (BV23, BV38) | 0 / 1 | 0 |
+| B003 | Remnant cut-off: distance run past the far sheet edge | 0 = none, else mm (whole) | 0 |
+| B004 | Remnant cut-off: inset from the sheet edge for the pierce | 0 = none, else mm (whole) | 0 |
+| B005 | Remnant cut-off: length of the first (acceleration) cut | 0 = none, else mm (whole) | 0 |
+| B006 | Acceleration stretch at the start of a contour without lead-in | 0 = none, else mm (whole) | 0 |
+| B007 | Cut quality pierced with `Normal` | 0 = none, else quality | 0 |
+| B008 | Cut quality pierced with `Fine` | 0 = none, else quality | 0 |
+| B009 | Cut quality pierced with `NoTime` | 0 = none, else quality | 0 |
+| B010 | Delete the loose files, keep only the `.bvc` | 0 / 1 | 0 |
+| B011 | Tool correction after the rapid instead of before | 0 / 1 | 0 |
+| B012 | Tool correction off after marking | 0 / 1 | 0 |
+| B013 | Point marks as circles of this diameter | ≤ 0.005 = no circle, else mm | 10 (shipped 0.2) |
+| B014 | Pierce mode from the technology table | 0 / 1 | 0 |
+| B015 | Operation mode from the technology table | 0 / 1 | 0 |
+| B016 | Part number = subprogram name | 0 / 1 | 0 |
+| B017 | All nestings in one `.bvc` | 0 / 1 | 0 |
+| B018 | Break full-circle arcs into 180° pieces | 0 / 1 | 0 |
+| B019 | Joint-lead micro-joint written at the end of the cut | 0 / 1 | 0 |
+| B020 | Remnant cut-offs: only the CAM's remnant class | 0 / 1 | 0 |
+| B021 | Decimals in part placement (CallSubProgram X/Y) | 0 whole, 1 three decimals | 0 |
+| B022 | Missing part number / quantity forced (quantity 1) | 0 / 1 | 0 |
+| B023 | Pierce at joint lead-ins | 0 / 1 | 0 |
+| B024 | Lead-in markers and pierce after every rapid ("no piercing in common cut" in the original's label) | 0 / 1 | 0 |
+| B025 | Remnant cut-off that starts inside the sheet gets a rapid and pierce | 0 / 1 | 0 |
+| B026 | Cut quality treated as marking | 0 = none, else quality | 0 |
+| B027 | Size on subprograms without a part | 0 / 1 | 0 |
+| B028 | Remnant subprograms numbered like parts | 0 / 1 | 0 |
+| B029 | Empty `ResidualSheetInfos` in the job file | 0 / 1 | 0 |
+| B030 | Empty `BigPartInfos` in the job file | 0 / 1 | 0 |
+| B031 | No tool correction on marking | 0 / 1 | 0 |
+| B032 | Close an open cut-out at each subprogram end | 0 / 1 | 0 |
+| B033 | Point circles cut as marking (needs B013) | 0 / 1 | 0 |
+| B034 | Point marks as crosses of this size (instead of circles) | 0 = off, else mm | 0 |
+| B035 | Remnant cut-off as two separate cuts | 0 / 1 | 0 |
+| B036 | Marking treatment: correction off and a pierce after each marking cut-out | 0 off, 1 `Fine`, 2 `Normal` | 0 |
+| B037 | No `NoTime` pierce on common cuts | 0 / 1 | 0 |
+| B038 | Micro-joints as stop-and-restart instead of `ExecMicrojoint` | 0 / 1 | 0 |
+| B039 | Height sensor commands | 0 all, 1 not for marking, 2 none (remnant cut-offs still) | 0 |
+| B040 | Tool correction after the lead-in | 0 / 1 | 0 |
+| B041 | `ToolArrangement="Vertical"` in the program | 0 / 1 | 0 |
+| B042 | Cut quality used instead of quality 7 | 0 = none, else quality | 0 |
+| B043 | Cut quality used instead of quality 3 | 0 = none, else quality | 0 |
+| B044 | Pierce on every cut-out without a lead-in | 0 / 1 | 0 |
+| B045 | Cut quality for remnant cut-offs | 0 = the contour's own, else quality | 0 |
+| B046 | Remnant cut-off edges classified (new method) | 0 / 1 | 0 |
+| B047 | Micro-joint on a contour's last element | 0 / 1 | 0 |
+| B048 | Per-edge remnant distances from R000–R007 instead of B004/B003 (needs B035 and B046, BV41) | 0 / 1 | 0 |
+| B049 | Micro-joint gaps always straight | 0 / 1 | 0 |
+| B050 | Point marks cut as a short cut (point cut cycle) | 0 / 1 | 0 |
+| C001–C003 | Material UserInfo texts (not written, BV55) | text | empty |
+| C004 | Subprogram name prefix | text | empty |
+| C005 | Guid (not written; the job file makes its own) | text | empty |
+| C006 | JobInfo parameter (not written; the technology's parameter file is used) | text | empty |
+| C007–C009 | JobInfo UserInfo texts (not written) | text | empty |
+| C010–C012 | PartInfo UserInfo texts (not written) | text | empty |
+| C013 | PartInfo order info (not written; the order reference comes from the job) | text | empty |
+| R000–R003 | Remnant inset inside the sheet at the bottom / left / top / right edge (B048) | mm | 0 |
+| R004–R007 | Remnant distance outside the sheet at the bottom / left / top / right edge (B048) | mm | 0 |
+
 ## Database tables (Expert's SQL Server database)
 
 | # | Table | What it holds (columns used by Expert) |
