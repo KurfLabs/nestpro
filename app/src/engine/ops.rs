@@ -1352,7 +1352,10 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         jobfile::may_save(f, &versions)?;
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
+    crate::shared::pause("xml import: checked");
     let lock = jobfile::save_lock(&ctx.library_dir)?;
+    // Read again under the lock: a roll back may have landed (UP26).
+    let versions = ctx.versions();
     for f in &files {
         jobfile::may_save(f, &versions)?;
     }

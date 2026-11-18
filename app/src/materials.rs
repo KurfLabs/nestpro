@@ -246,6 +246,7 @@ pub fn fallback(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings) 
 /// stored.
 pub fn update<T>(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: impl FnOnce() -> Saved, versions: &crate::shared::Versions, f: impl FnOnce(&mut List) -> Result<T, String>) -> Result<(T, List), String> {
     let refused = |e: String| format!("{e} The material list wasn't changed: try again once it can be reached.");
+    crate::shared::pause("materials: before lock");
     let lock = match home {
         Home::Library(d) => {
             crate::library::usable(d).map_err(refused)?;
@@ -256,7 +257,17 @@ pub fn update<T>(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings,
             WriteLock::take(home.lock_dir())?
         }
     };
-    // UP7: not over a list a newer version changed last.
+    // UP7: not over a list a newer version changed last. A Library's
+    // versions are read again under the lock: a roll back may have landed
+    // while this change waited for it (UP26).
+    let fresh;
+    let versions = match home {
+        Home::Library(d) => {
+            fresh = crate::shop::versions(d, &versions.this);
+            &fresh
+        }
+        Home::Pc(_) => versions,
+    };
     crate::shared::may_write_over(&home.file(), versions, LIST)?;
     let mut l = load(home, pc_dir, cfg).map_err(refused)?;
     let out = f(&mut l)?;

@@ -12892,3 +12892,48 @@ fn the_roll_back_warning_names_what_may_be_lost_and_the_pcs() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// UP26 (review S1): the shop is rolled back while an agent's change waits
+/// for the write lock: the shop version is read again under the lock, so a
+/// session on the release left writes nothing into the shop: an XML import
+/// into the shop folder, and a change to the shop's material list.
+#[test]
+fn a_roll_back_landing_while_an_agents_change_waits_leaves_the_shop_untouched() {
+    let d = dir("rollback_while_waiting");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    std::fs::write(d.join("brk.dxf"), crate::dxf::SAMPLE_DXF).unwrap();
+    let xml = d.join("order-77.xml");
+    std::fs::write(&xml, r#"<?xml version="1.0"?><Import>
+  <Product Reference="DEMO-12" Material="Mild steel" Thickness="3" Quantity="4" Fich="brk.dxf"/>
+</Import>"#).unwrap();
+    let out = lib.join("Imported");
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let l2 = lib.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "xml import: checked" {
+            crate::engine::rollout::rollback(&l2, &admin(), "0.5.0").unwrap();
+        }
+    });
+    let e = b.call("import-xml", None, &json!({"path": xml.to_str().unwrap(), "dir": out.to_str().unwrap()})).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("the import wrote into the shop after it was rolled back");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    assert_eq!(std::fs::read_dir(&out).map(|r| r.count()).unwrap_or(0), 0, "a job file was written");
+    // The material list, as the shop's admin rolls back from 0.6.0.
+    roll_out(&lib, &d, "0.6.0");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.6.0");
+    let list = crate::materials::Home::Library(lib.clone()).file();
+    let before = std::fs::read(&list).ok();
+    let l3 = lib.clone();
+    crate::shared::hooks::set(move |step| {
+        if step == "materials: before lock" {
+            crate::engine::rollout::rollback(&l3, &admin(), "0.6.0").unwrap();
+        }
+    });
+    let e = c.call("material", None, &json!({"mode": "add", "name": "DEMO 2205", "standard": "stainless"})).err();
+    crate::shared::hooks::clear();
+    let e = e.expect("the material list was changed after the shop was rolled back");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    assert_eq!(std::fs::read(&list).ok(), before, "the material list was written");
+    let _ = std::fs::remove_dir_all(&d);
+}

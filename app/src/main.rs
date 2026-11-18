@@ -971,7 +971,14 @@ impl App {
         // Library's write lock, and checked before any sheet is booked, so a
         // newer version's save in between is never written over and a
         // refused save books nothing.
-        let lock = match jobfile::save_lock(&self.library_dir()).and_then(|l| jobfile::may_save(path, &versions).map(|_| l)) {
+        // The shop version is read again under the lock: a roll back that
+        // landed while this save waited makes this PC's release the one
+        // left, and the shop read-only on it (UP26).
+        let mut versions = versions;
+        let lock = match jobfile::save_lock(&self.library_dir()).and_then(|l| {
+            versions = self.versions();
+            jobfile::may_save(path, &versions).map(|_| l)
+        }) {
             Ok(l) => l,
             Err(e) => {
                 self.status = format!("Couldn't save the job: {e}");
