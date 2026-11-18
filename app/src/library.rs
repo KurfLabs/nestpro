@@ -165,6 +165,11 @@ pub struct Changed {
     pub revision: u64,
     /// The shop's restore generation now (BK12).
     pub restore: u64,
+    /// BK12: the record isn't there any more: a restore of the shop since it
+    /// was read took it out (`by` and `at` are the restore's). Saving it
+    /// anyway puts it back, its sheets taken afresh from the stock as
+    /// restored.
+    pub gone: bool,
 }
 
 impl Changed {
@@ -232,6 +237,7 @@ impl Refused {
     /// `clock` shows them.
     pub fn words(&self, clock: &Clock) -> String {
         match self {
+            Refused::Changed(c) if c.gone => format!("{} was taken out of the Library by a restore of the shop from a backup ({}) since it was read here. Nothing was saved", c.name, c.saved_by(clock)),
             Refused::Changed(c) => format!("{} was saved by {} since it was read here. Nothing was saved", c.name, c.saved_by(clock)),
             Refused::InUse(u) => format!("{} Nothing was saved", u.said(clock)),
             Refused::Failed(e) => e.clone(),
@@ -669,7 +675,13 @@ impl Library {
         // UP7: never over a record or list a newer version wrote.
         self.may_write_record(kind, to.id(), before.as_deref()).map_err(Refused::Failed)?;
         let now = before.as_ref().map(|b| serde_json::from_slice::<OnDisk>(b).unwrap_or_default());
-        if let Some(c) = now.as_ref().and_then(|d| self.changed(kind, to, d)) {
+        // BK12: a record read before the shop's last restore that the
+        // restore took out is "saved since" too: never put back silently.
+        let changed = match &now {
+            Some(d) => self.changed(kind, to, d),
+            None => self.gone_since_restore(kind, to),
+        };
+        if let Some(c) = changed {
             return Err(Refused::Changed(c));
         }
         shared::pause("revision checked");
@@ -721,8 +733,34 @@ impl Library {
     /// save checks again under it.
     pub fn check(&self, kind: Kind, to: SaveTo) -> Result<(), Changed> {
         let Some(id) = to.id() else { return Ok(()) };
-        let Ok(b) = std::fs::read(self.path(kind, id)) else { return Ok(()) };
-        self.changed(kind, to, &serde_json::from_slice::<OnDisk>(&b).unwrap_or_default()).map_or(Ok(()), Err)
+        match std::fs::read(self.path(kind, id)) {
+            Ok(b) => self.changed(kind, to, &serde_json::from_slice::<OnDisk>(&b).unwrap_or_default()).map_or(Ok(()), Err),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.gone_since_restore(kind, to).map_or(Ok(()), Err),
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// BK12: record `to` was read before the shop's last restore (or while
+    /// one was unfinished) and isn't there now: the restore took it out.
+    /// One read in this generation and gone was deleted, and is saved again
+    /// as before (LB16).
+    fn gone_since_restore(&self, kind: Kind, to: SaveTo) -> Option<Changed> {
+        let SaveTo::Read(r) = to else { return None };
+        let restore = self.restore_generation();
+        if r.restore == restore {
+            return None;
+        }
+        let last = crate::shop::read(&self.dir).ok().flatten().and_then(|s| s.restored);
+        Some(Changed {
+            kind,
+            id: r.id,
+            name: record_words(kind, r.id),
+            by: last.as_ref().map(|l| l.by.clone()),
+            at: last.as_ref().map_or(0, |l| l.at),
+            revision: 0,
+            restore,
+            gone: true,
+        })
     }
 
     /// Record `read` as it is now, for refreshing an open job (LB15): as it
@@ -773,6 +811,7 @@ impl Library {
             at: d.saved.as_ref().map_or_else(|| self.written(kind, id), |s| s.at),
             revision: d.revision(),
             restore,
+            gone: false,
         })
     }
 

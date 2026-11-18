@@ -495,9 +495,14 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
 /// UP21 (S9): why a PC on `version` writes nothing in the shop in `dir`:
 /// it runs a release newer than the shop version, outside a trial. Such a
 /// PC starts no backup and holds no job; only its own record in the PCs
-/// list is written (SH4), so the list shows it ahead.
+/// list is written (SH4), so the list shows it ahead. UP27: nor while the
+/// shop file that says so can't be read (its reason is given).
 pub fn ahead_of_shop(dir: &Path, version: &str) -> Option<String> {
-    shop::versions(dir, version).ahead().map(|n| n.message())
+    let v = shop::versions(dir, version);
+    if let Some((_, e)) = v.unreadable {
+        return Some(e);
+    }
+    v.ahead().map(|n| n.message())
 }
 
 /// UP22: a PC on `version` against the shop version `shop`: (behind,

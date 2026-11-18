@@ -571,8 +571,14 @@ impl App {
             // remnants come out, then this job is booked as a new one. Done
             // once: saving again after a failure books only what changed.
             if let Some(o) = self.libui.overwrite.take().filter(|o| Some(o.id) == self.job_lib_id) {
-                let mut theirs = lib.load_job(o.id)?;
-                crate::engine::stockflow::release(&lib, &mut theirs.formats, &mut theirs.held)?;
+                // BK12: a job a restore took out has no save to give back:
+                // what this job booked before the restore isn't trusted
+                // either, so its sheets are taken afresh from the stock as
+                // restored.
+                if !o.gone {
+                    let mut theirs = lib.load_job(o.id)?;
+                    crate::engine::stockflow::release(&lib, &mut theirs.formats, &mut theirs.held)?;
+                }
                 crate::engine::stockflow::forget_booking(&mut self.result.formats, &mut self.held);
                 // From here the job goes over their save as Overwrite saw it:
                 // if storing it fails, saving again finishes it without
@@ -705,7 +711,11 @@ impl App {
     /// ask (LB9).
     fn ask_about_job(&mut self, c: Changed) {
         self.libui.overwrite = None;
-        self.status = format!("{} was saved by {} since you opened it — nothing was saved. Reload theirs, save yours as a copy, or overwrite theirs.", self.job_name, c.saved_by(&self.clock));
+        self.status = if c.gone {
+            format!("{} was taken out of the library by a restore of the shop ({}) since you opened it — nothing was saved. Save yours as a copy, or save it again.", self.job_name, c.saved_by(&self.clock))
+        } else {
+            format!("{} was saved by {} since you opened it — nothing was saved. Reload theirs, save yours as a copy, or overwrite theirs.", self.job_name, c.saved_by(&self.clock))
+        };
         self.libui.question = Some(SaveQuestion::Job(c));
     }
 
@@ -1191,6 +1201,16 @@ impl App {
     pub fn save_question_window(&mut self, ctx: &egui::Context) {
         let Some(q) = self.libui.question.clone() else { return };
         let (title, text, choices): (&str, String, Vec<(&str, &str)>) = match &q {
+            // BK12: taken out by a restore: there's no save of theirs to
+            // reload or give sheets back from.
+            SaveQuestion::Job(c) if c.gone => (
+                "A restore took this job out",
+                format!("{} was taken out of the library by a restore of the shop from a backup ({}) since you opened it. Nothing was saved.", self.job_name, c.saved_by(&self.clock)),
+                vec![
+                    ("Save mine as a copy", "Save yours as a new job under a free name. Its sheets are taken from the stock as restored."),
+                    ("Save it again", "Put yours back under its own number. Its sheets are taken from the stock as restored, not from what it held before the restore."),
+                ],
+            ),
             SaveQuestion::Job(c) => (
                 "Someone else saved this job",
                 format!("{} was saved by {} since you opened it. Nothing was saved.", self.job_name, c.saved_by(&self.clock)),
@@ -1253,6 +1273,8 @@ impl App {
             }
         });
         match (&q, pick) {
+            (SaveQuestion::Job(c), Some(0)) if c.gone => self.save_mine_as_copy(),
+            (SaveQuestion::Job(c), Some(1)) if c.gone => self.overwrite_theirs(),
             (SaveQuestion::Job(_), Some(0)) => self.reload_theirs(),
             (SaveQuestion::Job(_), Some(1)) => self.save_mine_as_copy(),
             (SaveQuestion::Job(_), Some(2)) => self.overwrite_theirs(),
@@ -1264,7 +1286,10 @@ impl App {
             (SaveQuestion::Part { .. }, Some(2)) => self.save_part_under_new_name(),
             _ if cancel => {
                 self.libui.question = None;
-                self.status = format!("Not saved: {} has someone else's newer save.", self.job_name);
+                self.status = match &q {
+                    SaveQuestion::Job(c) if c.gone => format!("Not saved: a restore of the shop took {} out of the library.", self.job_name),
+                    _ => format!("Not saved: {} has someone else's newer save.", self.job_name),
+                };
             }
             _ => {}
         }
@@ -1477,6 +1502,9 @@ impl App {
 /// was added to this job" (LB7); for a part that wasn't added from it, that
 /// this job's part isn't that one.
 fn part_changed(c: &Changed, added: bool, clock: &crate::shared::Clock) -> String {
+    if c.gone {
+        return format!("{} was taken out of the library by a restore of the shop from a backup ({})", c.name, c.saved_by(clock));
+    }
     let why = if added { "since it was added to this job" } else { "and this job's part of that name didn't come from it" };
     format!("{} in the library was saved by {} {why}", c.name, c.saved_by(clock))
 }
@@ -1760,6 +1788,49 @@ pub(crate) mod libui_tests {
         assert!(theirs.iter().all(|r| !now.contains(r)), "PROG-1's remnants are still in stock: {theirs:?} in {now:?}");
         assert_eq!(made(&prog2).len(), 1);
         assert!(now.contains(&made(&prog2)[0]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// BK12 (review S1): DEMO-7 is saved after the shop's backup, taking
+    /// sheets from stock; restoring the backup takes it out and puts the
+    /// sheets back. PROG-1, which still has it open, is asked before saving
+    /// (a restore took it out, with no "Reload theirs"); nothing is written
+    /// and nothing taken. "Save it again" puts it back under its number,
+    /// its sheets taken afresh from the stock as restored.
+    #[test]
+    fn a_job_a_restore_took_out_asks_and_saved_again_books_its_sheets_afresh() {
+        let dir = new_library("restore_gone");
+        let clock = Clock::at(NOV_9_0920);
+        let sam = Who::new("sam", "PROG-1");
+        crate::engine::shop::start(&dir, "Acme", &sam, &clock, crate::updates::VERSION).unwrap();
+        let mut s = crate::stock::Stock::default();
+        s.add_sheet(crate::stock::Item::sheet("S3000", 0, 10.0, 3000.0, 1500.0, 12), true).unwrap();
+        s.save(&dir).unwrap();
+        let backup = crate::engine::shop::backup_now(&dir, &Default::default(), &sam, &clock).unwrap().entry.name;
+        clock.advance(Duration::from_secs(10 * 60));
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        assert!(holds(&prog1) > 0);
+        assert_eq!(in_stock(&dir).0, 12 - holds(&prog1));
+        clock.advance(Duration::from_secs(60));
+        crate::engine::shop::restore(&dir, &backup, &sam, &clock, crate::updates::VERSION).unwrap();
+        assert_eq!(in_stock(&dir).0, 12, "the restore put the sheets back");
+        let record = prog1.library().unwrap().path(Kind::Job, id);
+        assert!(!record.exists());
+        clock.advance(Duration::from_secs(60));
+        prog1.parts[0].qty = 25;
+        prog1.run_nesting();
+        prog1.save_job_to_library();
+        assert!(matches!(&prog1.libui.question, Some(SaveQuestion::Job(c)) if c.gone && c.id == id), "it didn't ask: {}", prog1.status);
+        assert!(prog1.status.contains("taken out of the library by a restore"), "{}", prog1.status);
+        assert!(!record.exists(), "saved without asking");
+        assert_eq!(in_stock(&dir).0, 12, "a refused save took sheets");
+        prog1.overwrite_theirs();
+        assert!(prog1.libui.question.is_none(), "{}", prog1.status);
+        assert_eq!(prog1.job_lib_id, Some(id));
+        assert_eq!(prog1.library().unwrap().load_job(id).unwrap().parts[0].qty, 25);
+        assert!(holds(&prog1) > 0);
+        assert_eq!(in_stock(&dir).0, 12 - holds(&prog1), "its sheets weren't taken afresh from the stock as restored");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

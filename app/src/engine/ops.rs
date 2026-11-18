@@ -1536,8 +1536,12 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
 /// where it really is (a relative path, `..` or a link to a record counts).
 /// UP16: nothing written while this session's Library is a trial copy may
 /// land in the real shop folder: programs, pictures and drawings neither.
+/// UP27: nor while the shop file that says whether this is a trial can't
+/// be read, in the Library folder or any shop folder.
 pub(super) fn trial_guard(ctx: &Ctx, out: &Path, what: &str) -> Result<(), String> {
-    match ctx.versions().trial_of {
+    let versions = ctx.versions();
+    crate::shared::shop_file_read(out, &versions, what)?;
+    match versions.trial_of {
         Some(shop) => crate::shared::trial_may_write(out, &shop, what),
         None => Ok(()),
     }
@@ -1545,7 +1549,7 @@ pub(super) fn trial_guard(ctx: &Ctx, out: &Path, what: &str) -> Result<(), Strin
 
 pub(super) fn refuse_protected(ctx: &Ctx, out: &Path) -> Result<(), String> {
     trial_guard(ctx, out, &out.display().to_string())?;
-    let refused = || Err(format!("{} is a job file or one of the Library's own files: pictures and drawings are never written over those. Pick another out. Nothing was written.", out.display()));
+    let refused = || Err(format!("{} is a job file or one of the Library's own files: pictures, drawings and programs are never written over those. Pick another out. Nothing was written.", out.display()));
     let real = |p: &Path| std::fs::canonicalize(p).ok();
     let at = real(out).or_else(|| Some(real(out.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")))?.join(out.file_name()?))).unwrap_or_else(|| out.to_path_buf());
     if at.extension().is_some_and(|e| e.eq_ignore_ascii_case(jobfile::EXT)) {
@@ -2427,6 +2431,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             changed: true,
                             files: vec![],
                         }),
+                        // BK12: a restore took the record out since this file
+                        // read it: never put back by an agent. A copy books
+                        // its sheets afresh from the stock as restored.
+                        Err(Refused::Changed(c)) if c.gone => Err(format!(
+                            "Library job '{}' ({}) was taken out of the Library by a restore of the shop from a backup ({}) since this job file read it. Nothing was saved and nothing taken from stock. Only a person in the window puts it back under its own number. To keep this job file's work now, save it as a new job with library mode=save-job copy=true (its sheets are taken from the stock as restored).",
+                            job.name,
+                            crate::library::auto_ref(crate::library::Kind::Job, c.id),
+                            c.saved_by_stamp(&ctx.clock)
+                        )),
                         Err(Refused::Changed(c)) => Err(format!(
                             "Library job '{}' ({}) was saved by {} since this job file read it. Nothing was saved and nothing taken from stock. To work on theirs, read it again with library mode=open id={} (this file's changes are dropped); to keep yours, save it as a new job with library mode=save-job copy=true.",
                             c.name,
@@ -3417,7 +3430,13 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let mut o = Outcome::read(format!("Program for sheet {} ({} lines).{}{warn}", s + 1, text.lines().count(), on.note), json!(text));
             if let Some(out) = a.str("out") {
                 let out = PathBuf::from(out);
-                trial_guard(ctx, &out, "The program")?;
+                // UP7: never over a job file or a Library record, nor
+                // anything this program wrote, as `render` and
+                // `export-part-dxf`; in the shop folder, the trial (UP16),
+                // read-only (UP21) and shop file (UP27) rules too. Checked
+                // before the file is opened, so nothing is cut short.
+                refuse_protected(ctx, &out)?;
+                crate::shared::may_write_in(&out, &ctx.versions(), "The program")?;
                 std::fs::write(&out, &text).map_err(|e| format!("Couldn't write {}: {e}", out.display()))?;
                 o.files.push(out);
             }
