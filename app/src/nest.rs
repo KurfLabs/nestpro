@@ -1531,6 +1531,11 @@ pub struct SheetFormat {
     /// Fingerprint of the remnant lines they were made from.
     #[serde(default)]
     pub made_from: u64,
+    /// The machine (by its name in Settings → Machines) this sheet is cut
+    /// on; empty = the job's machine (MS1). Not written when empty, so jobs
+    /// saved before sheets had machines are saved the same.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
 }
 
 impl SheetFormat {
@@ -1546,7 +1551,7 @@ impl SheetFormat {
     }
     /// A stock item as a sheet format.
     pub fn from_stock(it: &crate::stock::Item) -> Self {
-        SheetFormat { w: it.length, h: it.width, outline: it.outline.clone(), stock_ref: it.reference.clone(), remnant: it.kind.is_remnant(), made: vec![], made_from: 0 }
+        SheetFormat { w: it.length, h: it.width, outline: it.outline.clone(), stock_ref: it.reference.clone(), remnant: it.kind.is_remnant(), made: vec![], made_from: 0, machine: String::new() }
     }
 }
 
@@ -2633,7 +2638,7 @@ mod tests {
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         // An L-shaped remnant: 1000 × 1000 with the top-left 600 × 600 gone.
         let l = crate::stock::Outline { outer: vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [600.0, 1000.0], [600.0, 400.0], [0.0, 400.0]], holes: vec![] };
-        let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 };
+        let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0, machine: String::new() };
         let plan = [FormatSlot { format: rem, qty: Some(1) }, FormatSlot { format: SheetFormat::rect(2000.0, 1000.0), qty: None }];
         let res = nest_plan(&parts, &spec, &plan);
         assert_eq!(res.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
@@ -2676,7 +2681,7 @@ mod tests {
         let parts = vec![Part { name: "L".into(), shape: Shape::LBracket, w: 220.0, h: 180.0, qty: 25, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 1, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let l = crate::stock::Outline { outer: vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [600.0, 1000.0], [600.0, 400.0], [0.0, 400.0]], holes: vec![] };
-        let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "R".into(), remnant: true, made: vec![], made_from: 0 };
+        let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "R".into(), remnant: true, made: vec![], made_from: 0, machine: String::new() };
         let plan = [FormatSlot { format: rem, qty: Some(1) }, FormatSlot { format: SheetFormat::rect(2000.0, 1000.0), qty: None }];
         let res = nest_plan(&parts, &spec, &plan);
         assert_eq!(res.sheets.iter().map(|s| s.len()).sum::<usize>(), 25);

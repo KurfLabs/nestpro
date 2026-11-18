@@ -84,6 +84,9 @@ pub struct Machine {
     /// The shop's own "pick quality by size" rows (CQ9). Empty = the machine
     /// file's size bands only.
     pub sizes: Vec<crate::qualities::SizeRule>,
+    /// Where this machine's programs are written (MS6); empty = the shared
+    /// export folder (Settings → Folders).
+    pub program_dir: String,
 }
 
 impl Machine {
@@ -124,7 +127,7 @@ impl Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default(), qualities: Default::default(), sizes: vec![] }
+        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default(), qualities: Default::default(), sizes: vec![], program_dir: String::new() }
     }
 }
 
@@ -506,6 +509,10 @@ impl AppSettings {
             if !m.sizes.is_empty() {
                 s += &format!("sizes = {}\n", esc(&crate::qualities::sizes_to_line(&m.sizes)));
             }
+            // MS6: only a machine with a program folder of its own writes one.
+            if !m.program_dir.is_empty() {
+                s += &format!("program_dir = {}\n", esc(&m.program_dir));
+            }
         }
         for i in &self.integrations {
             s += &format!(
@@ -658,6 +665,7 @@ impl AppSettings {
                             "order" => m.order = crate::ct1::OrderChanges::read(&v),
                             "qualities" => m.qualities = crate::qualities::ShopQualities::read(&v),
                             "sizes" => m.sizes = crate::qualities::sizes_read(&v),
+                            "program_dir" => m.program_dir = v,
                             _ => {}
                         }
                     }
@@ -1043,6 +1051,23 @@ mod settings_tests {
         assert!(e.in_use_warn && e.in_use_allow);
         let off = AppSettings::parse("[general]\nin_use_warn = false\nin_use_allow = false\n");
         assert!(!off.in_use_warn && !off.in_use_allow);
+    }
+
+    #[test]
+    fn a_machines_program_folder_is_saved_only_when_set_and_older_settings_load_unchanged() {
+        // MS6: settings saved before machines had a program folder.
+        let old = "# nestpro settings\n[general]\nlantek_dir = x\nactive_machine = 0\n[machine]\nname = Demo laser\noutput = iso\ngas_id = 1\ngas_name = Nitrogen\nkind = laser\n";
+        let s = AppSettings::parse(old);
+        assert!(s.machines[0].program_dir.is_empty());
+        let text = s.to_text();
+        assert!(!text.contains("program_dir"), "an unset folder isn't written");
+        assert_eq!(AppSettings::parse(&text), s);
+        // Set, it survives a restart.
+        let mut set = s.clone();
+        set.machines[0].program_dir = r"\\srv\Programs\Demo laser".into();
+        let text = set.to_text();
+        assert!(text.contains("program_dir = "));
+        assert_eq!(AppSettings::parse(&text).machines[0].program_dir, r"\\srv\Programs\Demo laser");
     }
 
     #[test]

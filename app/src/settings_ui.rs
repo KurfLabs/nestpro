@@ -525,6 +525,15 @@ impl App {
             self.applied_machine = Some(m);
             self.refresh();
         }
+        // MS3: a sheet moved to another machine follows that machine's set-up.
+        if self.applied_fleet != self.cfg.machines {
+            self.applied_fleet = self.cfg.machines.clone();
+            crate::engine::sheetmachine::forget();
+            if self.result.formats.iter().any(|f| !f.machine.is_empty()) {
+                self.ssim = None;
+                self.refresh();
+            }
+        }
         self.cfg.warn_tech = self.warn_tech;
         self.cfg.show_unbuilt = self.dv.show_unbuilt;
         self.cfg.theme = if self.follow_system { "system" } else if crate::theme::is_dark() { "dark" } else { "light" }.into();
@@ -1117,6 +1126,20 @@ impl App {
                     .on_hover_text("The gas a new job on this machine starts with; each job keeps its own, picked on the Sheet tab. Jobs saved before jobs carried a gas are cut with this one.");
                 if let Some(g) = picked {
                     m.pick_gas(g);
+                }
+            });
+            // MS6: where this machine's programs are written; empty = the
+            // shared export folder (Settings → Folders).
+            row(ui, "Program folder", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut m.program_dir).desired_width(300.0).hint_text("the export folder (Settings → Folders)"))
+                    .on_hover_text("Each machine's programs can go to their own folder, so each machine's PC finds only its own. Empty: the export folder in Settings → Folders, as before.");
+                if ui.button("Browse…").clicked() {
+                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                        m.program_dir = d.display().to_string();
+                    }
+                }
+                if !m.program_dir.is_empty() && ui.small_button("✖").clicked() {
+                    m.program_dir.clear();
                 }
             });
             if let Some(note) = m.gas_mismatch() {

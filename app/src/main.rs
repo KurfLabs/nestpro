@@ -429,6 +429,9 @@ pub struct App {
     /// own (a test gives one of its own).
     pub handoff: &'static updates::Handoff,
     pub applied_machine: Option<settings::Machine>,
+    /// Every machine as last applied: a sheet moved to one of them is
+    /// planned again when it changes (MS3).
+    pub applied_fleet: Vec<settings::Machine>,
     /// The machine's post-processor settings (block numbers, units, extension…).
     pub post: post::PostConfig,
     /// Read-only browser for Expert's database.
@@ -740,6 +743,7 @@ impl App {
             rollout: Default::default(),
             handoff: &updates::HANDOFF,
             applied_machine: None,
+            applied_fleet: vec![],
             post: post::PostConfig::default(),
             dbb: Default::default(),
             blm: blm::BlmSettings::for_machine(""),
@@ -1328,10 +1332,10 @@ impl App {
             v
         };
         // Same parts in the same places on the same kind of sheet (a remnant
-        // or another stock size is a different sheet).
+        // or another stock size is a different sheet), on the same machine (MS5).
         let fmt = |i: usize| {
             let f = self.result.format(i, &self.spec);
-            ((f.w * 10.0).round() as i64, (f.h * 10.0).round() as i64, f.stock_ref)
+            ((f.w * 10.0).round() as i64, (f.h * 10.0).round() as i64, f.stock_ref, f.machine)
         };
         let mut groups: Vec<(usize, usize, Vec<(usize, i64, i64, u8, bool, i64)>)> = vec![];
         for (i, s) in self.result.sheets.iter().enumerate() {
@@ -1901,10 +1905,30 @@ impl App {
 
     /// The program file name shown and written for a sheet.
     pub fn cnc_name(&self, sheet: usize) -> String {
+        // MS3: the program the sheet's machine gets.
+        let m = engine::sheetmachine::machine_of(&self.result.format(sheet.saturating_sub(1), &self.spec), &self.cfg);
+        if m.name != self.cfg.machine().name {
+            return if m.output == settings::Output::BlmSiemens { format!("{}.zip", blm::nest_name(&self.job_name, sheet)) } else { engine::load_post(&m).file_name(&self.job_name, sheet) };
+        }
         if self.blm.on {
             format!("{}.zip", blm::nest_name(&self.job_name, sheet))
         } else {
             self.post.file_name(&self.job_name, sheet)
+        }
+    }
+
+    /// MS2: move the sheet on screen to the machine named `name`.
+    pub fn move_sheet_to(&mut self, name: &str) {
+        self.checkpoint();
+        self.result.normalise(&self.spec);
+        match engine::sheetmachine::move_sheet(&mut self.result.formats, self.cur_sheet, name, &self.cfg) {
+            Ok(m) => {
+                self.ssim = None;
+                self.mark_cam_changed();
+                self.refresh();
+                self.status = m;
+            }
+            Err(e) => self.status = e,
         }
     }
 
@@ -1953,9 +1977,13 @@ impl App {
         };
         // UP16: in a trial nothing reaches the shop folder, programs neither.
         if let Some(shop) = self.versions().trial_of {
-            if let Err(e) = shared::trial_may_write(&base, &shop, "The programs") {
-                self.status = e;
-                return;
+            // MS7: every machine's program folder, not just the shared one.
+            let folders: Vec<PathBuf> = std::iter::once(base.clone()).chain(engine::sheetmachine::program_folders(&self.cfg, &base)).collect();
+            for d in folders.iter().cloned().chain(folders.iter().map(|d| d.join(engine::safe_name(&self.job_name)))) {
+                if let Err(e) = shared::trial_may_write(&d, &shop, "The programs") {
+                    self.status = e;
+                    return;
+                }
             }
         }
         // EXP2: post files that couldn't be read are read again first, so a
@@ -1966,7 +1994,8 @@ impl App {
         // Every sheet's program (or BLM LC5 set) and the CSV parts report.
         let blm = self.blm_now();
         let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
-        let res = engine::export(&base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &self.post, Some(&blm), self.cfg.stock.line.edge_offset);
+        // MS6, MS7: each sheet by its machine's post, into its machine's folder.
+        let res = engine::export_on(&self.cfg, &base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &self.post, &blm, self.cfg.stock.line.edge_offset);
         let n = self.result.sheets.len();
         self.status = match res {
             Ok(ex) => {
@@ -1994,6 +2023,8 @@ impl App {
         // nobody loses it without knowing (Ctrl+Z brings it back).
         let lost_order = self.manual_cuts.iter().filter(|s| !s.is_empty()).count();
         let lost_lines: usize = self.cut_lines.iter().map(|s| s.len()).sum();
+        // MS4: Nest all makes fresh sheets on the job's machine.
+        let moved_back = engine::sheetmachine::moved(&self.result.formats, &self.cfg);
         self.result = engine::nest_all(&self.parts, &self.spec, self.group_nest, Some(&self.stock_use()));
         self.manual_cuts.clear();
         self.ssim = None;
@@ -2032,6 +2063,7 @@ impl App {
         if !lost.is_empty() {
             self.status += &format!(" Removed {} — Ctrl+Z brings them back.", lost.join(" and "));
         }
+        self.status += &engine::sheetmachine::moved_back_note(moved_back, &self.cfg);
     }
 
     /// Nest only the sheet on screen again (RN1): the parts already on it, on
@@ -2104,12 +2136,21 @@ impl App {
         if self.cur_sheet >= self.result.sheets.len() {
             self.cur_sheet = self.result.sheets.len().saturating_sub(1);
         }
-        self.plans = engine::plans(&self.parts, &self.result.sheets, &self.result.formats, &self.spec, &self.manual_cuts);
+        self.plans = engine::plans_on(&self.cfg, &self.parts, &self.result.sheets, &self.result.formats, &self.spec, &self.manual_cuts);
         self.overlaps = self.result.sheets.get(self.cur_sheet).map_or(vec![], |s| engine::overlapping(&self.parts, s, &self.cur_spec()));
         self.program = match (self.result.sheets.get(self.cur_sheet), self.plans.get(self.cur_sheet)) {
-            // EXP2: no program while a post file can't be read.
-            (Some(_), Some(_)) if self.post.refusal().is_some() => format!("( NO PROGRAM: {} )", self.post.refusal().unwrap_or_default().replace(['(', ')'], "")),
-            (Some(s), Some(pl)) => engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.remnant_marks(self.cur_sheet), &self.post, self.cfg.stock.line.edge_offset),
+            (Some(s), Some(pl)) => {
+                // MS3: the sheet's program is written by its machine's post.
+                let f = self.result.format(self.cur_sheet, &self.spec);
+                let m = engine::sheetmachine::machine_of(&f, &self.cfg);
+                let post = if m.name == self.cfg.machine().name { self.post.clone() } else { engine::load_post(&m) };
+                let marks = self.remnant_marks(self.cur_sheet);
+                // EXP2: no program while a post file can't be read.
+                match post.refusal() {
+                    Some(why) => format!("( NO PROGRAM: {} )", why.replace(['(', ')'], "")),
+                    None => engine::sheetmachine::on_sheet(&f, &self.cfg, || engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &marks, &post, self.cfg.stock.line.edge_offset)),
+                }
+            }
             _ => "( NO SHEET NESTED )".into(),
         };
     }

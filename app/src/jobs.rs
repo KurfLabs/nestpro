@@ -648,7 +648,7 @@ impl App {
                     let sel = i == self.cur_sheet;
                     p.rect_stroke(card, CornerRadius::same(10), if sel { Stroke::new(2.0, th().accent) } else { Stroke::new(1.0, th().border) }, egui::StrokeKind::Inside);
                     // Mini sheet
-                    let area = Rect::from_min_max(card.min + Vec2::new(10.0, 10.0), Pos2::new(card.right() - 10.0, card.bottom() - 34.0));
+                    let area = Rect::from_min_max(card.min + Vec2::new(10.0, 10.0), Pos2::new(card.right() - 10.0, card.bottom() - 46.0));
                     let fs = self.sheet_spec(i);
                     let s = (area.width() / fs.w as f32).min(area.height() / fs.h as f32);
                     let sw = fs.w as f32 * s;
@@ -684,7 +684,13 @@ impl App {
                     }
                     let (u, _, _) = self.sheet_usage(i);
                     p.text(Pos2::new(card.left() + 12.0, card.bottom() - 16.0), Align2::LEFT_CENTER, format!("Sheet {}", i + 1), FontId::proportional(13.0), th().text_strong);
+                    // MS5: the machine the sheet is cut on, above its number
+                    // (in the accent colour when moved off the job's machine).
+                    let f = self.result.format(i, &self.spec);
+                    let machine = crate::engine::sheetmachine::label(&f, &self.cfg);
+                    p.text(Pos2::new(card.left() + 12.0, card.bottom() - 35.0), Align2::LEFT_CENTER, machine, FontId::proportional(11.5), if f.machine.is_empty() { th().text_dim } else { th().accent });
                     p.text(Pos2::new(card.right() - 12.0, card.bottom() - 16.0), Align2::RIGHT_CENTER, format!("{} parts · {u:.0}%", sheet.len()), FontId::proportional(11.5), th().text_dim);
+
                     let resp = resp.on_hover_text("Double-click to open on the nesting screen");
                     if resp.clicked() {
                         pick = Some(i);
@@ -717,7 +723,6 @@ impl App {
         let mut pick = None;
         let mut open = false;
         let un = self.unit();
-        let machine = self.machine_name();
         egui::ScrollArea::both().id_salt("sheet_list").auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
                 egui::Grid::new("sheet_grid").striped(true).num_columns(14).spacing([20.0, 5.0]).show(ui, |ui| {
@@ -753,7 +758,9 @@ impl App {
                         ui.label(un.num_dp(mx, 1));
                         ui.label(un.num_dp(my, 1));
                         ui.label(format!("{:.1}", cnc::weight_kg(self.spec.material, f.area_mm2(), self.spec.thickness)));
-                        ui.label(&machine);
+                        // MS5: the sheet's own machine (the job's unless it was moved).
+                        let m = crate::engine::sheetmachine::label(&f, &self.cfg);
+                        ui.label(if f.machine.is_empty() { RichText::new(m) } else { RichText::new(m).color(th().accent) });
                         ui.end_row();
                     }
                 });
@@ -778,6 +785,8 @@ impl App {
             let copies = self.sheet_groups().iter().find(|g| g.0 == self.cur_sheet).map_or(1, |g| g.1);
             let nest = format!("{}-{:02}", self.job_name, self.cur_sheet + 1);
             let f = self.result.format(self.cur_sheet, &self.spec);
+            // MS5: the sheet's own machine.
+            let machine = crate::engine::sheetmachine::label(&f, &self.cfg);
             let sheet = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", crate::engine::material::short_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref };
             format!("{nest} / {copies} / {machine} ({mat}) / {sheet} / {t:.4}")
         } else if let Some(p) = self.sel_part.and_then(|i| self.parts.get(i).map(|p| (i, p))) {

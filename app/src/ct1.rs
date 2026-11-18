@@ -233,9 +233,35 @@ static ACTIVE: std::sync::RwLock<Option<MachineTech>> = std::sync::RwLock::new(N
 /// Bumped whenever the machine changes (empties the cache).
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The last values picked for a material and thickness: (generation, the
-/// material's machine-file key, thickness bits).
+/// material's machine-file key, thickness bits, gas, the sheet machine's id
+/// or 0).
 #[allow(clippy::type_complexity)]
-static PICKED: std::sync::Mutex<Option<((u64, String, u64, i32, String), MachineTech)>> = std::sync::Mutex::new(None);
+static PICKED: std::sync::Mutex<Option<((u64, String, u64, i32, String, u64), MachineTech)>> = std::sync::Mutex::new(None);
+
+thread_local! {
+    /// MS3: the machine of the sheet being worked out on this thread (its id,
+    /// unique for every set of values, and its values). It wins over the
+    /// active machine until `with_sheet_machine` returns.
+    static SHEET: std::cell::RefCell<Option<(u64, MachineTech)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// MS3: run `f` with `t` (an id unique to those values, and the values) as
+/// the machine on this thread; None runs it with the active machine.
+pub fn with_sheet_machine<R>(t: Option<(u64, MachineTech)>, f: impl FnOnce() -> R) -> R {
+    struct Back(Option<(u64, MachineTech)>);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            let old = self.0.take();
+            SHEET.with(|s| *s.borrow_mut() = old);
+        }
+    }
+    let _back = Back(SHEET.with(|s| s.replace(t)));
+    f()
+}
+
+fn sheet_machine() -> Option<(u64, MachineTech)> {
+    SHEET.with(|s| s.borrow().clone())
+}
 
 #[cfg(test)]
 thread_local! {
@@ -246,6 +272,9 @@ thread_local! {
 /// The active machine's technology (set when settings are applied): its own
 /// values, before any material × thickness section.
 pub fn active() -> MachineTech {
+    if let Some((_, t)) = sheet_machine() {
+        return t;
+    }
     #[cfg(test)]
     if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
         return t;
@@ -330,17 +359,20 @@ pub fn for_material(material: usize, thickness: f64, gas: Option<crate::gas::Gas
     let key = key_of_material(material);
     let keys = JobKeys::for_job(&key, thickness, gas);
     let name = crate::engine::material::name_or(material, "");
+    let sheet = sheet_machine();
     #[cfg(test)]
-    if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
-        return t.for_job(&keys).with_sheet_sizes(&name, thickness);
+    if sheet.is_none() {
+        if let Some(t) = LOCAL.with(|l| l.borrow().clone()) {
+            return t.for_job(&keys).with_sheet_sizes(&name, thickness);
+        }
     }
-    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), key, thickness.to_bits(), keys.gas, name.clone());
+    let id = (GENERATION.load(std::sync::atomic::Ordering::SeqCst), key, thickness.to_bits(), keys.gas, name.clone(), sheet.as_ref().map_or(0, |s| s.0));
     if let Some((k, t)) = PICKED.lock().ok().and_then(|g| g.clone()) {
         if k == id {
             return t;
         }
     }
-    let t = active().for_job(&keys).with_sheet_sizes(&name, thickness);
+    let t = sheet.map_or_else(active, |s| s.1).for_job(&keys).with_sheet_sizes(&name, thickness);
     if let Ok(mut g) = PICKED.lock() {
         *g = Some((id, t.clone()));
     }

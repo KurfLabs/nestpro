@@ -2619,7 +2619,8 @@ impl App {
                         ui.label(RichText::new("No sheets — press Nest all").weak());
                     }
                     for (i, s) in self.result.sheets.iter().enumerate() {
-                        let title = format!("{}W {}", i + 1, self.sheet_label(i, 3));
+                        // MS5: each sheet with the machine it's cut on.
+                        let title = format!("{}W {} · {}", i + 1, self.sheet_label(i, 3), engine::sheetmachine::label(&self.result.format(i, &self.spec), &self.cfg));
                         let txt = if i == self.cur_sheet {
                             RichText::new(title).background_color(th().accent_soft)
                         } else {
@@ -3219,6 +3220,7 @@ impl App {
             let (u, _, _) = self.sheet_usage(self.cur_sheet);
             let count = self.result.sheets[self.cur_sheet].len();
             egui::Grid::new("cur_grid").num_columns(2).spacing([0.0, 3.0]).min_col_width(130.0).striped(true).show(ui, |ui| {
+                row(ui, "Machine", engine::sheetmachine::label(&self.result.format(self.cur_sheet, &self.spec), &self.cfg));
                 row(ui, "Parts", format!("{count}"));
                 row(ui, "Usage", format!("{u:.1} %"));
                 row(ui, "Cut length", format!("{:.1} m", pl.cut_len / 1000.0));
@@ -3286,6 +3288,27 @@ impl App {
                 ui.add_space(12.0);
                 // The sheet's CNC program name, as the original shows it.
                 ui.label(format!("CNC: {}", self.cnc_name(self.cur_sheet + 1)));
+                ui.add_space(12.0);
+                // MS2, MS5: the machine the sheet is cut on; picking another
+                // moves the sheet there.
+                if !self.result.sheets.is_empty() {
+                    let now = engine::sheetmachine::label(&self.result.format(self.cur_sheet, &self.spec), &self.cfg);
+                    let names: Vec<String> = self.cfg.machines.iter().map(|m| m.name.clone()).collect();
+                    let mut pick = None;
+                    ui.menu_button(format!("Machine: {now} ▾"), |ui| {
+                        for n in &names {
+                            if ui.selectable_label(*n == now, n).clicked() {
+                                pick = Some(n.clone());
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("The machine this sheet is cut on. Pick another to move the sheet there: its automatic cut qualities, leads, cut order and kerf become that machine's; what was set by hand stays.");
+                    if let Some(n) = pick {
+                        self.move_sheet_to(&n);
+                    }
+                }
                 ui.add_space(16.0);
                 if !self.status.is_empty() {
                     ui.add(egui::Label::new(RichText::new(&self.status).color(th().text_dim)).truncate()).on_hover_text(&self.status);

@@ -204,7 +204,9 @@ impl App {
             self.empty_sheet_kept = Some(0);
         } else {
             self.result.normalise(&self.spec);
-            self.result.formats[self.cur_sheet] = f;
+            // The sheet stays on its machine (MS1).
+            let machine = std::mem::take(&mut self.result.formats[self.cur_sheet].machine);
+            self.result.formats[self.cur_sheet] = nest::SheetFormat { machine, ..f };
         }
         let i = self.cur_sheet;
         let misfits = self.result.sheets[i].iter().filter(|p| !self.fits_sheet(p, i)).count();

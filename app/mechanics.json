@@ -8511,6 +8511,54 @@
   "group": "bystar",
   "value": "Remnant distance outside the sheet at the bottom / left / top / right edge (B048); values: mm; default 0",
   "source": "BV22; observed"
+ },
+ {
+  "name": "A sheet's machine",
+  "group": "sheet machines",
+  "value": "Each sheet has its machine (ADR 0004): a sheet stores the name of its machine in Settings → Machines in the job file; none stored means the job's machine (the active one), so jobs saved before this open, plan and write exactly as before (MS8). A sheet whose machine has since been renamed or deleted is planned and written on the job's machine, and info says so (machine_missing).",
+  "source": "MS1"
+ },
+ {
+  "name": "Moving a sheet",
+  "group": "sheet machines",
+  "value": "Moving a sheet to another machine: in the window with Machine ▾ in the status bar (the sheet on screen), for agents with sheet-machine sheet=N machine=\"name\" (the name in any case). An unknown name is refused with the list of machines and the sheet stays where it was. Moving a sheet to the job's own machine stores no machine, so it follows the job again.",
+  "source": "MS2"
+ },
+ {
+  "name": "A moved sheet's cut plan",
+  "group": "sheet machines",
+  "value": "A sheet's automatic cut plan is worked out with its machine's tables: cut qualities from that machine's size bands, its leads, cut order, kerf and speeds, so its cut time and simulation are that machine's; its program is written by that machine's post (G-code, LC5 set or OMAX file). What was set by hand stays when a sheet moves: a part's or contour's cut quality picked by hand keeps its number, and a hand cut order and hand-placed leads stay. The job's material, thickness and gas stay the job's.",
+  "source": "MS3"
+ },
+ {
+  "name": "New sheets and Nest all",
+  "group": "sheet machines",
+  "value": "New sheets and Nest all use the job's machine: Nest all makes fresh sheets, so a sheet moved to another machine goes back, and its message says how many (\"1 sheet that was moved to another machine is back on the job's machine (…); move it again if it should go there\"; agents: moved_back). Changing a sheet to another stock sheet, remnant or size keeps its machine.",
+  "source": "MS4"
+ },
+ {
+  "name": "Where a sheet's machine shows",
+  "group": "sheet machines",
+  "value": "A sheet's machine shows wherever sheets are listed: beside the sheet's number on the job screen's sheet cards (in the accent colour when moved off the job's machine), in the sheet's details on the Results tab, in the status bar's Machine ▾, and per sheet in info (machine, moved, and the program file that machine gets). Identical sheets on different machines are not folded into one card. info sheet=N also lists the sheet's cuts with their quality, lead-in length and whether they were picked by hand.",
+  "source": "MS5"
+ },
+ {
+  "name": "A machine's program folder",
+  "group": "sheet machines",
+  "value": "Each machine in Settings → Machines has a program folder; empty means the shared export folder (Settings → Folders), as before. It is saved only when set, so settings saved before load and save unchanged.",
+  "source": "MS6"
+ },
+ {
+  "name": "Writing a job on two machines",
+  "group": "sheet machines",
+  "value": "Writing programs goes sheet by sheet: each sheet by its machine's post into <that machine's program folder>\\<job>. Every check (the stops, each LC5 set's read-back, each OMAX check) runs on every sheet before anything is written, and a refusal removes the job's programs from every machine's folder. Each folder gets the parts report; programs of this job left from an earlier write are removed per folder, keeping what either machine wrote when two share a folder. The message (and the agents' reply, machines) lists the files per machine and folder. An agent that names a machine on export or program (AG4) writes every sheet for that machine, moved ones too, for that call only.",
+  "source": "MS7"
+ },
+ {
+  "name": "Old jobs write the same programs",
+  "group": "sheet machines",
+  "value": "A job saved before sheets had machines writes byte for byte the same programs as before (checked against programs recorded from the release before).",
+  "source": "MS8"
  }
 ]
 }

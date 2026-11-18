@@ -246,7 +246,7 @@ fn draw_plan(sc: &mut Scene, plan: &SheetPlan, numbers: bool) {
 
 /// One sheet: parts filled in their colours with #numbers, cut lines, the
 /// remnant shaded, and (with `path`) the cut path.
-pub fn sheet_scene(job: &JobFile, k: usize, width_px: u32, path: bool) -> Result<Scene, String> {
+pub fn sheet_scene(job: &JobFile, cfg: &crate::settings::AppSettings, k: usize, width_px: u32, path: bool) -> Result<Scene, String> {
     let sheet = job.sheets.get(k).ok_or_else(|| format!("there is no sheet {} (the job has {})", k + 1, job.sheets.len()))?;
     let f = job.format(k);
     let spec = &job.spec_at(k);
@@ -283,7 +283,7 @@ pub fn sheet_scene(job: &JobFile, k: usize, width_px: u32, path: bool) -> Result
         draw_shown_only(&mut sc, &job.parts[pl.part], |q| pl.map(q));
     }
     if path {
-        let plans = job.plans();
+        let plans = job.plans_on(cfg);
         draw_plan(&mut sc, &plans[k], true);
     }
     for (i, pl) in sheet.iter().enumerate() {

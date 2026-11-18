@@ -28,6 +28,7 @@ pub mod render;
 pub mod rollout;
 pub mod selection;
 pub mod session;
+pub mod sheetmachine;
 pub mod shop;
 pub mod updates;
 pub mod sheetpick;
@@ -102,6 +103,8 @@ pub fn unreadable_post_files(m: &settings::Machine) -> Vec<String> {
 /// Settings → Apply.
 pub fn install_machine(m: &settings::Machine, lantek_dir: &str) -> crate::ct1::MachineTech {
     crate::blm::set_adi(crate::blm::AdiParams::from_files(&m.blm_ps1, &m.blm_cf1));
+    // The other machines' files are read again when a sheet on them is planned.
+    sheetmachine::forget();
     let t = crate::ct1::MachineTech::for_machine(m, lantek_dir);
     crate::ct1::set_active(t.clone());
     t
@@ -401,6 +404,19 @@ pub fn programs_written(n: usize, spec: &SheetSpec, base: &crate::blm::BlmSettin
 pub fn export_note(ex: &Exported, n: usize, spec: &SheetSpec, base: &crate::blm::BlmSettings, unit: crate::units::LenUnit) -> String {
     let what = if base.on { "BLM LC5 program sets (.zip + .XML)" } else { "The programs" };
     let warn = ex.warning.as_ref().map_or(String::new(), |w| format!(" But {w}."));
+    if ex.by_machine.len() > 1 || ex.by_machine.first().is_some_and(|(m, ..)| !m.is_empty() && *m != base.machine) {
+        // MS7: which files went to which machine's folder.
+        let per = ex
+            .by_machine
+            .iter()
+            .map(|(m, d, f)| {
+                let names: Vec<String> = f.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).filter(|n| n != "parts.csv").collect();
+                format!("{m}: {} in {}", names.join(", "), d.display())
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return format!("{}. {per} (each with a parts report).{warn}", programs_written(n, spec, base, unit));
+    }
     format!("{}. {what} and a parts report are in {}.{warn}", programs_written(n, spec, base, unit), ex.dir.display())
 }
 
@@ -1441,6 +1457,19 @@ pub fn plans(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], sp
     sheets.iter().enumerate().map(|(k, s)| cnc::plan_manual(parts, s, &spec.for_format(&format_at(formats, spec, k)), manual.get(k).map_or(&[][..], |v| v.as_slice()))).collect()
 }
 
+/// `plans`, each sheet worked out on its own machine (MS3): its cut
+/// qualities, leads, cut order, kerf and cut time from that machine's tables.
+pub fn plans_on(cfg: &AppSettings, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], spec: &SheetSpec, manual: &[Vec<ManualCut>]) -> Vec<SheetPlan> {
+    sheets
+        .iter()
+        .enumerate()
+        .map(|(k, s)| {
+            let f = format_at(formats, spec, k);
+            sheetmachine::on_sheet(&f, cfg, || cnc::plan_manual(parts, s, &spec.for_format(&f), manual.get(k).map_or(&[][..], |v| v.as_slice())))
+        })
+        .collect()
+}
+
 /// The ISO program of one sheet (sheet numbers from 1; `spec` with that
 /// sheet's size), cut lines last; `bridge` is the remnant line's edge offset.
 #[allow(clippy::too_many_arguments)]
@@ -1624,6 +1653,18 @@ pub struct Exported {
     pub dir: PathBuf,
     pub files: Vec<PathBuf>,
     pub warning: Option<String>,
+    /// MS7: per machine the job's sheets went to, in sheet order: its name,
+    /// the folder its programs are in, and the files written there.
+    pub by_machine: Vec<(String, PathBuf, Vec<PathBuf>)>,
+}
+
+/// One machine's way of writing programs, for the sheets cut on it (MS6, MS7).
+pub struct ProgramOut {
+    pub machine: String,
+    /// `<folder>\<job>`: where its programs go.
+    pub dir: PathBuf,
+    pub post: crate::post::PostConfig,
+    pub blm: Option<crate::blm::BlmSettings>,
 }
 
 /// File-name-safe job name.
@@ -1636,13 +1677,17 @@ pub fn safe_name(s: &str) -> String {
 /// runs a sheet that no longer exists (EXP1).
 fn remove_stale_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, kept: &[PathBuf]) -> std::io::Result<()> {
     let blm_job = blm.map_or(job_name, |b| b.job.as_str());
+    // What was written is kept however its folder is spelled (MS7: two
+    // machines may name the same folder differently).
+    let kept_real: Vec<PathBuf> = kept.iter().filter_map(|k| std::fs::canonicalize(k).ok()).collect();
+    let is_kept = |f: &PathBuf| kept.contains(f) || std::fs::canonicalize(f).is_ok_and(|r| kept_real.contains(&r));
     // One locked file doesn't keep the others: every one is tried.
     let mut first_error = None;
     for k in 1..=999 {
         let nest = crate::blm::nest_name(blm_job, k);
         let omx = crate::post::PostConfig::name_with(job_name, k, crate::omax::EXTENSION);
         for f in [dir.join(post.iso_file_name(job_name, k)), dir.join(omx), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML"))] {
-            if !kept.contains(&f) && f.is_file() {
+            if !is_kept(&f) && f.is_file() {
                 if let Err(e) = std::fs::remove_file(&f) {
                     first_error.get_or_insert(e);
                 }
@@ -1661,8 +1706,26 @@ fn remove_programs_note(dir: &Path, job_name: &str, post: &crate::post::PostConf
     }
 }
 
+/// `remove_programs_note` for every machine's folder (MS7).
+fn remove_all_programs_note(outs: &[ProgramOut], job_name: &str) -> String {
+    if let [o] = outs {
+        return remove_programs_note(&o.dir, job_name, &o.post, o.blm.as_ref());
+    }
+    let mut bad = String::new();
+    for o in outs {
+        if let Err(e) = remove_stale_programs(&o.dir, job_name, &o.post, o.blm.as_ref(), &[]) {
+            bad += &format!(" Some of this job's earlier programs in {} couldn't be removed ({e}): delete them before anyone runs them.", o.dir.display());
+        }
+    }
+    if bad.is_empty() {
+        " No program of this job is left in those folders.".into()
+    } else {
+        bad
+    }
+}
+
 /// Write every sheet's machine program (G-code, or BLM LC5 sets) and the CSV
-/// parts report into `base\<job>`.
+/// parts report into `base\<job>`, all with one machine's post.
 #[allow(clippy::too_many_arguments)]
 pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, bridge: f64) -> Result<Exported, String> {
     // EXP2: a post file that can't be read stops the export; the job's
@@ -1670,11 +1733,88 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
     if let Some(why) = post.refusal() {
         return Err(why);
     }
-    let dir = base.join(safe_name(job_name));
+    let out = ProgramOut { machine: String::new(), dir: base.join(safe_name(job_name)), post: post.clone(), blm: blm.cloned() };
+    export_outs(job_name, parts, sheets, formats, plans, job_spec, cuts, marks, &[out], &vec![0; sheets.len()], None, bridge)
+}
+
+/// MS6, MS7: how each machine a job's sheets are on writes them. `shared`
+/// is the export folder; the job's machine (the active one) writes with
+/// `post` and `blm` (as Settings → Apply loaded them, `blm` filled in for the
+/// job), every other machine with its own post and BLM values. Returns the
+/// outputs and, per sheet, the one it goes to.
+#[allow(clippy::too_many_arguments)]
+pub fn program_outs(cfg: &AppSettings, shared: &Path, job_name: &str, formats: &[SheetFormat], n_sheets: usize, job_spec: &SheetSpec, post: &crate::post::PostConfig, blm: &crate::blm::BlmSettings) -> (Vec<ProgramOut>, Vec<usize>) {
+    let job = cfg.machine();
+    let (mut outs, mut of_sheet) = (Vec::<ProgramOut>::new(), vec![]);
+    for k in 0..n_sheets {
+        let m = sheetmachine::machine_of(&format_at(formats, job_spec, k), cfg);
+        let i = match outs.iter().position(|o| o.machine == m.name) {
+            Some(i) => i,
+            None => {
+                let dir = sheetmachine::program_base(&m, shared).join(safe_name(job_name));
+                let (p, b) = if m.name == job.name { (post.clone(), blm.clone()) } else { (load_post(&m), blm_for(job_spec, &moved_blm(&m, blm), job_name)) };
+                outs.push(ProgramOut { machine: m.name.clone(), dir, post: p, blm: Some(b) });
+                outs.len() - 1
+            }
+        };
+        of_sheet.push(i);
+    }
+    if outs.is_empty() {
+        outs.push(ProgramOut { machine: job.name.clone(), dir: sheetmachine::program_base(&job, shared).join(safe_name(job_name)), post: post.clone(), blm: Some(blm.clone()) });
+    }
+    // EXP1, MS7: the machines no sheet goes to this time are listed too (with
+    // no sheets), so this job's programs left in their folders by an earlier
+    // write, from a sheet since moved, are taken away: nobody runs them.
+    for m in &cfg.machines {
+        if !outs.iter().any(|o| o.machine == m.name) {
+            let dir = sheetmachine::program_base(m, shared).join(safe_name(job_name));
+            let (p, b) = if m.name == job.name { (post.clone(), blm.clone()) } else { (load_post(m), blm_for(job_spec, &moved_blm(m, blm), job_name)) };
+            outs.push(ProgramOut { machine: m.name.clone(), dir, post: p, blm: Some(b) });
+        }
+    }
+    (outs, of_sheet)
+}
+
+/// MS3: machine `m`'s BLM switches for a sheet moved to it, with the job's
+/// gas (`job`'s, from `blm_for`): a job without a gas of its own is cut with
+/// its own machine's (GS11), not the one a sheet moved to.
+pub fn moved_blm(m: &settings::Machine, job: &crate::blm::BlmSettings) -> crate::blm::BlmSettings {
+    crate::blm::BlmSettings { gas_id: job.gas_id, gas_name: job.gas_name.clone(), ..blm_base(m) }
+}
+
+/// Write every sheet's program with its machine's post into its machine's
+/// folder (MS6, MS7), and the CSV parts report into each of those folders.
+/// Every check runs on every sheet before anything is written.
+#[allow(clippy::too_many_arguments)]
+pub fn export_on(cfg: &AppSettings, shared: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], post: &crate::post::PostConfig, blm: &crate::blm::BlmSettings, bridge: f64) -> Result<Exported, String> {
+    let (outs, of_sheet) = program_outs(cfg, shared, job_name, formats, sheets.len(), job_spec, post, blm);
+    export_outs(job_name, parts, sheets, formats, plans, job_spec, cuts, marks, &outs, &of_sheet, Some(cfg), bridge)
+}
+
+/// Work `f` out on sheet `k`'s machine when the export knows the machines.
+fn on_sheet_k<R>(cfg: Option<&AppSettings>, formats: &[SheetFormat], spec: &SheetSpec, k: usize, f: impl FnOnce() -> R) -> R {
+    match cfg {
+        Some(c) => sheetmachine::on_sheet(&format_at(formats, spec, k), c, f),
+        None => f(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_outs(job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], outs: &[ProgramOut], of_sheet: &[usize], cfg: Option<&AppSettings>, bridge: f64) -> Result<Exported, String> {
     if sheets.is_empty() {
         // The job's earlier programs would still be there to run.
-        let _ = remove_stale_programs(&dir, job_name, post, blm, &[]);
+        for o in outs {
+            let _ = remove_stale_programs(&o.dir, job_name, &o.post, o.blm.as_ref(), &[]);
+        }
         return Err("Nothing to export — nest first.".into());
+    }
+    let out_of = |k: usize| &outs[of_sheet.get(k).copied().unwrap_or(0).min(outs.len() - 1)];
+    // EXP2, MS7: a post file that can't be read, of any machine a sheet goes
+    // to, stops the export; the job's earlier programs stay.
+    for k in 0..sheets.len() {
+        if let Some(why) = out_of(k).post.refusal() {
+            return Err(why);
+        }
     }
     // JOB-41, MAC-46: a part drawn so it would be cut wrong, or a lead-in that
     // pierces off the sheet, stops the export before anything is written.
@@ -1682,68 +1822,93 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
         let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
         let issues = stop_issues(parts, s, spec, pl);
         if !issues.is_empty() {
-            return Err(format!("{}{}", stop_refusal(k + 1, &issues), remove_programs_note(&dir, job_name, post, blm)));
+            return Err(format!("{}{}", stop_refusal(k + 1, &issues), remove_all_programs_note(outs, job_name)));
         }
     }
     // BL39: every LC5 set is read back before anything is written; a set that
     // wouldn't cut the plan stops the whole export, and the job's earlier
     // programs go too, so they can't be run by mistake.
-    let mut sets = vec![];
-    if let Some(b) = blm.filter(|b| b.on) {
-        for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
-            let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
-            let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
-            let set = crate::blm::sheet_set(k + 1, parts, s, spec, pl, c, b);
-            let issues = readback::check_set(&set, parts, s, pl, c);
-            if !issues.is_empty() {
-                return Err(format!("{}{}", readback::refusal(k + 1, &issues), remove_programs_note(&dir, job_name, post, blm)));
-            }
-            sets.push(set);
+    let mut sets = BTreeMap::new();
+    for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
+        let Some(b) = out_of(k).blm.as_ref().filter(|b| b.on) else { continue };
+        let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
+        let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
+        let set = on_sheet_k(cfg, formats, job_spec, k, || crate::blm::sheet_set(k + 1, parts, s, spec, pl, c, b));
+        let issues = readback::check_set(&set, parts, s, pl, c);
+        if !issues.is_empty() {
+            return Err(format!("{}{}", readback::refusal(k + 1, &issues), remove_all_programs_note(outs, job_name)));
         }
+        sets.insert(k, set);
     }
     // OM1, OM3: an OMAX file is checked the same way before anything is written.
-    if post.omax {
-        for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
-            let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
-            let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
-            if let Some(why) = omax_refusal(k + 1, s, spec, pl, c, marks.get(k).map_or(&[][..], |v| v.as_slice()), bridge) {
-                return Err(format!("{why}{}", remove_programs_note(&dir, job_name, post, blm)));
-            }
+    for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
+        if !out_of(k).post.omax || sets.contains_key(&k) {
+            continue;
+        }
+        let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
+        let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
+        if let Some(why) = omax_refusal(k + 1, s, spec, pl, c, marks.get(k).map_or(&[][..], |v| v.as_slice()), bridge) {
+            return Err(format!("{why}{}", remove_all_programs_note(outs, job_name)));
         }
     }
     let mut files = vec![];
+    let mut by_machine: Vec<(String, PathBuf, Vec<PathBuf>)> = vec![];
     let mut warning = None;
     let res = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(&dir)?;
         for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
+            let o = out_of(k);
+            std::fs::create_dir_all(&o.dir)?;
             let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
             let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
-            if let Some(set) = sets.get(k) {
+            let mut written = vec![];
+            if let Some(set) = sets.get(&k) {
                 // The LC5 reads BLM's SPF set (zipped) and its XML job sheet.
-                crate::blm::write_sheet(&dir, set)?;
-                files.push(dir.join(format!("{}.zip", set.nest)));
-                files.push(dir.join(format!("{}.XML", set.nest)));
+                crate::blm::write_sheet(&o.dir, set)?;
+                written.push(o.dir.join(format!("{}.zip", set.nest)));
+                written.push(o.dir.join(format!("{}.XML", set.nest)));
                 if set.warning.is_some() {
                     warning = set.warning.clone();
                 }
-                continue;
+            } else {
+                let f = o.dir.join(o.post.file_name(job_name, k + 1));
+                let text = on_sheet_k(cfg, formats, job_spec, k, || program(k + 1, parts, s, spec, pl, c, marks.get(k).map_or(&[][..], |v| v.as_slice()), &o.post, bridge));
+                std::fs::write(&f, text)?;
+                written.push(f);
             }
-            let f = dir.join(post.file_name(job_name, k + 1));
-            std::fs::write(&f, program(k + 1, parts, s, spec, pl, c, marks.get(k).map_or(&[][..], |v| v.as_slice()), post, bridge))?;
-            files.push(f);
+            match by_machine.iter_mut().find(|(m, d, _)| *m == o.machine && *d == o.dir) {
+                Some(e) => e.2.extend(written.iter().cloned()),
+                None => by_machine.push((o.machine.clone(), o.dir.clone(), written.clone())),
+            }
+            files.extend(written);
         }
-        remove_stale_programs(&dir, job_name, post, blm, &files)?;
         let mut csv = String::from("reference,shape,width_mm,height_mm,quantity,nested\n");
         for (i, p) in parts.iter().enumerate() {
             csv.push_str(&format!("{},{},{:.1},{:.1},{},{}\n", p.name.replace(',', " "), p.shape.label(), p.w, p.h, p.qty, placed_count(sheets, i)));
         }
-        let f = dir.join("parts.csv");
-        std::fs::write(&f, csv)?;
-        files.push(f);
+        let mut dirs: Vec<PathBuf> = vec![];
+        for (_, d, _) in &by_machine {
+            if !dirs.contains(d) {
+                dirs.push(d.clone());
+            }
+        }
+        for d in &dirs {
+            files.push(d.join("parts.csv"));
+        }
+        // Two machines may share a folder: what either wrote is kept.
+        for o in outs {
+            remove_stale_programs(&o.dir, job_name, &o.post, o.blm.as_ref(), &files)?;
+        }
+        for d in &dirs {
+            let f = d.join("parts.csv");
+            std::fs::write(&f, &csv)?;
+            if let Some(e) = by_machine.iter_mut().find(|(_, dd, _)| dd == d) {
+                e.2.push(f);
+            }
+        }
         Ok(())
     })();
     // A write that fails partway must not leave a mix of new and old files.
-    res.map_err(|e| format!("Export failed: {e}.{}", remove_programs_note(&dir, job_name, post, blm)))?;
+    res.map_err(|e| format!("Export failed: {e}.{}", remove_all_programs_note(outs, job_name)))?;
     // QR6: warn (the programs are still written) when parts overlap.
     if let Some(o) = overlap_warning(parts, sheets, |k| job_spec.for_format(&format_at(formats, job_spec, k))) {
         warning = Some(match warning {
@@ -1751,7 +1916,8 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
             None => o,
         });
     }
-    Ok(Exported { dir, files, warning })
+    let dir = by_machine.first().map_or_else(|| outs[0].dir.clone(), |e| e.1.clone());
+    Ok(Exported { dir, files, warning, by_machine })
 }
 
 /// Drop the empty sheets (and their formats, cut lines and hand cuts), except
@@ -1790,8 +1956,14 @@ impl JobFile {
         JobFile { program_version: None, format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() }
     }
 
+    /// Every sheet's plan on the job's machine (the active one).
     pub fn plans(&self) -> Vec<SheetPlan> {
         plans(&self.parts, &self.sheets, &self.formats, &self.spec, &self.manual_cuts)
+    }
+
+    /// Every sheet's plan on its own machine (MS3).
+    pub fn plans_on(&self, cfg: &AppSettings) -> Vec<SheetPlan> {
+        plans_on(cfg, &self.parts, &self.sheets, &self.formats, &self.spec, &self.manual_cuts)
     }
 
     /// Sheet `k`'s format (size, remnant outline, stock reference).

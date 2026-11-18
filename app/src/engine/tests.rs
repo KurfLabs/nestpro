@@ -13387,3 +13387,221 @@ fn a_session_started_before_a_trial_follows_this_pcs_library() {
     assert_eq!(s.ctx.library_dir, live);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Each sheet has its machine (MAC-75, MAC-76, MS1–MS8).
+// ---------------------------------------------------------------------------
+
+/// A made-up machine file for 12.9–20.1 mm mild steel: `bands` (Z010–Z012
+/// lines), leads of `lead` mm and a cutting speed of `speed` mm/min.
+fn sheet_machine_file(bands: &str, lead: f64, speed: u32) -> String {
+    let leads = (0..8).map(|k| format!("Z{:03} {lead}\nZ{:03} {lead}\nZ{:03} {}\nZ{:03} {}\n", 68 + 6 * k, 69 + 6 * k, 72 + 6 * k, lead + 0.5, 73 + 6 * k, lead + 0.5)).collect::<String>();
+    format!("A051 40000\nA058 {speed}\nZ000 \"##MATEXP0010##\"\nZ001 12.9\nZ002 20.1\n{bands}{leads}Z999 0\n")
+}
+
+/// Two made-up machines in a made-up install in `root`: "Demo ISO" (G-code,
+/// the job's), whose file cuts every contour at quality 3 with 2 mm leads at
+/// 3000 mm/min, and "Demo BLM" (the LC5), whose size bands cut small holes
+/// at 1, middle ones at 2 and the rest at 3, with 6 mm leads at 1500 mm/min.
+/// The BLM machine writes into its own program folder `blm_dir`.
+fn two_machines(root: &Path, blm_dir: &Path) -> crate::settings::AppSettings {
+    let iso = sheet_machine_file("Z010 0\nZ011 99999\nZ012 2\n", 2.0, 3000);
+    let blm = sheet_machine_file("Z010 0\nZ011 5\nZ012 0\nZ010 5\nZ011 12\nZ012 1\nZ010 12\nZ011 99999\nZ012 2\n", 6.0, 1500);
+    std::fs::create_dir_all(root.join("blm")).unwrap();
+    std::fs::write(root.join("blm").join("PstAdi06.CT1"), blm).unwrap();
+    // The LC5's post settings: the built-in values, but a file that is there (EXP2).
+    std::fs::write(root.join("blm").join("PstAdi06.PS1"), "").unwrap();
+    let machines = vec![
+        crate::settings::Machine { name: "Demo ISO".into(), ..Default::default() },
+        crate::settings::Machine { name: "Demo BLM".into(), output: crate::settings::Output::BlmSiemens, gas_id: 3, gas_name: "Oxygen".into(), blm_ps1: root.join("blm").join("PstAdi06.PS1").to_string_lossy().into_owned(), program_dir: blm_dir.to_string_lossy().into_owned(), ..Default::default() },
+    ];
+    shop_settings(root, &iso, machines)
+}
+
+/// A job of two made-up 300 × 200 plates (a Ø6 and a Ø16 hole, a marked
+/// line), one on each 400 × 300 sheet, on "Demo ISO".
+fn two_sheet_job(d: &Path) -> (Session, OnMachine) {
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = two_machines(&d.join("install"), &d.join("blm-programs"));
+    let on = apply_machine(&mut s);
+    call(&mut s, "new", Some(d.join("DEMO-125.snjob").to_str().unwrap()), json!({"w": 400, "h": 300, "material": "mild steel", "thickness": 15, "force": true}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(d).to_str().unwrap(), "qty": 2, "layers": "MARK=mark"}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    assert_eq!(s.job.as_ref().unwrap().sheets.len(), 2);
+    (s, on)
+}
+
+/// Sheet `k`'s cuts as info lists them: (hole, quality, lead-in mm, by hand).
+fn sheet_cuts(s: &mut Session, k: usize) -> Vec<(bool, u64, f64, bool)> {
+    let info = call(s, "info", None, json!({"sheet": k}));
+    info["data"]["sheets"][k - 1]["cuts"].as_array().unwrap_or_else(|| panic!("{info}")).iter().map(|c| (c["hole"].as_bool().unwrap(), c["quality"].as_u64().unwrap(), c["lead_in_mm"].as_f64().unwrap(), c["by_hand"].as_bool().unwrap())).collect()
+}
+
+fn qualities(cuts: &[(bool, u64, f64, bool)]) -> Vec<u64> {
+    let mut q: Vec<u64> = cuts.iter().map(|c| c.1).collect();
+    q.sort();
+    q
+}
+
+#[test]
+fn a_sheet_moved_to_another_machine_takes_its_cut_plan_and_keeps_what_was_set_by_hand() {
+    let d = dir("ms_move");
+    let (mut s, _on) = two_sheet_job(&d);
+    // Both sheets on the job's machine: every contour at quality 3, 2 mm leads.
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!((info["data"]["sheets"][0]["machine"].as_str(), info["data"]["sheets"][1]["machine"].as_str()), (Some("Demo ISO"), Some("Demo ISO")), "{info}");
+    let before = sheet_cuts(&mut s, 2);
+    assert_eq!(qualities(&before), vec![3, 3, 3], "{before:?}");
+    // The outline's lead is the machine's 2 mm (holes' leads are shortened to fit them).
+    let outline_lead = |c: &[(bool, u64, f64, bool)]| c.iter().find(|c| !c.0).unwrap().2;
+    assert_eq!(outline_lead(&before), 2.0, "{before:?}");
+    // The Ø16 hole (contour 2) set to quality 5 by hand, and a cut order
+    // picked by hand on sheet 2 (its outline first).
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "2", "quality": 5}));
+    let placed = &s.job.as_ref().unwrap().sheets[1][0];
+    let (x, y) = (placed.x, placed.y + 100.0);
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 2, "x": x, "y": y, "tol": 2}));
+    let picked = sheet_cuts(&mut s, 2);
+    assert!(picked.iter().any(|c| !c.0 && c.3), "the outline picked by hand: {picked:?}");
+
+    // MS2: sheet 2 goes to the LC5. Its Ø6 hole takes that machine's band
+    // (quality 1), the outline stays 3, the hole set by hand keeps 5; its
+    // leads are that machine's (longer); the hand cut order stays.
+    let r = call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "demo blm"}));
+    assert!(r["message"].as_str().unwrap().contains("moved from Demo ISO to Demo BLM"), "{r}");
+    let after = sheet_cuts(&mut s, 2);
+    assert_eq!(qualities(&after), vec![1, 3, 5], "{after:?}");
+    // (its 6 mm lead, cut short to stay inside the part gap)
+    assert!(outline_lead(&after) > 4.0 && after.iter().zip(&picked).filter(|(a, _)| a.0 && a.1 == 5).all(|(a, b)| a.2 > b.2 + 2.0), "the LC5's leads: {picked:?} → {after:?}");
+    assert!(after.iter().any(|c| !c.0 && c.3), "the hand cut order stays: {after:?}");
+    // Sheet 1 stays on the job's machine, as it was (with the hand quality).
+    assert_eq!(qualities(&sheet_cuts(&mut s, 1)), vec![3, 3, 5]);
+    // MS5: info names each sheet's machine and the program it gets.
+    let info = call(&mut s, "info", None, json!({}));
+    let sh = &info["data"]["sheets"];
+    assert_eq!((sh[0]["machine"].as_str(), sh[1]["machine"].as_str(), sh[1]["moved"].as_bool()), (Some("Demo ISO"), Some("Demo BLM"), Some(true)), "{info}");
+    assert!(sh[1]["program"].as_str().unwrap().ends_with(".zip"), "{info}");
+    // The move is saved in the job file and read back.
+    let saved = std::fs::read_to_string(d.join("DEMO-125.snjob")).unwrap();
+    assert_eq!(saved.matches("\"machine\": \"Demo BLM\"").count(), 1, "only the moved sheet names a machine");
+
+    // MS2: moving it back to the job's machine stores no machine.
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo ISO"}));
+    assert!(s.job.as_ref().unwrap().formats[1].machine.is_empty());
+    assert_eq!(qualities(&sheet_cuts(&mut s, 2)), vec![3, 3, 5]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_on_two_machines_writes_each_sheet_into_its_machines_folder() {
+    let d = dir("ms_export");
+    let (mut s, _on) = two_sheet_job(&d);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM"}));
+    let shared = d.join("shared");
+    let r = call(&mut s, "export", None, json!({"dir": shared.to_str().unwrap()}));
+    // MS7: sheet 1's G-code in the shared folder, sheet 2's LC5 set in the
+    // BLM machine's own program folder; each folder gets the parts report.
+    let iso_dir = shared.join("DEMO-125");
+    let blm_dir = d.join("blm-programs").join("DEMO-125");
+    let iso: Vec<String> = std::fs::read_dir(&iso_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let blm: Vec<String> = std::fs::read_dir(&blm_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(iso, vec!["DEMO125X1.CNC".to_string(), "parts.csv".to_string()], "sheet 1's G-code only");
+    assert!(blm.iter().any(|n| n.ends_with(".zip")) && blm.iter().any(|n| n.ends_with(".XML")) && !blm.iter().any(|n| n.ends_with(".CNC")), "sheet 2's LC5 set only: {blm:?}");
+    assert!(iso.contains(&"parts.csv".to_string()) && blm.contains(&"parts.csv".to_string()));
+    // The reply lists the files per machine, in sheet order.
+    let m = &r["data"]["machines"];
+    assert_eq!((m[0]["machine"].as_str(), m[1]["machine"].as_str()), (Some("Demo ISO"), Some("Demo BLM")), "{r}");
+    assert!(m[1]["files"].as_array().unwrap().iter().any(|f| f.as_str().unwrap().ends_with(".zip")), "{r}");
+    let msg = r["message"].as_str().unwrap();
+    assert!(msg.contains("Demo ISO: ") && msg.contains("Demo BLM: ") && msg.contains("blm-programs"), "{msg}");
+    // The sheet's program is its machine's too.
+    let p2 = call(&mut s, "program", None, json!({"sheet": 2}));
+    assert!(p2["data"].as_str().unwrap().starts_with("; BLM LC5 set"), "{p2}");
+    let p1 = call(&mut s, "program", None, json!({"sheet": 1}));
+    assert!(!p1["data"].as_str().unwrap().contains("NEXT_L"), "{p1}");
+    // MS3: a job without a gas of its own is cut with its own machine's gas
+    // (Nitrogen), not the one of the machine a sheet moved to (Oxygen).
+    s.job.as_mut().unwrap().spec.gas = None;
+    let p2 = call(&mut s, "program", None, json!({"sheet": 2}));
+    assert!(p2["data"].as_str().unwrap().contains(";NOMEGAS=Nitrogen"), "{p2}");
+    // MS7: every sheet on the other machine: the message still names it.
+    call(&mut s, "sheet-machine", None, json!({"sheet": 1, "machine": "Demo BLM"}));
+    let all = call(&mut s, "export", None, json!({"dir": shared.to_str().unwrap()}));
+    assert!(all["message"].as_str().unwrap().contains("Demo BLM: "), "{all}");
+    assert!(!iso_dir.join("DEMO125X1.CNC").exists(), "sheet 1's G-code is gone from the shared folder");
+    call(&mut s, "sheet-machine", None, json!({"sheet": 1, "machine": "Demo ISO"}));
+
+    // Sheet 2 back on the job's machine: the next export writes it as G-code
+    // and its LC5 set in the BLM folder is taken away (EXP1).
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo ISO"}));
+    call(&mut s, "export", None, json!({"dir": shared.to_str().unwrap()}));
+    let iso_after: Vec<String> = std::fs::read_dir(&iso_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(iso_after, vec!["DEMO125X1.CNC".to_string(), "DEMO125X2.CNC".to_string(), "parts.csv".to_string()]);
+    assert!(!std::fs::read_dir(&blm_dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".zip")), "the old LC5 set is gone");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn nest_all_puts_moved_sheets_back_on_the_jobs_machine_and_says_so() {
+    let d = dir("ms_nest");
+    let (mut s, _on) = two_sheet_job(&d);
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM"}));
+    let r = call(&mut s, "nest", None, json!({"stock": "off"}));
+    assert_eq!(r["data"]["moved_back"], json!(1), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("1 sheet that was moved to another machine is back on the job's machine (Demo ISO)"), "{r}");
+    let info = call(&mut s, "info", None, json!({}));
+    assert!(info["data"]["sheets"].as_array().unwrap().iter().all(|k| k["machine"] == "Demo ISO" && k["moved"] == false), "{info}");
+    // Nothing moved: nothing said.
+    let r = call(&mut s, "nest", None, json!({"stock": "off"}));
+    assert_eq!(r["data"]["moved_back"], json!(0));
+    assert!(!r["message"].as_str().unwrap().contains("back on the job's machine"), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn moving_a_sheet_to_a_machine_that_isnt_set_up_is_refused_with_the_list() {
+    let d = dir("ms_unknown");
+    let (mut s, _on) = two_sheet_job(&d);
+    let e = err(&mut s, "sheet-machine", json!({"sheet": 2, "machine": "Plasma 9"}));
+    assert!(e.contains("There's no machine \"Plasma 9\"") && e.contains("\"Demo ISO\", \"Demo BLM\""), "{e}");
+    assert!(s.job.as_ref().unwrap().formats[1].machine.is_empty(), "the sheet stays where it was");
+    let e = err(&mut s, "sheet-machine", json!({"sheet": 5, "machine": "Demo BLM"}));
+    assert!(e.contains('5'), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_sheets_cut_time_is_worked_out_on_its_machine() {
+    let d = dir("ms_time");
+    let (mut s, _on) = two_sheet_job(&d);
+    let times = |s: &mut Session| {
+        let info = call(s, "info", None, json!({}));
+        (info["data"]["sheets"][0]["time_s"].as_f64().unwrap(), info["data"]["sheets"][1]["time_s"].as_f64().unwrap())
+    };
+    let (a, b) = times(&mut s);
+    assert!((a - b).abs() < 0.05, "the same sheet on the same machine: {a} / {b}");
+    // The LC5 cuts at 1500 mm/min, half the G-code machine's 3000.
+    call(&mut s, "sheet-machine", None, json!({"sheet": 2, "machine": "Demo BLM"}));
+    let (a2, b2) = times(&mut s);
+    assert!((a2 - a).abs() < 0.05 && b2 > a2 * 1.3, "sheet 2 now takes the LC5's time: {a2} / {b2}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_saved_before_sheets_had_machines_writes_the_same_programs() {
+    // MS8: a made-up job saved by the release before this change, and the
+    // programs that release wrote for it (G-code with the built-in post, and
+    // each sheet's LC5 set), recorded in testdata.
+    let d = dir("ms_old_job");
+    let job = d.join("DEMO-MS8.snjob");
+    std::fs::write(&job, include_bytes!("testdata/ms8/DEMO-MS8.snjob")).unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    let out = d.join("out");
+    call(&mut s, "export", Some(job.to_str().unwrap()), json!({"dir": out.to_str().unwrap()}));
+    let program = std::fs::read(out.join("DEMO-MS8").join("DEMOMS8X1.CNC")).unwrap();
+    assert_eq!(program, include_bytes!("testdata/ms8/DEMOMS8X1.CNC"), "the G-code program");
+    s.ctx.blm.on = true;
+    let t = call(&mut s, "program", None, json!({"sheet": 1}));
+    assert_eq!(t["data"].as_str().unwrap(), include_str!("testdata/ms8/blm-sheet1.txt"), "the LC5 set");
+    let _ = std::fs::remove_dir_all(&d);
+}

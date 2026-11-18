@@ -472,7 +472,7 @@ impl Session {
                 return Err("sheets are numbered from 1".into());
             }
             let k = k as usize - 1;
-            (render::sheet_scene(job, k, width, path)?, format!("sheet {}", k + 1), dir.join(format!("{stem}-sheet{}.png", k + 1)))
+            (render::sheet_scene(job, &self.ctx.cfg, k, width, path)?, format!("sheet {}", k + 1), dir.join(format!("{stem}-sheet{}.png", k + 1)))
         };
         let out = a.str("out").map(PathBuf::from).unwrap_or(default_out);
         ops::refuse_protected(&self.ctx, &out)?;

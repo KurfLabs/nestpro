@@ -1,0 +1,161 @@
+{
+  "program_version": "0.1.0",
+  "format": "nestpro-job",
+  "version": 1,
+  "name": "DEMO-MS8",
+  "week": "",
+  "parts": [
+    {
+      "name": "DEMO-PLATE",
+      "shape": "PlateHole",
+      "w": 300.0,
+      "h": 200.0,
+      "qty": 3,
+      "rotate": true,
+      "color": 0,
+      "tech": null,
+      "custom": null,
+      "rots": {
+        "plain": [
+          true,
+          true,
+          true,
+          true
+        ],
+        "mirrored": [
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "texts": [],
+      "group": ""
+    },
+    {
+      "name": "DEMO-TAB",
+      "shape": "Rectangle",
+      "w": 120.0,
+      "h": 80.0,
+      "qty": 4,
+      "rotate": true,
+      "color": 1,
+      "tech": null,
+      "custom": null,
+      "rots": {
+        "plain": [
+          true,
+          true,
+          true,
+          true
+        ],
+        "mirrored": [
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "texts": [],
+      "group": ""
+    }
+  ],
+  "spec": {
+    "w": 1000.0,
+    "h": 500.0,
+    "margin": 5.0,
+    "gap": 5.0,
+    "material": 0,
+    "thickness": 3.0,
+    "level": 3,
+    "machine": "Laser",
+    "kerf": {},
+    "gas": 1,
+    "pick": "stock"
+  },
+  "sheets": [
+    [
+      {
+        "part": 0,
+        "x": 5.0,
+        "y": 5.0,
+        "w": 300.0,
+        "h": 200.0,
+        "turns": 2,
+        "mirror": false
+      },
+      {
+        "part": 0,
+        "x": 5.0,
+        "y": 210.0,
+        "w": 300.0,
+        "h": 200.0,
+        "turns": 2,
+        "mirror": false
+      },
+      {
+        "part": 0,
+        "x": 310.0,
+        "y": 5.0,
+        "w": 300.0,
+        "h": 200.0,
+        "turns": 2,
+        "mirror": false
+      },
+      {
+        "part": 1,
+        "x": 310.0,
+        "y": 210.0,
+        "w": 120.0,
+        "h": 80.0,
+        "turns": 0,
+        "mirror": false
+      },
+      {
+        "part": 1,
+        "x": 310.0,
+        "y": 295.0,
+        "w": 120.0,
+        "h": 80.0,
+        "turns": 0,
+        "mirror": false
+      },
+      {
+        "part": 1,
+        "x": 310.0,
+        "y": 380.0,
+        "w": 120.0,
+        "h": 80.0,
+        "turns": 0,
+        "mirror": false
+      },
+      {
+        "part": 1,
+        "x": 435.0,
+        "y": 210.0,
+        "w": 120.0,
+        "h": 80.0,
+        "turns": 0,
+        "mirror": false
+      }
+    ]
+  ],
+  "formats": [
+    {
+      "w": 1000.0,
+      "h": 500.0,
+      "outline": null,
+      "stock_ref": "",
+      "remnant": false,
+      "made": [],
+      "made_from": 0
+    }
+  ],
+  "held": {},
+  "cut_lines": [],
+  "method": "vertical, method 3 (lowest shape centre), modules",
+  "manual_cuts": [],
+  "stale": false,
+  "booked": false,
+  "material_name": "Mild steel"
+}

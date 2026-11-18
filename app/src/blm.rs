@@ -113,7 +113,29 @@ static ADI: std::sync::RwLock<Option<AdiParams>> = std::sync::RwLock::new(None);
 /// The active machine's post settings (set from Settings → Machines); the
 /// built-in values until a machine sets them.
 pub fn adi() -> AdiParams {
+    if let Some(p) = SHEET_ADI.with(|s| s.get()) {
+        return p;
+    }
     ADI.read().ok().and_then(|g| *g).unwrap_or_default()
+}
+
+thread_local! {
+    /// MS3: the post settings of the machine of the sheet being written on
+    /// this thread; they win over the active machine's.
+    static SHEET_ADI: std::cell::Cell<Option<AdiParams>> = const { std::cell::Cell::new(None) };
+}
+
+/// MS3: run `f` with `p` as the post settings on this thread (None: the
+/// active machine's).
+pub fn with_sheet_adi<R>(p: Option<AdiParams>, f: impl FnOnce() -> R) -> R {
+    struct Back(Option<AdiParams>);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            SHEET_ADI.with(|s| s.set(self.0));
+        }
+    }
+    let _back = Back(SHEET_ADI.with(|s| s.replace(p)));
+    f()
 }
 
 pub fn set_adi(p: AdiParams) {

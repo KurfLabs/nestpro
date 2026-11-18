@@ -157,7 +157,7 @@ pub static OPS: &[Op] = &[
         a("level", Ty::Int, "Automatic nesting level 1-5 (default 3)"), c("machine", MACHINES, "Machine type (default laser)"),
         a("force", Ty::Bool, "Overwrite an existing file"),
     ] },
-    Op { name: "info", group: "Job", kind: Kind::Read, help: "Job report: sheet, what nest will nest on (nest_on: the stock first, with its sheets and remnants for the job, or the job's sheet size, and why; stock_thicknesses: every thickness of the job's material in stock, in mm, with its sheets and remnants; near_stock: when none is in stock at the job's thickness, a stocked one within 2 %, e.g. 11 ga for 3 mm), parts (ordered / nested / missing, technology), sheets (usage, cut length, pierces, time, remnant). With sheet=N, also every placed part on that sheet.", args: &[a("sheet", Ty::Int, "Also list the parts placed on this sheet")] },
+    Op { name: "info", group: "Job", kind: Kind::Read, help: "Job report: sheet, what nest will nest on (nest_on: the stock first, with its sheets and remnants for the job, or the job's sheet size, and why; stock_thicknesses: every thickness of the job's material in stock, in mm, with its sheets and remnants; near_stock: when none is in stock at the job's thickness, a stocked one within 2 %, e.g. 11 ga for 3 mm), parts (ordered / nested / missing, technology), sheets (usage, cut length, pierces, time, remnant). With sheet=N, also every placed part on that sheet and every cut in cutting order (its part, hole or outline, cut quality, lead-in length, by hand or not). Each sheet names the machine it's cut on (sheet-machine moves it).", args: &[a("sheet", Ty::Int, "Also list the parts placed and the cuts on this sheet")] },
     Op { name: "rename", group: "Job", kind: Kind::Write, help: "Rename the job or move it to another week/folder.", args: &[a("name", Ty::Str, "New job name"), a("week", Ty::Str, "New week/folder")] },
     Op { name: "undo", group: "Job", kind: Kind::Write, help: "Undo the last change (the MCP session keeps every step; the command line keeps one, in <job>.snjob~).", args: &[] },
     // --- parts ---
@@ -234,6 +234,9 @@ pub static OPS: &[Op] = &[
     ] },
     Op { name: "sheet-change", group: "Nesting", kind: Kind::Write, help: "Change which sheet a nested sheet is (Sheets → Change data): another stock sheet or remnant, a size, or back to the job's sheet. Refused when a placed part would end up outside it. A whole stock sheet also becomes the job's sheet, as in the window: nest then nests on its size (ST18).", args: &[
         SHEET, a("ref", Ty::Str, "Stock reference"), a("w", Ty::Num, "Or: length X, mm"), a("h", Ty::Num, "Width Y, mm"), a("job_sheet", Ty::Bool, "true = back to the job's own sheet"),
+    ] },
+    Op { name: "sheet-machine", group: "Nesting", kind: Kind::Write, help: "Move a nested sheet to another machine in Settings → Machines (MS2), so one job can go to two machines. Its automatic cut qualities, leads, cut order and kerf become that machine's; cut qualities, a cut order and leads set by hand stay. The job's own machine puts it back. Unknown names are refused with the list of machines. info shows each sheet's machine; nest puts every sheet back on the job's machine.", args: &[
+        r("sheet", Ty::Int, "Sheet number, from 1"), r("machine", Ty::Str, "The machine's name in Settings → Machines"),
     ] },
     Op { name: "sheet-delete", group: "Nesting", kind: Kind::Write, help: "Delete a nested sheet; its parts are no longer nested.", args: &[r("sheet", Ty::Int, "Sheet number, from 1")] },
     Op { name: "clear-sheets", group: "Nesting", kind: Kind::Write, help: "Take every part off the sheets.", args: &[] },
@@ -820,6 +823,17 @@ fn nest_on_json(job: &JobFile, ctx: &Ctx) -> Value {
     })
 }
 
+/// The program file sheet `k` gets from its machine (MS3).
+fn sheet_program_name(job: &JobFile, ctx: &Ctx, k: usize) -> String {
+    let m = sheetmachine::machine_of(&job.format(k), &ctx.cfg);
+    let (blm_on, post) = if m.name == ctx.cfg.machine().name { (ctx.blm.on, ctx.post.clone()) } else { (m.output == crate::settings::Output::BlmSiemens, load_post(&m)) };
+    if blm_on {
+        format!("{}.zip", crate::blm::nest_name(&job.name, k + 1))
+    } else {
+        post.file_name(&job.name, k + 1)
+    }
+}
+
 fn placed_json(job: &JobFile, s: usize) -> Value {
     json!(job.sheets[s].iter().enumerate().map(|(i, p)| json!({
         "item": i + 1, "part": p.part + 1, "name": job.parts[p.part].name, "x": r1(p.x), "y": r1(p.y), "w": r1(p.w), "h": r1(p.h), "angle": (p.angle() * 100.0).round() / 100.0, "mirror": p.mirror,
@@ -827,7 +841,7 @@ fn placed_json(job: &JobFile, s: usize) -> Value {
 }
 
 pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
-    let plans = job.plans();
+    let plans = job.plans_on(&ctx.cfg);
     let parts: Vec<Value> = job
         .parts
         .iter()
@@ -862,10 +876,21 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
                 "remnant": remnant_info(&job.parts, s, &f, job.cuts(k), crate::kerf::kerf_mm(&job.spec_at(k))).map(|(w, h, a)| json!({"w": r1(w), "h": r1(h), "area_m2": (a / 1e4).round() / 100.0})),
                 "size": [r1(f.w), r1(f.h)], "stock_ref": (!f.stock_ref.is_empty()).then(|| f.stock_ref.clone()), "is_remnant": f.remnant, "area_m2": (f.area_mm2() / 1e4).round() / 100.0,
                 "remnants_stored": f.made,
-                "program": if ctx.blm.on { format!("{}.zip", crate::blm::nest_name(&job.name, k + 1)) } else { ctx.post.file_name(&job.name, k + 1) },
+                // MS5: the machine it's cut on, and the program that machine gets.
+                "machine": sheetmachine::label(&f, &ctx.cfg),
+                "moved": !f.machine.is_empty(),
+                "program": sheet_program_name(job, ctx, k),
             });
+            if let Some(w) = sheetmachine::missing(&f, &ctx.cfg) {
+                v["machine_missing"] = json!(w);
+            }
             if detail_sheet == Some(k) {
                 v["placed"] = placed_json(job, k);
+                // The sheet's cuts as its machine plans them (MS3).
+                let len = |p: &[P]| p.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum::<f64>();
+                v["cuts"] = json!(pl.contours.iter().filter(|c| c.punch.is_none()).enumerate().map(|(n, c)| json!({
+                    "cut": n + 1, "part": c.part_no, "hole": c.inner, "quality": c.quality, "lead_in_mm": r1(len(&c.lead_path)), "by_hand": c.manual,
+                })).collect::<Vec<_>>());
             }
             v
         })
@@ -1091,7 +1116,7 @@ fn speeds_json(spec: &crate::nest::SheetSpec, t: &crate::ct1::MachineTech) -> Va
 
 /// The job's kerf compensation (KC1–KC6, KC18): the machine's settings, the
 /// job's choice, and per contour of one sheet what it gets.
-fn compensation_report(job: &JobFile, a: &Args) -> Result<(String, Value), String> {
+fn compensation_report(job: &JobFile, ctx: &Ctx, a: &Args) -> Result<(String, Value), String> {
     let mt = crate::ct1::for_spec(&job.spec);
     let s = &mt.comp;
     let line = crate::kerf::status_line(&job.spec);
@@ -1115,7 +1140,7 @@ fn compensation_report(job: &JobFile, a: &Args) -> Result<(String, Value), Strin
     let mut msg = format!("{line}.");
     if !job.sheets.is_empty() {
         let k = sheet_idx(job, a)?;
-        let plans = job.plans();
+        let plans = job.plans_on(&ctx.cfg);
         let p = &plans[k];
         data["sheet"] = json!(k + 1);
         data["contours"] = json!(p.contours.iter().enumerate().filter(|(_, c)| c.punch.is_none()).map(|(n, c)| json!({
@@ -2599,6 +2624,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 st.fallback_job_size = false;
             }
             let stock = (mode != "off").then(|| stockflow::StockUse { st: &st, ..ctx.stock_use(job) });
+            // MS4: Nest all makes fresh sheets on the job's machine.
+            let moved_back = sheetmachine::moved(&job.formats, &ctx.cfg);
             let r = nest_all(&job.parts, &job.spec, group, stock.as_ref());
             let grouped = group && nest::part_groups(&job.parts).len() > 1;
             let unreachable = stock.as_ref().filter(|_| !grouped).and_then(stockflow::stock_unreachable_note).unwrap_or_default();
@@ -2631,9 +2658,16 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 format!("{placed} of {need} parts nested on {} sheet(s){from} — some are larger than the sheet.", job.sheets.len())
             };
             let usage: Vec<Value> = job.sheets.iter().enumerate().map(|(k, s)| { let f = job.format(k); json!({"sheet": k + 1, "parts": s.len(), "usage_pct": r1(sheet_usage(&job.parts, s, &job.spec, &f).0), "stock_ref": (!f.stock_ref.is_empty()).then(|| f.stock_ref.clone())}) }).collect();
-            let mut o = Outcome::msg(m + &unreachable);
-            o.data = json!({ "sheets": usage, "method": job.method });
+            let mut o = Outcome::msg(m + &unreachable + &sheetmachine::moved_back_note(moved_back, &ctx.cfg));
+            o.data = json!({ "sheets": usage, "method": job.method, "moved_back": moved_back });
             Ok(o)
+        }
+        "sheet-machine" => {
+            let s = sheet_idx(job, &a)?;
+            let name = a.str("machine").unwrap_or_default();
+            job.normalise_formats();
+            let m = sheetmachine::move_sheet(&mut job.formats, s, name.trim(), &ctx.cfg)?;
+            Ok(Outcome::msg(m))
         }
         "clear-sheets" => {
             job.clear_nestings();
@@ -2659,7 +2693,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let picked = picks_job_sheet(job, &f);
             job.normalise_formats();
-            job.formats[s] = f;
+            // The sheet stays on its machine (MS1).
+            let machine = std::mem::take(&mut job.formats[s].machine);
+            job.formats[s] = SheetFormat { machine, ..f };
             job.sheet_changed(s);
             Ok(Outcome::msg(format!("Sheet {} is now {what}{}.{picked}", s + 1, if had_cut { " — its remnant line was removed, add a new one" } else { "" })))
         }
@@ -3175,7 +3211,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             if let Some(v) = system {
                 job.spec.kerf.system = v;
             }
-            let (msg, data) = compensation_report(job, &a)?;
+            let (msg, data) = compensation_report(job, ctx, &a)?;
             Ok(if changed { Outcome { message: format!("Compensation set. {msg}"), data, changed: true, files: vec![] } } else { Outcome::read(msg, data) })
         }
         "joint-at" => {
@@ -3397,7 +3433,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             Ok(Outcome::msg(if kind == CutKind::Remnant { "Remnant line added (edge to edge) — cut last." } else { "Cut line added — it is cut after the parts." }))
         }
         "verify" => {
-            let plans = job.plans();
+            let plans = job.plans_on(&ctx.cfg);
             let ks: Vec<usize> = match a.str("sheet").as_deref().map(str::trim) {
                 None | Some("all") => (0..job.sheets.len()).collect(),
                 Some(_) => vec![sheet_idx(job, &a)?],
@@ -3425,40 +3461,49 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         }
         "program" => {
             let s = sheet_idx(job, &a)?;
-            // AG4: the machine named for this call (before the plans: its technology file).
-            let on = super::CallMachine::of(ctx, a.str("machine").as_deref(), job.spec.machine)?;
-            // EXP2: the same refusal as export.
-            if let Some(why) = on.post.refusal() {
-                return Err(why);
-            }
-            let plans = job.plans();
+            // AG4: the machine named for this call (before the plans: its
+            // technology file) writes the sheet, moved or not; otherwise the
+            // sheet's own machine does (MS3).
+            let named = a.str("machine");
+            let on = super::CallMachine::of(ctx, named.as_deref(), job.spec.machine)?;
+            let (scope, plans) = if named.is_some() { (SheetFormat::default(), job.plans()) } else { (job.format(s), job.plans_on(&ctx.cfg)) };
             // JOB-41, MAC-46: the same stop as export.
             let stops = stop_issues(&job.parts, &job.sheets[s], &job.spec_at(s), &plans[s]);
             if !stops.is_empty() {
                 return Err(stop_refusal(s + 1, &stops));
             }
-            let text = if on.blm.on {
-                let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &on.blm, &job.name));
-                // BL39: the same refusal as export.
-                let issues = readback::check_set(&set, &job.parts, &job.sheets[s], &plans[s], job.cuts(s));
-                if !issues.is_empty() {
-                    return Err(readback::refusal(s + 1, &issues));
-                }
-                let mut t = format!("; BLM LC5 set {} — {} subprogram file(s)\n", set.nest, set.spf.len());
-                for (n, body) in &set.spf {
-                    t.push_str(&format!("; ==== {n}\n{body}\n"));
-                }
-                t
-            } else {
-                let marks = stockflow::remnant_marks(&crate::stock::Stock::load_cached(&ctx.library_dir), &job.stock_sheets(), &job.formats, s, &ctx.cfg.stock);
-                // OM1, OM3: the same refusal as export.
-                if on.post.omax {
-                    if let Some(why) = omax_refusal(s + 1, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, ctx.cfg.stock.line.edge_offset) {
-                        return Err(why);
-                    }
-                }
-                program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, &on.post, ctx.cfg.stock.line.edge_offset)
+            let (post, blm) = match sheetmachine::find(&ctx.cfg, &scope.machine).filter(|m| m.name != ctx.cfg.machine().name) {
+                Some(m) => (load_post(m), moved_blm(m, &blm_for(&job.spec, &on.blm, &job.name))),
+                None => (on.post.clone(), on.blm.clone()),
             };
+            // EXP2: the same refusal as export, for the sheet's machine.
+            if let Some(why) = post.refusal() {
+                return Err(why);
+            }
+            let text = sheetmachine::on_sheet(&scope, &ctx.cfg, || -> Result<String, String> {
+                Ok(if blm.on {
+                    let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &blm, &job.name));
+                    // BL39: the same refusal as export.
+                    let issues = readback::check_set(&set, &job.parts, &job.sheets[s], &plans[s], job.cuts(s));
+                    if !issues.is_empty() {
+                        return Err(readback::refusal(s + 1, &issues));
+                    }
+                    let mut t = format!("; BLM LC5 set {} — {} subprogram file(s)\n", set.nest, set.spf.len());
+                    for (n, body) in &set.spf {
+                        t.push_str(&format!("; ==== {n}\n{body}\n"));
+                    }
+                    t
+                } else {
+                    let marks = stockflow::remnant_marks(&crate::stock::Stock::load_cached(&ctx.library_dir), &job.stock_sheets(), &job.formats, s, &ctx.cfg.stock);
+                    // OM1, OM3: the same refusal as export.
+                    if post.omax {
+                        if let Some(why) = omax_refusal(s + 1, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, ctx.cfg.stock.line.edge_offset) {
+                            return Err(why);
+                        }
+                    }
+                    program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, &post, ctx.cfg.stock.line.edge_offset)
+                })
+            })?;
             // QR6: say so when parts on the sheet overlap.
             let warn = sheet_overlap_note(&job.parts, s, &job.sheets[s], &job.spec_at(s)).map_or(String::new(), |w| format!(" Warning: {w} and would be cut through each other."));
             let mut o = Outcome::read(format!("Program for sheet {} ({} lines).{}{warn}", s + 1, text.lines().count(), on.note), json!(text));
@@ -3477,16 +3522,36 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             Ok(o)
         }
         "export" => {
+            // `dir` stands in for the shared export folder; a machine with a
+            // program folder of its own still writes there (MS7).
             let base = a.str("dir").map(PathBuf::from).unwrap_or_else(|| ctx.export_dir());
             trial_guard(ctx, &base, "The programs")?;
-            // AG4: the machine named for this call (before the plans: its technology file).
-            let on = super::CallMachine::of(ctx, a.str("machine").as_deref(), job.spec.machine)?;
-            let plans = job.plans();
-            let blm = blm_for(&job.spec, &on.blm, &job.name);
+            let named = a.str("machine");
             let marks = stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock);
-            let ex = export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &on.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
-            // GS16: the material, thickness and gas they're for.
-            let mut o = Outcome::read(format!("{}{}", export_note(&ex, job.sheets.len(), &job.spec, &on.blm, crate::units::LenUnit::Mm), on.note), Value::Null);
+            let (ex, on) = if named.is_some() {
+                // AG4: the machine named for this call (before the plans: its
+                // technology file) writes every sheet, moved ones too.
+                let on = super::CallMachine::of(ctx, named.as_deref(), job.spec.machine)?;
+                let plans = job.plans();
+                let blm = blm_for(&job.spec, &on.blm, &job.name);
+                (export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &on.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?, on)
+            } else {
+                // MS3, MS7: each sheet by its own machine, into its folder;
+                // UP16: in a trial, none of those folders in the shop either.
+                for d in sheetmachine::program_folders(&ctx.cfg, &base) {
+                    trial_guard(ctx, &d, "The programs")?;
+                    trial_guard(ctx, &d.join(safe_name(&job.name)), "The programs")?;
+                }
+                let on = super::CallMachine::of(ctx, None, job.spec.machine)?;
+                let plans = job.plans_on(&ctx.cfg);
+                let blm = blm_for(&job.spec, &on.blm, &job.name);
+                (export_on(&ctx.cfg, &base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &on.post, &blm, ctx.cfg.stock.line.edge_offset)?, on)
+            };
+            // GS16: the material, thickness and gas they're for; MS7: which
+            // machine's folder each file went to.
+            let mut o = Outcome::read(format!("{}{}", export_note(&ex, job.sheets.len(), &job.spec, &on.blm, crate::units::LenUnit::Mm), on.note), json!({
+                "machines": ex.by_machine.iter().map(|(m, d, f)| json!({"machine": if m.is_empty() { on.blm.machine.clone() } else { m.clone() }, "folder": d.display().to_string(), "files": f.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect::<Vec<_>>()})).collect::<Vec<_>>()
+            }));
             o.files = ex.files;
             Ok(o)
         }
