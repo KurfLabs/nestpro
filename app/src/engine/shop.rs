@@ -431,19 +431,25 @@ pub fn setup(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
 pub fn setup_in(ctx: &Ctx, a: &Args) -> Result<Setup, String> {
     match (a.str("start"), a.str("join")) {
         (Some(_), Some(_)) => Err("Give start= or join=, not both. Nothing was changed.".into()),
-        (None, Some(folder)) => join_op(ctx, &folder),
+        (None, Some(folder)) => join_op(ctx, &folder, a.bool("leave")?.unwrap_or(false)),
         (Some(folder), None) => start_op(ctx, &folder, &a.str("name").unwrap_or_default()).map(|outcome| Setup { outcome, library: None }),
         (None, None) => Err("Say what to set up: join=<the shop folder> joins a shop (`nestpro setup --join \\\\srv\\Nesting`); start=<the Library folder> name=<the shop's name> starts one there (`nestpro setup --start \\\\srv\\Nesting --name Acme`).".into()),
     }
 }
 
 /// `setup join=` (SH10–SH15): the checks, then this PC's Library setting.
-fn join_op(ctx: &Ctx, folder: &str) -> Result<Setup, String> {
-    let j = join(folder, &ctx.library_dir, &ctx.who, &ctx.clock, &ctx.version).map_err(|r| r.text())?;
+/// When the setting can't be saved, this PC's record is taken back and the
+/// join is refused: the shop never lists a PC that isn't in it.
+fn join_op(ctx: &Ctx, folder: &str, leave: bool) -> Result<Setup, String> {
+    let j = join(folder, &ctx.library_dir, &ctx.who, &ctx.clock, &ctx.version, leave).map_err(|r| r.text())?;
     if !j.already {
-        use_library_folder(&ctx.pc_dir, &ctx.cfg, &j.folder).map_err(|e| {
-            format!("Not joined: the checks passed and {} is in shop {}'s PCs list, but {e}. This PC's Library is still {}. Try again.\n{}", ctx.who.pc, j.shop.name, ctx.library_dir.display(), check_lines(&j.checks))
-        })?;
+        if let Err(e) = use_library_folder(&ctx.pc_dir, &ctx.cfg, &j.folder) {
+            let back = match undo(&j, &ctx.who) {
+                Ok(()) => format!("{} was taken off its PCs list again", ctx.who.pc),
+                Err(u) => format!("{} couldn't be taken off its PCs list again ({u}): remove it on Settings → Shop's PCs list", ctx.who.pc),
+            };
+            return Err(format!("Not joined shop {}: {e}. This PC's Library is still {}, and {back}. Check this PC's settings folder and try again.\n{}", j.shop.name, ctx.library_dir.display(), check_lines(&j.checks)));
+        }
     }
     let s = &j.shop;
     let data = json!({
@@ -457,10 +463,11 @@ fn join_op(ctx: &Ctx, folder: &str) -> Result<Setup, String> {
         "this_pc_version": ctx.version,
         "update": j.update,
         "this_pc_recorded": j.unrecorded.is_none(),
+        "this_pc_not_recorded": j.unrecorded,
         "checks": j.checks.iter().map(Check::to_json).collect::<Vec<_>>(),
     });
     let outcome = Outcome { message: format!("{}\n{}", j.summary(), check_lines(&j.checks)), data, changed: true, files: vec![ctx.pc_dir.join(crate::settings::FILE_NAME)] };
-    Ok(Setup { outcome, library: Some(j.folder) })
+    Ok(Setup { outcome, library: (!j.already).then_some(j.folder) })
 }
 
 /// `setup start= name=` (SH1).
@@ -533,6 +540,11 @@ pub fn check_lines(checks: &[Check]) -> String {
 pub struct Refused {
     pub why: String,
     pub checks: Vec<Check>,
+    /// SH14: this PC is in another shop (its name and folder; no name when
+    /// its folder can't be reached, so which shop it is in can't be told),
+    /// and leaving it wasn't asked for: all that stopped the join. The window
+    /// asks the person; agents give leave=true.
+    pub leaving: Option<(Option<String>, std::path::PathBuf)>,
 }
 
 impl Refused {
@@ -557,61 +569,99 @@ pub struct Joined {
     pub update: Option<String>,
     /// This PC's Library was already that folder (SH14).
     pub already: bool,
-    /// The shop this PC was in before, and its folder, when it was another
-    /// one (SH14).
-    pub left: Option<(String, std::path::PathBuf)>,
-    /// Why this PC couldn't be added to the PCs list, when it couldn't.
+    /// The shop this PC left, and its folder, when it was in another one, or
+    /// its Library folder that couldn't be reached (no name) (SH14).
+    pub left: Option<(Option<String>, std::path::PathBuf)>,
+    /// Why this PC couldn't be added to the PCs list, when it couldn't: the
+    /// shop is joined all the same, and Add this PC tries again (SH4).
     pub unrecorded: Option<String>,
+    /// This PC's record in the PCs list before joining (None: it had none),
+    /// put back by `undo` when this PC's settings can't be saved (SH10).
+    pub record_before: Option<Vec<u8>>,
 }
 
 /// The shop version in a shop file (rolled out by the admin PC, ADR 0006;
-/// what the version guard judges files by, UP8):
-/// None while the shop has none yet.
+/// what the version guard judges files by, UP8): None while the shop has
+/// none yet.
 pub fn shop_version(s: &ShopFile) -> Option<&str> {
     s.shop_version()
 }
 
-/// SH12: this PC's version against the shop's, as a check; None when there
-/// is nothing to compare (the shop has no version yet, or either can't be
-/// read as a version). The second value is the update line for an older PC.
-fn version_check(shop: Option<&str>, mine: &str) -> Option<(Check, Option<String>)> {
-    let shop = shop?;
+/// SH12: this PC's version against the shop's, as a check, and the update
+/// line for an older PC. A shop with no version, or one that can't be
+/// compared, says so.
+fn version_check(shop: Option<&str>, mine: &str) -> (Check, Option<String>) {
+    let Some(shop) = shop else {
+        return (Check::new("version", Mark::Note, format!("The shop has no shop version yet, so no version was compared (this PC runs {mine}).")), None);
+    };
     // UP6: the version guard's order (a missing part is 0).
-    Some(match crate::shared::version_order(mine, shop)? {
-        std::cmp::Ordering::Equal => (Check::new("version", Mark::Ok, format!("This PC runs the shop version, {mine}.")), None),
-        std::cmp::Ordering::Less => {
+    match crate::shared::version_order(mine, shop) {
+        None => (Check::new("version", Mark::Note, format!("The shop version {shop} and this PC's {mine} can't be compared, so no version was compared.")), None),
+        Some(std::cmp::Ordering::Equal) => (Check::new("version", Mark::Ok, format!("This PC runs the shop version, {mine}.")), None),
+        Some(std::cmp::Ordering::Less) => {
             let update = format!("Update this PC: the shop is on {shop}.");
             (Check::new("version", Mark::Note, format!("This PC runs {mine}, older than the shop version {shop}. It may join. {update}")), Some(update))
         }
-        std::cmp::Ordering::Greater => (Check::new("version", Mark::Note, format!("This PC runs {mine}, newer than the shop version {shop}. The admin PC decides which version the shop runs.")), None),
-    })
+        Some(std::cmp::Ordering::Greater) => (Check::new("version", Mark::Note, format!("This PC runs {mine}, newer than the shop version {shop}. The admin PC decides which version the shop runs.")), None),
+    }
 }
 
-/// SH10, SH11: join the shop in the folder `typed` (as typed or picked),
-/// as `who`, whose Library is `current` now. The folder is tidied and named
-/// on its share (SH13), then checked, in order, stopping at the first that
-/// fails: it can be reached; it holds a Library; it holds a shop file; this
-/// PC can take the Library's write lock there; and, under that lock, it can
-/// write and remove a file there (a probe, written only into the folder that
-/// is there). Nothing is made in a folder that fails a check (the lock file
-/// and the probe are gone again). Then this PC's version is compared with the
-/// shop's (SH12) and, still under the lock, this PC adds itself to the PCs
-/// list (SH4). Changing this PC's Library setting is the caller's: the window
-/// and `setup` do it.
-pub fn join(typed: &str, current: &Path, who: &Who, clock: &Clock, version: &str) -> Result<Joined, Refused> {
+/// The check file joining writes and removes in `folder` (SH11).
+fn probe_name() -> String {
+    format!("join-check-{}.tmp", crate::shared::writer_tag())
+}
+
+/// What a refused join left in `folder`: the check file `name` and its
+/// temporary copies, when they couldn't be removed.
+fn left_in(folder: &Path, name: &str) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(folder).map_or_else(|_| vec![], |d| d.flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(name))).collect())
+}
+
+/// SH11: write a check file in `folder` as the shop's files are written
+/// (only into a folder that is there) and remove it again. Err: why, and
+/// what was left there.
+fn probe(folder: &Path, lock: &WriteLock) -> Result<(), (String, Vec<std::path::PathBuf>)> {
+    let name = probe_name();
+    let f = folder.join(&name);
+    if let Err(e) = crate::shared::write_existing(&f, b"nestpro: this PC checked it can write here, and removed this file again.\n", lock) {
+        return Err((format!("This PC can't write in {} ({e}). Check that this PC's user may change files there: the shop's group needs Modify rights.", folder.display()), left_in(folder, &name)));
+    }
+    crate::shared::pause("join check file written");
+    if let Err(e) = std::fs::remove_file(&f) {
+        return Err((format!("This PC can make files in {} but can't remove them ({e}). The shop's group needs Modify rights, not only Write.", folder.display()), left_in(folder, &name)));
+    }
+    Ok(())
+}
+
+/// SH10, SH11, SH14: join the shop in the folder `typed` (as typed or
+/// picked), as `who`, whose Library is `current` now. The folder is tidied,
+/// made a full path and named on its share (SH13), then checked, in order,
+/// stopping at the first that fails: it can be reached; it holds a Library;
+/// it holds a shop file; this PC isn't in another shop, or `leave` says to
+/// leave it; this PC can take the Library's write lock there; and, under
+/// that lock, the shop file is read again (another PC may have changed it
+/// meanwhile), this PC can write and remove a check file in the shop folder
+/// and in its `Shop` folder, where its record goes, and the lock still
+/// holds. Then this PC's version is compared with the shop's (SH12) and,
+/// still under the lock, this PC adds itself to the PCs list (SH4). A
+/// refusal makes nothing in the folder, or names exactly what it couldn't
+/// remove again. Changing this PC's Library setting is the caller's: the
+/// window and `setup` do it, and `undo` takes the record back when they
+/// can't.
+pub fn join(typed: &str, current: &Path, who: &Who, clock: &Clock, version: &str, leave: bool) -> Result<Joined, Refused> {
     let mut checks = vec![];
     let tidy = shop::tidy_folder(typed, cfg!(windows));
     if tidy.is_empty() {
-        return Err(Refused { why: "Give the shop folder to join (join=\\\\srv\\Nesting). Nothing was changed.".into(), checks });
+        return Err(Refused { why: "Give the shop folder to join (join=\\\\srv\\Nesting). Nothing was changed.".into(), checks, leaving: None });
     }
-    let (full, renamed) = shop::full_folder(&tidy);
+    let (full, renamed) = shop::full_folder(&shop::absolute_folder(&tidy));
     if let Some(note) = renamed {
         checks.push(Check::new("folder", Mark::Note, note));
     }
     let dir = std::path::PathBuf::from(&full);
     let refuse = |checks: &mut Vec<Check>, what: &'static str, why: String| -> Result<Joined, Refused> {
         checks.push(Check::new(what, Mark::No, why.clone()));
-        Err(Refused { why: format!("Not joined: {why} Nothing was changed, and nothing was made in {}.", dir.display()), checks: std::mem::take(checks) })
+        Err(Refused { why: format!("Not joined: {why} Nothing was changed, and nothing was made in {}.", dir.display()), checks: std::mem::take(checks), leaving: None })
     };
     // SH11, SH8: a folder that isn't there is said so, never made.
     if !dir.is_dir() {
@@ -622,44 +672,113 @@ pub fn join(typed: &str, current: &Path, who: &Who, clock: &Clock, version: &str
         return refuse(&mut checks, "library", format!("{} holds no Library, so it isn't a shop folder. Pick the folder the shop was started in.", dir.display()));
     }
     checks.push(Check::new("library", Mark::Ok, "It holds a Library."));
-    let s = match shop::read(&dir) {
+    let named = match shop::read(&dir) {
         Err(e) => return refuse(&mut checks, "shop", e),
         Ok(None) => return refuse(&mut checks, "shop", format!("{} holds a Library but no shop. Start the shop there first, on the PC that should be its admin PC (Settings → Shop → Start a shop here, or `nestpro setup --start`).", dir.display())),
         Ok(Some(s)) => s,
     };
-    checks.push(Check::new("shop", Mark::Ok, format!("It is the folder of shop {} (admin PC {}).", s.name, s.admin.pc)));
+    checks.push(Check::new("shop", Mark::Ok, format!("It is the folder of shop {} (admin PC {}).", named.name, named.admin.pc)));
+    // SH14: leaving another shop is asked for, before anything is written.
+    let already = shop::same_folder(current, &dir);
+    // A Library folder that can't be reached (or whose shop file can't be
+    // read) can't tell whether this PC is in a shop: asked as for leaving
+    // one. Only this PC's own default place, never made, is no shop at all.
+    let never_made = !current.is_dir() && shop::same_folder(current, &crate::library::default_dir());
+    let left = match (already || never_made, shop::read(current)) {
+        (true, _) | (false, Ok(None)) => None,
+        (false, Ok(Some(o))) => Some((Some(o.name), current.to_path_buf())),
+        (false, Err(_)) => Some((None, current.to_path_buf())),
+    };
+    if let (Some((name, from)), false) = (&left, leave) {
+        let how = format!("give leave=true (`nestpro setup --join {} --leave`), or confirm in the window.", dir.display());
+        let why = match name {
+            Some(name) => format!("This PC is in shop {name} ({}). Joining {} leaves it: {how}", from.display(), named.name),
+            None => format!("This PC's Library folder {} can't be reached, so whether it is in another shop can't be told. To join {} instead: {how}", from.display(), named.name),
+        };
+        checks.push(Check::new("leave", Mark::No, why.clone()));
+        return Err(Refused { why: format!("Not joined: {why} Nothing was changed."), checks, leaving: left.clone() });
+    }
     let lock = match WriteLock::take(&dir) {
         Ok(l) => l,
         Err(e) => return refuse(&mut checks, "lock", format!("This PC can't take the Library's write lock there ({e}). Check that this PC's user may change files there: the shop's group needs Modify rights.")),
     };
     crate::shared::pause("join locked");
-    // A probe file, written as the shop's files are (only into the folder
-    // that is there) and removed again: this PC can make, replace and remove
-    // files there.
-    let probe = dir.join(format!("join-check-{}.tmp", crate::shared::writer_tag()));
-    let wrote = crate::shared::write_existing(&probe, b"nestpro: this PC checked it can write here, and removed this file again.\n", &lock);
-    let removed = if wrote.is_ok() { std::fs::remove_file(&probe).map_err(|e| e.to_string()) } else { Ok(()) };
-    if let Err(e) = wrote {
-        return refuse(&mut checks, "write", format!("This PC can't write in {} ({e}). Check that this PC's user may change files there: the shop's group needs Modify rights.", dir.display()));
+    // From here a refusal lets go of the lock first, and names whatever it
+    // couldn't remove again (a share that lets a PC make files but not
+    // remove them).
+    let fail = |mut checks: Vec<Check>, what: &'static str, why: String, mut left: Vec<std::path::PathBuf>, lock: WriteLock| -> Result<Joined, Refused> {
+        checks.push(Check::new(what, Mark::No, why.clone()));
+        if let Err(f) = lock.release() {
+            left.push(f);
+        }
+        let after = if left.is_empty() {
+            format!("Nothing was changed, and nothing was made in {}.", dir.display())
+        } else {
+            let names: Vec<String> = left.iter().map(|p| p.display().to_string()).collect();
+            format!("Nothing was changed, but this PC couldn't remove what it made: {}. Remove {} by hand.", names.join(", "), if left.len() == 1 { "it" } else { "them" })
+        };
+        Err(Refused { why: format!("Not joined: {why} {after}"), checks, leaving: None })
+    };
+    // SH12: the shop as it is now, read under the lock.
+    let s = match shop::read(&dir) {
+        Ok(Some(s)) => s,
+        Ok(None) => return fail(checks, "shop", format!("{} is no shop any more (its shop file went while this PC was waiting for the lock).", dir.display()), vec![], lock),
+        Err(e) => return fail(checks, "shop", e, vec![], lock),
+    };
+    // SH11: this PC can make, change and remove files where the shop's files
+    // and its own record go.
+    let pcs = dir.join(shop::PCS);
+    for folder in [dir.as_path(), pcs.as_path()] {
+        if folder == pcs {
+            match std::fs::read_dir(&pcs) {
+                Ok(_) => {}
+                // Made again with this PC's record, as starting a shop made it.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(&pcs).is_err() => continue,
+                // Something that isn't a folder this PC can read (a file of
+                // that name, or a folder it may not list) fails the check.
+                Err(e) => return fail(checks, "write", format!("{} isn't a folder this PC can read ({e}). The shop's PCs list is kept there: it must be a folder the shop's group may change.", pcs.display()), vec![], lock),
+            }
+        }
+        if let Err((why, left)) = probe(folder, &lock) {
+            return fail(checks, "write", why, left, lock);
+        }
     }
-    if let Err(e) = removed {
-        // The one file a refused join can leave: said, naming it.
-        let why = format!("This PC can make files in {} but can't remove them ({e}). The shop's group needs Modify rights, not only Write.", dir.display());
-        checks.push(Check::new("write", Mark::No, why.clone()));
-        return Err(Refused { why: format!("Not joined: {why} Nothing was changed; remove the check file {} by hand.", probe.display()), checks });
-    }
-    checks.push(Check::new("write", Mark::Ok, "This PC can make, change and remove files there."));
+    checks.push(Check::new("write", Mark::Ok, "This PC can make, change and remove files there, and in its Shop folder."));
     if let Err(e) = lock.still_held() {
-        return refuse(&mut checks, "lock", format!("The Library's write lock didn't hold there ({e}). Try again; if it keeps failing, the share may not keep files as this program needs."));
+        return fail(checks, "lock", format!("The Library's write lock didn't hold there ({e}). Try again; if it keeps failing, the share may not keep files as this program needs."), vec![], lock);
     }
     checks.push(Check::new("lock", Mark::Ok, "The Library's write lock works there."));
-    let (vc, update) = version_check(shop_version(&s), version).map_or((None, None), |(c, u)| (Some(c), u));
-    checks.extend(vc);
+    let (vc, update) = version_check(shop_version(&s), version);
+    checks.push(vc);
+    let record_before = std::fs::read(shop::record_file(&dir, &who.pc)).ok();
     let unrecorded = write_record(&dir, who, clock.now(), version, &lock).err().map(|e| unrecorded(who, &e));
-    drop(lock);
-    let already = shop::same_folder(current, &dir);
-    let left = if already { None } else { shop::read(current).ok().flatten().map(|o| (o.name, current.to_path_buf())) };
-    Ok(Joined { shop: s, folder: dir, checks, update, already, left, unrecorded })
+    if let Some(e) = &unrecorded {
+        // SH9 (SH4): the shop is joined all the same; Add this PC retries.
+        checks.push(Check::new("pc", Mark::Note, e.clone()));
+    }
+    if let Err(f) = lock.release() {
+        checks.push(Check::new("lock", Mark::Note, format!("The Library's write lock file {} couldn't be removed: other PCs wait for it until it is old. Remove it by hand.", f.display())));
+    }
+    let left = if leave { left } else { None };
+    Ok(Joined { shop: s, folder: dir, checks, update, already, left, unrecorded, record_before })
+}
+
+/// SH10: take back what joining wrote when this PC's settings couldn't be
+/// saved: its record in the PCs list goes back to what it was (or away, when
+/// it had none), under the write lock. Err: why it couldn't.
+pub fn undo(j: &Joined, who: &Who) -> Result<(), String> {
+    if j.unrecorded.is_some() {
+        return Ok(());
+    }
+    let lock = WriteLock::take(&j.folder)?;
+    let f = shop::record_file(&j.folder, &who.pc);
+    match &j.record_before {
+        Some(bytes) => crate::shared::write_existing(&f, bytes, &lock),
+        None => match std::fs::remove_file(&f) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{} can't be removed ({e})", f.display())),
+            _ => Ok(()),
+        },
+    }
 }
 
 impl Joined {
@@ -671,8 +790,10 @@ impl Joined {
         } else {
             format!("Joined shop {} in {} (admin PC {}). This PC's Library is now that folder; its own Library is left as it was, and its materials join the shop's list.", s.name, self.folder.display(), s.admin.pc)
         };
-        if let Some((name, dir)) = &self.left {
-            msg.push_str(&format!(" It left shop {name} ({}); join it again with `nestpro setup --join {}`.", dir.display(), dir.display()));
+        match &self.left {
+            Some((Some(name), dir)) => msg.push_str(&format!(" It left shop {name} ({}); join it again with `nestpro setup --join {} --leave`.", dir.display(), dir.display())),
+            Some((None, dir)) => msg.push_str(&format!(" Its Library was {}, which couldn't be reached; to go back to it once it can be, choose it in Settings → Folders (or, if it is a shop, `nestpro setup --join {} --leave`).", dir.display(), dir.display())),
+            None => {}
         }
         if let Some(u) = &self.update {
             msg.push_str(&format!(" {u}"));
@@ -684,12 +805,18 @@ impl Joined {
     }
 }
 
+/// SH10: this PC's settings with its Library at `folder`: the job that was
+/// active is the old Library's, so none is (S6). Only the Library folder
+/// and the active job change.
+pub fn joined_settings(cfg: &crate::settings::AppSettings, folder: &Path) -> crate::settings::AppSettings {
+    crate::settings::AppSettings { library_dir: folder.display().to_string(), active_job: String::new(), setup_pending: false, ..cfg.clone() }
+}
+
 /// SH10: this PC's Library folder setting becomes `folder`, in the settings
 /// file of its settings folder `pc_dir` (read again first, so nothing else
 /// in it changes). A PC with no settings file yet starts from `cfg`.
 pub fn use_library_folder(pc_dir: &Path, cfg: &crate::settings::AppSettings, folder: &Path) -> Result<(), String> {
     let f = pc_dir.join(crate::settings::FILE_NAME);
-    let mut s = crate::settings::AppSettings::read_from(&f).unwrap_or_else(|| cfg.clone());
-    s.library_dir = folder.display().to_string();
+    let s = joined_settings(&crate::settings::AppSettings::read_from(&f).unwrap_or_else(|| cfg.clone()), folder);
     s.save_to(&f).map_err(|e| format!("this PC's settings ({}) can't be saved ({e})", f.display()))
 }

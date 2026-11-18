@@ -66,9 +66,13 @@ The first time the program opens on a PC with no settings, it asks where that PC
   Each check is shown; a refusal says what to fix, and nothing is made in the folder.
 - **Just this PC** — a Library on this PC only, as before. It can join a shop later.
 
+Until one of the three is done, nothing is saved: close the program first and the screen comes
+back next time.
+
 A PC that already has a Library set skips this screen: use **Settings → Shop** (Start a shop here,
 or Join a shop…). Joining leaves the PC's own Library as it was on disk; its materials join the
-shop's material list.
+shop's material list. A PC that is already in another shop is asked first, naming the shop it
+leaves.
 
 To set up several PCs from a script:
 
@@ -76,8 +80,9 @@ To set up several PCs from a script:
 nestpro setup --join \\srv\Nesting --text
 ```
 
-It prints each check, one per line, and exits with a non-zero code when it refuses. The admin PC
-can start the shop the same way: `nestpro setup --start \\srv\Nesting --name Acme`.
+It prints each check, one per line, and exits with a non-zero code when it refuses. A PC already
+in another shop is refused unless you add `--leave`. The admin PC can start the shop the same way:
+`nestpro setup --start \\srv\Nesting --name Acme`.
 
 `nestpro shop --text` (or Settings → Shop) lists the shop's PCs, who used each last, its version
 and when it was last seen.

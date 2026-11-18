@@ -648,6 +648,18 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
     Some(Lease { file: file.to_path_buf(), token, since, wall, played0, hold_for })
 }
 
+impl WriteLock {
+    /// Let go of the lock and look that its file is gone (SH11): Err names
+    /// the lock file this writer made but couldn't remove (a share that lets
+    /// a PC make files but not remove them), so a refusal can say so.
+    pub fn release(self) -> Result<(), PathBuf> {
+        let (file, token) = (self.0.file.clone(), self.0.token.clone());
+        drop(self);
+        let still = std::fs::read(&file).ok().and_then(|t| serde_json::from_slice::<Holder>(&t).ok()).is_some_and(|h| h.token == token);
+        if still { Err(file) } else { Ok(()) }
+    }
+}
+
 impl Drop for WriteLock {
     fn drop(&mut self) {
         let last = HELD.with(|h| {
