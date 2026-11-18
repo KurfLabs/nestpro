@@ -752,7 +752,7 @@ impl Joined {
         };
         match &self.left {
             Some((Some(name), dir)) => msg.push_str(&format!(" It left shop {name} ({}); join it again with `nestpro setup --join {} --leave`.", dir.display(), dir.display())),
-            Some((None, dir)) => msg.push_str(&format!(" Its Library was {}, which couldn't be reached; point it back there with `nestpro setup --join {} --leave` once it can be.", dir.display(), dir.display())),
+            Some((None, dir)) => msg.push_str(&format!(" Its Library was {}, which couldn't be reached; to go back to it once it can be, choose it in Settings → Folders (or, if it is a shop, `nestpro setup --join {} --leave`).", dir.display(), dir.display())),
             None => {}
         }
         if let Some(u) = &self.update {
