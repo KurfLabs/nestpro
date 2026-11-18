@@ -777,6 +777,16 @@ pub fn recorded_version(bytes: &[u8]) -> Option<String> {
     }
 }
 
+/// UP5: a file's `program_version` as read into a struct: a version that
+/// isn't text (a number) is kept as written, so it is never taken for none.
+pub fn version_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(v) => Some(v.to_string()),
+    })
+}
+
 /// UP5: `value` as a Library file's text, recording `version` as the
 /// program that wrote it, first, before the file's own fields.
 pub fn stamped<T: Serialize>(value: &T, version: &str) -> Result<String, String> {

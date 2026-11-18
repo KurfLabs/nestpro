@@ -405,6 +405,24 @@ impl Library {
         crate::shop::versions(&self.dir, &self.version)
     }
 
+    /// UP7: may this program store record `id` of `kind` (None: a new
+    /// record) and its line in the list? Not when a newer version wrote the
+    /// record or the list last. The record is read here: only one that isn't
+    /// there counts as missing; one that can't be read just now is refused,
+    /// as it can't be told older. Called under the write lock, before
+    /// anything is booked, stored or deleted.
+    pub fn may_store(&self, kind: Kind, id: Option<u64>) -> Result<(), String> {
+        let record = match id {
+            None => None,
+            Some(id) => match std::fs::read(self.path(kind, id)) {
+                Ok(b) => Some(b),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("{} can't be read before saving over it ({e}). Nothing was saved.", record_words(kind, id))),
+            },
+        };
+        self.may_write_record(kind, id, record.as_deref())
+    }
+
     /// UP7: a save over record `id` (and the list's line for it) is refused
     /// when a newer version wrote the record or the list last. Read under
     /// the write lock, before anything is booked or written.
@@ -412,8 +430,7 @@ impl Library {
         let v = self.versions();
         if let (Some(id), Some(b)) = (id, record) {
             if let Some(n) = v.newer(shared::recorded_version(b).as_deref()) {
-                let what = if kind == Kind::Job { "Library job" } else { "Library part" };
-                return Err(n.refusal(&format!("{what} {}", auto_ref(kind, id))));
+                return Err(n.refusal(&record_words(kind, id)));
             }
         }
         shared::may_write_over(&self.dir.join(INDEX), &v, LIST)
@@ -892,9 +909,9 @@ impl Library {
                 None => format!("{} It can't be deleted while it's in use: try again when it's closed. Nothing was deleted.", u.said(&self.clock)),
             })?;
         }
-        // UP7: not a record, or the list, a newer version wrote.
-        let record = std::fs::read(self.path(kind, id)).ok();
-        self.may_write_record(kind, Some(id), record.as_deref()).map_err(|e| e.replace("Nothing was saved.", "Nothing was deleted."))?;
+        // UP7: not a record, or the list, a newer version wrote; nor one
+        // that can't be read just now.
+        self.may_store(kind, Some(id)).map_err(|e| e.replace("Nothing was saved.", "Nothing was deleted."))?;
         lock.still_held()?;
         let _ = std::fs::write(self.deleted_mark(kind, id), b"");
         let _ = std::fs::remove_file(self.path(kind, id));
@@ -924,6 +941,12 @@ impl Library {
         }
         Ok(rec)
     }
+}
+
+/// "Library job JOB000007", "Library part SHP000003", as a refusal names it.
+fn record_words(kind: Kind, id: u64) -> String {
+    let what = if kind == Kind::Job { "Library job" } else { "Library part" };
+    format!("{what} {}", auto_ref(kind, id))
 }
 
 /// Record files read: (kind, number) → (stamp, line in the list).
@@ -1089,7 +1112,7 @@ mod library_tests {
         assert_eq!((p1, p2), (1, 2));
         assert_eq!(lib.path(Kind::Product, 1234), dir.join("Products").join("1").join("1234.json"));
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
-        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
+        let job = JobFile { program_version: None, format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
         let j = lib.save_job(&job, SaveTo::New).unwrap().id;
         // Saving again over the same number keeps one record.
         lib.save_job(&job, SaveTo::Over(j)).unwrap();

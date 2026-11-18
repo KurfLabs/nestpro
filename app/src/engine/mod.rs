@@ -1740,7 +1740,7 @@ pub fn drop_empty_sheets(sheets: &mut Vec<Vec<Placed>>, formats: &mut Vec<SheetF
 
 impl JobFile {
     pub fn new_job(name: &str, spec: SheetSpec) -> JobFile {
-        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() }
+        JobFile { program_version: None, format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() }
     }
 
     pub fn plans(&self) -> Vec<SheetPlan> {

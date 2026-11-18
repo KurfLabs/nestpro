@@ -23,6 +23,13 @@ pub const EXT: &str = "snjob";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JobFile {
+    /// The program version that last wrote the file (UP5), first in it.
+    /// None for a job saved before versions were recorded, which counts as
+    /// old. Every save records the saving program's own (`to_text_on`). A
+    /// program older than it opens the job read-only and never saves over
+    /// it (UP7, UP9).
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::shared::version_field")]
+    pub program_version: Option<String>,
     pub format: String,
     pub version: u32,
     pub name: String,
@@ -97,33 +104,62 @@ pub fn to_text_on(job: &JobFile, version: &str) -> Result<String, String> {
     let name = crate::engine::material::stored_name(job.spec.material, &job.material_name);
     // MA31: an unresolved material is saved with the file's own number.
     let id = crate::engine::material::file_id(job.spec.material);
-    if job.version == v && job.material_name == name && id == job.spec.material {
-        return crate::shared::stamped(job, version);
+    let stamp = Some(version.to_string());
+    if job.version == v && job.material_name == name && id == job.spec.material && job.program_version == stamp {
+        return serde_json::to_string_pretty(job).map_err(|e| e.to_string());
     }
-    let mut out = JobFile { version: v, material_name: name, ..job.clone() };
+    let mut out = JobFile { version: v, material_name: name, program_version: stamp, ..job.clone() };
     out.spec.material = id;
-    crate::shared::stamped(&out, version)
+    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
 }
 
-/// Save a job file by this program, outside a shop.
+/// Save a job file by this program, outside a shop and any Library.
 pub fn save(path: &std::path::Path, job: &JobFile) -> Result<(), String> {
-    save_on(path, job, &crate::shared::Versions::this(crate::updates::VERSION))
+    save_under(path, job, &crate::shared::Versions::this(crate::updates::VERSION), None)
+}
+
+/// The write lock a job save holds from its version check through the
+/// write (UP7): the Library's, while its folder `library_dir` can be used,
+/// so a PC on a newer version can't save in between (a job file in the
+/// Library, or anywhere the PCs sharing it save jobs). None while it can't
+/// be reached: a job file elsewhere is still saved then.
+pub fn save_lock(library_dir: &std::path::Path) -> Result<Option<crate::shared::WriteLock>, String> {
+    if crate::library::usable(library_dir).is_err() {
+        return Ok(None);
+    }
+    crate::shared::WriteLock::take(library_dir).map(Some)
 }
 
 /// Save a job file by a program on `versions.this`, which the file records
-/// (UP5). Refused, saying to update this PC, when the file there was last
-/// written by a newer version (UP7, UP8).
-pub fn save_on(path: &std::path::Path, job: &JobFile, versions: &crate::shared::Versions) -> Result<(), String> {
-    crate::shared::may_write_over(path, versions, &what(path))?;
+/// (UP5), under the write lock of the Library in `library_dir` (`save_lock`).
+/// Refused, saying to update this PC, when the file there was last written
+/// by a newer version (UP7, UP8).
+pub fn save_on(path: &std::path::Path, job: &JobFile, versions: &crate::shared::Versions, library_dir: &std::path::Path) -> Result<(), String> {
+    let lock = save_lock(library_dir)?;
+    save_under(path, job, versions, lock.as_ref())
+}
+
+/// UP7: may a program on `versions` save a job over `path`? Not when a newer
+/// version wrote the file there. Checked under the save's write lock
+/// before anything else the save does (stock, Library records, undo copy).
+pub fn may_save(path: &std::path::Path, versions: &crate::shared::Versions) -> Result<(), String> {
+    crate::shared::may_write_over(path, versions, &what(path))
+}
+
+/// `save_on` while `lock` (the save's write lock, `save_lock`) is held: the
+/// version check and the write under one hold of it.
+pub fn save_under(path: &std::path::Path, job: &JobFile, versions: &crate::shared::Versions, lock: Option<&crate::shared::WriteLock>) -> Result<(), String> {
+    may_save(path, versions)?;
     let text = to_text_on(job, &versions.this)?;
     // Write next to it, then rename, so a crash never leaves half a file
     // (as Expert rewrites LANTEKIN.CNI through a temporary file, LK3); the
-    // temporary file is this writer's own (LB3).
-    crate::shared::write_file(path, text.as_bytes(), None)
+    // temporary file is this writer's own (LB3), and with the lock, only
+    // while it is still this writer's (LB2).
+    crate::shared::write_file(path, text.as_bytes(), lock)
 }
 
 /// "The job file DEMO-001.snjob", as a refusal names it.
-fn what(path: &std::path::Path) -> String {
+pub fn what(path: &std::path::Path) -> String {
     format!("The job file {}", path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned()))
 }
 
@@ -133,13 +169,15 @@ pub fn load(path: &std::path::Path) -> Result<JobFile, String> {
     load_versioned(path).map(|(j, _)| j)
 }
 
-/// A job file and the program version that last wrote it (UP5: None for a
-/// job saved before versions were recorded). A program older than that
-/// version opens the job read-only and never saves over it (UP7, UP9).
+/// A job file and the program version that last wrote it, from the same
+/// read (UP5: None for a job saved before versions were recorded). A
+/// program older than that version opens the job read-only and never saves
+/// over it (UP7, UP9).
 pub fn load_versioned(path: &std::path::Path) -> Result<(JobFile, Option<String>), String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let j = from_bytes(&bytes)?;
-    Ok((j, crate::shared::recorded_version(&bytes)))
+    let written = j.program_version.clone();
+    Ok((j, written))
 }
 
 fn from_bytes(bytes: &[u8]) -> Result<JobFile, String> {
@@ -181,7 +219,7 @@ mod jobfile_tests {
         // The sheet is an L-shaped remnant from stock.
         let outline = crate::stock::Outline { outer: vec![[0.0, 0.0], [2000.0, 0.0], [2000.0, 1000.0], [800.0, 1000.0], [800.0, 400.0], [0.0, 400.0]], holes: vec![] };
         let formats = vec![crate::nest::SheetFormat { w: 2000.0, h: 1000.0, outline: Some(outline), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 }];
-        let j = JobFile { format: FORMAT.into(), version: VERSION, name: "Frames".into(), week: "W12".into(), parts, spec, sheets, formats, held: Default::default(), cut_lines: cuts, method: "Modules".into(), manual_cuts: vec![vec![crate::cnc::ManualCut { placed: 0, contour: 0, start: [5.0, 5.0], reverse: true, whole: None }]], stale: true, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
+        let j = JobFile { program_version: None, format: FORMAT.into(), version: VERSION, name: "Frames".into(), week: "W12".into(), parts, spec, sheets, formats, held: Default::default(), cut_lines: cuts, method: "Modules".into(), manual_cuts: vec![vec![crate::cnc::ManualCut { placed: 0, contour: 0, start: [5.0, 5.0], reverse: true, whole: None }]], stale: true, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
         let path = std::env::temp_dir().join("nestpro_test_job.snjob");
         save(&path, &j).unwrap();
         let k = load(&path).unwrap();
@@ -215,7 +253,7 @@ mod jobfile_tests {
         let part = Part { name: "P".into(), shape: Shape::Rectangle, w: 100.0, h: 40.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let quarter = Placed { x: 10.0, y: 10.0, ..crate::nest::oriented(&part, 0, 90.0, false) };
-        let mut j = JobFile { format: FORMAT.into(), version: VERSION, name: "DEMO-001".into(), week: String::new(), parts: vec![part.clone()], spec, sheets: vec![vec![quarter]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
+        let mut j = JobFile { program_version: None, format: FORMAT.into(), version: VERSION, name: "DEMO-001".into(), week: String::new(), parts: vec![part.clone()], spec, sheets: vec![vec![quarter]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
         let version = |j: &JobFile| serde_json::from_str::<serde_json::Value>(&to_text(j).unwrap()).unwrap()["version"].as_u64();
         assert_eq!(version(&j), Some(1));
         j.sheets[0].push(Placed { x: 300.0, y: 10.0, ..crate::nest::oriented(&part, 0, 30.0, false) });

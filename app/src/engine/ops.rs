@@ -1344,7 +1344,16 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             return Err(format!("These job files exist already: {} — use force=true to overwrite, or another dir.", there.join(", ")));
         }
     }
+    // UP7: none is written when one of them is a newer version's.
+    let versions = ctx.versions();
+    for f in &files {
+        jobfile::may_save(f, &versions)?;
+    }
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
+    let lock = jobfile::save_lock(&ctx.library_dir)?;
+    for f in &files {
+        jobfile::may_save(f, &versions)?;
+    }
     let mut notes = im.notes.clone();
     let mut jobs = vec![];
     for (xj, f) in im.jobs.into_iter().zip(&files) {
@@ -1362,7 +1371,7 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         j.stale = !xj.parts.is_empty();
         jobs.push(json!({"job": f.display().to_string(), "name": xj.name, "material": super::material::name_or(j.spec.material, "?"), "thickness": j.spec.thickness, "parts": xj.parts.iter().map(|p| json!({"name": p.name, "qty": p.qty})).collect::<Vec<_>>()}));
         j.parts = xj.parts;
-        jobfile::save(f, &j)?;
+        jobfile::save_under(f, &j, &versions, lock.as_ref())?;
     }
     let mut o = Outcome::read(
         format!("XML import {}: {} of {} product(s) into {} job file(s). Set the sheet of each, then nest.{}", path.display(), im.added, im.products, files.len(), if notes.is_empty() { String::new() } else { format!(" — {}", notes.join("; ")) }),
@@ -1510,6 +1519,40 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
         ..Default::default()
     };
     crate::formats::read_file_with(path, fmt, &ctx.cfg, opts)
+}
+
+/// UP7: a picture or drawing is never written over a job file or one of
+/// the Library's own files (its jobs, parts, list, stock, material list,
+/// shop file and PCs' records, this PC's own material list), nor over any
+/// file a version of this program records it wrote. `out` is judged where
+/// it really is (a relative path, `..` or a link to one of them counts).
+pub(super) fn refuse_protected(ctx: &Ctx, out: &Path) -> Result<(), String> {
+    let refused = || Err(format!("{} is a job file or one of the Library's own files: pictures and drawings are never written over those. Pick another out. Nothing was written.", out.display()));
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let at = real(out).or_else(|| Some(real(out.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")))?.join(out.file_name()?))).unwrap_or_else(|| out.to_path_buf());
+    if at.extension().is_some_and(|e| e.eq_ignore_ascii_case(jobfile::EXT)) {
+        return refused();
+    }
+    if std::fs::read(&at).is_ok_and(|b| crate::shared::recorded_version(&b).is_some()) {
+        return refused();
+    }
+    if let Some(lib) = real(&ctx.library_dir) {
+        if let Ok(rel) = at.strip_prefix(&lib) {
+            let first = rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
+            let json = rel.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
+            // The list, the shop file and the folder trees sit at the top.
+            let own = (rel.components().count() == 1 && json)
+                || ["Jobs", "Products", crate::shop::PCS].contains(&first.as_str())
+                || (first == crate::stock::FOLDER && json);
+            if own {
+                return refused();
+            }
+        }
+    }
+    if real(&ctx.pc_dir).is_some_and(|d| at == d.join(crate::materials::FILE)) {
+        return refused();
+    }
+    Ok(())
 }
 
 /// The Library, as the agent's user (LB5).
@@ -2082,6 +2125,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let g = p.geometry();
             let marks = p.custom.as_ref().map_or(vec![], |c| c.marks.clone());
             let out = PathBuf::from(a.need_str("out")?);
+            refuse_protected(ctx, &out)?;
             if let Some(d) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
                 std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
             }
@@ -2246,6 +2290,13 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             c.id
                         )
                     };
+                    // UP7: every part, and the list, checked under one hold of
+                    // the write lock before the first is saved: none is saved
+                    // when one is a newer version's.
+                    let _lock = lib.lock()?;
+                    for &to in &to {
+                        lib.may_store(crate::library::Kind::Product, to.id())?;
+                    }
                     for (&i, &to) in t.iter().zip(&to) {
                         if let Err(c) = lib.check(crate::library::Kind::Product, to) {
                             return Err(refused(c, matches!(to, SaveTo::Read(_)), i));
@@ -2626,6 +2677,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             Some(rows.iter().zip(refs).map(|(row, r)| ((row.sheet, row.piece), r)).collect())
                         }
                     };
+                    // UP7: not into a stock a newer version changed: refused
+                    // before the job is marked booked or saved.
+                    {
+                        let _lock = ctx.library_at().lock()?;
+                        crate::shared::may_write_over(&file, &ctx.versions(), "The sheet stock")?;
+                    }
                     let note = job.book_stock_named(ctx, true, names.as_ref());
                     // Its sheets couldn't be taken (another PC took one, SV10):
                     // said so, not "Booked".

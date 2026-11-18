@@ -295,6 +295,7 @@ impl App {
     pub(crate) fn current_jobfile(&mut self) -> crate::jobfile::JobFile {
         self.store_job();
         crate::jobfile::JobFile {
+            program_version: None,
             format: crate::jobfile::FORMAT.into(),
             version: crate::jobfile::VERSION,
             name: self.job_name.clone(),
@@ -718,7 +719,7 @@ impl App {
             }
         };
         let known: Vec<String> = lib.entries().iter().filter(|e| e.kind == Kind::Product).map(|e| e.name.clone()).collect();
-        let (mut added, mut skipped, mut last) = (0, 0, None);
+        let (mut added, mut skipped, mut last, mut refused) = (0, 0, None, None);
         for p in &self.parts {
             // A reference already stored is the same product (as in Lantek,
             // PK1): keep the stored one, where it is.
@@ -726,16 +727,26 @@ impl App {
                 skipped += 1;
                 continue;
             }
-            if let Ok(rec) = lib.save_product_in(p, &folder, (self.spec.material, &crate::engine::material::read_name(self.spec.material, &self.job_material_names)), self.spec.thickness, SaveTo::New, &to) {
-                // The job's part is that library part now, as saved (LB7).
-                self.lib_read.parts.insert(p.name.clone(), rec);
-                added += 1;
-                last = Some(rec.id);
+            match lib.save_product_in(p, &folder, (self.spec.material, &crate::engine::material::read_name(self.spec.material, &self.job_material_names)), self.spec.thickness, SaveTo::New, &to) {
+                Ok(rec) => {
+                    // The job's part is that library part now, as saved (LB7).
+                    self.lib_read.parts.insert(p.name.clone(), rec);
+                    added += 1;
+                    last = Some(rec.id);
+                }
+                // Why one wasn't added (a list a newer version wrote, UP7;
+                // the share): said, never left out silently.
+                Err(e) => {
+                    refused.get_or_insert_with(|| (p.name.clone(), e.words(&self.clock)));
+                }
             }
         }
         self.lib_refresh();
         let place = last.map_or_else(String::new, |id| format!(" {}", self.part_place_words(id)));
         self.status = format!("Library: {added} product(s) added{place}{}.", if skipped > 0 { format!(", {skipped} already there") } else { String::new() });
+        if let Some((name, why)) = refused {
+            self.status.push_str(&format!(" Not added: {name} — {why}"));
+        }
     }
 
     /// Save one product (with its technology and texts) to the library,
@@ -889,6 +900,9 @@ impl App {
     }
 
     pub fn add_library_product(&mut self, id: u64) {
+        // UP9: a part a newer version saved is used as it is; saving it back
+        // is refused (UP7), and the status says so now.
+        let newer = self.library().ok().and_then(|l| l.product_newer(id)).map_or_else(String::new, |n| format!(" It is read-only on this PC: {} Saving it back to the library is refused.", n.message()));
         match self.library().and_then(|l| l.load_product(id)) {
             Ok(pf) => {
                 let mut p = pf.part;
@@ -904,7 +918,7 @@ impl App {
                 self.parts.push(p);
                 self.sel_part = Some(self.parts.len() - 1);
                 self.stale = true;
-                self.status = format!("Added {name} from the library — nest to place it.");
+                self.status = format!("Added {name} from the library — nest to place it.{newer}");
             }
             Err(e) => self.status = format!("Couldn't add library product {id}: {e}"),
         }

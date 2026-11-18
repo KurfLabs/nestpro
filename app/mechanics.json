@@ -7538,7 +7538,7 @@
  {
   "name": "older never overwrites newer",
   "group": "versions",
-  "value": "a save, stock change, material change, list update, delete or shop-file change over a file a newer version wrote is refused under the write lock, before anything is booked: 'X is read-only on this PC. <message> Nothing was saved.'",
+  "value": "a save, stock change, material change, list update, delete or shop-file change over a file a newer version wrote is refused, checked and written under one hold of the write lock, before anything is booked, stored or copied for undo: 'X is read-only on this PC. <message> Nothing was saved.'; render and part drawings never write over job or Library files",
   "source": "UP7; own design"
  },
  {

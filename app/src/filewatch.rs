@@ -88,8 +88,9 @@ impl App {
             }
         }
         let copy = j.clone();
-        // UP9: read-only when a newer version wrote the file now.
-        let newer = std::fs::read(path).ok().and_then(|b| self.versions().newer(crate::shared::recorded_version(&b).as_deref()));
+        // UP9: read-only when a newer version wrote the file now, by the
+        // stamp of the same read as its contents.
+        let newer = self.versions().newer(j.program_version.as_deref());
         if let Some(job) = self.jobs.get_mut(self.cur_job) {
             job.read_only = newer.map(|n| n.message());
         }

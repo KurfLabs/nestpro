@@ -9436,6 +9436,8 @@ fn two_pcs_whose_long_names_start_alike_each_keep_their_record() {
     let st = call(&mut a, "shop", None, json!({}));
     let pcs: Vec<&str> = st["data"]["pcs"].as_array().unwrap().iter().map(|p| p["pc"].as_str().unwrap()).collect();
     assert_eq!(pcs, vec![one, two], "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}
 
 // ---------------------------------------------------------------------------
 // Older never overwrites newer (spec #178, UP5–UP10): two sessions play two
@@ -9778,5 +9780,258 @@ fn two_pcs_on_two_versions_changing_the_stock_at_once_never_lose_the_newer_ones_
     }
     assert!(refused, "PC-B was never refused after PC-A changed the stock");
     assert_eq!(recorded(&crate::stock::Stock::file(&lib)).as_deref(), Some("0.5.0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// While this thread's next file write waits just before it lands (under
+/// the save's write lock), `other` runs on another thread; it is given
+/// half a second, then this write goes on. With the lock held from the
+/// version check through the write, `other`'s save waits for it and comes
+/// after; without it, `other` lands first and this write replaces it.
+fn while_writing<F: FnOnce() + Send + 'static>(other: F) -> std::thread::JoinHandle<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<std::thread::JoinHandle<()>>();
+    let mut other = Some(other);
+    crate::shared::hooks::set(move |step| {
+        if step == "lock checked" {
+            if let Some(f) = other.take() {
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+                let h = std::thread::spawn(move || {
+                    f();
+                    let _ = done_tx.send(());
+                });
+                let _ = done_rx.recv_timeout(std::time::Duration::from_millis(500));
+                let _ = tx.send(h);
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        if let Ok(h) = rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            h.join().unwrap();
+        }
+    })
+}
+
+/// S1 (UP7): a job file in the Library folder, saved on PC-B (0.4.0) while
+/// PC-A (0.5.0) saves it at the same moment: PC-B's version check and write
+/// are one hold of the Library's write lock, so PC-A's save comes after it
+/// and is never replaced by the older one.
+#[test]
+fn an_older_pcs_job_save_never_lands_over_a_newer_save_made_at_the_same_moment() {
+    let d = dir("version_job_race");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = lib.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap().to_string();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(&job), json!({"w": 2000, "h": 1000}));
+    let (lib2, clock2, job2) = (lib.clone(), clock.clone(), job.clone());
+    let a = while_writing(move || {
+        let mut a = pc_on(&lib2, "PC-A", "0.5.0", &clock2);
+        a.call("rename", Some(&job2), &json!({"name": "DEMO-001 by A"})).unwrap();
+    });
+    let r = b.call("rename", Some(&job), &json!({"name": "DEMO-001 by B"}));
+    crate::shared::hooks::clear();
+    a.join().unwrap();
+    r.unwrap();
+    let j = jobfile::load(&jp).unwrap();
+    assert_eq!((j.name.as_str(), j.program_version.as_deref()), ("DEMO-001 by A", Some("0.5.0")), "the older PC's save landed over the newer one");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S2 (UP7): PC-B (0.4.0) saves its job into the Library while PC-A (0.5.0)
+/// saves the same job file: PC-B's job file is checked and locked before
+/// the record is stored and its sheets booked, so its call either does all
+/// of it or none of it; here it does all, and PC-A's save follows.
+#[test]
+fn an_older_pc_never_stores_or_books_for_a_job_file_it_then_cant_save() {
+    let d = dir("version_job_book_race");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = d.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap().to_string();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    call(&mut b, "new", Some(&job), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    let (lib2, clock2, job2) = (lib.clone(), clock.clone(), job.clone());
+    let a = while_writing(move || {
+        let mut a = pc_on(&lib2, "PC-A", "0.5.0", &clock2);
+        a.call("rename", Some(&job2), &json!({"name": "DEMO-001 by A"})).unwrap();
+    });
+    let r = b.call("library", Some(&job), &json!({"mode": "save-job"}));
+    crate::shared::hooks::clear();
+    a.join().unwrap();
+    let r = r.expect("the save-job was refused after it had stored the record");
+    let id = r.json["data"]["id"].as_u64().unwrap();
+    assert!(crate::library::Library::at(&lib, &Who::new("sam", "PC-B"), &clock).entries().iter().any(|e| e.id == id));
+    assert_eq!(jobfile::load(&jp).unwrap().name, "DEMO-001 by A", "PC-A's save after it was lost");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S5 (UP7): `save-part` of two parts, the second a newer version's, saves
+/// neither: every part and the list are checked before the first is saved.
+#[test]
+fn save_part_saves_none_when_one_of_the_parts_is_a_newer_versions() {
+    let d = dir("version_save_part_batch");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(d.join("a.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P2"}));
+    call(&mut a, "library", None, json!({"mode": "save-part"}));
+    // The list as an older version wrote it: only the part is newer.
+    let index = lib.join(crate::library::INDEX);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
+    v["program_version"] = json!("0.4.0");
+    std::fs::write(&index, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(d.join("b.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "name": "DEMO-P1"}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P2"}));
+    let e = err(&mut b, "library", json!({"mode": "save-part"}));
+    assert!(e.contains(UPDATE) && e.contains("Nothing was saved"), "{e}");
+    let names: Vec<String> = crate::library::Library::at(&lib, &Who::new("sam", "PC-B"), &clock).entries().into_iter().map(|e| e.name).collect();
+    assert_eq!(names, vec!["DEMO-P2".to_string()], "a part was saved before the batch was refused");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S6 (UP7): `stock-book mode=book` into a stock a newer version changed is
+/// refused, and the job file stays unbooked.
+#[test]
+fn booking_into_a_stock_a_newer_version_changed_is_refused_and_the_job_stays_unbooked() {
+    let d = dir("version_stock_book");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    call(&mut pc_on(&lib, "PC-A", "0.5.0", &clock), "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    let jp = d.join("DEMO-001.snjob");
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let e = err(&mut b, "stock-book", json!({"mode": "book"}));
+    assert_eq!(e, format!("The sheet stock is read-only on this PC. {UPDATE} Nothing was saved."));
+    assert!(!jobfile::load(&jp).unwrap().booked, "the job was saved as booked though nothing was booked");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S7 (UP5): the stamp is part of the job agents see (`JobFile`), from the
+/// same read as the job.
+#[test]
+fn a_job_file_carries_the_version_that_wrote_it() {
+    let d = dir("version_jobfile_field");
+    let clock = Clock::at(1_794_216_000);
+    let lib = stock_ctx(&d).library_dir;
+    let jp = d.join("DEMO-001.snjob");
+    call(&mut pc_on(&lib, "PC-A", "0.5.0", &clock), "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    let (j, written) = jobfile::load_versioned(&jp).unwrap();
+    assert_eq!((j.program_version.as_deref(), written.as_deref()), (Some("0.5.0"), Some("0.5.0")));
+    assert!(std::fs::read_to_string(&jp).unwrap().starts_with("{\n  \"program_version\": \"0.5.0\","));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S8 (UP7): a picture or drawing is never written over the open job file,
+/// a job file, or the Library's own files, even while the job is read-only.
+#[test]
+fn render_and_part_drawings_never_write_over_job_or_library_files() {
+    let d = dir("version_protected_out");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = d.join("DEMO-001.snjob");
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    call(&mut a, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "info", Some(jp.to_str().unwrap()), json!({}));
+    let before = files_under(&d);
+    let stock = crate::stock::Stock::file(&lib);
+    let index = lib.join(crate::library::INDEX);
+    let shop = lib.join(crate::shop::FILE);
+    let relative = lib.join("Sheets").join("..").join(crate::library::INDEX);
+    for out in [&jp, &stock, &index, &shop, &relative] {
+        let e = b.call("render", Some(jp.to_str().unwrap()), &json!({"part": 1, "out": out.to_str().unwrap()})).err().unwrap_or_else(|| panic!("render wrote over {}", out.display()));
+        assert!(e.contains("Nothing was written"), "{e}");
+        let e = b.call("export-part-dxf", Some(jp.to_str().unwrap()), &json!({"part": 1, "out": out.to_str().unwrap()})).err().unwrap_or_else(|| panic!("export-part-dxf wrote over {}", out.display()));
+        assert!(e.contains("Nothing was written"), "{e}");
+    }
+    assert_eq!(files_under(&d), before, "a protected file was written");
+    // A picture of its own still works.
+    call(&mut b, "render", Some(jp.to_str().unwrap()), json!({"part": 1, "out": d.join("DEMO-001.png").to_str().unwrap()}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S9 (UP9): an older session that reads a job a newer version saved since
+/// leaves that version's undo copy alone.
+#[test]
+fn an_older_session_reading_a_newer_job_leaves_its_undo_copy_alone() {
+    let d = dir("version_undo_copy");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let jp = d.join("DEMO-001.snjob");
+    let job = jp.to_str().unwrap();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(job), json!({"w": 2000, "h": 1000}));
+    call(&mut b, "info", Some(job), json!({}));
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    call(&mut a, "rename", Some(job), json!({"name": "DEMO-001 by A"}));
+    let undo = backup_path(&jp);
+    let copy = std::fs::read(&undo).expect("PC-A's change left no undo copy");
+    let r = call(&mut b, "info", Some(job), json!({}));
+    assert!(r["read_only"].is_string(), "{r}");
+    assert_eq!(std::fs::read(&undo).ok(), Some(copy), "the older session removed the newer PC's undo copy");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S10 (UP7): a forced XML import writes none of its job files when one of
+/// them is a newer version's, and says so with the shop's version.
+#[test]
+fn a_forced_xml_import_writes_nothing_when_one_job_file_is_a_newer_versions() {
+    let d = dir("version_xml_import");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    std::fs::write(d.join("brk.dxf"), crate::dxf::SAMPLE_DXF).unwrap();
+    let xml = d.join("order-77.xml");
+    std::fs::write(&xml, r#"<?xml version="1.0"?><Import>
+  <Product Reference="DEMO-12" Material="Mild steel" Thickness="3" Quantity="4" Fich="brk.dxf"/>
+  <Product Reference="DEMO-5" Material="AISI304" Thickness="1,5" Quantity="2" Fich="brk.dxf"/>
+</Import>"#).unwrap();
+    let out = d.join("jobs");
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    let files: Vec<String> = call(&mut a, "import-xml", None, json!({"path": xml.to_str().unwrap(), "dir": out.to_str().unwrap()}))["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
+    assert_eq!(files.len(), 2);
+    // The first job file is gone; the second is the newer PC's.
+    std::fs::remove_file(&files[0]).unwrap();
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    let e = err(&mut b, "import-xml", json!({"path": xml.to_str().unwrap(), "dir": out.to_str().unwrap(), "force": true}));
+    assert!(e.contains(UPDATE), "{e}");
+    assert!(!Path::new(&files[0]).exists(), "a job file was written before the import was refused");
+    assert_eq!(recorded(Path::new(&files[1])).as_deref(), Some("0.5.0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S11 (UP7): a Library record that can't be read just now is never deleted
+/// unchecked: nothing is deleted, and no mark is left.
+#[cfg(unix)]
+#[test]
+fn a_record_that_cant_be_read_is_never_deleted_unchecked() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = dir("version_delete_unreadable");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "new", Some(d.join("b.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    let id = call(&mut b, "library", None, json!({"mode": "save-part"}))["data"]["ids"][0].as_u64().unwrap();
+    let part = crate::library::Library::at(&lib, &Who::new("sam", "PC-B"), &clock).path(crate::library::Kind::Product, id);
+    std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // (Someone allowed to read anyway, as root, can't play this PC.)
+    if std::fs::read(&part).is_err() {
+        let e = err(&mut b, "library", json!({"mode": "delete", "kind": "part", "id": id}));
+        assert!(e.contains("can't be read") && e.contains("Nothing was deleted"), "{e}");
+        assert!(part.exists(), "the record was deleted");
+        let mut mark = part.clone().into_os_string();
+        mark.push(".deleted");
+        assert!(!Path::new(&mark).exists(), "a deleted mark was left");
+    }
+    std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o644)).unwrap();
     let _ = std::fs::remove_dir_all(&d);
 }
