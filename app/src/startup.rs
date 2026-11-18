@@ -288,7 +288,7 @@ impl crate::App {
                     ui.horizontal(|ui| {
                         if let Some((name, from)) = &leave {
                             // SH14: leaving the shop this PC is in is asked first.
-                            ui.label(RichText::new(format!("This PC is in shop {name} ({}). Joining leaves it.", from.display())).color(t.text));
+                            ui.label(RichText::new(format!("This PC is in shop {name} ({}). Leave it and join this shop?", from.display())).color(t.text));
                         }
                     });
                     ui.horizontal(|ui| {
@@ -458,10 +458,14 @@ impl crate::App {
                     }
                 }
             }
-            Answer::Refused(r, typed) => {
-                if let Some((name, from)) = r.leaving.clone() {
-                    fr.ask = Some(Ask { typed, what: Asked::Leave { name, from } });
-                }
+            // SH14: leaving the shop this PC is in is a question for the
+            // person (the agents' wording, leave=true, isn't theirs).
+            Answer::Refused(r, typed) if r.leaving.is_some() => {
+                let (name, from) = r.leaving.clone().unwrap_or_default();
+                fr.ask = Some(Ask { typed, what: Asked::Leave { name, from } });
+                fr.checks = r.checks.into_iter().filter(|c| c.what != "leave").collect();
+            }
+            Answer::Refused(r, _) => {
                 fr.refused = Some(r.why);
                 fr.checks = r.checks;
             }
@@ -481,23 +485,35 @@ impl crate::App {
         }
     }
 
-    /// `--first-run[=join]` (screenshot runs only): the first-run screen;
-    /// `join`: joined to a made-up shop Acme in a temporary folder of its
-    /// own, with each check shown. Never a real Library or shop.
+    /// `--first-run[=join|leave]` (screenshot runs only): the first-run
+    /// screen; `join`: joined to a made-up shop Acme in a temporary folder of
+    /// its own, with each check shown; `leave`: Settings → Shop's Join a
+    /// shop on a PC in a made-up shop Other, asked whether to leave it.
+    /// Never a real Library or shop.
     pub fn demo_first_run(&mut self, what: &str) {
         if !self.shot_mode_now() {
             return;
         }
         let mut fr = FirstRun::default();
-        if what == "join" {
+        if what == "join" || what == "leave" {
             use crate::shared::{Clock, Who};
-            let Some(dir) = crate::settings_ui::new_temp_folder("nestpro-first-run-demo").map(|d| d.join("Nesting")) else { return };
+            let Some(base) = crate::settings_ui::new_temp_folder("nestpro-first-run-demo") else { return };
+            let dir = base.join("Nesting");
             if crate::library::create(&dir).is_err() {
                 return;
             }
             let now = self.clock.now();
             let _ = crate::engine::shop::start(&dir, "Acme", &Who::new("sam", "PC-A"), &Clock::at(now - 40 * 86400), crate::updates::VERSION);
             self.who = Who::new("kim", "PC-B");
+            if what == "leave" {
+                let other = base.join("Other");
+                if crate::library::create(&other).is_err() {
+                    return;
+                }
+                let _ = crate::engine::shop::start(&other, "Other", &self.who, &Clock::at(now - 9 * 86400), crate::updates::VERSION);
+                self.cfg.library_dir = other.display().to_string();
+                fr = FirstRun::join_from_settings();
+            }
             fr.pick = Some(Choice::Join);
             fr.folder = dir.display().to_string();
             let a = match crate::engine::shop::join(&fr.folder, &self.library_dir(), &self.who, &self.clock, crate::updates::VERSION, false) {

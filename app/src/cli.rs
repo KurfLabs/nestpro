@@ -190,7 +190,7 @@ fn usage() -> String {
          nestpro <operation> <job.snjob> [--arg=value …] [--text]\n  nestpro mcp                     MCP server on stdin/stdout (for AI agents)\n  \
          nestpro ops [--json|--gui]      list every operation (--gui: the GUI command each stands for)\n  nestpro help <operation>        one operation's arguments\n  \
          nestpro library-check <folder> --minutes 10 --text   the two-PC Library check (start it on two PCs at once)\n  \
-         nestpro setup --join <folder>                        join the shop in that folder: prints each check (`nestpro shop` shows it)\n  \
+         nestpro setup --join <folder> [--leave]              join the shop in that folder: prints each check (`nestpro shop` shows it)\n  \
          nestpro setup --start <folder> --name <name>         start a shop in that Library folder\n\n\
          A typical job:\n  nestpro new jobs/frames.snjob --w=3000 --h=1500 --material=steel --thickness=5\n  \
          nestpro import-dxf jobs/frames.snjob --path=\"bracket.dxf\" --qty=20\n  nestpro add-shape jobs/frames.snjob --shape=disc --w=300 --qty=8\n  \
