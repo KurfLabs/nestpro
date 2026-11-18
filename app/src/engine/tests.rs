@@ -10685,12 +10685,16 @@ fn a_backup_that_stops_halfway_leaves_nothing_and_the_next_pc_takes_it() {
     // Another Library's half zip in the same folder stays.
     let theirs = backups.join("Backup Acme 99999999 2026-11-09 0920 PC-B.zip.PC-B-7-9.part");
     std::fs::write(&theirs, b"PK theirs").unwrap();
-    // PC-C opens: it takes the abandoned lock over (short times here), then
-    // takes the day's backup under it; each half zip takes a while to clear.
-    let lock = crate::shared::WriteLock::take_with(&lib, std::time::Duration::from_millis(600), std::time::Duration::from_secs(20)).unwrap();
-    crate::shared::hooks::set(|s| {
+    // PC-C opens: it takes the abandoned lock over (after 3 s here), with
+    // 30 s to write, then takes the day's backup under it. The share is
+    // slow: each half zip takes 9 s to clear (played as gone by, not slept,
+    // so a loaded machine's own delays don't count against it): 54 s in all,
+    // past the 30 s, so only renewing as it goes keeps the lock.
+    let hold = std::time::Duration::from_secs(30);
+    let lock = crate::shared::WriteLock::take_holding(&lib, std::time::Duration::from_secs(3), hold, std::time::Duration::from_secs(30)).unwrap();
+    crate::shared::hooks::set(move |s| {
         if s == "backup: part cleared" {
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            crate::shared::play_time(hold * 3 / 10);
         }
     });
     let got = super::shop::daily_backup(&lib, &own, &Who::new("lee", "PC-C"), &clock);

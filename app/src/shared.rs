@@ -384,11 +384,39 @@ fn holder_label(text: Option<&Vec<u8>>) -> String {
     text.and_then(|t| serde_json::from_slice::<Holder>(t).ok()).map_or_else(|| "another PC".to_string(), |h| format!("{} on {}", h.user, h.pc))
 }
 
+/// Test seam: time a test plays as gone by on this thread on top of the real
+/// time (a share that answers slowly), so tests of a writer's time neither
+/// sleep nor hang on how loaded the machine is. Always none outside tests.
+fn played() -> Duration {
+    #[cfg(test)]
+    return PLAYED.with(|p| p.get());
+    #[cfg(not(test))]
+    Duration::ZERO
+}
+
+#[cfg(test)]
+thread_local! {
+    static PLAYED: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+
+/// Play `d` as gone by for the writer's time of this thread's locks (tests).
+#[cfg(test)]
+pub(crate) fn play_time(d: Duration) {
+    PLAYED.with(|p| p.set(p.get() + d));
+}
+
+/// How long since `since` (and `wall`), by this PC's steady clock and its
+/// wall clock, the longer, with the time a test played since `played0`.
+fn gone(since: Instant, wall: SystemTime, played0: Duration) -> Duration {
+    let real = since.elapsed().max(wall.elapsed().unwrap_or_default());
+    real + played().saturating_sub(played0)
+}
+
 /// Still inside this writer's time: held for less than `hold_for` since
 /// `since`, by this PC's steady clock and its wall clock both (the steady
 /// one doesn't count time asleep on every system) (LB2).
-fn within(since: Instant, wall: SystemTime, hold_for: Duration) -> Result<(), String> {
-    if since.elapsed() < hold_for && wall.elapsed().map_or(true, |d| d < hold_for) {
+fn within(since: Instant, wall: SystemTime, played0: Duration, hold_for: Duration) -> Result<(), String> {
+    if gone(since, wall, played0) < hold_for {
         Ok(())
     } else {
         Err(format!("this PC took longer than {} to write to the Library, so another PC may take its write lock over. Nothing was saved — save again", shown(hold_for)))
@@ -414,6 +442,8 @@ struct Lease {
     /// When it was taken (just before asking for it), by both clocks.
     since: Instant,
     wall: SystemTime,
+    /// The time a test had played on this thread at `since` (tests).
+    played0: Duration,
     /// How long after `since` it may still replace files (LB2).
     hold_for: Duration,
 }
@@ -439,6 +469,13 @@ impl WriteLock {
     /// of `abandoned_after`, as HOLD_FOR is of ABANDONED_AFTER.
     pub fn take_with(dir: &Path, abandoned_after: Duration, longest_wait: Duration) -> Result<WriteLock, String> {
         Self::take_for(dir, abandoned_after, abandoned_after / 3, longest_wait)
+    }
+
+    /// `take` with its own times to be abandoned after and to write in
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn take_holding(dir: &Path, abandoned_after: Duration, hold_for: Duration, longest_wait: Duration) -> Result<WriteLock, String> {
+        Self::take_for(dir, abandoned_after, hold_for, longest_wait)
     }
 
     fn take_for(dir: &Path, abandoned_after: Duration, hold_for: Duration, longest_wait: Duration) -> Result<WriteLock, String> {
@@ -474,7 +511,7 @@ impl WriteLock {
                         let _ = std::fs::remove_file(&file);
                         return Err(format!("can't lock the Library at {}: {e}", dir.display()));
                     }
-                    return Ok(Lease { file, token, since, wall, hold_for }.held());
+                    return Ok(Lease { file, token, since, wall, played0: played(), hold_for }.held());
                 }
                 // Windows reports a lock file being deleted by its holder as
                 // access denied: busy, like one that's there.
@@ -512,7 +549,7 @@ impl WriteLock {
     /// every file is replaced.
     pub fn still_held(&self) -> Result<(), String> {
         let l = &self.0;
-        within(l.since, l.wall, l.hold_for)?;
+        within(l.since, l.wall, l.played0, l.hold_for)?;
         let now = std::fs::read(&l.file).ok();
         let ours = now.as_deref().and_then(|t| serde_json::from_slice::<Holder>(t).ok()).is_some_and(|h| h.token == l.token);
         let taking_over = now.as_deref().is_some_and(|t| mark_path(&l.file, t).exists());
@@ -522,7 +559,7 @@ impl WriteLock {
         }
         // Reading the lock can be slow on a share: still inside the time
         // after it, so only the change itself is left to send (LB2).
-        within(l.since, l.wall, l.hold_for)
+        within(l.since, l.wall, l.played0, l.hold_for)
     }
 
     /// Renew the lock for a long job (a backup, BK3): rewrite the lock file,
@@ -537,22 +574,22 @@ impl WriteLock {
         h.since = now_secs();
         h.renewed += 1;
         let text = serde_json::to_vec(&h).map_err(|e| e.to_string())?;
-        let (since, wall) = (Instant::now(), SystemTime::now());
+        let (since, wall, played0) = (Instant::now(), SystemTime::now(), played());
         replace_in(&l.file, &text, || self.still_held(), false)?;
         let (file, token) = (l.file.clone(), l.token.clone());
         HELD.with(|held| {
             for (x, _) in held.borrow_mut().iter_mut().filter(|(x, _)| x.file == file && x.token == token) {
-                (x.since, x.wall) = (since, wall);
+                (x.since, x.wall, x.played0) = (since, wall, played0);
             }
         });
-        (self.0.since, self.0.wall) = (since, wall);
+        (self.0.since, self.0.wall, self.0.played0) = (since, wall, played0);
         Ok(())
     }
 
     /// `renew` once a third of this writer's time has gone, so a long job
     /// that checks often keeps the lock without ever running out of time.
     pub fn renew_if_due(&mut self) -> Result<(), String> {
-        if self.0.since.elapsed() >= self.0.hold_for / 3 || self.0.wall.elapsed().map_or(false, |d| d >= self.0.hold_for / 3) {
+        if gone(self.0.since, self.0.wall, self.0.played0) >= self.0.hold_for / 3 {
             self.renew()
         } else {
             Ok(())
@@ -578,7 +615,7 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
     let (token, me) = claim();
     // This PC's time runs from making the mark: from then on others see it
     // and could judge it abandoned in turn.
-    let (since, wall) = (Instant::now(), SystemTime::now());
+    let (since, wall, played0) = (Instant::now(), SystemTime::now(), played());
     let mark = mark_path(file, chain.last()?);
     let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&mark).ok()?;
     let written = f.write_all(me.as_bytes()).and_then(|_| f.sync_all());
@@ -598,7 +635,7 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
         return None;
     }
     pause("take over: checked");
-    if replace(file, me.as_bytes(), || within(since, wall, hold_for)).is_err() {
+    if replace(file, me.as_bytes(), || within(since, wall, played0, hold_for)).is_err() {
         if root_moved_on() {
             let _ = std::fs::remove_file(&mark);
         }
@@ -608,7 +645,7 @@ fn take_over(file: &Path, chain: &[Vec<u8>], hold_for: Duration) -> Option<Lease
     for t in chain {
         let _ = std::fs::remove_file(mark_path(file, t));
     }
-    Some(Lease { file: file.to_path_buf(), token, since, wall, hold_for })
+    Some(Lease { file: file.to_path_buf(), token, since, wall, played0, hold_for })
 }
 
 impl Drop for WriteLock {
@@ -1165,21 +1202,26 @@ mod shared_tests {
     #[test]
     fn a_renewed_lock_is_never_taken_over_while_its_job_runs() {
         let dir = scratch("renew");
-        let short = Duration::from_millis(300);
-        let mut lock = WriteLock::take_with(&dir, short, Duration::from_secs(10)).unwrap();
+        // A waiting PC takes a lock over once it has stayed unchanged 6 s.
+        // The job renews every 2 s (a third of its time to write, here as
+        // long as the abandon time), so a slow, loaded machine whose share
+        // stalls for up to 4 s still keeps it; it runs one and a half times
+        // the abandon time.
+        let short = Duration::from_secs(6);
+        let mut lock = WriteLock::take_holding(&dir, short, short, Duration::from_secs(30)).unwrap();
         let let_go = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
         let waiter = {
             let (dir, let_go) = (dir.clone(), let_go.clone());
             std::thread::spawn(move || {
-                let got = WriteLock::take_with(&dir, short, Duration::from_secs(10)).unwrap();
+                let got = WriteLock::take_with(&dir, short, Duration::from_secs(30)).unwrap();
                 let at = Instant::now();
                 drop(got);
                 (at, *let_go.lock().unwrap())
             })
         };
         let start = Instant::now();
-        while start.elapsed() < short * 4 {
-            std::thread::sleep(Duration::from_millis(15));
+        while start.elapsed() < short * 3 / 2 {
+            std::thread::sleep(Duration::from_millis(100));
             lock.renew_if_due().unwrap();
         }
         // Still this job's to write with, long after the abandon time.
