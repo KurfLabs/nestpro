@@ -7478,7 +7478,7 @@
  {
   "name": "update check (PC of its own)",
   "group": "releases",
-  "value": "GitHub Releases at start and once a day, background, 30 s limit; never in a shop; no connection = 'Couldn't check for updates' on the card only",
+  "value": "GitHub Releases at start and once a day, background, 30 s for the whole check (shop lookup included), no request after it; never in a shop; an unreadable release index fails the check; no connection = 'Couldn't check for updates' on the card only",
   "source": "UP11; own design"
  },
  {
@@ -7496,7 +7496,7 @@
  {
   "name": "update when I close",
   "group": "releases",
-  "value": "download in background, install after the window closes, no restart; Windows installer builds only (Linux: releases are for Windows)",
+  "value": "download in background, install after the window closes (waits up to 90 s for a running download), no restart; withdrawn when the Library changes or becomes a shop's; Windows installer builds only (Linux: releases are for Windows)",
   "source": "UP14; own design"
  },
  {

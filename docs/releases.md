@@ -153,16 +153,26 @@ programs. That code is the "Risky paths" list in `AGENTS.md`, which the script r
 
 A PC whose Library isn't a shop's checks GitHub Releases when the program opens and once a
 day while it stays open (rules UP11–UP14 in `app/MECHANICS.md`). The check runs off the
-window's thread and gives up after 30 seconds; with no connection the window shows no banner
-and no dialog, only "Couldn't check for updates" on Settings → Shop → Updates. A PC in a shop
-never checks GitHub: it updates from the shop folder (ADR 0006).
+window's thread and gives up after 30 seconds, finding out whether the PC is in a shop
+included; with no connection the window shows no banner and no dialog, only "Couldn't check
+for updates" on Settings → Shop → Updates. A PC in a shop never checks GitHub: it updates from
+the shop folder (ADR 0006).
+
+The program reads the release list itself (`updates.rs`, GitHub's releases API and each
+release's `releases.win.json`), each request limited to what is left of the 30 seconds. It
+doesn't use the crate's `GithubSource` for this: that one skips a release whose index can't be
+downloaded or read, so the newest release could go missing and an older one be offered.
 
 - **What is offered** is decided by `engine::updates::offer`: the newest plain
   `MAJOR.MINOR.PATCH` release newer than this PC's version, never a pre-release. Its notes'
   "Changes machine programs" entries are shown first.
 - **Update when I close** downloads the full package in the background
-  (`download_updates`); when the window closes, `wait_exit_then_apply_updates` hands it to
-  the installer, which installs once the program has ended. The program isn't restarted.
+  (`download_updates`, through `GithubSource`). When the window closes, the program waits up
+  to 90 seconds for a download still running, looks again that the PC isn't in a shop, and
+  hands the downloaded package (`get_update_pending_restart`) to
+  `wait_exit_then_apply_updates`, which installs once the program has ended. The program
+  isn't restarted. A download not done in time installs nothing; the next start offers it
+  again. Pointing the Library elsewhere, or it becoming a shop's, withdraws the choice.
 - **Agents** see the same with `nestpro shop --mode=updates`; installing stays a person's
   choice, in the window.
 - **Trying it without GitHub:** `--fake-releases=<file>` (or `NESTPRO_FAKE_RELEASES=<file>`)

@@ -146,7 +146,7 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             let Some(st) = status(dir)? else {
                 return Ok(Outcome::read(
                     format!("This PC's Library ({}) isn't a shop. Start one there with `nestpro setup --start <folder> --name <name>` or Settings → Shop → Start a shop here.", dir.display()),
-                    json!({"shop": null, "folder": dir.display().to_string(), "this_version": ctx.version}),
+                    json!({"shop": null, "folder": dir.display().to_string()}),
                 ));
             };
             let pcs: Vec<Value> = st
@@ -165,7 +165,6 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     "admin_set_at": ctx.clock.stamp(s.admin.at),
                     "admin_was": s.admin.was,
                     "shop_settings": s.settings_by.words(),
-                    "this_version": ctx.version,
                     "pcs": pcs,
                 }),
             ))

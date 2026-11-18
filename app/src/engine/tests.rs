@@ -9299,13 +9299,12 @@ fn an_agent_sees_the_newest_release_for_a_pc_of_its_own() {
     assert!(m.contains("0.10.0") && m.contains("machine programs") && m.contains("A person installs it"), "{m}");
     // Nothing changed: a check only reads.
     assert_ne!(r["changed"], true, "{r}");
-    // Up to date, and the status says this PC's version.
+    // Up to date.
     s.ctx.version = "0.10.0".into();
     let r = call(&mut s, "shop", None, json!({"mode": "updates"}));
     assert_eq!(r["data"]["offer"], Value::Null, "{r}");
     assert!(r["message"].as_str().unwrap().contains("up to date"), "{r}");
-    let st = call(&mut s, "shop", None, json!({}));
-    assert_eq!(st["data"]["this_version"], "0.10.0", "{st}");
+    assert_eq!(r["data"]["this_version"], "0.10.0", "{r}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

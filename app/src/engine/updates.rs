@@ -73,12 +73,18 @@ pub fn offer(this: &str, releases: &[Release], shop: Option<&ShopFile>) -> Optio
 
 /// UP11: the shop this PC's Library (`dir`) belongs to, to know whether it
 /// checks GitHub: None for a Library that is no shop, and for this PC's own
-/// Library folder (`own`) while it isn't made yet (a new install). Any other
-/// folder that can't be reached is refused, naming it (LB11): it may be a
-/// shop's, so it is never taken for none.
+/// Library folder (`own`) when it is certainly not there yet (a new
+/// install). Any other folder that can't be reached, and this PC's own
+/// folder when it can't be told whether it is there, is refused, naming it
+/// (LB11): it may be a shop's, so it is never taken for none.
 pub fn shop_of(dir: &Path, own: &Path) -> Result<Option<ShopFile>, String> {
-    if dir == own && !dir.exists() {
-        return Ok(None);
+    if dir == own {
+        if let Err(e) = std::fs::metadata(dir) {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(format!("{} ({e})", crate::library::unreachable(dir)));
+        }
     }
     crate::shop::read(dir)
 }
@@ -216,6 +222,23 @@ mod tests {
     fn a_pc_in_a_shop_is_offered_nothing_from_the_public_releases() {
         // ADR 0006: it updates to what the admin PC rolled out.
         assert_eq!(offer("0.4.0", &list(&["0.5.0"]), Some(&acme())), None);
+    }
+
+    /// S5: this PC's own Library folder counts as "not made yet" only when
+    /// it is certainly not there; one that can't be looked at may be a
+    /// shop's.
+    #[test]
+    fn an_own_library_that_cant_be_looked_at_isnt_taken_for_none() {
+        let d = std::env::temp_dir().join(format!("nestpro_shop_of_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let missing = d.join("Library");
+        assert_eq!(shop_of(&missing, &missing), Ok(None));
+        // Under a file: looking at it fails, but not with "not found".
+        std::fs::write(d.join("file"), "x").unwrap();
+        let odd = d.join("file").join("Library");
+        assert!(shop_of(&odd, &odd).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
