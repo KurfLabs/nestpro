@@ -7548,6 +7548,54 @@
   "source": "SH8; own design"
  },
  {
+  "name": "first-run screen",
+  "group": "shop",
+  "value": "shown only on a PC with no settings file, an empty settings folder and no Library in the default place: Start a shop, Join a shop, Just this PC, one line each",
+  "source": "SH9; own design"
+ },
+ {
+  "name": "join a shop",
+  "group": "shop",
+  "value": "Library folder setting becomes the shop folder after the checks; this PC added to the PCs list; its own Library untouched; its materials join the shop's list (MA28)",
+  "source": "SH10; own design"
+ },
+ {
+  "name": "checks before joining",
+  "group": "shop",
+  "value": "reachable, holds a Library, holds a shop file, write lock taken, a check file made and removed under it, lock still held; refusal says what to fix; nothing made",
+  "source": "SH11; own design"
+ },
+ {
+  "name": "shop version on joining",
+  "group": "shop",
+  "value": "compared as numbers; older may join, told to update; newer told the admin PC decides; none or unreadable: nothing said",
+  "source": "SH12; own design"
+ },
+ {
+  "name": "shop folder name",
+  "group": "shop",
+  "value": "tidied (quotes, spaces, doubled or end separators); on Windows a mapped drive letter becomes the \\\\server\\share path behind it, said",
+  "source": "SH13; own design"
+ },
+ {
+  "name": "already in a shop",
+  "group": "shop",
+  "value": "the same folder: told so, setting kept; another shop's folder: left, named, record kept there",
+  "source": "SH14; own design"
+ },
+ {
+  "name": "join for agents",
+  "group": "shop",
+  "value": "setup join=: each check [ok]/[!!]/[no] in the message and data.checks; refusal an error with the checks; CLI exits 1 (2 for wrong arguments)",
+  "source": "SH15; own design"
+ },
+ {
+  "name": "first-run start and this PC",
+  "group": "shop",
+  "value": "Start a shop: folder + name, asks before making a Library in a folder with none; Just this PC: Library in Documents\\Sheet Nesting\\Library",
+  "source": "SH16; own design"
+ },
+ {
   "name": "file version",
   "group": "versions",
   "value": "every Library file (job, library part, the Library's list, sheet stock, material list, shop file) records program_version, the version that last wrote it; none = written before, counts as old",

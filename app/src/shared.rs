@@ -736,6 +736,20 @@ fn is_newer(a: &[u64], b: &[u64]) -> bool {
     (0..n).map(|i| at(a, i).cmp(&at(b, i))).find(|o| o.is_ne()) == Some(std::cmp::Ordering::Greater)
 }
 
+/// UP6: how version `a` stands to `b` (0.10.0 is newer than 0.9.0), as
+/// joining a shop compares this PC's with the shop's (SH12); None when
+/// either isn't numbers.
+pub fn version_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let (a, b) = (version_numbers(a)?, version_numbers(b)?);
+    Some(if is_newer(&a, &b) {
+        std::cmp::Ordering::Greater
+    } else if is_newer(&b, &a) {
+        std::cmp::Ordering::Less
+    } else {
+        std::cmp::Ordering::Equal
+    })
+}
+
 /// The program versions a Library file is judged by (UP7): this program's,
 /// and, in a shop, the shop's version and the releases it has rolled back
 /// from. The window and the agents give the engine their own (a test plays
