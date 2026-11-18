@@ -12716,11 +12716,18 @@ fn rolling_out_the_release_left_again_works_normally_on_it() {
 /// The shop file's layouts set by hand: the release kept for roll back
 /// wrote jobs in an older layout than the shop version does.
 fn kept_release_wrote_older_jobs(lib: &Path) {
-    let f = lib.join(crate::shop::FILE);
-    let mut v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
-    let jobs = v[crate::shop::PREVIOUS_LAYOUTS]["jobs"].as_u64().unwrap();
-    v[crate::shop::PREVIOUS_LAYOUTS]["jobs"] = json!(jobs - 1);
-    std::fs::write(&f, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    edit_shop_file(lib, |v| {
+        let jobs = v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["jobs"].as_u64().unwrap();
+        v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["jobs"] = json!(jobs - 1);
+    });
+}
+
+/// The shop file of `lib`, changed by hand.
+fn edit_shop_file(lib: &Path, f: impl FnOnce(&mut Value)) {
+    let p = lib.join(crate::shop::FILE);
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    f(&mut v);
+    std::fs::write(&p, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
 }
 
 /// UP24: roll back after the shop's files were saved in a layout the
@@ -12737,16 +12744,9 @@ fn rolling_back_after_a_newer_layout_was_written_is_refused_and_changes_nothing(
     assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap_err(), want);
     assert_eq!(crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err(), want);
     assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
-    // A kind the release kept doesn't know at all is refused too.
-    let f = lib.join(crate::shop::FILE);
-    let mut v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
-    v[crate::shop::PREVIOUS_LAYOUTS] = json!({"jobs": 99, "library": 99, "materials": 99});
-    std::fs::write(&f, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
-    assert_eq!(crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err(), "The sheet stock was saved in a layout 0.4.0 can't read. Restore a backup instead. Nothing was changed.");
-    // No record of what it reads: refused, never guessed.
-    v.as_object_mut().unwrap().remove(crate::shop::PREVIOUS_LAYOUTS);
-    std::fs::write(&f, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
-    assert!(crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err().contains("doesn't record which file layouts 0.4.0 reads"));
+    // A kind the release kept reads in no layout it can read: refused.
+    edit_shop_file(&lib, |v| v[crate::shop::RELEASE_LAYOUTS]["0.4.0"]["stock"] = json!(0));
+    assert_eq!(crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err(), "Jobs and the sheet stock were saved in a layout 0.4.0 can't read. Restore a backup instead. Nothing was changed.");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -13025,5 +13025,60 @@ fn a_trial_queued_before_a_roll_back_never_installs_after_it() {
     let (r, applied, _) = close_installs(h, "0.5.0");
     assert_eq!(r, Ok(Some("0.4.0".into())));
     assert_eq!(applied, [("0.4.0".to_string(), Source::Folder(lib.join("Updates").join("0.4.0")), Why::Shop)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP24 (review S5): roll back goes only to a release that recorded its
+/// own file layouts when it was rolled out: only releases that know about
+/// roll back (and so save what a release left wrote) record them. A
+/// release kept that was rolled out by an older program, which recorded
+/// only the shop's layouts, is refused, changing nothing.
+#[test]
+fn roll_back_goes_only_to_a_release_that_recorded_its_own_layouts() {
+    let d = dir("rollback_unaware");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    // As a release from before roll back rolled 0.4.0 out: no record of
+    // 0.4.0's own layouts (the shop's `layouts` stay).
+    edit_shop_file(&lib, |v| {
+        v[crate::shop::RELEASE_LAYOUTS].as_object_mut().unwrap().remove("0.4.0");
+    });
+    let before = files_under(&lib);
+    let e = crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap_err();
+    assert_eq!(e, "0.4.0 didn't record the file layouts it saves in when it was rolled out: it is from before roll back, and can't save what 0.5.0 wrote. Restore a backup instead. Nothing was changed.");
+    assert_eq!(crate::engine::rollout::rollback_ask(&lib, &admin(), "0.5.0").unwrap_err(), e);
+    assert_eq!(files_under(&lib), before, "a refused roll back changed the shop folder");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP24 (review S6): the layouts the shop's files are recorded in must be
+/// there, readable and whole (every kind of file the program guards):
+/// missing, damaged or partial records refuse roll back, never pass it.
+#[test]
+fn roll_back_refuses_layout_records_that_are_missing_damaged_or_partial() {
+    let d = dir("rollback_layout_records");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let shop_file = std::fs::read(lib.join(crate::shop::FILE)).unwrap();
+    let cases: [(&str, fn(&mut Value)); 6] = [
+        ("shop's layouts missing", |v| {
+            v.as_object_mut().unwrap().remove(crate::shop::LAYOUTS);
+        }),
+        ("shop's layouts damaged", |v| v[crate::shop::LAYOUTS] = json!("jobs 2")),
+        ("shop's layouts partial", |v| {
+            v[crate::shop::LAYOUTS].as_object_mut().unwrap().remove("stock");
+        }),
+        ("release's layouts damaged", |v| v[crate::shop::RELEASE_LAYOUTS]["0.4.0"] = json!([1, 2])),
+        ("release's layouts partial", |v| {
+            v[crate::shop::RELEASE_LAYOUTS]["0.4.0"].as_object_mut().unwrap().remove("materials");
+        }),
+        ("release records damaged", |v| v[crate::shop::RELEASE_LAYOUTS] = json!(7)),
+    ];
+    for (what, f) in cases {
+        std::fs::write(lib.join(crate::shop::FILE), &shop_file).unwrap();
+        edit_shop_file(&lib, f);
+        let before = files_under(&lib);
+        let e = crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").expect_err(what);
+        assert!(e.contains("Restore a backup instead") && e.ends_with("Nothing was changed."), "{what}: {e}");
+        assert_eq!(files_under(&lib), before, "{what}: a refused roll back changed the shop folder");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }

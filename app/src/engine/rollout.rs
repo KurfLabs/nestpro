@@ -419,19 +419,19 @@ pub fn rollout_with(dir: &Path, release: &Path, who: &Who, this: &str, changes: 
     if !made.is_empty() {
         s = shop::read(dir)?.ok_or_else(not_shop)?;
     }
-    // UP24: the layouts of the release kept for roll back are those the
-    // shop recorded until now (the release before writes them).
-    let kept_layouts = before.as_ref().and(s.layouts());
     s.other.insert(shop::SHOP_VERSION.into(), json!(this));
     match &before {
         Some(b) => s.other.insert(shop::PREVIOUS_VERSION.into(), json!(b)),
         None => s.other.remove(shop::PREVIOUS_VERSION),
     };
-    match kept_layouts {
-        Some(l) => s.other.insert(shop::PREVIOUS_LAYOUTS.into(), json!(l)),
-        None => s.other.remove(shop::PREVIOUS_LAYOUTS),
-    };
     s.other.insert(shop::LAYOUTS.into(), json!(layouts()));
+    // UP24: this release records its own layouts, so the shop can roll
+    // back to it later; the record of the one before stays (it is kept for
+    // roll back), older ones go with their packages.
+    let mut mine = s.other.get(shop::RELEASE_LAYOUTS).and_then(Value::as_object).cloned().unwrap_or_default();
+    mine.retain(|v, _| before.as_deref() == Some(v.as_str()));
+    mine.insert(this.to_string(), json!(layouts()));
+    s.other.insert(shop::RELEASE_LAYOUTS.into(), Value::Object(mine));
     shop::write_judged(dir, &s, &lock, this, &judged).map_err(|e| format!("Not rolled out: the shop file couldn't be written ({e}). {}", still()))?;
     let removed = prune_updates(dir, &[this, before.as_deref().unwrap_or(this)], &lock);
     Ok(RolledOut { version: this.to_string(), previous: before, removed, changes: made, repaired: false })
@@ -630,10 +630,19 @@ fn may_roll_back(dir: &Path, s: &ShopFile, who: &Who, this: &str, changes: &[One
     if let Err(e) = current_release_ok(dir, &to) {
         return Err(format!("{to}'s packages aren't whole in the shop folder's Updates ({e}), so the PCs couldn't install it. Put {to}'s release index and full package (from its GitHub release) back in {}, then Roll back again, or restore a backup instead. Nothing was changed.", folder.display()));
     }
-    let Some(reads) = s.previous_layouts() else {
-        return Err(format!("The shop file doesn't record which file layouts {to} reads, so rolling back could leave files it can't open. Restore a backup instead. Nothing was changed."));
+    // UP24: both records must be there, readable and whole: every kind of
+    // file this program guards. Nothing is ever guessed.
+    let guarded = layouts();
+    let whole = |l: &BTreeMap<String, u32>| guarded.keys().all(|k| l.contains_key(k));
+    let reads = match s.release_layouts(&to) {
+        Ok(None) => return Err(format!("{to} didn't record the file layouts it saves in when it was rolled out: it is from before roll back, and can't save what {from} wrote. Restore a backup instead. Nothing was changed.")),
+        Ok(Some(l)) if whole(&l) => l,
+        _ => return Err(format!("The shop file's record of the file layouts {to} saves in is damaged or incomplete, so it can't be told whether {to} reads the shop's files. Restore a backup instead. Nothing was changed.")),
     };
-    let unread: Vec<String> = s.layouts().unwrap_or_default().into_iter().filter(|(k, n)| reads.get(k).is_none_or(|r| n > r)).map(|(k, _)| k).collect();
+    let Some(written) = s.layouts().filter(|l| whole(l)) else {
+        return Err(format!("The shop file doesn't record every file layout the shop's files are saved in, so it can't be told whether {to} reads them. Restore a backup instead. Nothing was changed."));
+    };
+    let unread: Vec<String> = written.into_iter().filter(|(k, n)| reads.get(k).is_none_or(|r| n > r)).map(|(k, _)| k).collect();
     if !unread.is_empty() {
         return Err(layout_refusal(&unread, &to));
     }
@@ -718,10 +727,9 @@ pub fn rollback_with(dir: &Path, who: &Who, this: &str, changes: &[OneTimeChange
     if !list.iter().any(|v| shared::version_order(v, &from) == Some(Ordering::Equal)) {
         list.push(from.clone());
     }
-    let reads = s.previous_layouts().unwrap_or_default();
+    let reads = s.release_layouts(&to).ok().flatten().unwrap_or_default();
     s.other.insert(shop::SHOP_VERSION.into(), json!(to));
     s.other.remove(shop::PREVIOUS_VERSION);
-    s.other.remove(shop::PREVIOUS_LAYOUTS);
     s.other.insert(shop::LAYOUTS.into(), json!(reads));
     s.other.insert(shop::ROLLED_BACK_FROM.into(), json!(list));
     // Judged as the shop will be: what the release left wrote counts as

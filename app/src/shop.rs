@@ -210,9 +210,11 @@ pub const PREVIOUS_VERSION: &str = "previous_shop_version";
 /// The file layouts of the release the shop rolled out last (UP19, UP20):
 /// `{"jobs": 2, "library": 1, …}`.
 pub const LAYOUTS: &str = "layouts";
-/// The file layouts of the release kept for roll back (UP19, UP24): what
-/// the shop's `layouts` were before the last roll out.
-pub const PREVIOUS_LAYOUTS: &str = "previous_layouts";
+/// The file layouts each release kept in `Updates` saves in, recorded by
+/// that release when it was rolled out (UP19, UP24): `{"0.4.0": {"jobs": 2,
+/// …}, …}`. Only releases that know about roll back record them, so roll
+/// back goes only to a release found here.
+pub const RELEASE_LAYOUTS: &str = "release_layouts";
 /// The releases the shop has rolled back from (UP10, UP25): what they wrote
 /// counts as the shop version's.
 pub const ROLLED_BACK_FROM: &str = "rolled_back_from";
@@ -263,10 +265,17 @@ impl ShopFile {
         self.other.get(LAYOUTS).and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
-    /// UP24: the file layouts of the release kept for roll back (the shop's
-    /// layouts before the last roll out); None when none were recorded.
-    pub fn previous_layouts(&self) -> Option<std::collections::BTreeMap<String, u32>> {
-        self.other.get(PREVIOUS_LAYOUTS).and_then(|v| serde_json::from_value(v.clone()).ok())
+    /// UP24: the file layouts `version` recorded when it was rolled out:
+    /// Ok(None) when it recorded none, Err when the record is damaged.
+    pub fn release_layouts(&self, version: &str) -> Result<Option<std::collections::BTreeMap<String, u32>>, ()> {
+        match self.other.get(RELEASE_LAYOUTS) {
+            None => Ok(None),
+            Some(Value::Object(m)) => match m.get(version) {
+                None => Ok(None),
+                Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| ()),
+            },
+            Some(_) => Err(()),
+        }
     }
 
     /// UP10, UP25: the releases the shop has rolled back from, in the order

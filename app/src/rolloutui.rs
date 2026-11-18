@@ -894,7 +894,7 @@ impl App {
                 }
                 s.other.insert(crate::shop::SHOP_VERSION.into(), serde_json::json!(v));
                 s.other.insert(crate::shop::PREVIOUS_VERSION.into(), serde_json::json!(older));
-                s.other.insert(crate::shop::PREVIOUS_LAYOUTS.into(), serde_json::json!(kept));
+                s.other.insert(crate::shop::RELEASE_LAYOUTS.into(), serde_json::json!(std::collections::BTreeMap::from([(older.to_string(), kept), (v.to_string(), rollout::layouts())])));
             }
             crate::shop::write_judged(&dir, &s, &lock, v, &crate::shared::Versions::this(v))
         })();
