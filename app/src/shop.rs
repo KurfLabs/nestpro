@@ -113,10 +113,21 @@ pub fn revision_floor(dir: &Path) -> u64 {
     read(dir).ok().flatten().and_then(|s| s.restored).map_or(0, |r| r.revision_floor)
 }
 
-/// BK12: how many restores the shop has had (0: none, or no shop). What a
-/// PC reads from the Library is read in this generation (LB7).
+/// BK12: the generation of a restore that hasn't finished (running, or
+/// stopped halfway): what is read then matches no finished restore's, so
+/// saving it after the restore asks first.
+pub const UNSETTLED: u64 = u64::MAX;
+
+/// BK12: how many restores the shop has had (0: none, or no shop); what a
+/// PC reads from the Library is read in this generation (LB7). While a
+/// restore is unfinished, `UNSETTLED`. A shop that has never been restored
+/// stays 0, so its saves are judged on revisions alone, as before.
 pub fn restore_generation(dir: &Path) -> u64 {
-    read(dir).ok().flatten().and_then(|s| s.restored).map_or(0, |r| r.generation)
+    match read(dir).ok().flatten().and_then(|s| s.restored) {
+        None => 0,
+        Some(r) if r.finished => r.generation,
+        Some(_) => UNSETTLED,
+    }
 }
 
 /// One PC's record in `Shop` (SH4): written by that PC when it opens the

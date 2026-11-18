@@ -7634,7 +7634,7 @@
  {
   "name": "before restore backup",
   "group": "shop",
-  "value": "the Library as it is now zipped first under the lock (… before restore.zip), no Keep pruning, read through every check sum and checked against the names and sizes zipped; failing that nothing is restored; a Library with files a newer version wrote isn't restored; one of the Library's backups, kept its first day",
+  "value": "the Library as it is now zipped first under the lock (… before restore.zip), no Keep pruning, read through by the restore's own reader and checked against the files and folders zipped; failing that nothing is restored; a Library with files a newer version wrote, or names a restore refuses, isn't restored; one of the Library's backups, kept its first day",
   "source": "BK9; own design"
  },
  {
@@ -7652,13 +7652,13 @@
  {
   "name": "restore record",
   "group": "shop",
-  "value": "shop file: backup, its day, before restore backup, PC, when, finished, lock token, generation, revision floor; reads carry the generation, an older one is saved since (asks) whatever the revision",
+  "value": "shop file: backup, its day, before restore backup, PC, when, finished, lock token, generation, revision floor; the generation is published once every file is in place; reads carry it (none while a restore is unfinished), an older one is saved since (asks) whatever the revision",
   "source": "BK12; own design"
  },
  {
   "name": "restore notice",
   "group": "shop",
-  "value": "next quick check: restored / being restored / stopped halfway; baseline taken when the window first shows the Library; open jobs reload or ask; old job saves ask; Backups card shows the last restore; agents shop last_restore (running too)",
+  "value": "next quick check, from one shop file read: restored / being restored / stopped halfway; open jobs wait while it runs; baseline taken when the window first shows the Library; open jobs reload or ask; old job saves ask; Backups card shows the last restore; agents shop last_restore (running too)",
   "source": "BK13; own design"
  }
 ]

@@ -422,8 +422,9 @@ pub struct Done {
     pub entry: Entry,
     /// Files in it.
     pub files: usize,
-    /// Each file put in it, by its name in the zip, with its size: what a
-    /// restore checks its "before restore" backup against (BK9).
+    /// Each file and folder (`name/`, size 0) put in it, by its name in the
+    /// zip, with its size: what a restore checks its "before restore"
+    /// backup against (BK9).
     pub listing: Vec<(String, u64)>,
     /// Old backups removed past Keep (BK4).
     pub removed: Vec<String>,
@@ -557,7 +558,7 @@ fn take_as(library: &Path, own: &Settings, who: &Who, clock: &Clock, why: Why, b
     // backup it's about to restore may be one of them.
     let removed = if before_restore { vec![] } else { prune(&dir, &ns, p.settings.keep(), today, Some(&mut lock)) };
     drop(lock);
-    let files = listing.len();
+    let files = listing.iter().filter(|(n, _)| !n.ends_with('/')).count();
     let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
     let entry = Entry { name, path, day: today, time: now, pc: shared::file_safe(&who.pc), seq: n, bytes, before_restore };
     // The one a restore takes first goes to the second place once the
@@ -723,6 +724,7 @@ fn zip_library(library: &Path, to: &Path, skip_top: &[&str], mark: &str, lock: &
                     continue;
                 }
                 z.add_directory(format!("{inner}/"), SimpleFileOptions::default()).map_err(|e| werr(&e))?;
+                files.push((format!("{inner}/"), 0));
                 todo.push((path, inner));
                 continue;
             }
@@ -1007,6 +1009,9 @@ struct Held {
     dirs: Vec<Vec<String>>,
     files: Vec<(usize, Vec<String>)>,
     top_revision: u64,
+    /// Every entry by its name in the zip (folders `name/`, size 0), with
+    /// its size as read, kept ones included (BK9).
+    listing: Vec<(String, u64)>,
 }
 
 /// Read a backup through, under the lock (renewed as it reads), before
@@ -1017,7 +1022,7 @@ struct Held {
 /// is put back: this program couldn't read them or save them again. What a
 /// restore never takes from a backup (BK10) is then left out.
 fn read_backup(z: &mut Archive, versions: &shared::Versions, lock: &mut WriteLock) -> Result<Held, String> {
-    let mut held = Held { dirs: vec![], files: vec![], top_revision: 0 };
+    let mut held = Held { dirs: vec![], files: vec![], top_revision: 0, listing: vec![] };
     let mut seen = std::collections::HashSet::new();
     for i in 0..z.len() {
         let mut e = z.by_index(i).map_err(|e| format!("it can't be read ({e})"))?;
@@ -1030,8 +1035,11 @@ fn read_backup(z: &mut Archive, versions: &shared::Versions, lock: &mut WriteLoc
             return Err(format!("it holds \"{raw}\" twice (names differing only in capitals are one file on Windows)"));
         }
         let dir = raw.ends_with(['/', '\\']);
-        if !dir {
-            let (_, b) = read_entry(&mut e, lock, stamped(&raw), &raw)?;
+        if dir {
+            held.listing.push((raw.clone(), 0));
+        } else {
+            let (n, b) = read_entry(&mut e, lock, stamped(&raw), &raw)?;
+            held.listing.push((raw.clone(), n));
             if let Some(n) = versions.newer(shared::recorded_version(&b).as_deref()) {
                 return Err(format!("\"{raw}\" in it was written by version {}, newer than this program ({}), which couldn't read it. Update this PC first", n.written, versions.this));
             }
@@ -1051,25 +1059,18 @@ fn read_backup(z: &mut Archive, versions: &shared::Versions, lock: &mut WriteLoc
     Ok(held)
 }
 
-/// A backup just taken is whole and this Library's (BK9): marked with its
-/// id, every entry read through its check sum, and exactly the files that
-/// were put in it, with their sizes (`listing`). Read under the lock,
-/// renewed as it reads.
-fn verify(path: &Path, id: &str, listing: &[(String, u64)], lock: &mut WriteLock) -> Result<(), String> {
+/// A backup just taken is whole, this Library's and one a restore can put
+/// back (BK9): marked with its id, read through by the restore's own reader
+/// (every name a restore takes, every check sum, no newer file), and
+/// holding exactly the files and folders that were put in it, with their
+/// sizes (`listing`). Read under the lock, renewed as it reads.
+fn verify(path: &Path, id: &str, listing: &[(String, u64)], versions: &shared::Versions, lock: &mut WriteLock) -> Result<(), String> {
     if !marked(path, id) {
         return Err(format!("{} isn't marked as this Library's backup", path.display()));
     }
     let mut z = open_zip(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut found = std::collections::BTreeMap::new();
-    for i in 0..z.len() {
-        let mut e = z.by_index(i).map_err(|e| format!("{} can't be read ({e})", path.display()))?;
-        let name = e.name().to_string();
-        if name.ends_with('/') {
-            continue;
-        }
-        let (n, _) = read_entry(&mut e, lock, false, &name).map_err(|e| format!("{}: {e}", path.display()))?;
-        found.insert(name, n);
-    }
+    let held = read_backup(&mut z, versions, lock).map_err(|e| format!("{}: {e}", path.display()))?;
+    let found: std::collections::BTreeMap<String, u64> = held.listing.into_iter().collect();
     let want: std::collections::BTreeMap<String, u64> = listing.iter().cloned().collect();
     if found != want {
         let odd = want.iter().find(|(k, v)| found.get(*k) != Some(v)).map(|(k, _)| k.clone()).or_else(|| found.keys().find(|k| !want.contains_key(*k)).cloned()).unwrap_or_default();
@@ -1175,6 +1176,22 @@ fn live(library: &Path) -> Result<Live, String> {
     Ok(l)
 }
 
+/// BK9, BK11: every name in the Library now is one a restore would put back
+/// from its "before restore" backup: none Windows would read as another or
+/// can't keep, and no two differing only in capitals. Else it names the
+/// first, to rename before restoring.
+fn restorable_names(l: &Live) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for p in l.dirs.iter().chain(&l.files) {
+        let name = p.join("/");
+        entry_parts(&name).map_err(|e| format!("the Library holds {name}, a name a restore couldn't put back ({e}). Rename it, then restore"))?;
+        if !seen.insert(folded(p)) {
+            return Err(format!("the Library holds {name} and another name differing only in capitals, which a restore couldn't both put back. Rename one, then restore"));
+        }
+    }
+    Ok(())
+}
+
 /// Before anything changes (BK11): where each of the backup's folders and
 /// files goes in the Library as it is now. Refused, naming it: a link on the
 /// way (a restore never goes through or replaces one), a place that is
@@ -1185,6 +1202,7 @@ fn preflight(library: &Path, held: &Held, l: &Live) -> Result<(), String> {
     let root = std::fs::canonicalize(library).map_err(|e| format!("{} can't be read ({e})", library.display()))?;
     let mut checked = std::collections::HashSet::new();
     let file_keys: std::collections::HashSet<String> = held.files.iter().map(|(_, f)| key(f)).collect();
+    let dir_keys: std::collections::HashSet<String> = held.dirs.iter().map(|d| key(d)).collect();
     for parts in held.dirs.iter().chain(held.files.iter().map(|(_, f)| f)) {
         for n in 1..=parts.len() {
             let p = &parts[..n];
@@ -1206,6 +1224,18 @@ fn preflight(library: &Path, held: &Held, l: &Live) -> Result<(), String> {
             let same = names.len() == p.len() && names.iter().zip(p).all(|(a, b)| a.eq_ignore_ascii_case(b));
             if !same || names.first().is_some_and(|t| kept_live(t)) {
                 return Err(format!("{} is another name for {}", dest.display(), real.display()));
+            }
+            // LB16 (review S10): a job or library part record, or a deleted
+            // one's mark, is never taken out by a change of shape (a folder
+            // of them replaced by a file, or one of them by a folder): its
+            // number must stay taken.
+            let under = |f: &Vec<String>| f.len() > p.len() && key(&f[..p.len()]) == key(p);
+            if m.is_dir() && file_keys.contains(&key(p)) && l.files.iter().any(|f| under(f) && record_of(f).is_some()) {
+                return Err(format!("{} would replace the folder {}, which holds job or library part records. Restore a backup of this Library", parts.join("/"), dest.display()));
+            }
+            let needs_folder = n < parts.len() || dir_keys.contains(&key(p));
+            if !m.is_dir() && needs_folder && record_of(p).is_some() {
+                return Err(format!("{} would replace the record {} with a folder. Restore a backup of this Library", parts.join("/"), dest.display()));
             }
             if m.is_dir() && file_keys.contains(&key(p)) {
                 // A folder the backup has a file in place of: all of it must
@@ -1280,6 +1310,9 @@ pub fn restore(library: &Path, name: &str, who: &Who, clock: &Clock, version: &s
             return Err(nothing(format!("Update this PC first: {} was saved by version {}, newer than this program ({}), so the Library as it is now couldn't be put back on this PC", f.join("/"), n.written, versions.this)));
         }
     }
+    // BK9: the "before restore" backup must be one a restore can take:
+    // every name in the Library one it would put back.
+    restorable_names(&now).map_err(nothing)?;
     preflight(library, &held, &now).map_err(cant)?;
     lock.still_held().map_err(nothing)?;
     // BK9: the Library as it is now, first, read through and checked.
@@ -1289,7 +1322,7 @@ pub fn restore(library: &Path, name: &str, who: &Who, clock: &Clock, version: &s
         Err(e) => return Err(nothing(format!("the Library as it is now couldn't be backed up first ({e})"))),
     };
     shared::pause("restore: before restore taken");
-    verify(&before.entry.path, &ns.id, &before.listing, lock).map_err(|e| nothing(format!("the backup of the Library as it is now ({}) can't be trusted: {e}", before.entry.name)))?;
+    verify(&before.entry.path, &ns.id, &before.listing, &versions, lock).map_err(|e| nothing(format!("the backup of the Library as it is now ({}) can't be trusted: {e}", before.entry.name)))?;
     let kept_before = |e: String| nothing(format!("{e}. The backup {} of the Library as it was is kept", before.entry.name));
     // Unpacked into a folder of its own first (BK11). One a restore left
     // when its PC stopped goes first.
@@ -1338,12 +1371,16 @@ pub fn restore(library: &Path, name: &str, who: &Who, clock: &Clock, version: &s
             floor = floor.max(record_revision(&b));
         }
     }
-    let generation = shop.restored.as_ref().map_or(0, |r| r.generation) + 1;
+    // BK12: the new generation is published only once every file is in
+    // place; while unfinished, nothing read counts as read in any (see
+    // `shop::restore_generation`).
+    let generation = shop.restored.as_ref().map_or(0, |r| r.generation);
     shop.restored = Some(crate::shop::Restore { backup: from.name.clone(), backup_when: from.stamp(), before: before.entry.name.clone(), by: who.clone(), at: clock.now(), finished: false, revision_floor: floor, generation, lock: lock.token() });
     if let Err(e) = lock.renew_if_due().and_then(|()| crate::shop::write(library, &shop, lock, version)) {
         clear(lock);
         return Err(kept_before(format!("the shop file couldn't record the restore ({e})")));
     }
+    shared::pause("restore: recorded");
     // LB16: the numbers of the records it takes out stay taken, before any
     // is taken out.
     if let Err(e) = reserve(library, &held, &now, lock) {
@@ -1363,6 +1400,7 @@ pub fn restore(library: &Path, name: &str, who: &Who, clock: &Clock, version: &s
     let (files, removed) = swapped.map_err(halfway)?;
     if let Some(r) = shop.restored.as_mut() {
         r.finished = true;
+        r.generation = generation + 1;
     }
     lock.renew_if_due().and_then(|()| crate::shop::write(library, &shop, lock, version)).map_err(|e| halfway(format!("every file was put back, but the shop file couldn't record that the restore finished ({e})")))?;
     Ok(Restored { from, before: before.entry, files, removed })
@@ -1671,6 +1709,29 @@ mod backup_tests {
         assert_eq!(record_revision(b"0\nEOF"), 0);
         assert_eq!(shown_stamp("2026-11-09 09:20"), "9 Nov 09:20");
         assert_eq!(shown_stamp("soon"), "soon");
+    }
+
+    /// S1 rest (review round 2): a "before restore" backup is checked
+    /// folders and all: a folder missing from what was zipped, or one too
+    /// many, fails it.
+    #[test]
+    fn the_before_restore_check_counts_folders_too() {
+        let root = std::env::temp_dir().join(format!("nestpro_backup_verify_dirs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lib = root.join("Library");
+        crate::library::create(&lib).unwrap();
+        std::fs::create_dir_all(lib.join("Empty folder")).unwrap();
+        let clock = Clock::at(1_794_216_000);
+        let Daily::Taken(d) = take(&lib, &Settings::default(), &Who::new("sam", "PC-A"), &clock, Why::Now).unwrap() else { panic!("no backup taken") };
+        let id = library_id(&lib).unwrap().unwrap();
+        let versions = shared::Versions::this(crate::updates::VERSION);
+        let mut lock = WriteLock::take(&lib).unwrap();
+        verify(&d.entry.path, &id, &d.listing, &versions, &mut lock).unwrap();
+        assert!(d.listing.iter().any(|(n, _)| n == "Empty folder/"), "{:?}", d.listing);
+        let without: Vec<(String, u64)> = d.listing.iter().filter(|(n, _)| n != "Empty folder/").cloned().collect();
+        assert!(verify(&d.entry.path, &id, &without, &versions, &mut lock).is_err(), "a folder that wasn't zipped passed");
+        drop(lock);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

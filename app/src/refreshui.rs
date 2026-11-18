@@ -58,6 +58,8 @@ pub struct AutoRefresh {
     /// BK13: "The shop was restored to 9 Nov 09:20. Reopen your job", shown
     /// until closed.
     pub restore_note: Option<String>,
+    /// BK13: a restore was running at the last look: open jobs wait.
+    pub restoring: bool,
 }
 
 impl AutoRefresh {
@@ -90,7 +92,7 @@ impl App {
         // this Library, so a restore made while auto-refresh is off is still
         // told when it's turned on.
         if self.autorefresh.restore_seen.is_none() {
-            self.autorefresh.restore_seen = Some(self.restore_now(&self.library_dir()).unwrap_or(None));
+            self.autorefresh.restore_seen = Some(self.restore_now(&self.library_dir()).unwrap_or(None).map(|(r, st)| (r.at, st)));
         }
         match self.autorefresh.timer.due(self.cfg.refresh_minutes, self.clock.now(), front_again) {
             Due::Nothing => {}
@@ -140,7 +142,10 @@ impl App {
         if self.stockui.loaded && (full || seen.as_ref().is_none_or(|s| s.stock != stamp.stock)) {
             ok &= self.refresh_stock(&dir);
         }
-        if jobs {
+        // BK13: not while a restore puts files back: looked at once it's done.
+        if jobs && self.autorefresh.restoring {
+            self.autorefresh.recheck = true;
+        } else if jobs {
             self.autorefresh.recheck = !self.refresh_open_jobs(&lib, list.as_deref(), full);
         }
         self.autorefresh.seen = if ok { Some(stamp) } else { None };
@@ -150,12 +155,17 @@ impl App {
     /// last look? Then the note says so: "The shop was restored to 9 Nov
     /// 09:20. Reopen your job". At the first look only what's there is
     /// noted; a shop file that can't be read now is looked at next time.
+    /// The state and the note come from one read of the shop file, and the
+    /// baseline moves on only after it (review N1). While a restore runs,
+    /// open jobs aren't looked at (`restoring`): they'd be read halfway.
     fn refresh_restored(&mut self, dir: &Path) -> bool {
-        let Ok(now) = self.restore_now(dir) else { return false };
+        let Ok(r) = self.restore_now(dir) else { return false };
+        crate::shared::pause("refresh: restore read");
+        let now = r.as_ref().map(|(r, st)| (r.at, *st));
+        self.autorefresh.restoring = matches!(now, Some((_, crate::engine::shop::RestoreState::Running)));
         let seen = self.autorefresh.restore_seen.replace(now);
-        let r = crate::shop::read(dir).ok().flatten().and_then(|s| s.restored);
-        match (seen, r, now) {
-            (Some(seen), Some(r), Some((_, state))) if seen != now => {
+        match (seen, r) {
+            (Some(seen), Some((r, state))) if seen != now => {
                 let note = crate::engine::shop::restore_notice(&r, state, &self.clock);
                 self.status = format!("{note}.");
                 self.autorefresh.restore_note = Some(note);
@@ -167,8 +177,11 @@ impl App {
 
     /// BK13: the shop's last restore now: when, and whether it finished, is
     /// running or stopped. Err: the shop file can't be read just now.
-    fn restore_now(&self, dir: &Path) -> Result<Option<(u64, crate::engine::shop::RestoreState)>, String> {
-        Ok(crate::shop::read(dir)?.and_then(|s| s.restored).map(|r| (r.at, crate::engine::shop::restore_state(dir, &r))))
+    fn restore_now(&self, dir: &Path) -> Result<Option<(crate::shop::Restore, crate::engine::shop::RestoreState)>, String> {
+        Ok(crate::shop::read(dir)?.and_then(|s| s.restored).map(|r| {
+            let st = crate::engine::shop::restore_state(dir, &r);
+            (r, st)
+        }))
     }
 
     /// BK13: the note on every window after the shop was restored, until
@@ -911,6 +924,70 @@ mod refreshui_tests {
         pc2.cfg.refresh_minutes = 5;
         later(&clock, QUICK_S);
         pc2.refresh_tick(false);
+        assert_eq!(pc2.autorefresh.restore_note.as_deref(), Some("The shop was restored to 9 Nov 09:20. Reopen your job"), "{}", pc2.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// BK13, review S5 rest: while a restore puts files back, an open job
+    /// isn't reloaded (it would be read halfway); once it's done, it is.
+    #[test]
+    fn open_jobs_wait_while_a_restore_runs() {
+        let dir = new_library("refresh_restore_running");
+        let clock = Clock::at(NOV_9_0920);
+        let sam = Who::new("sam", "PROG-1");
+        crate::engine::shop::start(&dir, "Acme", &sam, &clock, crate::updates::VERSION).unwrap();
+        let pc1 = demo7(&dir, &clock);
+        let id = pc1.job_lib_id.unwrap();
+        let mut pc2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        pc2.cfg.refresh_minutes = 5;
+        pc2.open_library_job(id);
+        pc2.refresh_tick(false);
+        // A restore is recorded and running: it holds the write lock.
+        let lock = crate::shared::WriteLock::take(&dir).unwrap();
+        let mut s = crate::shop::read(&dir).unwrap().unwrap();
+        s.restored = Some(crate::shop::Restore { backup: "b.zip".into(), backup_when: "2026-11-09 09:00".into(), before: "a.zip".into(), by: sam.clone(), at: clock.now(), finished: false, revision_floor: 5, generation: 1, lock: lock.token() });
+        crate::shop::write(&dir, &s, &lock, crate::updates::VERSION).unwrap();
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert!(pc2.autorefresh.restore_note.as_deref().is_some_and(|n| n.contains("being restored")), "{:?}", pc2.autorefresh.restore_note);
+        assert!(pc2.autorefresh.notes.is_empty() && pc2.libui.question.is_none(), "an open job was looked at mid-restore");
+        // It finishes: the open job reloads.
+        s.restored.as_mut().unwrap().finished = true;
+        crate::shop::write(&dir, &s, &lock, crate::updates::VERSION).unwrap();
+        drop(lock);
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert!(pc2.autorefresh.notes.contains_key(&id), "not reloaded once the restore was done: {}", pc2.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review N1: the notice and the baseline come from one read of the shop
+    /// file: one that can't be read right after doesn't lose the notice.
+    #[test]
+    fn a_shop_file_unreadable_right_after_the_look_keeps_the_notice() {
+        let dir = new_library("refresh_restore_n1");
+        let clock = Clock::at(NOV_9_0920);
+        let sam = Who::new("sam", "PROG-1");
+        crate::engine::shop::start(&dir, "Acme", &sam, &clock, crate::updates::VERSION).unwrap();
+        let _pc1 = demo7(&dir, &clock);
+        let backup = crate::engine::shop::backup_now(&dir, &Default::default(), &sam, &clock).unwrap().entry.name;
+        let mut pc2 = window(&dir, "kim", "PROG-2", &clock);
+        pc2.cfg.refresh_minutes = 5;
+        pc2.refresh_tick(false);
+        later(&clock, 60);
+        crate::engine::shop::restore(&dir, &backup, &sam, &clock, crate::updates::VERSION).unwrap();
+        let shop_file = crate::shop::file(&dir);
+        let good = std::fs::read(&shop_file).unwrap();
+        let f2 = shop_file.clone();
+        crate::shared::hooks::set(move |step| {
+            if step == "refresh: restore read" {
+                std::fs::write(&f2, b"not a shop file").unwrap();
+            }
+        });
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        crate::shared::hooks::clear();
+        std::fs::write(&shop_file, &good).unwrap();
         assert_eq!(pc2.autorefresh.restore_note.as_deref(), Some("The shop was restored to 9 Nov 09:20. Reopen your job"), "{}", pc2.status);
         let _ = std::fs::remove_dir_all(&dir);
     }

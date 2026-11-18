@@ -11725,3 +11725,76 @@ fn agents_shop_takes_no_backup_name() {
     assert!(e.contains("refused for agents"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// Review round 2 of the restore (PR #205).
+
+/// S1 rest: a Library holding a name a restore would refuse (here a short
+/// name like `Notes~1.txt`) isn't restored: its "before restore" backup
+/// couldn't be put back. Said up front, naming it; nothing changes.
+#[test]
+fn a_library_holding_a_name_a_restore_refuses_is_not_restored() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, chosen) = restore_shop("restore_r2_names", &clock);
+    std::fs::write(lib.join("Notes~1.txt"), b"a short name").unwrap();
+    let before = files_under(&lib);
+    let e = restore_as(&lib, "PC-A", &chosen, &clock).err().expect("restored a Library whose before restore backup couldn't be put back");
+    assert!(e.contains("Notes~1.txt") && e.contains("Rename it") && e.contains("Nothing was restored"), "{e}");
+    assert_eq!(files_under(&lib), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S10 rest: a backup that would replace a folder of records with a file,
+/// or a record with a folder, is refused before anything changes: their
+/// numbers must stay taken.
+#[test]
+fn a_backup_changing_the_shape_of_records_is_refused() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, _s, lib, _) = restore_shop("restore_r2_shape", &clock);
+    let index = std::fs::read(lib.join("index.json")).unwrap();
+    let job = files_under(&lib).into_keys().find(|k| k.ends_with(".snjob")).unwrap().replace('\\', "/");
+    let job_dir = job.rsplit_once('/').unwrap().0.to_string();
+    let before = files_under(&lib);
+    let as_folder = format!("{job}/");
+    for files in [vec![(job_dir.as_str(), b"a file now" as &[u8])], vec![(as_folder.as_str(), b"" as &[u8])]] {
+        let mut all: Vec<(&str, &[u8])> = vec![("index.json", &index)];
+        all.extend(files.clone());
+        let name = crafted_backup(&lib, &clock, &all);
+        let e = restore_as(&lib, "PC-A", &name, &clock).err().unwrap_or_else(|| panic!("{files:?} was restored over records"));
+        assert!(e.contains("record") && e.contains("Nothing was restored"), "{e}");
+        std::fs::remove_file(lib.join("Backups").join(&name)).unwrap();
+        assert_eq!(files_under(&lib), before, "{files:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// S5 rest: a job another PC reads while the restore is recorded but before
+/// its files are in place (same revision as the backup's) gets no
+/// generation the finished restore has: saving it afterwards asks.
+#[test]
+fn a_job_read_while_a_restore_runs_asks_before_saving() {
+    let clock = Clock::at(1_794_216_000);
+    let (d, mut s, lib, chosen) = restore_shop("restore_r2_running_read", &clock);
+    let job_id = call(&mut s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().find(|e| e["kind"] == "job").unwrap()["id"].as_u64().unwrap();
+    let read = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (l2, c2, r2) = (lib.clone(), clock.clone(), read.clone());
+    crate::shared::hooks::set(move |step| {
+        if step == "restore: recorded" && r2.borrow().is_none() {
+            let pc_b = crate::library::Library::at(&l2, &Who::new("kim", "PC-B"), &c2);
+            *r2.borrow_mut() = Some(pc_b.load_job(job_id).unwrap());
+        }
+    });
+    clock.advance(std::time::Duration::from_secs(60));
+    let r = restore_as(&lib, "PC-A", &chosen, &clock);
+    crate::shared::hooks::clear();
+    r.unwrap();
+    let job = read.borrow_mut().take().expect("never read mid-restore");
+    let record = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, job_id);
+    let restored = std::fs::read(&record).unwrap();
+    let pc_b = crate::library::Library::at(&lib, &Who::new("kim", "PC-B"), &clock);
+    let got = pc_b.save_job(&job, crate::library::SaveTo::Read(job.library.unwrap()));
+    assert!(matches!(got, Err(crate::library::Refused::Changed(_))), "saved without asking: {got:?}");
+    assert_eq!(std::fs::read(&record).unwrap(), restored);
+    // A shop never restored: saves are as they were (generation 0).
+    assert_eq!(crate::shop::restore_generation(&d.join("library-none")), 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
