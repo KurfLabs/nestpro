@@ -88,9 +88,18 @@ pub fn file(dir: &Path) -> PathBuf {
     dir.join(FILE)
 }
 
-/// A PC's record in the shop folder.
+/// A PC's record in the shop folder: a short readable part of its name and
+/// a key made from the whole name (`PC-A-3f1c…json`), so two PCs whose names
+/// start alike, or differ only in signs a file name can't hold, never share a
+/// record (SH4).
 pub fn record_file(dir: &Path, pc: &str) -> PathBuf {
-    dir.join(PCS).join(format!("{}.json", shared::file_safe(pc)))
+    let short: String = shared::file_safe(pc).chars().take(24).collect();
+    dir.join(PCS).join(format!("{short}-{:016x}.json", name_key(pc)))
+}
+
+/// FNV-1a of the PC's whole name: the same on every PC and every version.
+fn name_key(pc: &str) -> u64 {
+    pc.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
 
 /// The shop in `dir`: None when the folder holds no shop file. A folder that
@@ -108,29 +117,55 @@ pub fn read(dir: &Path) -> Result<Option<ShopFile>, String> {
     }
 }
 
-/// Write the shop file, under the Library's write lock (LB1, LB3).
+/// Write the shop file, under the Library's write lock (LB1, LB3). Never
+/// makes the shop folder: a Library that went away fails the write (SH2).
 pub fn write(dir: &Path, shop: &ShopFile, lock: &WriteLock) -> Result<(), String> {
     let text = serde_json::to_vec_pretty(shop).map_err(|e| e.to_string())?;
-    shared::write_file(&file(dir), &text, Some(lock))
+    shared::write_existing(&file(dir), &text, lock)
 }
 
-/// Write this PC's record, under the Library's write lock (LB1, LB3).
+/// Write this PC's record, under the Library's write lock (LB1, LB3). The
+/// `Shop` folder is made again if someone took it away, but only inside a
+/// shop folder that is there: never the shop folder or those above it (SH2).
 pub fn write_record(dir: &Path, rec: &PcRecord, lock: &WriteLock) -> Result<(), String> {
     let text = serde_json::to_vec_pretty(rec).map_err(|e| e.to_string())?;
-    shared::write_file(&record_file(dir, &rec.pc), &text, Some(lock))
+    let pcs = dir.join(PCS);
+    if !pcs.is_dir() {
+        lock.still_held()?;
+        match std::fs::create_dir(&pcs) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(format!("{} can't be made ({e})", pcs.display())),
+            _ => {}
+        }
+    }
+    shared::write_existing(&record_file(dir, &rec.pc), &text, lock)
 }
 
-/// Every PC's record in the shop, by PC name. A record that can't be read
-/// (being written, or damaged) is left out.
-pub fn records(dir: &Path) -> Vec<PcRecord> {
-    let mut out: Vec<PcRecord> = std::fs::read_dir(dir.join(PCS))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .filter_map(|p| serde_json::from_slice::<PcRecord>(&std::fs::read(&p).ok()?).ok())
-        .collect();
+/// Every PC's record in the shop, by PC name. A record that is damaged is
+/// left out; a shop folder or `Shop` folder that can't be read (the share
+/// dropped while reading it) is an error naming it, never an empty list.
+pub fn records(dir: &Path) -> Result<Vec<PcRecord>, String> {
+    let pcs = dir.join(PCS);
+    let failed = |e: std::io::Error| {
+        if dir.is_dir() { format!("The PCs list in {} can't be read ({e}). Check the network or the server.", pcs.display()) } else { crate::library::unreachable(dir) }
+    };
+    let list = match std::fs::read_dir(&pcs) {
+        // No PC has recorded itself yet (or someone took the folder away).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir.is_dir() => return Ok(vec![]),
+        r => r.map_err(failed)?,
+    };
+    let mut out = vec![];
+    for e in list {
+        let p = e.map_err(failed)?.path();
+        if !p.extension().is_some_and(|x| x == "json") {
+            continue;
+        }
+        match std::fs::read(&p) {
+            Ok(bytes) => out.extend(serde_json::from_slice::<PcRecord>(&bytes).ok()),
+            // Gone since the folder was listed (a PC's record replaced).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(failed(e)),
+        }
+    }
     out.sort_by_key(|r| r.pc.to_lowercase());
-    out
+    Ok(out)
 }
