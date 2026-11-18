@@ -97,7 +97,8 @@ jobs:
           $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object FullName -match 'Hostx64\\x64' | Select-Object -First 1
           $deps = & $dumpbin.FullName /nologo /dependents app\target\x86_64-pc-windows-msvc\release\nestpro.exe
           $deps
-          if ($deps -match '(?i)(vcruntime|msvcp)[0-9_]*\.dll') { throw "nestpro.exe still needs the Visual C++ runtime DLL" }
+          if ($LASTEXITCODE -ne 0 -or -not ($deps -match 'Image has the following dependencies')) { throw "dumpbin gave no dependency list for nestpro.exe" }
+          if ($deps -match '(?i)\b(vcruntime|msvcp)[a-z0-9_]*\.dll') { throw "nestpro.exe still needs the Visual C++ runtime DLL" }
           "nestpro.exe imports no VCRUNTIME/MSVCP DLL"
       - uses: actions/setup-dotnet@v4
         with:

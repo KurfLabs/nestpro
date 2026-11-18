@@ -37,7 +37,17 @@ git rev-parse -q --verify "$to^{commit}" >/dev/null || refuse "$to is not a comm
 if [ -z "$from" ]; then
   # The last release: a plain vX.Y.Z tag on main's own line, never a
   # pre-release (v0.2.0-rc1) or a tag on a merged branch's commit.
-  from=$(git describe --tags --abbrev=0 --first-parent --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$to^" 2>/dev/null) || from=""
+  # Only tags the release check accepts (vMAJOR.MINOR.PATCH, nothing after):
+  # v1.2.2+build.1 or v0.2.0-rc1 are never a release.
+  # A lightweight tag has no peeled object: its first field is the commit.
+  tags=$(git for-each-ref refs/tags --format='%(*objectname) %(objectname) %(refname:short)' 2>/dev/null |
+    awk '$NF ~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { print $1, $NF }') || tags=""
+  # awk reads the whole list (no early exit), so git never writes into a closed pipe.
+  from=$(git rev-list --first-parent "$to^" 2>/dev/null |
+    awk -v tags="$tags" '
+      BEGIN { n = split(tags, line, "\n"); for (i = 1; i <= n; i++) { split(line[i], f, " "); tag[f[1]] = f[2] } }
+      found == "" && ($1 in tag) { found = tag[$1] }
+      END { if (found != "") print found }') || from=""
 fi
 if [ -n "$from" ]; then
   git rev-parse -q --verify "$from^{commit}" >/dev/null || refuse "$from is not a commit."

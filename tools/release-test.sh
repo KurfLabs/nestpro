@@ -87,6 +87,17 @@ git_ merge -q --no-ff side -m "Merge PR #2: side"
 expect 0 "0.2.0" "a tag on main's merge" check --main main v0.2.0
 git_ switch -q --detach side
 expect 1 "isn't on main" "a tag on a merged side-branch commit" check --main main v0.2.0
+# A long main: the check reads git's whole list, so git never writes into a
+# closed pipe (which pipefail would turn into a refusal of a good tag).
+git_ switch -q main
+{ for i in $(seq 1 3000); do
+    printf 'commit refs/heads/long\nmark :%d\ncommitter t <t@example.com> %d +0000\ndata 2\nc\n' "$i" "$((1700000000 + i))"
+    if [ "$i" = 1 ]; then printf 'from main\n'; fi
+    printf '\n'
+  done; } | git_ fast-import --quiet
+git_ switch -q long
+expect 0 "0.2.0" "a tag at the tip of a 3,000-commit main" check --main long v0.2.0
+git_ switch -q main
 
 # ---- release-notes.sh: the commits and the machine-program section ----------
 
@@ -116,6 +127,8 @@ git_ switch -q main && git_ merge -q --no-ff rapids -m "Merge PR #5: Shorter rap
 echo 3 > app/src/ui.rs && git_ commit -qam "Bigger buttons"
 # A pre-release tag isn't a release: the notes still start at v0.1.0.
 git_ tag v0.1.1-rc1
+# Nor is a tag with build data: only the plain vMAJOR.MINOR.PATCH the release check accepts.
+git_ tag v0.1.2+build.1
 # A merge made on GitHub's site: the subject names the branch, the body the title.
 git_ switch -qc acme/joints && echo 2 > app/src/kerf.rs && git_ commit -qam "wip"
 git_ switch -q main && git_ merge -q --no-ff acme/joints -m "Merge pull request #7 from acme/joints" -m "Joints on small holes"
@@ -127,7 +140,7 @@ expect 0 "## Changes machine programs" "the section is there" notes
 expect 0 "- Shorter rapids between parts (#5): app/src/cnc.rs, app/src/post.rs" "a merge touching two risky files, named once with both" notes
 expect 0 "- Kerf on small holes (" "a direct commit touching a risky file" notes
 expect 0 "Since v0.1.0: 6 changes." "the range starts at the last release tag" notes
-expect 0 "Since v0.1.0: 6 changes." "not at a pre-release tag (v0.1.1-rc1) or a tag on a merged branch (v0.1.5)" notes
+expect 0 "Since v0.1.0: 6 changes." "not at a pre-release tag (v0.1.1-rc1), a build tag (v0.1.2+build.1) or a tag on a merged branch (v0.1.5)" notes
 expect 0 "- Joints on small holes (#7): app/src/kerf.rs" "a merge made on GitHub's site, by its title" notes
 lacks "from acme/joints" "not by its branch" notes
 expect 0 "- Explain the stock list (" "every change is listed" notes

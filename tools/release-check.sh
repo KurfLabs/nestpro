@@ -49,7 +49,9 @@ fi
 # from main, but its files were never main's.
 if [ -n "$main_ref" ]; then
   sha=$(git rev-parse HEAD 2>/dev/null)
-  git rev-list --first-parent "$main_ref" 2>/dev/null | grep -qx "$sha" ||
+  # grep reads the whole list (no -q): stopping at the match would leave git
+  # writing into a closed pipe, and pipefail would turn the match into a refusal.
+  git rev-list --first-parent "$main_ref" 2>/dev/null | grep -x -- "$sha" >/dev/null ||
     refuse "commit $(git rev-parse --short HEAD 2>/dev/null) isn't on main ($main_ref): releases are tagged on main."
 fi
 echo "$version"
