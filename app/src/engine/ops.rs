@@ -3632,6 +3632,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Settings → Shop/Roll out to the shop…", "gui: rolling out is a person's, on the admin PC, after the warning (UP19, UP20); shop mode=rollout refuses agents with the reason"),
     ("Settings → Shop/{&format!(\"Roll back to {p}…\")}", "gui: rolling back is a person's, on the admin PC, after the warning (UP23, UP24); shop mode=rollback refuses agents with the reason"),
     ("Settings → Shop/Stop trying", "gui: ends this PC's trial and points its Library back at the shop, a person's choice (UP17); shop mode=updates says whether this PC is trying a release"),
+    ("jobtree.rs/Keep the program open", "gui: cancels closing the window while a backup or restore runs (S2); agents have no window to close"),
     ("rolloutui.rs/Stop trying", "gui: ends this PC's trial and points its Library back at the shop, a person's choice (UP17); shop mode=updates says whether this PC is trying a release"),
     // --- labels built at run time ("{expression}") ---
     ("ERP / MES/{&format!(\"{}\\njobs\", p.name())}", "todo: [AGT-7] bring ERP work in as a job"),

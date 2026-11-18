@@ -758,6 +758,16 @@ pub struct Trial {
     pub backup: PathBuf,
 }
 
+/// UP16 (S4): trial copies go in `root`, a folder of this PC's own: never
+/// in the shop folder `dir`, nor in a folder that is the same place under
+/// another name (both are resolved before anything is made).
+pub fn trial_place_ok(dir: &Path, root: &Path) -> Result<(), String> {
+    if shared::inside(root, dir) {
+        return Err(format!("Nothing was tried: trial copies go in {}, which is inside the shop folder {}, and a trial never writes to the shop folder.", root.display(), dir.display()));
+    }
+    Ok(())
+}
+
 /// UP16: begin trying `version` on this PC (the admin PC of the shop in
 /// `dir`): take a fresh backup of the shop (BK7: Back up now) and unpack it
 /// into a new folder in `root`, on this PC, marked as a trial copy. From
@@ -766,6 +776,7 @@ pub struct Trial {
 /// its own and no second place, so its own backups never mix with the
 /// shop's. `this` is the program writing the copy's shop file.
 pub fn start_trial(dir: &Path, root: &Path, version: &str, who: &Who, clock: &Clock, this: &str, own: &backup::Settings) -> Result<Trial, String> {
+    trial_place_ok(dir, root)?;
     let s = shop::read(dir)?.ok_or_else(|| format!("{} isn't a shop. Nothing was tried.", dir.display()))?;
     if let Some(m) = s.trial() {
         return Err(format!("This PC is already trying {} on a copy of the shop. Stop trying first.", m.version));
@@ -1296,6 +1307,33 @@ mod tests {
         assert_eq!(t.mark.shop_version.as_deref(), Some("0.4.0"));
         assert!(matches!(crate::engine::updates::from_shop(&lib, "0.5.0"), Ok(crate::engine::updates::FromShop::Update { back: true, ref version, .. }) if version == "0.4.0"));
         assert!(shop::versions(&lib, "0.5.0").at(&lib.join("index.json")).ahead().is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S4: a shop folder that is `Documents\Sheet Nesting` itself never gets
+    /// the trial copy: a place inside the shop (also by another name, a
+    /// link to it) is refused before the backup is taken or a folder made.
+    #[test]
+    fn a_trial_copy_never_goes_inside_the_shop_folder() {
+        let d = tmp("rollout_trial_place");
+        let lib = acme(&d, "0.4.0");
+        rollout(&lib, &fake_release(&d, "0.4.0"), &sam(), "0.4.0").unwrap();
+        let c = Clock::at(1_794_216_600);
+        let mut places = vec![lib.join("Trials"), lib.join("Library").join("..").join("Trials")];
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&lib, d.join("link")).unwrap();
+            places.push(d.join("link").join("Trials"));
+        }
+        for root in places {
+            let e = start_trial(&lib, &root, "0.5.0", &sam(), &c, "0.4.0", &Default::default()).unwrap_err();
+            assert!(e.contains("inside the shop folder") && e.starts_with("Nothing was tried"), "{e}");
+        }
+        assert!(!lib.join("Trials").exists(), "a trial folder was made in the shop");
+        assert_eq!(crate::backup::backups_in(&lib, &lib.join(crate::backup::FOLDER)).map(|l| l.len()).unwrap_or(0), 0, "a backup was taken for a trial that was refused");
+        assert!(shop::read(&lib).unwrap().unwrap().trial().is_none());
+        let t = start_trial(&lib, &d.join("pc").join("Trials"), "0.5.0", &sam(), &c, "0.4.0", &Default::default()).unwrap();
+        assert!(!crate::shared::inside(&t.copy, &lib), "{}", t.copy.display());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

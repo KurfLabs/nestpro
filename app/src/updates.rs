@@ -335,6 +335,48 @@ pub struct Handoff {
     /// S3: the Library the window works on, and this PC's own Library
     /// folder, so the close can look at its shop once more.
     place: Mutex<Option<(PathBuf, PathBuf)>>,
+    /// S2: backups and restores of the Library under way (how many of
+    /// each): the window doesn't close, and nothing installs, until they
+    /// are done.
+    work: Mutex<(u32, u32)>,
+    work_done: Condvar,
+}
+
+/// S2: work on the Library's files that must never stop halfway when the
+/// program closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Work {
+    /// A backup being taken (the day's, Back up now, or Try on this PC's).
+    Backup,
+    /// A restore putting a backup's files back (BK8).
+    Restore,
+}
+
+impl Work {
+    /// What the window says while closing waits for it.
+    pub fn closing_text(self) -> &'static str {
+        match self {
+            Work::Restore => "Restoring — the program closes when it's done.",
+            Work::Backup => "Backing up the shop — the program closes when it's done.",
+        }
+    }
+}
+
+/// S2: held by a backup's or a restore's thread while it runs.
+pub struct WorkGuard {
+    h: &'static Handoff,
+    w: Work,
+}
+
+impl Drop for WorkGuard {
+    fn drop(&mut self) {
+        let mut n = self.h.work.lock().unwrap_or_else(|p| p.into_inner());
+        match self.w {
+            Work::Backup => n.0 = n.0.saturating_sub(1),
+            Work::Restore => n.1 = n.1.saturating_sub(1),
+        }
+        self.h.work_done.notify_all();
+    }
 }
 
 /// The program's own handoff: the window fills it, `install_on_close`
@@ -343,7 +385,43 @@ pub static HANDOFF: Handoff = Handoff::new();
 
 impl Handoff {
     pub const fn new() -> Handoff {
-        Handoff { slot: Mutex::new((0, Stage::Idle)), changed: Condvar::new(), place: Mutex::new(None) }
+        Handoff { slot: Mutex::new((0, Stage::Idle)), changed: Condvar::new(), place: Mutex::new(None), work: Mutex::new((0, 0)), work_done: Condvar::new() }
+    }
+
+    /// S2: a backup or a restore starts: taken on the window's thread before
+    /// its own thread starts, and held by that thread until it is done.
+    pub fn begin(&'static self, w: Work) -> WorkGuard {
+        let mut n = self.work.lock().unwrap_or_else(|p| p.into_inner());
+        match w {
+            Work::Backup => n.0 += 1,
+            Work::Restore => n.1 += 1,
+        }
+        WorkGuard { h: self, w }
+    }
+
+    /// S2: what runs now that closing must wait for (a restore first).
+    pub fn working(&self) -> Option<Work> {
+        let n = *self.work.lock().unwrap_or_else(|p| p.into_inner());
+        if n.1 > 0 {
+            Some(Work::Restore)
+        } else if n.0 > 0 {
+            Some(Work::Backup)
+        } else {
+            None
+        }
+    }
+
+    /// S2: wait until no backup or restore runs (however long it takes:
+    /// ending the program halfway would leave the Library half restored).
+    pub fn wait_for_work(&self) {
+        while self.working().is_some() {
+            crate::shared::pause("close: waiting for a backup or restore");
+            let n = self.work.lock().unwrap_or_else(|p| p.into_inner());
+            if n.0 + n.1 == 0 {
+                break;
+            }
+            let _ = self.work_done.wait_timeout(n, Duration::from_millis(500));
+        }
     }
 
     /// S3: the window works on the Library in `dir` (`own`: this PC's own
@@ -482,6 +560,9 @@ pub fn finish_on_close_with(
     fetch: impl FnOnce(&Chosen) -> Result<(), String>,
     apply: impl FnOnce(&Chosen) -> Result<(), String>,
 ) -> Result<Option<String>, String> {
+    // S2: a backup or a restore still running finishes first: the program
+    // never ends, nor an update installs, halfway through one.
+    h.wait_for_work();
     let queued = h.take_ready(limit);
     let what = queued.as_ref().map_or("The shop's release".to_string(), |c| format!("Version {}", c.version));
     let (tx, rx) = channel();
@@ -527,7 +608,9 @@ pub fn at_close(queued: Option<Chosen>, place: Option<(PathBuf, PathBuf)>, this:
             Some(c) => c.stands().map(|()| Some((c, true))),
         };
     };
-    let shop_dir = match crate::shop::read(&lib) {
+    // S6: the same look as the offer and the download (`standalone`): this
+    // PC's own Library folder not made yet is a PC of its own, not an error.
+    let shop_dir = match crate::engine::updates::shop_of(&lib, &own) {
         Err(e) => return Err(NotStandalone::Unknown(e)),
         Ok(None) => {
             return match queued {
@@ -952,6 +1035,55 @@ mod tests {
         h.withdraw();
         h.done(n, true);
         assert_eq!(h.take_ready(Duration::ZERO), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S2: once the window has closed, a restore (or a backup) still running
+    /// finishes before the hand-off looks at the shop or installs anything.
+    #[test]
+    fn the_close_waits_for_a_restore_still_running() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let h = handoff();
+        let mut guard = Some(h.begin(Work::Restore));
+        assert_eq!(h.working(), Some(Work::Restore));
+        let ended = std::sync::Arc::new(AtomicBool::new(false));
+        let e2 = ended.clone();
+        crate::shared::hooks::set(move |step| {
+            if step == "close: waiting for a backup or restore" {
+                // The restore's thread finishes now.
+                e2.store(true, SeqCst);
+                drop(guard.take());
+            }
+        });
+        let e3 = ended.clone();
+        let r = finish_on_close_with(h, Duration::ZERO, move |_| if e3.load(SeqCst) { Ok(None) } else { Err(NotStandalone::Moved("looked at the shop while a restore ran".into())) }, Duration::from_secs(5), |_| Ok(()), |_| panic!("installed"));
+        crate::shared::hooks::clear();
+        assert_eq!(r, Ok(None));
+        assert_eq!(h.working(), None);
+    }
+
+    /// S6: a PC of its own whose own Library folder isn't made yet (settings,
+    /// no default Library) is offered a public release, downloads it, and
+    /// installs it on close: the close looks at its shop as the offer and
+    /// the download did.
+    #[test]
+    fn a_pc_without_its_library_folder_yet_installs_the_release_it_chose() {
+        let d = tmp("no_own_folder");
+        let own = d.join("own");
+        let h = handoff();
+        h.set_place(&own, &own);
+        let c = Chosen { version: "0.2.0".into(), dir: own.clone(), own: own.clone(), src: Source::Fake(d.join("releases.json")), why: Why::Public };
+        assert_eq!(c.stands(), Ok(()), "the download wouldn't start");
+        let n = h.start(c);
+        h.done(n, true);
+        let mut applied = None;
+        let r = finish_on_close(h, Duration::from_secs(5), |c| {
+            applied = Some(c.version.clone());
+            Ok(())
+        });
+        assert_eq!(r, Ok(Some("0.2.0".into())));
+        assert_eq!(applied.as_deref(), Some("0.2.0"));
+        assert!(!own.exists(), "the close made a Library");
         let _ = std::fs::remove_dir_all(&d);
     }
 

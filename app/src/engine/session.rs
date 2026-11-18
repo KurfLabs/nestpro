@@ -25,6 +25,10 @@ pub struct Session {
     /// Why the open job is read-only (UP9): a newer version saved its file
     /// last. Operations that change it are refused; reading it works.
     read_only: Option<crate::shared::Newer>,
+    /// S10: follow this PC's Library as its settings name it now (the MCP
+    /// server, which runs for a long time beside the window). Off for one
+    /// command and in tests that give their own Library.
+    pub follow: bool,
 }
 
 /// What a call gave back: the JSON answer and, for render, the PNG.
@@ -52,7 +56,41 @@ pub fn job_path(s: &str) -> PathBuf {
 
 impl Session {
     pub fn new(ctx: Ctx) -> Session {
-        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None, read_only: None }
+        Session { ctx, job: None, path: None, stamp: None, undo: vec![], seen: None, read_only: None, follow: false }
+    }
+
+    /// Close the open job: its undo steps and what was read of it go too.
+    /// Gives its file.
+    fn close_job(&mut self) -> Option<PathBuf> {
+        self.job = None;
+        self.undo.clear();
+        self.stamp = None;
+        self.read_only = None;
+        self.path.take()
+    }
+
+    /// S10: this PC's Library as its settings name it now. The window
+    /// changes it (Try on this PC, Stop trying, joining a shop) while an
+    /// agent's session runs: the session follows before anything it does,
+    /// so it never writes jobs or stock in the Library this PC left. Its
+    /// open job is closed then (as when joining, SH10): its undo steps and
+    /// stock booking are the old Library's. Gives what to say, and the job
+    /// closed.
+    fn follow_library(&mut self) -> Option<(String, Option<PathBuf>)> {
+        if !self.follow {
+            return None;
+        }
+        let cfg = crate::settings::AppSettings::read_from(&self.ctx.pc_dir.join(crate::settings::FILE_NAME))?;
+        let now = if cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&cfg.library_dir) };
+        if now == self.ctx.library_dir {
+            return None;
+        }
+        let old = std::mem::replace(&mut self.ctx.library_dir, now.clone());
+        self.ctx.cfg.library_dir = cfg.library_dir;
+        // What was seen of the old Library's holds on jobs (CU7).
+        self.ctx.watch = Default::default();
+        let closed = self.close_job();
+        Some((format!("This PC's Library changed from {} to {} in its settings (in the window: Try on this PC, Stop trying, or joining a shop). This session works in {} from now on.", old.display(), now.display(), now.display()), closed))
     }
 
     /// Open a job file (again, when it changed on disk).
@@ -113,6 +151,15 @@ impl Session {
     /// Run an operation. `job` names the job file (needed for `new`, and when
     /// no job is open yet).
     pub fn call(&mut self, name: &str, job: Option<&str>, args: &Value) -> Result<Reply, String> {
+        // S10: first, the Library this PC works in now. A call that would
+        // have gone to the job it closed changes nothing, and says so.
+        let followed = self.follow_library();
+        if let Some((said, Some(closed))) = &followed {
+            let needs_job = ops::find(name).is_some_and(|o| !matches!(o.kind, Kind::Global | Kind::Create));
+            if job.is_none() && needs_job {
+                return Err(format!("{said} The job open in this session ({}) was closed: it belongs to the Library this PC left. Nothing was changed. Open it again (job=) to work on it.", closed.display()));
+            }
+        }
         // SH11: setup looks at a folder before it changes anything, so it
         // writes no Library's material list first; a join writes the shop's
         // only once the shop passed its checks (below).
@@ -130,6 +177,12 @@ impl Session {
             }
         }
         if let Some(o) = r.json.as_object_mut() {
+            if let Some((said, closed)) = followed {
+                o.insert("library_changed".into(), json!(said));
+                if let Some(p) = closed {
+                    o.insert("closed_job".into(), json!(p.display().to_string()));
+                }
+            }
             if let Some(n) = joined {
                 o.insert("materials_joined".into(), json!(n.note()));
             }
@@ -178,11 +231,7 @@ impl Session {
                 self.ctx.library_dir = d;
                 // SH10: the open job, its undo steps and its stock booking
                 // are the old Library's: never saved into the shop's.
-                self.job = None;
-                self.undo.clear();
-                self.stamp = None;
-                self.read_only = None;
-                if let Some(p) = self.path.take() {
+                if let Some(p) = self.close_job() {
                     outcome.message.push_str(&format!("\nThe job open in this session ({}) was closed: it belongs to the Library this PC left. Open it again to work on it.", p.display()));
                     outcome.data["closed_job"] = json!(p.display().to_string());
                 }
