@@ -7780,6 +7780,12 @@
   "group": "shop",
   "value": "a PC still running the release rolled back from (not in a trial) finds the shop read-only: Restart to go back to 0.4.0; saves read the shop version again under the write lock; at close the shop is looked at once more (30 s): the shop version installs (fetched then if needed), an ended trial doesn't; no answer installs nothing",
   "source": "UP26; own design"
+ },
+ {
+  "name": "Shop file that can't be read",
+  "group": "shop",
+  "value": "a shop file that can't be read while the Library folder can decides nothing: no save, folder change, program, picture, backup or hold in the Library folder or any shop folder (The shop file <path> can't be read … Nothing was saved); files elsewhere save as usual",
+  "source": "UP27; own design"
  }
 ]
 }

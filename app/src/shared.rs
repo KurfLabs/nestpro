@@ -876,6 +876,11 @@ pub struct Versions {
     /// UP16: the real shop folder, when this PC's Library is a trial copy of
     /// it: nothing the trial saves may land in it.
     pub trial_of: Option<PathBuf>,
+    /// UP27: the Library folder whose shop file can't be read while the
+    /// folder can, and why ("The shop file … can't be read …"). What that
+    /// file records (the shop version, a trial's mark) isn't known, so
+    /// nothing is written in that folder, nor in any other shop folder.
+    pub unreadable: Option<(PathBuf, String)>,
 }
 
 /// A file a newer program wrote (UP7), and what to say about it (UP8).
@@ -973,6 +978,36 @@ impl Newer {
     }
 }
 
+/// UP27: may `what` be written at `path` while the Library's shop file
+/// can't be read? Not in the Library folder, nor in any folder holding a
+/// shop (a trial copy's real shop): what the shop file says decides that.
+/// Elsewhere it may.
+pub fn shop_file_read(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
+    let Some((lib, e)) = &versions.unreadable else { return Ok(()) };
+    let in_a_shop = || std::path::absolute(path).is_ok_and(|p| p.ancestors().skip(1).any(|d| d.join(crate::shop::FILE).is_file()));
+    if inside(path, lib) || in_a_shop() {
+        let e = e.trim_end();
+        let what = if what.is_empty() { "It" } else { what };
+        return Err(format!("{e}{} {what} is written only once it can be read. Nothing was saved.", if e.ends_with('.') { "" } else { "." }));
+    }
+    Ok(())
+}
+
+/// UP16, UP21, UP27: may `what` be written at `path` at all, whatever is
+/// there now: not inside the real shop folder from a trial copy, not in the
+/// shop folder from a PC newer than the shop version, and not while the
+/// shop file that says which of these hold can't be read.
+pub fn may_write_in(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
+    shop_file_read(path, versions, what)?;
+    if let Some(shop) = versions.trial_of.as_deref() {
+        trial_may_write(path, shop, what)?;
+    }
+    match versions.at(path).ahead() {
+        Some(n) => Err(n.refusal(what)),
+        None => Ok(()),
+    }
+}
+
 /// UP16: may a PC whose Library is a trial copy of the shop in `shop`
 /// write `what` at `path`? Never inside the real shop folder.
 pub fn trial_may_write(path: &Path, shop: &Path, what: &str) -> Result<(), String> {
@@ -1055,16 +1090,12 @@ pub fn stamped<T: Serialize>(value: &T, version: &str) -> Result<String, String>
 /// to update this PC (UP8). A file that isn't there yet may be written; one
 /// that can't be read just now is refused, as it can't be told older.
 pub fn may_write_over(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
-    // UP16: a trial never writes in the real shop folder.
-    if let Some(shop) = versions.trial_of.as_deref() {
-        trial_may_write(path, shop, what)?;
-    }
-    // UP21: a PC newer than the shop version writes nothing in the shop,
-    // not even a new file; elsewhere it saves as usual.
+    // UP16: a trial never writes in the real shop folder. UP21: a PC newer
+    // than the shop version writes nothing in the shop, not even a new
+    // file; elsewhere it saves as usual. UP27: neither is told while the
+    // shop file can't be read.
+    may_write_in(path, versions, what)?;
     let versions = &versions.at(path);
-    if let Some(n) = versions.ahead() {
-        return Err(n.refusal(what));
-    }
     match std::fs::read(path) {
         Ok(b) => versions.newer(recorded_version(&b).as_deref()).map_or(Ok(()), |n| Err(n.refusal(what))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

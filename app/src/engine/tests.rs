@@ -11742,10 +11742,56 @@ fn another_session_sees_the_restore_and_its_old_job_cant_overwrite() {
     let e = err(&mut b, "library", json!({"mode": "save-job"}));
     assert!(e.contains("since this job file read it"), "{e}");
     assert_eq!(std::fs::read(&record).unwrap(), theirs, "the old job file saved over the restored job");
-    // PC-B's job made since the backup saves again under its own number.
-    let again = call(&mut b2, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
-    assert_eq!(again, made_since);
+    // PC-B's job made since the backup was taken out by the restore: its
+    // save is refused too (review S1), and its number stays free.
+    let e = err(&mut b2, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("taken out of the Library by a restore") && e.contains("copy=true"), "{e}");
+    let gone = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, made_since);
+    assert!(!gone.exists(), "the job the restore took out was put back");
     assert_eq!(std::fs::read(&record).unwrap(), theirs);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// BK12 (review S1): a job saved after the backup, with a sheet booked from
+/// stock, is taken out by the restore, which puts the sheet back in stock.
+/// The PC that still has it open can't save it back under its number
+/// through an agent: refused like a job saved since, nothing written and
+/// nothing taken from stock. Saved as a copy, its sheets are taken afresh
+/// from the stock as restored, never trusted from before the restore.
+#[test]
+fn a_job_a_restore_took_out_is_not_saved_back_and_its_copy_books_afresh() {
+    let d = dir("restore_gone_job");
+    let clock = Clock::at(1_794_216_000);
+    let (mut a, lib) = backup_shop(&d, &clock);
+    let chosen = file_of(&call(&mut a, "shop", None, json!({"mode": "backup"})));
+    let sheets = || crate::stock::Stock::load(&lib).unwrap().get("S1").map_or(0, |i| i.qty);
+    assert_eq!(sheets(), 2);
+    clock.advance(std::time::Duration::from_secs(3600));
+    let mut b = shop_session(&lib, Who::new("kim", "PC-B").as_agent(), &clock);
+    let bp = d.join("PC-B brackets.snjob");
+    call(&mut b, "new", Some(bp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 4, "name": "DEMO-PB"}));
+    call(&mut b, "nest", None, json!({}));
+    let id = call(&mut b, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    let took = 2 - sheets();
+    assert!(took > 0, "the job took no sheet from stock");
+    clock.advance(std::time::Duration::from_secs(600));
+    restore_as(&lib, "PC-A", &chosen, &clock).unwrap();
+    assert_eq!(sheets(), 2, "the restore put the stock back");
+    let record = crate::library::Library::at(&lib, &Who::new("x", "y"), &clock).path(crate::library::Kind::Job, id);
+    assert!(!record.exists());
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 90, "h": 90, "qty": 1, "name": "DEMO-PX"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("PC-B brackets") && e.contains("was taken out of the Library by a restore of the shop from a backup (sam on PC-A at ") && e.contains("Nothing was saved and nothing taken from stock") && e.contains("copy=true"), "{e}");
+    assert!(!record.exists(), "the job the restore took out was put back");
+    assert_eq!(sheets(), 2);
+    // As a copy: a new job, its sheets taken from the stock as restored.
+    let copy = call(&mut b, "library", None, json!({"mode": "save-job", "copy": true}));
+    let copy_id = copy["data"]["id"].as_u64().unwrap();
+    assert_ne!(copy_id, id);
+    let held: i32 = jobfile::load(&bp).unwrap().held.values().sum();
+    assert!(held > 0, "{copy}");
+    assert_eq!(sheets(), 2 - held, "{copy}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -12684,6 +12730,105 @@ fn a_pc_still_on_the_release_left_opens_the_shop_read_only_with_the_restart_mess
     assert!(r["message"].as_str().unwrap().contains("Restart to go back to 0.4.0"), "{r}");
     // Once it runs 0.4.0 again (installed when its program closed).
     opens_and_saves(&lib, &jp, "0.4.0", "DEMO-001 back");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP21 (review S5): a PC on the release the shop rolled back from changes
+/// no folder in the shop: making or renaming a job or part folder and
+/// moving a saved job are refused with the restart message, and the folder
+/// trees stay as they were. On the shop version it changes them.
+#[test]
+fn a_pc_on_the_release_left_changes_no_library_folder() {
+    let d = dir("rollback_folders");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    let mut a = pc_running(&lib, admin().as_agent(), "0.5.0");
+    call(&mut a, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    call(&mut a, "part-folders", None, json!({"mode": "new", "name": "Brackets"}));
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let trees = || [crate::library::Kind::Job, crate::library::Kind::Product].map(|k| std::fs::read(lib.join(crate::folders::file_name(k))).unwrap());
+    let before = trees();
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    for (op, args) in [
+        ("job-folders", json!({"mode": "new", "name": "Beta"})),
+        ("job-folders", json!({"mode": "rename", "folder": "Acme", "name": "Acme 2"})),
+        ("job-folders", json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme"})),
+        ("part-folders", json!({"mode": "new", "name": "Beta"})),
+        ("part-folders", json!({"mode": "rename", "folder": "Brackets", "name": "Brackets 2"})),
+    ] {
+        let e = err(&mut b, op, args.clone());
+        assert!(e.contains("Restart to go back to 0.4.0"), "{op} {args}: {e}");
+    }
+    assert_eq!(trees(), before, "a PC on the release left changed the Library's folders");
+    let mut c = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.4.0");
+    call(&mut c, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme"}));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP7, UP21 (review S9): `program out=` is never written over a job file
+/// or a Library record (the stock, the list), as `render` and
+/// `export-part-dxf` aren't; a PC on the release the shop rolled back from
+/// writes no program into the shop folder, and writes one elsewhere.
+#[test]
+fn a_program_is_never_written_over_the_librarys_files_nor_into_a_read_only_shop() {
+    let d = dir("program_out");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let jp = job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    let mut s = pc_running(&lib, Who::new("lee", "PC-C").as_agent(), "0.5.0");
+    let job = jp.to_str().unwrap();
+    call(&mut s, "nest", Some(job), json!({}));
+    for out in [crate::stock::Stock::file(&lib), jp.clone(), lib.join("index.json")] {
+        let before = std::fs::read(&out).unwrap();
+        let e = s.call("program", Some(job), &json!({"sheet": 1, "out": out.to_str().unwrap()})).err().expect("a program was written over a Library file");
+        assert!(e.contains("Pick another out") && e.contains("Nothing was written"), "{e}");
+        assert_eq!(std::fs::read(&out).unwrap(), before, "{}", out.display());
+    }
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let into_shop = lib.join("DEMO-001 sheet 1.cnc");
+    let e = b.call("program", Some(job), &json!({"sheet": 1, "out": into_shop.to_str().unwrap()})).err().expect("a PC on the release left wrote into the shop");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
+    assert!(!into_shop.exists());
+    let own = d.join("DEMO-001 sheet 1.cnc");
+    call(&mut b, "program", Some(job), json!({"sheet": 1, "out": own.to_str().unwrap()}));
+    assert!(own.is_file());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// UP27 (review S11): the shop file can't be read (damaged) while the
+/// Library's records can. Its shop version isn't known, so a PC on the
+/// release the shop rolled back from saves nothing in the shop: not a job
+/// over its record, not the stock, not a folder, not a program, each
+/// refused naming the shop file. Its own job file outside the shop saves.
+/// Readable again, the restart message is back.
+#[test]
+fn a_shop_file_that_cant_be_read_lets_nothing_be_written_in_the_shop() {
+    let d = dir("shop_file_unreadable");
+    let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
+    let jp = job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
+    let shop = lib.join(crate::shop::FILE);
+    let good = std::fs::read(&shop).unwrap();
+    std::fs::write(&shop, b"{ damaged").unwrap();
+    let before = files_under(&lib);
+    let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
+    let job = jp.to_str().unwrap();
+    call(&mut b, "rename", Some(job), json!({"name": "DEMO-001 x"}));
+    call(&mut b, "nest", Some(job), json!({}));
+    let cant = format!("The shop file {} can't be read", shop.display());
+    for (op, args) in [
+        ("library", json!({"mode": "save-job"})),
+        ("stock", json!({"mode": "create", "ref": "S3", "w": 1500, "h": 750, "thickness": 3, "qty": 1})),
+        ("job-folders", json!({"mode": "new", "name": "Beta"})),
+        ("program", json!({"sheet": 1, "out": lib.join("DEMO-001.cnc").to_str().unwrap()})),
+    ] {
+        let e = b.call(op, Some(job), &args).err().unwrap_or_else(|| panic!("{op} {args} wrote in the shop"));
+        assert!(e.contains(&cant) && e.contains("Nothing was saved"), "{op} {args}: {e}");
+    }
+    assert_eq!(files_under(&lib), before, "something was written in the shop");
+    std::fs::write(&shop, &good).unwrap();
+    let e = b.call("library", Some(job), &json!({"mode": "save-job"})).err().expect("saved into the shop");
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

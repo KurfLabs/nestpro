@@ -171,7 +171,7 @@ mod refresh_tests {
     }
 
     fn saved(revision: u64) -> Changed {
-        Changed { kind: crate::library::Kind::Job, id: 7, name: "DEMO-7".into(), by: Some(crate::shared::Who::new("Sam", "PROG-2")), at: 1_794_216_000, revision, restore: 0 }
+        Changed { kind: crate::library::Kind::Job, id: 7, name: "DEMO-7".into(), by: Some(crate::shared::Who::new("Sam", "PROG-2")), at: 1_794_216_000, revision, restore: 0, gone: false }
     }
 
     /// LB15: an open job someone else saved reloads by itself when it has no

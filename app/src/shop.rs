@@ -288,19 +288,25 @@ impl ShopFile {
 /// UP7, UP8, UP21: the versions a Library file in `dir` is judged by: this
 /// program's `this`, and the shop's version when `dir` is a shop folder that
 /// records one. A shop file that can't be read just now names no shop
-/// version (the refusal then names only the file's). Files written by a
-/// release the shop rolled back from count as the shop version's (UP10,
-/// UP25). A PC on a
-/// release newer than the shop version, in the shop itself (not a trial
-/// copy), gets the whole shop read-only (UP21).
+/// version, and nothing is written in the shop on it (UP27: its version and
+/// a trial's mark aren't known). Files written by a release the shop rolled
+/// back from count as the shop version's (UP10, UP25). A PC on a release
+/// newer than the shop version, in the shop itself (not a trial copy), gets
+/// the whole shop read-only (UP21).
 pub fn versions(dir: &Path, this: &str) -> shared::Versions {
-    let s = read(dir).ok().flatten();
+    let read = read(dir);
+    // A folder that can't be reached is said by the write itself (LB11).
+    let unreadable = match &read {
+        Err(e) if dir.is_dir() => Some((dir.to_path_buf(), e.clone())),
+        _ => None,
+    };
+    let s = read.ok().flatten();
     let shop = s.as_ref().and_then(|s| s.shop_version().map(String::from));
     let trial_of = s.as_ref().and_then(|s| s.trial()).map(|m| PathBuf::from(m.shop_folder));
     let back_to = shop.clone().filter(|v| trial_of.is_none() && shared::version_order(this, v) == Some(std::cmp::Ordering::Greater));
     let shop_dir = shop.as_ref().map(|_| dir.to_path_buf());
     let rolled_back_from = s.as_ref().map(ShopFile::rolled_back_from).unwrap_or_default();
-    shared::Versions { this: this.to_string(), shop, rolled_back_from, back_to, shop_dir, trial_of }
+    shared::Versions { this: this.to_string(), shop, rolled_back_from, back_to, shop_dir, trial_of, unreadable }
 }
 
 /// Write this PC's record, under the Library's write lock (LB1, LB3). The
