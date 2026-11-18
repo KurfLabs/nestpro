@@ -11797,6 +11797,8 @@ fn the_roll_back_warning_names_what_may_be_lost_and_the_pcs() {
             "0.5.0 stays in the shop folder's Updates, so it can be rolled out again.",
         ]
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
 
 // ---------------------------------------------------------------------------
 // Joining a shop, review round 1 (ticket #182): what a join leaves behind,
