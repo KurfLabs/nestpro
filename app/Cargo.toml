@@ -23,6 +23,10 @@ geo = { version = "0.33", default-features = false }
 # The Library's daily backups (backup.rs): deflate in pure Rust only, the
 # version the installer crate already brings in.
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Checking a release's package against its index before it becomes the shop
+# version (engine/rollout.rs): the versions the installer crate already brings in.
+sha1 = "0.11.0"
+sha2 = "0.11.1"
 
 # HTTPS for ERP/MES integrations (integrations/http.rs): Windows' own TLS
 # (schannel, uses the Windows certificate store) there; rustls elsewhere.

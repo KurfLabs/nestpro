@@ -181,3 +181,42 @@ downloaded or read, so the newest release could go missing and an older one be o
   "notes": "..."}`. A file that isn't there plays no connection. `--update-chosen` and
   `--whats-new` show the banner after Update when I close, and What's new, for screenshots.
   Tests never read GitHub.
+
+## Updates in a shop
+
+A PC in a shop never checks GitHub by itself. The admin PC decides which release the shop runs
+(ADR 0006, rules UP15–UP22 in `app/MECHANICS.md`):
+
+- **Check GitHub** on the admin PC's Settings → Shop → Updates (a person's click) shows the
+  newest published release, with What's new.
+- **Try on this PC** needs a release to go back to: a shop with no shop version yet first rolls
+  out the release this PC runs. It then fetches the tried release's index (`releases.win.json`) and full package into
+  a release folder beside this PC's settings (`Releases\<version>`), takes a fresh backup of the
+  shop and unpacks it into `Documents\Sheet Nesting\Trials\<shop> trying <version>`, which
+  becomes this PC's Library. The release installs when the program closes, from that folder
+  (`FileSource`, the exact version). Nothing the trial saves reaches the shop folder. When the
+  tried release first opens the copy, its one-time changes to the shop's files run there.
+  **Stop trying** points the Library back at the shop folder; the shop version installs when
+  the program closes, and the shop is read-only on this PC until then.
+- **Roll out to the shop** rolls out the release this PC runs, after a warning that names the
+  PCs behind and a change of file layout. The package is checked against the release's index
+  (`Size`, and `SHA256`, or `SHA1` when that's all it gives) and copied into a staging folder in
+  `Updates` before the Library's write lock is taken. Under the lock, an index listing only that
+  release is written, the folder is renamed to `Updates\<version>`, the release's one-time changes
+  run on the shop, and it becomes the shop version, the one before kept beside it for roll back.
+  Rolling the shop version out again copies only its package, when the one in `Updates` is
+  missing or damaged. Agents are refused, and so is a roll out while a job from the trial copy is
+  open.
+- **Every other PC** reads the shop version when the program opens and at the Library's quick
+  check. When its own version differs, it fetches that version from `Updates\<version>`
+  (`FileSource`, with `AllowVersionDowngrade` when it goes back to an older shop version) and
+  shows "Update ready, restart when you're done". It installs with `wait_exit_then_apply_updates`
+  once the window has closed, and only while that release is still the shop version. The
+  installer finds a downloaded release by itself only when it is newer
+  (`get_update_pending_restart`), so the program keeps the release it fetched from the folder
+  and hands that over.
+- **Trying it without GitHub:** with `--fake-releases=<file>` a release is made up when it is
+  fetched (an index and a package that are no program), so the whole flow can be shown on any
+  system. `--shop-demo --rollout-demo=warning|ready|trial` shows the warning before Roll out,
+  "Update ready" on another PC, and the trial banner, on a made-up shop. Tests use made-up
+  release folders.

@@ -32,6 +32,8 @@ pub const MAX_REF: usize = 40;
 
 const FORMAT: &str = "nestpro-stock";
 const VERSION: u32 = 1;
+/// The stock file's layout, as a roll out records it (UP20).
+pub const LAYOUT: u32 = VERSION;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Kind {

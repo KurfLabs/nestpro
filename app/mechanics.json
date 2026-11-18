@@ -7708,6 +7708,54 @@
   "group": "shop",
   "value": "next quick check, from one shop file read: restored / being restored / stopped halfway; open jobs wait while it runs; baseline taken when the window first shows the Library; open jobs reload or ask; old job saves ask; Backups card shows the last restore; agents shop last_restore (running too)",
   "source": "BK13; own design"
+ },
+ {
+  "name": "shop updates card",
+  "group": "shop",
+  "value": "Settings → Shop → Updates in a shop: shop version, this PC's version and what it installs; admin PC only: Check GitHub (a person's click), What's new, Try on this PC, Roll out to the shop, Stop trying",
+  "source": "UP15; own design"
+ },
+ {
+  "name": "try on this PC",
+  "group": "shop",
+  "value": "admin PC, a release newer than the shop version; needs a shop version to go back to (a new shop first rolls out this PC's release) whose package is whole; the window's shop writers finish first (a backup under way stops it, holds let go now); settings saved before the switch, else nothing changes; fresh backup unpacked into Documents\\Sheet Nesting\\Trials as this PC's Library (own backup id, no second place); installs on close; nothing written into the real shop folder (saves, job files, programs, pictures)",
+  "source": "UP16; own design"
+ },
+ {
+  "name": "stop trying",
+  "group": "shop",
+  "value": "back to the shop folder at once (saved first), shop version installs on close (shop folder read-only until then); copy kept; a trial whose shop version changed meanwhile ends when the program opens, before the active job is reopened; an unreachable shop keeps the copy",
+  "source": "UP17; own design"
+ },
+ {
+  "name": "one-time changes",
+  "group": "shop",
+  "value": "tied to a release; run on the trial copy once that release opens it, on the shop only at roll out on the admin PC under the lock; recorded by name in the shop file, never twice; each safe to run again after a stop before its record; a failure stops the roll out",
+  "source": "UP18; own design"
+ },
+ {
+  "name": "roll out",
+  "group": "shop",
+  "value": "person on the admin PC only (agents refused), not while a trial job is open; the release this PC runs, newer than the shop version (same version: package-only repair when damaged); package checked by size (required) and SHA-256/SHA-1, the admin PC offering the repair of a damaged shop-version package; staged in Updates before the lock, published under it; one-time changes, shop version + previous + layouts; only folders this program made are taken out, an unmarked release folder never replaced; no job opens while it runs",
+  "source": "UP19; own design"
+ },
+ {
+  "name": "roll out warning",
+  "group": "shop",
+  "value": "PCs behind (each opens new jobs read-only until it updates), newer file layout than the shop's last roll out, PCs ahead; Roll out or Cancel",
+  "source": "UP20; own design"
+ },
+ {
+  "name": "updates from the shop folder",
+  "group": "shop",
+  "value": "shop version read at start and each quick check; a different version fetched from Updates\\<version>, never the internet; banner Update ready, restart when you're done; installs when the window has closed, only if still the shop version; a PC newer than the shop version finds the shop folder read-only (files elsewhere are its own), starts no backup, holds no job, keeps its own PC record",
+  "source": "UP21; own design"
+ },
+ {
+  "name": "PCs against the shop version",
+  "group": "shop",
+  "value": "PCs list marks behind and ahead; agents' shop gives shop_version, previous_shop_version, releases_in_updates and behind/ahead per PC",
+  "source": "UP22; own design"
  }
 ]
 }

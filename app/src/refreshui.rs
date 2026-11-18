@@ -107,6 +107,8 @@ impl App {
     /// during the look changes the stamp after it was taken, so the next
     /// look reads again. Reads only.
     pub fn refresh_check(&mut self, full: bool) {
+        // UP21: the shop version is looked at again at each quick check.
+        self.rollout.look = true;
         let dir = self.library_dir();
         let mut full = full;
         if self.autorefresh.down {

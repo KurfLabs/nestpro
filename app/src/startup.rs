@@ -447,7 +447,7 @@ impl crate::App {
         self.redo.clear();
         // S2: a PC in a shop never takes a public release: whatever was
         // offered or chosen from them is withdrawn.
-        self.setui.upd.withdraw(&crate::updates::HANDOFF);
+        self.setui.upd.withdraw(self.handoff);
         self.setui.shop = None;
         Ok(self.library_folder_changed())
     }

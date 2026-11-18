@@ -58,6 +58,7 @@ mod library;
 mod folders;
 mod libtree;
 mod refreshui;
+mod rolloutui;
 mod shared;
 mod shop;
 mod region;
@@ -420,6 +421,11 @@ pub struct App {
     pub cfg: settings::AppSettings,
     pub cfg_saved: settings::AppSettings,
     pub setui: settings_ui::SettingsUi,
+    /// Updates in a shop: the shop version, a trial and roll out (UP15–UP22).
+    pub rollout: rolloutui::RolloutUi,
+    /// Where a chosen update waits for the program to close: the program's
+    /// own (a test gives one of its own).
+    pub handoff: &'static updates::Handoff,
     pub applied_machine: Option<settings::Machine>,
     /// The machine's post-processor settings (block numbers, units, extension…).
     pub post: post::PostConfig,
@@ -728,6 +734,8 @@ impl App {
             cfg: settings::AppSettings::load(),
             cfg_saved: settings::AppSettings::default(),
             setui: Default::default(),
+            rollout: Default::default(),
+            handoff: &updates::HANDOFF,
             applied_machine: None,
             post: post::PostConfig::default(),
             dbb: Default::default(),
@@ -1035,8 +1043,30 @@ impl App {
         }
     }
 
+    /// When the program opens: settle which Library this PC works in (UP17:
+    /// a trial the shop moved on from ends, back to the shop folder; UP18:
+    /// the tried release's one-time changes on the copy), then reopen the
+    /// active job from that Library (AJ2), so no job of the old one stays
+    /// open (S6).
+    pub fn open_at_start(&mut self) {
+        self.resolve_trial_at_start();
+        if let Some(id) = crate::jobtree::active_job_id(&self.cfg.active_job) {
+            self.open_library_job(id);
+            if self.job_lib_id != Some(id) {
+                self.cfg.active_job.clear();
+            } else {
+                self.status = format!("Reopened the active job {}.", self.job_name);
+            }
+        }
+    }
+
     /// Open a saved job as a job of its own (a second copy gets " (1)").
     pub fn open_job_file(&mut self, path: &std::path::Path) {
+        // N1: no job is opened while a roll out runs.
+        if self.rollout.rolling {
+            self.status = rolloutui::ROLLING.into();
+            return;
+        }
         let (j, written) = match jobfile::load_versioned(path) {
             Ok(j) => j,
             Err(e) => {
@@ -1048,7 +1078,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let tried = 0;
-        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, restore: 0, parts: j.library_parts }, lib_folder: None, material_names: engine::material::names_read(j.spec.material, &j.material_name), read_only: self.versions().newer(written.as_deref()).map(|n| n.message()) });
+        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, restore: 0, parts: j.library_parts }, lib_folder: None, material_names: engine::material::names_read(j.spec.material, &j.material_name), read_only: self.versions().at(path).newer(written.as_deref()).map(|n| n.message()) });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -1910,6 +1940,13 @@ impl App {
         } else {
             library::documents_dir()
         };
+        // UP16: in a trial nothing reaches the shop folder, programs neither.
+        if let Some(shop) = self.versions().trial_of {
+            if let Err(e) = shared::trial_may_write(&base, &shop, "The programs") {
+                self.status = e;
+                return;
+            }
+        }
         // Every sheet's program (or BLM LC5 set) and the CSV parts report.
         let blm = self.blm_now();
         let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
@@ -2875,6 +2912,10 @@ impl eframe::App for App {
         self.restore_window(&ctx);
         // UP11: releases for a PC of its own, checked off the window's thread.
         self.update_tick(&ctx);
+        // UP21: a PC in a shop installs the shop version from the shop
+        // folder; UP16: a trial on the admin PC.
+        self.shop_update_tick(&ctx);
+        self.rollout_window(&ctx);
         self.whats_new_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
@@ -3037,6 +3078,8 @@ impl eframe::App for App {
         }
         // UP13: "Version 0.5.0 is out" while a newer release is offered.
         self.update_banner(ui);
+        // UP16, UP21: a trial, or the shop version ready to install.
+        self.shop_update_banner(ui);
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(th().chrome).stroke(Stroke::new(1.0, th().border)).inner_margin(egui::Margin::symmetric(8, 3)))
             .show(ui, |ui| {
@@ -3254,16 +3297,11 @@ fn main() -> eframe::Result {
                 app.cut_lines.clear();
                 app.refresh();
             }
-            // Reopen the active job (rule AJ2: no record = no active job).
+            // S6: the Library this PC works in is settled first (a trial
+            // the shop moved on from ends here), then the active job is
+            // reopened from it (rule AJ2: no record = no active job).
             if load_layout {
-                if let Some(id) = crate::jobtree::active_job_id(&app.cfg.active_job) {
-                    app.open_library_job(id);
-                    if app.job_lib_id != Some(id) {
-                        app.cfg.active_job.clear();
-                    } else {
-                        app.status = format!("Reopened the active job {}.", app.job_name);
-                    }
-                }
+                app.open_at_start();
             }
             if first_run {
                 app.firstrun = Some(startup::FirstRun::default());
@@ -3441,6 +3479,11 @@ fn main() -> eframe::Result {
             // --settings=shop-admin: with the admin PC question open (SH7).
             if let Some(what) = settings_ui::shop_demo_arg() {
                 app.demo_shop(&what);
+                // --rollout-demo=warning|ready|trial (with --fake-releases):
+                // updates in that shop (UP16, UP20, UP21).
+                if let Some(w) = std::env::args().find_map(|a| a.strip_prefix("--rollout-demo=").map(str::to_string)) {
+                    app.demo_rollout(&w);
+                }
             }
             // --in-use=note|ask|warning|taken (screenshots, with --library-dir=
             // a new, empty folder): jobs in use on made-up PCs (CU8–CU10).

@@ -405,6 +405,9 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         // refuses it, whoever the session says it works for.
         "admin" => make_admin(dir, &ctx.who.clone().as_agent(), &ctx.clock).map(|_| unreachable!("an agent changed the admin PC")),
         "backup" => {
+            if let Some(why) = ahead_of_shop(dir, &ctx.version) {
+                return Err(format!("No backup was taken: the shop is read-only on this PC. {why}"));
+            }
             let d = backup_now(dir, &ctx.cfg.backups, &ctx.who, &ctx.clock)?;
             let (message, data) = backup_said(&d);
             Ok(Outcome { message, data, changed: false, files: vec![d.entry.path.clone()] })
@@ -413,6 +416,9 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         // Agents never restore a backup (BK8): the engine's own rule
         // refuses it, whoever the session says it works for.
         "restore" => restore(dir, "", &ctx.who.clone().as_agent(), &ctx.clock, &ctx.version).map(|_| unreachable!("an agent restored a backup")),
+        // UP19: rolling out stays with a person on the admin PC: the
+        // engine's own rule refuses it, whoever the session says it works for.
+        "rollout" => super::rollout::rollout(dir, Path::new(""), &ctx.who.clone().as_agent(), &ctx.version).map(|_| unreachable!("an agent rolled out a release")),
         _ => {
             // Using the program on this PC records it (SH4). When it can't,
             // the shop is still shown, with why this PC isn't in it (SH6).
@@ -432,15 +438,26 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     json!({"shop": null, "folder": dir.display().to_string(), "backups": backups_json(&b)}),
                 ));
             };
+            let s = &st.shop;
+            let sv = s.shop_version();
+            // UP22: each PC's version against the shop version.
             let pcs: Vec<Value> = st
                 .pcs
                 .iter()
-                .map(|p| json!({"pc": p.pc, "user": p.user, "version": p.version, "last_seen": ctx.clock.stamp(p.last_seen), "admin": p.pc == st.shop.admin.pc, "this_pc": p.pc == ctx.who.pc}))
+                .map(|p| {
+                    let (behind, ahead) = against(&p.version, sv);
+                    json!({"pc": p.pc, "user": p.user, "version": p.version, "last_seen": ctx.clock.stamp(p.last_seen), "admin": p.pc == st.shop.admin.pc, "this_pc": p.pc == ctx.who.pc, "behind": behind, "ahead": ahead})
+                })
                 .collect();
-            let s = &st.shop;
             let note = unrecorded.as_ref().map_or(String::new(), |e| format!(" {e}"));
+            let behind: Vec<&str> = st.pcs.iter().filter(|p| against(&p.version, sv).0).map(|p| p.pc.as_str()).collect();
+            let versions = match sv {
+                None => " No shop version is rolled out yet.".to_string(),
+                Some(v) if behind.is_empty() => format!(" Shop version {v}."),
+                Some(v) => format!(" Shop version {v}; behind it: {}.", behind.join(", ")),
+            };
             Ok(Outcome::read(
-                format!("Shop {} in {}: admin PC {}, {} PC(s); shop settings are changed {}.{note}", s.name, dir.display(), s.admin.pc, pcs.len(), s.settings_by.words()),
+                format!("Shop {} in {}: admin PC {}, {} PC(s); shop settings are changed {}.{versions}{note}", s.name, dir.display(), s.admin.pc, pcs.len(), s.settings_by.words()),
                 json!({
                     "name": s.name,
                     "folder": dir.display().to_string(),
@@ -449,6 +466,9 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     "admin_set_at": ctx.clock.stamp(s.admin.at),
                     "admin_was": s.admin.was,
                     "shop_settings": s.settings_by.words(),
+                    "shop_version": sv,
+                    "previous_shop_version": s.previous_version(),
+                    "releases_in_updates": super::rollout::in_updates(dir).unwrap_or_default(),
                     "pcs": pcs,
                     "this_pc_recorded": unrecorded.is_none(),
                     "this_pc_not_recorded": unrecorded,
@@ -466,6 +486,26 @@ pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 }),
             ))
         }
+    }
+}
+
+/// UP21 (S9): why a PC on `version` writes nothing in the shop in `dir`:
+/// it runs a release newer than the shop version, outside a trial. Such a
+/// PC starts no backup and holds no job; only its own record in the PCs
+/// list is written (SH4), so the list shows it ahead.
+pub fn ahead_of_shop(dir: &Path, version: &str) -> Option<String> {
+    shop::versions(dir, version).ahead().map(|n| n.message())
+}
+
+/// UP22: a PC on `version` against the shop version `shop`: (behind,
+/// ahead). A version that can't be compared counts as behind; nothing is
+/// behind or ahead while the shop has no shop version.
+pub fn against(version: &str, shop: Option<&str>) -> (bool, bool) {
+    let Some(sv) = shop else { return (false, false) };
+    match crate::shared::version_order(version, sv) {
+        Some(std::cmp::Ordering::Equal) => (false, false),
+        Some(std::cmp::Ordering::Greater) => (false, true),
+        _ => (true, false),
     }
 }
 
@@ -639,7 +679,7 @@ pub struct Joined {
 /// what the version guard judges files by, UP8): None while the shop has
 /// none yet.
 pub fn shop_version(s: &ShopFile) -> Option<&str> {
-    s.other.get(shop::SHOP_VERSION).and_then(Value::as_str).filter(|v| !v.trim().is_empty())
+    s.shop_version()
 }
 
 /// SH12: this PC's version against the shop's, as a check, and the update

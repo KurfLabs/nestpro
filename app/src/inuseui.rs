@@ -171,10 +171,43 @@ impl App {
         let _ = rx.recv_timeout(wait);
     }
 
+    /// S5: let go of this window's holds now, on this thread, after any hold
+    /// work under way (waited for up to `wait`), before this PC stops
+    /// working in this Library (a trial begins). An error leaves them held.
+    pub fn release_holds_now(&mut self, wait: std::time::Duration) -> Result<(), String> {
+        if let Some(rx) = self.inuse.running.take() {
+            match rx.recv_timeout(wait) {
+                Ok(t) => {
+                    for (id, r) in t.renewed.unwrap_or_default() {
+                        if matches!(r, Renewed::Held(_)) {
+                            self.inuse.held.insert(id);
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.inuse.running = Some(rx);
+                    return Err("this PC's hold work in the shop is still under way".into());
+                }
+                Err(_) => {}
+            }
+        }
+        let held: Vec<u64> = self.inuse.held.iter().copied().collect();
+        if held.is_empty() {
+            return Ok(());
+        }
+        inuse::release(&self.hold_library(), &held)?;
+        self.inuse.held.clear();
+        Ok(())
+    }
+
     /// What hold work asks for: every job in use here (CU5), whether held;
     /// none while warn is off.
     fn renewal_wants(&mut self) -> Vec<Want> {
         if !self.cfg.in_use_warn {
+            return vec![];
+        }
+        // S9: a PC newer than the shop version holds no job in the shop.
+        if crate::engine::shop::ahead_of_shop(&self.hold_library().dir, crate::updates::VERSION).is_some() {
             return vec![];
         }
         let held = self.inuse.held.clone();
@@ -373,6 +406,11 @@ impl App {
     fn take_to_open(&mut self, id: u64, name: &str) -> Option<InUse> {
         crate::shared::pause("opening");
         let lib = self.library().ok()?;
+        // S9: a PC newer than the shop version holds no job in the shop
+        // (the job opens read-only there anyway, UP21).
+        if crate::engine::shop::ahead_of_shop(&lib.dir, crate::updates::VERSION).is_some() {
+            return None;
+        }
         // The hold names the job as the Library lists it.
         let listed = lib.entries().into_iter().find(|e| e.kind == crate::library::Kind::Job && e.id == id).map(|e| e.name);
         match inuse::take(&lib, id, listed.as_deref().unwrap_or(name)) {
@@ -401,6 +439,12 @@ impl App {
     /// Open library job `id`. When someone else has it in use and warn is on,
     /// ask first (CU3, CU8); with warn off it opens as before (CU1).
     pub fn open_library_job(&mut self, id: u64) {
+        // N1: no job is opened while a roll out runs: one from the trial
+        // copy would be open when the PC goes back to the shop.
+        if self.rollout.rolling {
+            self.status = crate::rolloutui::ROLLING.into();
+            return;
+        }
         // Not asked again about a job held here, taken over from here (told
         // already), or opened here anyway.
         let known = self.inuse.held.contains(&id) || self.inuse.lost.contains_key(&id) || self.inuse.busy.contains_key(&id);
