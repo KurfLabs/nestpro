@@ -11709,7 +11709,7 @@ fn other_pcs_tell_a_running_restore_from_one_that_stopped() {
     let note = super::shop::restore_notice(&r, st, &clock);
     assert!(note.contains("stopped halfway") && note.contains(&r.before), "{note}");
     let (warn, line) = crate::settings_ui::restore_line(&r, st, &clock);
-    assert!(warn && line.contains("stopped halfway") && line.contains(&r.before), "{line}");
+    assert!(warn && line.contains("stopped halfway") && line.contains("before restore"), "{line}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

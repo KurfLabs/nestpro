@@ -2310,6 +2310,20 @@ impl App {
             let pick = all.iter().find(|e| e.pc == "PC-C").or(all.first()).map(|e| e.name.clone());
             self.setui.restore = Some(RestoreAsk { pick, sure: what == "restore-ask" });
         }
+        // `--shop-demo=restore-stopped` (BK13): the admin PC's restore of the
+        // backup of two days ago stopped halfway 20 minutes ago; the Backups
+        // card says so from the shop file.
+        if what == "restore-stopped" {
+            self.who = Who::new("sam", "PC-A");
+            let all = crate::backup::overview(&dir, &own).map(|o| o.all).unwrap_or_default();
+            if let (Some(e), Ok(Some(mut s)), Ok(lock)) = (all.iter().find(|e| e.pc == "PC-C"), crate::shop::read(&dir), crate::shared::WriteLock::take(&dir)) {
+                let id8 = e.name.split(' ').nth(2).unwrap_or_default();
+                let before = format!("Backup Acme {id8} {} PC-A before restore.zip", self.clock.stamp(now - 20 * 60).replace(':', ""));
+                s.restored = Some(crate::shop::Restore { backup: e.name.clone(), backup_when: e.stamp(), before, by: Who::new("sam", "PC-A"), at: now - 20 * 60, finished: false, revision_floor: 0, generation: 1, lock: String::new() });
+                let _ = crate::shop::write(&dir, &s, &lock, crate::updates::VERSION);
+            }
+            self.setui.shop = None;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2356,7 +2370,7 @@ impl App {
                 let state = crate::engine::shop::restore_state(dir, r);
                 let (warn, line) = restore_line(r, state, &self.clock);
                 row(ui, "Last restore", |ui| {
-                    ui.label(RichText::new(line).size(12.0).color(if warn { t.warn_fg } else { t.text })).on_hover_text(format!("{} — restored from {} by {}. The Library as it was before is in {}.", backup_day(r), r.backup, r.by.label(), r.before));
+                    ui.label(RichText::new(line).size(11.5).color(if warn { t.warn_fg } else { t.text })).on_hover_text(format!("{} — restored from {} by {}. The Library as it was before is in {}.", backup_day(r), r.backup, r.by.label(), r.before));
                 });
             }
             row(ui, "Folder", |ui| match &ov.folder {
@@ -2619,7 +2633,7 @@ pub(crate) fn restore_line(r: &crate::shop::Restore, state: crate::engine::shop:
     match state {
         Finished => (false, format!("Back to {}, by {}, {}", backup_day(r), r.by.pc, clock.shown(r.at))),
         Running => (false, format!("Restoring to {} on {} (since {})…", backup_day(r), r.by.pc, clock.shown(r.at))),
-        Stopped => (true, format!("⚠ The restore to {} on {} stopped halfway ({}). {} holds the Library as it was: restore it.", backup_day(r), r.by.pc, clock.shown(r.at), r.before)),
+        Stopped => (true, format!("⚠ Restore to {} stopped halfway ({}, {}): restore its \"before restore\" backup", backup_day(r), r.by.pc, clock.shown(r.at))),
     }
 }
 
