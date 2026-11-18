@@ -335,10 +335,10 @@ pub struct Handoff {
     /// S3: the Library the window works on, and this PC's own Library
     /// folder, so the close can look at its shop once more.
     place: Mutex<Option<(PathBuf, PathBuf)>>,
-    /// S2: backups and restores of the Library under way (how many of
-    /// each): the window doesn't close, and nothing installs, until they
-    /// are done.
-    work: Mutex<(u32, u32)>,
+    /// S2: backups, restores, roll outs and roll backs under way (how many
+    /// of each, by `Work::slot`): the window doesn't close, and nothing
+    /// installs, until they are done.
+    work: Mutex<[u32; 4]>,
     work_done: Condvar,
 }
 
@@ -350,14 +350,33 @@ pub enum Work {
     Backup,
     /// A restore putting a backup's files back (BK8).
     Restore,
+    /// Roll out writing the release and the shop version into the shop
+    /// folder (UP19).
+    RollOut,
+    /// Roll back writing the shop version back (UP23).
+    RollBack,
 }
 
 impl Work {
+    /// Where it is counted; the window names the first that runs.
+    const ALL: [Work; 4] = [Work::Restore, Work::RollBack, Work::RollOut, Work::Backup];
+
+    fn slot(self) -> usize {
+        match self {
+            Work::Restore => 0,
+            Work::RollBack => 1,
+            Work::RollOut => 2,
+            Work::Backup => 3,
+        }
+    }
+
     /// What the window says while closing waits for it.
     pub fn closing_text(self) -> &'static str {
         match self {
             Work::Restore => "Restoring — the program closes when it's done.",
             Work::Backup => "Backing up the shop — the program closes when it's done.",
+            Work::RollOut => "Rolling out — the program closes when it's done.",
+            Work::RollBack => "Rolling back — the program closes when it's done.",
         }
     }
 }
@@ -371,10 +390,7 @@ pub struct WorkGuard {
 impl Drop for WorkGuard {
     fn drop(&mut self) {
         let mut n = self.h.work.lock().unwrap_or_else(|p| p.into_inner());
-        match self.w {
-            Work::Backup => n.0 = n.0.saturating_sub(1),
-            Work::Restore => n.1 = n.1.saturating_sub(1),
-        }
+        n[self.w.slot()] = n[self.w.slot()].saturating_sub(1);
         self.h.work_done.notify_all();
     }
 }
@@ -385,39 +401,32 @@ pub static HANDOFF: Handoff = Handoff::new();
 
 impl Handoff {
     pub const fn new() -> Handoff {
-        Handoff { slot: Mutex::new((0, Stage::Idle)), changed: Condvar::new(), place: Mutex::new(None), work: Mutex::new((0, 0)), work_done: Condvar::new() }
+        Handoff { slot: Mutex::new((0, Stage::Idle)), changed: Condvar::new(), place: Mutex::new(None), work: Mutex::new([0; 4]), work_done: Condvar::new() }
     }
 
-    /// S2: a backup or a restore starts: taken on the window's thread before
-    /// its own thread starts, and held by that thread until it is done.
+    /// S2: a backup, restore, roll out or roll back starts: taken on the
+    /// window's thread before its own thread starts, and held by that
+    /// thread until it is done.
     pub fn begin(&'static self, w: Work) -> WorkGuard {
         let mut n = self.work.lock().unwrap_or_else(|p| p.into_inner());
-        match w {
-            Work::Backup => n.0 += 1,
-            Work::Restore => n.1 += 1,
-        }
+        n[w.slot()] += 1;
         WorkGuard { h: self, w }
     }
 
     /// S2: what runs now that closing must wait for (a restore first).
     pub fn working(&self) -> Option<Work> {
         let n = *self.work.lock().unwrap_or_else(|p| p.into_inner());
-        if n.1 > 0 {
-            Some(Work::Restore)
-        } else if n.0 > 0 {
-            Some(Work::Backup)
-        } else {
-            None
-        }
+        Work::ALL.into_iter().find(|w| n[w.slot()] > 0)
     }
 
-    /// S2: wait until no backup or restore runs (however long it takes:
-    /// ending the program halfway would leave the Library half restored).
+    /// S2: wait until none of that work runs (however long it takes:
+    /// ending the program halfway would leave the shop folder half
+    /// written).
     pub fn wait_for_work(&self) {
         while self.working().is_some() {
             crate::shared::pause("close: waiting for a backup or restore");
             let n = self.work.lock().unwrap_or_else(|p| p.into_inner());
-            if n.0 + n.1 == 0 {
+            if n.iter().all(|&k| k == 0) {
                 break;
             }
             let _ = self.work_done.wait_timeout(n, Duration::from_millis(500));
@@ -1038,14 +1047,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// S2: once the window has closed, a restore (or a backup) still running
-    /// finishes before the hand-off looks at the shop or installs anything.
+    /// S2: once the window has closed, a restore (or a backup, a roll out or
+    /// a roll back) still running finishes before the hand-off looks at the
+    /// shop or installs anything.
     #[test]
     fn the_close_waits_for_a_restore_still_running() {
+        for w in Work::ALL {
+            the_close_waits_for(w);
+        }
+    }
+
+    fn the_close_waits_for(w: Work) {
         use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
         let h = handoff();
-        let mut guard = Some(h.begin(Work::Restore));
-        assert_eq!(h.working(), Some(Work::Restore));
+        let mut guard = Some(h.begin(w));
+        assert_eq!(h.working(), Some(w));
         let ended = std::sync::Arc::new(AtomicBool::new(false));
         let e2 = ended.clone();
         crate::shared::hooks::set(move |step| {
@@ -1056,9 +1072,9 @@ mod tests {
             }
         });
         let e3 = ended.clone();
-        let r = finish_on_close_with(h, Duration::ZERO, move |_| if e3.load(SeqCst) { Ok(None) } else { Err(NotStandalone::Moved("looked at the shop while a restore ran".into())) }, Duration::from_secs(5), |_| Ok(()), |_| panic!("installed"));
+        let r = finish_on_close_with(h, Duration::ZERO, move |_| if e3.load(SeqCst) { Ok(None) } else { Err(NotStandalone::Moved(format!("looked at the shop while {w:?} ran"))) }, Duration::from_secs(5), |_| Ok(()), |_| panic!("installed"));
         crate::shared::hooks::clear();
-        assert_eq!(r, Ok(None));
+        assert_eq!(r, Ok(None), "{w:?}");
         assert_eq!(h.working(), None);
     }
 

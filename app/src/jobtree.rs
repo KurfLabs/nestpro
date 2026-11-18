@@ -504,11 +504,16 @@ mod jobtree_tests {
         assert_eq!(a.quit_wait, None);
         let c = close_frame(&ctx, &mut a, true);
         assert!(!c.contains(&CancelClose), "the close after the restore was stopped: {c:?}");
-        // A backup is waited for the same way.
-        let backup = a.handoff.begin(Work::Backup);
-        let c = close_frame(&ctx, &mut a, true);
-        assert!(c.contains(&CancelClose) && a.quit_wait == Some(Work::Backup), "{c:?}");
-        drop(backup);
+        // A backup, a roll out and a roll back are waited for the same way.
+        for (w, text) in [(Work::Backup, "Backing up the shop"), (Work::RollOut, "Rolling out"), (Work::RollBack, "Rolling back")] {
+            let running = a.handoff.begin(w);
+            let c = close_frame(&ctx, &mut a, true);
+            assert!(c.contains(&CancelClose) && a.quit_wait == Some(w), "{w:?}: {c:?}");
+            assert_eq!(w.closing_text(), format!("{text} — the program closes when it's done."));
+            drop(running);
+            let c = close_frame(&ctx, &mut a, false);
+            assert!(c.contains(&Close) && a.quit_wait.is_none(), "{w:?}: {c:?}");
+        }
     }
 
     #[test]

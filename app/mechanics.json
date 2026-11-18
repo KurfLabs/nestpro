@@ -7676,7 +7676,7 @@
  {
   "name": "restore on the admin PC",
   "group": "shop",
-  "value": "Restore… on Settings → Shop → Backups, admin PC only (whatever SH3 says), in a shop; lists backups by date, asks once more; other PCs and agents refused with the reason; closing waits for a running restore or backup (Restoring — the program closes when it's done), and so does an update on close",
+  "value": "Restore… on Settings → Shop → Backups, admin PC only (whatever SH3 says), in a shop; lists backups by date, asks once more; other PCs and agents refused with the reason; closing waits for a running restore, backup, roll out or roll back (Restoring — the program closes when it's done), and so does an update on close",
   "source": "BK8; own design"
  },
  {
@@ -7736,7 +7736,7 @@
  {
   "name": "roll out",
   "group": "shop",
-  "value": "person on the admin PC only (agents refused), not while a trial job is open; the release this PC runs, newer than the shop version (same version: package-only repair when damaged); package checked by size (required) and SHA-256/SHA-1, the admin PC offering the repair of a damaged shop-version package; staged in Updates before the lock, published under it; one-time changes, shop version + previous + layouts; only folders this program made are taken out, an unmarked release folder never replaced; no job opens while it runs",
+  "value": "person on the admin PC only (agents refused), not while a trial job is open; the release this PC runs, newer than the shop version (same version: package-only repair when damaged); package checked by size (required) and SHA-256/SHA-1, the admin PC offering the repair of a damaged shop-version package; staged in Updates before the lock, published under it; one-time changes, shop version + previous + layouts; only folders this program made are taken out, an unmarked release folder never replaced; no job opens while it runs; closing waits while it writes (Rolling out — the program closes when it's done)",
   "source": "UP19; own design"
  },
  {
@@ -7760,7 +7760,7 @@
  {
   "name": "roll back",
   "group": "shop",
-  "value": "person on the admin PC only (agents refused); to the release kept beside the shop version, its package whole in Updates (size and checksum); this PC on the shop version or the one kept; not a trial copy; Yes rolls back only the from/to the warning showed, else asks again; shop file: shop version = the one kept, none kept before it, its layouts; both releases stay in Updates; every PC goes back when its program closes",
+  "value": "person on the admin PC only (agents refused); to the release kept beside the shop version, its package whole in Updates (size and checksum); this PC on the shop version or the one kept; not a trial copy; Yes rolls back only the from/to the warning showed, else asks again; shop file: shop version = the one kept, none kept before it, its layouts; both releases stay in Updates; every PC goes back when its program closes; closing waits while it writes (Rolling back — the program closes when it's done)",
   "source": "UP23; own design"
  },
  {

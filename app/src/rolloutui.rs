@@ -643,7 +643,10 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let v = w.version.clone();
         self.rollout.rolling = true;
+        // S2: closing the program waits for it.
+        let working = self.handoff.begin(updates::Work::RollOut);
         std::thread::spawn(move || {
+            let _working = working;
             let _ = tx.send(rollout::rollout(&w.shop, &w.release, &who, &w.version).map(Step::RolledOut));
         });
         self.rollout.busy = Some((format!("Rolling out {v}…"), rx));
@@ -667,8 +670,11 @@ impl App {
         let who = self.who.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let to = ask.to.clone();
+        // S2: closing the program waits for it.
+        let working = self.handoff.begin(updates::Work::RollBack);
         // S4: only the roll back the person confirmed (from and to).
         std::thread::spawn(move || {
+            let _working = working;
             let _ = tx.send(rollout::rollback_as_asked(&shop, &who, updates::VERSION, &ask).map(Step::RolledBack));
         });
         self.rollout.busy = Some((format!("Rolling back to {to}…"), rx));
@@ -1300,6 +1306,38 @@ mod tests {
         assert_eq!(a.library_dir(), lib, "{:?}", a.rollout.note);
         assert!(a.held.is_empty() && a.result.formats.iter().all(|f| f.stock_ref.is_empty() && f.made.is_empty()), "a job kept the trial's stock");
         assert!(a.undo.is_empty() && a.redo.is_empty(), "undo could bring the trial's stock back");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S2: Roll out and Roll back hold the close while they write the shop
+    /// folder: closing then waits ("Rolling out — the program closes when
+    /// it's done"), and the update hand-off too.
+    #[test]
+    fn closing_waits_while_a_roll_out_or_roll_back_writes_the_shop() {
+        let d = tmp("close_rolling");
+        let lib = acme(&d, Some("0.0.9"));
+        let mut a = admin_app(&d, &lib);
+        let answer = |a: &mut App| a.rollout.busy.take().map(|(_, rx)| rx.recv_timeout(Duration::from_secs(120)).expect("no answer"));
+        a.prepare_rollout();
+        let Some(Ok(Step::Ready(w))) = answer(&mut a) else { panic!("{:?}", a.rollout.note) };
+        // Another writer holds the shop's lock: the roll out waits for it.
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        a.roll_out(w);
+        assert_eq!(a.handoff.working(), Some(updates::Work::RollOut), "closing wouldn't wait for the roll out");
+        drop(lock);
+        assert!(matches!(answer(&mut a), Some(Ok(Step::RolledOut(_)))));
+        a.handoff.wait_for_work();
+        assert_eq!(a.handoff.working(), None);
+        a.prepare_rollback();
+        let Some(Ok(Step::BackReady(shop, ask))) = answer(&mut a) else { panic!("{:?}", a.rollout.note) };
+        let lock = crate::shared::WriteLock::take(&lib).unwrap();
+        a.roll_back(shop, ask);
+        assert_eq!(a.handoff.working(), Some(updates::Work::RollBack), "closing wouldn't wait for the roll back");
+        drop(lock);
+        let r = answer(&mut a);
+        assert!(matches!(r, Some(Ok(Step::RolledBack(_)))), "{:?}", r.map(|r| r.err()));
+        a.handoff.wait_for_work();
+        assert_eq!(a.handoff.working(), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 
