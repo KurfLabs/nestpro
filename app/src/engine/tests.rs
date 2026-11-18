@@ -11480,7 +11480,7 @@ fn roll_out(lib: &Path, d: &Path, version: &str) {
 }
 
 /// A job `name` saved by a PC on `version` into the Library: its job file
-/// in `d` and its Library record. Gives the job file.
+/// in the folder `d` and its Library record. Gives the job file.
 fn job_saved_on(lib: &Path, d: &Path, version: &str, name: &str) -> PathBuf {
     let jp = d.join(format!("{name}.snjob"));
     let mut s = pc_running(lib, Who::new("kim", "PC-B").as_agent(), version);
@@ -11557,7 +11557,9 @@ fn rolling_back_twice_keeps_every_release_rolled_back_from() {
 fn a_pc_still_on_the_release_left_opens_the_shop_read_only_with_the_restart_message() {
     let d = dir("rollback_left");
     let lib = shop_rolled_to(&d, "0.4.0", "0.5.0");
-    let jp = job_saved_on(&lib, &d, "0.5.0", "DEMO-001");
+    // A job kept in the shop folder, and one on the desktop.
+    let jp = job_saved_on(&lib, &lib, "0.5.0", "DEMO-001");
+    let own = job_saved_on(&lib, &d, "0.5.0", "DEMO-002");
     crate::engine::rollout::rollback(&lib, &admin(), "0.5.0").unwrap();
     let mut b = pc_running(&lib, Who::new("kim", "PC-B").as_agent(), "0.5.0");
     let job = jp.to_str().unwrap();
@@ -11565,6 +11567,10 @@ fn a_pc_still_on_the_release_left_opens_the_shop_read_only_with_the_restart_mess
     assert_eq!(info["read_only"], "This job is read-only on this PC. This PC runs 0.5.0, newer than the shop version 0.4.0. Restart to go back to 0.4.0.", "{info}");
     let e = b.call("rename", Some(job), &json!({"name": "DEMO-001 x"})).err().expect("a PC on the release left saved into the shop");
     assert!(e.contains("Restart to go back to 0.4.0") && e.contains("Nothing was saved"), "{e}");
+    // Its own job file outside the shop folder saves; the Library doesn't.
+    call(&mut b, "rename", Some(own.to_str().unwrap()), json!({"name": "DEMO-002 x"}));
+    let e = err(&mut b, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
     let e = err(&mut b, "stock", json!({"mode": "create", "ref": "S3", "w": 1500, "h": 750, "thickness": 3, "qty": 1}));
     assert!(e.contains("Restart to go back to 0.4.0"), "{e}");
     let r = call(&mut b, "shop", None, json!({"mode": "updates"}));
