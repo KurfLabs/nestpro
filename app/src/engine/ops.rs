@@ -1521,11 +1521,14 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
     crate::formats::read_file_with(path, fmt, &ctx.cfg, opts)
 }
 
-/// UP7: a picture or drawing is never written over a job file or one of
-/// the Library's own files (its jobs, parts, list, stock, material list,
-/// shop file and PCs' records, this PC's own material list), nor over any
-/// file a version of this program records it wrote. `out` is judged where
-/// it really is (a relative path, `..` or a link to one of them counts).
+/// UP7: a picture, drawing or program is never written over a job file or
+/// one of the Library's own records: a job file (`.snjob`, or any file
+/// holding a job, stamped or not), a library part record, the list, the
+/// folder trees, the stock, the material list (the Library's or this PC's),
+/// the shop file or a PC's record, nor over any file a version of this
+/// program records it wrote. An export of its own (PNG, DXF, CNC) is never
+/// refused by where it is: beside a Library job is fine. `out` is judged
+/// where it really is (a relative path, `..` or a link to a record counts).
 pub(super) fn refuse_protected(ctx: &Ctx, out: &Path) -> Result<(), String> {
     let refused = || Err(format!("{} is a job file or one of the Library's own files: pictures and drawings are never written over those. Pick another out. Nothing was written.", out.display()));
     let real = |p: &Path| std::fs::canonicalize(p).ok();
@@ -1533,18 +1536,27 @@ pub(super) fn refuse_protected(ctx: &Ctx, out: &Path) -> Result<(), String> {
     if at.extension().is_some_and(|e| e.eq_ignore_ascii_case(jobfile::EXT)) {
         return refused();
     }
-    if std::fs::read(&at).is_ok_and(|b| crate::shared::recorded_version(&b).is_some()) {
-        return refused();
+    // What the file there is: one of this program's (stamped, or in one of
+    // its formats, as a job file saved before stamps is).
+    #[derive(serde::Deserialize)]
+    struct Format {
+        #[serde(default)]
+        format: Option<String>,
     }
+    if let Ok(b) = std::fs::read(&at) {
+        let ours = serde_json::from_slice::<Format>(&b).ok().and_then(|k| k.format).is_some_and(|f| f.starts_with("nestpro-"));
+        if ours || crate::shared::recorded_version(&b).is_some() {
+            return refused();
+        }
+    }
+    // The Library's records by where they are: its JSON files at the top
+    // (the list, the shop file, the folder trees) and in Products, Shop and
+    // Sheets (library parts, PCs' records, stock, material list).
     if let Some(lib) = real(&ctx.library_dir) {
         if let Ok(rel) = at.strip_prefix(&lib) {
-            let first = rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
             let json = rel.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
-            // The list, the shop file and the folder trees sit at the top.
-            let own = (rel.components().count() == 1 && json)
-                || ["Jobs", "Products", crate::shop::PCS].contains(&first.as_str())
-                || (first == crate::stock::FOLDER && json);
-            if own {
+            let first = rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
+            if json && (rel.components().count() == 1 || ["Products", crate::shop::PCS, crate::stock::FOLDER].contains(&first.as_str())) {
                 return refused();
             }
         }

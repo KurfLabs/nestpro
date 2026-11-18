@@ -10035,3 +10035,52 @@ fn a_record_that_cant_be_read_is_never_deleted_unchecked() {
     std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o644)).unwrap();
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// S2 (UP7): a booked job's `library` call checks the stock before it
+/// stores anything: with the stock a newer version's, `save-part` is
+/// refused and the Library's parts and list stay as they were.
+#[test]
+fn a_booked_jobs_library_call_checks_the_stock_before_it_stores_anything() {
+    let d = dir("version_booked_save_part");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut b = pc_on(&lib, "PC-B", "0.4.0", &clock);
+    call(&mut b, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    call(&mut b, "new", Some(d.join("b.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut b, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    call(&mut b, "stock-book", None, json!({"mode": "book"}));
+    call(&mut pc_on(&lib, "PC-A", "0.5.0", &clock), "stock", None, json!({"mode": "create", "ref": "S2", "w": 1500, "h": 750, "thickness": 3, "qty": 2}));
+    let before = files_under(&lib);
+    let e = err(&mut b, "library", json!({"mode": "save-part"}));
+    assert_eq!(e, format!("The sheet stock is read-only on this PC. {UPDATE} Nothing was saved."));
+    assert_eq!(files_under(&lib), before, "the Library changed for a call that was refused");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N2 (UP7): a picture is written beside a Library job, as `render` does by
+/// default, and a drawing anywhere in the Library's folders; only the
+/// Library's records themselves are refused.
+#[test]
+fn pictures_and_drawings_beside_a_library_job_are_written_and_only_records_are_refused() {
+    let d = dir("version_out_beside_record");
+    let clock = Clock::at(1_794_216_000);
+    let lib = shop_on(&d, "0.5.0", &clock);
+    let mut a = pc_on(&lib, "PC-A", "0.5.0", &clock);
+    call(&mut a, "new", Some(d.join("a.snjob").to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut a, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "name": "DEMO-P1"}));
+    let id = call(&mut a, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    let record = crate::library::Library::at(&lib, &Who::new("sam", "PC-A"), &clock).path(crate::library::Kind::Job, id);
+    let job = record.to_str().unwrap();
+    let r = call(&mut a, "render", Some(job), json!({"part": 1}));
+    let png = PathBuf::from(r["files"][0].as_str().unwrap());
+    assert_eq!(png.parent(), record.parent(), "{r}");
+    assert!(png.is_file(), "{r}");
+    let dxf = record.with_file_name("DEMO-P1.dxf");
+    call(&mut a, "export-part-dxf", Some(job), json!({"part": 1, "out": dxf.to_str().unwrap()}));
+    assert!(dxf.is_file());
+    let bytes = std::fs::read(&record).unwrap();
+    let e = a.call("render", Some(job), &json!({"part": 1, "out": job})).err().expect("render wrote over the job record");
+    assert!(e.contains("Nothing was written"), "{e}");
+    assert_eq!(std::fs::read(&record).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(&d);
+}

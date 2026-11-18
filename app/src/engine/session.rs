@@ -205,7 +205,16 @@ impl Session {
         let listing = op.name == "library" && ops::Args(&args).str("mode").as_deref() == Some("list");
         let early = match op.kind {
             Kind::Write if listing => None,
-            Kind::Write if matches!(op.name, "library" | "stock-book") => Some(self.lock_job_file()?),
+            Kind::Write if matches!(op.name, "library" | "stock-book") => {
+                let lock = self.lock_job_file()?;
+                // A booked job's change is booked after the call (below): a
+                // stock a newer version changed is refused now, under the
+                // lock, before the call stores anything in the Library.
+                if op.name == "library" && self.job.as_ref().is_some_and(|j| j.booked) {
+                    crate::shared::may_write_over(&crate::stock::Stock::file(&self.ctx.library_dir), &self.ctx.versions(), "The sheet stock")?;
+                }
+                Some(lock)
+            }
             Kind::Write => {
                 let path = self.path.as_ref().ok_or("no job open")?;
                 jobfile::may_save(path, &self.ctx.versions())?;
