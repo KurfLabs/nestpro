@@ -13387,3 +13387,307 @@ fn a_session_started_before_a_trial_follows_this_pcs_library() {
     assert_eq!(s.ctx.library_dir, live);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Opening a ByStar Fiber .bvc (JOB-73, BV1–BV20).
+// ---------------------------------------------------------------------------
+
+/// A made-up ByStar Fiber cut program, numbers divided by `unit` (25.4 for an
+/// Imperial file). `subs` are (name, part number, commands) and `main` the
+/// main program's commands after the clamps; commands use `{x}`-free text
+/// built with `bvc_move`/`bvc_line`/`bvc_arc`.
+struct CcpBuilder {
+    unit: f64,
+    id: usize,
+    out: String,
+}
+
+impl CcpBuilder {
+    fn new(unit: f64, sheet: (f64, f64)) -> CcpBuilder {
+        let ms = if unit == 1.0 { "Metric" } else { "Imperial" };
+        let out = format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<CuttingControlProgram MeasurementSystem=\"{ms}\" Thickness=\"{}\">\r\n  <Technology />\r\n  <ApplicationFlat PlanWidth=\"{}\" PlanHeight=\"{}\" SheetWidth=\"{}\" SheetHeight=\"{}\" />\r\n  <SubPrograms>\r\n",
+            3.0 / unit,
+            sheet.0 / unit,
+            sheet.1 / unit,
+            sheet.0 / unit,
+            sheet.1 / unit
+        );
+        CcpBuilder { unit, id: 0, out }
+    }
+    fn cmd(&mut self, name: &str, attrs: &str) {
+        self.id += 1;
+        self.out += &format!("      <{name} Id=\"{}\"{attrs} />\r\n", self.id);
+    }
+    fn n(&self, v: f64) -> String {
+        format!("{}", v / self.unit)
+    }
+    fn sub(&mut self, name: &str, part: Option<usize>) {
+        self.id += 1;
+        let pn = part.map_or(String::new(), |p| format!(" PartNumber=\"{p}\""));
+        self.out += &format!("    <SubProgram Id=\"{}\" Name=\"{name}\"{pn}>\r\n      <ControlCommands>\r\n", self.id);
+    }
+    fn end_sub(&mut self) {
+        self.out += "      </ControlCommands>\r\n    </SubProgram>\r\n";
+    }
+    /// One closed contour in operation mode `mode`: a rapid to `start`, a
+    /// short lead-in, the cut along `moves` (line to a point, or arc with a
+    /// sweep), a lead-out.
+    fn contour(&mut self, mode: i64, kind: &str, start: P, moves: &[(P, Option<f64>)]) {
+        self.cmd("SetOperationMode", &format!(" Value=\"{mode}\""));
+        self.cmd("SetToolCorrection", " Value=\"Left\"");
+        let pierce = [start[0] + 1.0, start[1] + 1.0];
+        let (px, py) = (self.n(pierce[0]), self.n(pierce[1]));
+        self.cmd("MoveLineTo", &format!(" X=\"{px}\" Y=\"{py}\""));
+        self.cmd("BeginLeadIn", "");
+        self.cmd("SetPiercingMode", " Value=\"Fine\"");
+        self.cmd("ExecPiercing", "");
+        let (sx, sy) = (self.n(start[0]), self.n(start[1]));
+        self.cmd("LineTo", &format!(" X=\"{sx}\" Y=\"{sy}\""));
+        self.cmd("EndLeadIn", "");
+        self.cmd("BeginCutOut", &format!(" Contour=\"{kind}\""));
+        for (p, sweep) in moves {
+            let (x, y) = (self.n(p[0]), self.n(p[1]));
+            match sweep {
+                Some(a) => self.cmd("ArcTo", &format!(" X=\"{x}\" Y=\"{y}\" SweepAngle=\"{a}\"")),
+                None => self.cmd("LineTo", &format!(" X=\"{x}\" Y=\"{y}\"")),
+            }
+        }
+        self.cmd("BeginLeadOut", "");
+        let (ox, oy) = (self.n(start[0] - 1.0), self.n(start[1] - 1.0));
+        self.cmd("LineTo", &format!(" X=\"{ox}\" Y=\"{oy}\""));
+        self.cmd("EndLeadOut", "");
+        self.cmd("EndCutOut", "");
+        self.cmd("SetToolCorrection", " Value=\"None\"");
+    }
+    fn rect(&mut self, mode: i64, w: f64, h: f64) {
+        self.contour(mode, "Exterior", [0.0, 0.0], &[([0.0, h], None), ([w, h], None), ([w, 0.0], None), ([0.0, 0.0], None)]);
+    }
+    fn circle(&mut self, mode: i64, c: P, r: f64) {
+        self.contour(mode, "Interior", [c[0] + r, c[1]], &[([c[0] - r, c[1]], Some(-180.0)), ([c[0] + r, c[1]], Some(-180.0))]);
+    }
+    fn engrave(&mut self, a: P, b: P) {
+        self.cmd("SetOperationMode", " Value=\"2\"");
+        let (ax, ay, bx, by) = (self.n(a[0]), self.n(a[1]), self.n(b[0]), self.n(b[1]));
+        self.cmd("MoveLineTo", &format!(" X=\"{ax}\" Y=\"{ay}\""));
+        self.cmd("BeginCutOut", " Contour=\"Unknown\"");
+        self.cmd("LineTo", &format!(" X=\"{bx}\" Y=\"{by}\""));
+        self.cmd("EndCutOut", "");
+    }
+    fn main(&mut self) {
+        self.out += "  </SubPrograms>\r\n  <ControlCommands>\r\n";
+        self.cmd("SetClamps", " Value=\"Off\"");
+    }
+    fn call(&mut self, sub: &str, x: f64, y: f64, rot: i32) {
+        let (x, y) = (self.n(x), self.n(y));
+        self.cmd("CallSubProgram", &format!(" X=\"{x}\" Y=\"{y}\" Rotation=\"{rot}\" SubProgramName=\"{sub}\""));
+    }
+    /// A remnant cut-off at `x` as the original writes it: pierce inside,
+    /// cut back out over the bottom edge, then from the pierce across.
+    fn cut_off(&mut self, x: f64, sheet_h: f64) {
+        self.cmd("SetOperationMode", " Value=\"3\"");
+        for to in [-5.0, sheet_h + 5.0] {
+            let (px, py, tx, ty) = (self.n(x), self.n(5.0), self.n(x), self.n(to));
+            self.cmd("MoveLineTo", &format!(" X=\"{px}\" Y=\"{py}\""));
+            self.cmd("BeginCutOut", " Contour=\"Exterior\"");
+            self.cmd("SetPiercingMode", " Value=\"NoTime\"");
+            self.cmd("ExecPiercing", "");
+            self.cmd("LineTo", &format!(" X=\"{tx}\" Y=\"{ty}\""));
+            self.cmd("EndCutOut", "");
+            self.cmd("ExecHighPositioning", "");
+        }
+    }
+    fn done(mut self) -> String {
+        self.out += "  </ControlCommands>\r\n</CuttingControlProgram>\r\n";
+        self.out
+    }
+}
+
+/// The made-up part subprograms: 1 = DEMO-PLATE 200 × 100 (outline mode 3,
+/// a Ø20 hole in mode 4, a Ø10 hole in mode 3, an engraved line), 2 =
+/// DEMO-TAB 60 × 40 (mode 1).
+fn bvc_parts(c: &mut CcpBuilder) {
+    c.sub("1", Some(1));
+    c.circle(4, [50.0, 50.0], 10.0);
+    c.circle(3, [150.0, 50.0], 5.0);
+    c.engrave([80.0, 20.0], [120.0, 20.0]);
+    c.rect(3, 200.0, 100.0);
+    c.end_sub();
+    c.sub("2", Some(2));
+    c.rect(1, 60.0, 40.0);
+    c.end_sub();
+}
+
+/// Nest 1 (cut once): a plate at 0°, a plate at 90°, a tab, and a remnant
+/// cut-off at X 1000; nest 2 (cut 3 times): a plate and a tab turned 180°.
+fn bvc_nests(unit: f64) -> Vec<(String, String)> {
+    let mut a = CcpBuilder::new(unit, (3000.0, 1500.0));
+    bvc_parts(&mut a);
+    a.main();
+    a.call("1", 10.0, 10.0, 0);
+    a.call("1", 400.0, 10.0, 90);
+    a.call("2", 700.0, 10.0, 0);
+    a.cut_off(1000.0, 1500.0);
+    let mut b = CcpBuilder::new(unit, (3000.0, 1500.0));
+    bvc_parts(&mut b);
+    b.main();
+    b.call("1", 10.0, 10.0, 0);
+    b.call("2", 360.0, 50.0, 180);
+    vec![("DEMO-BVC-1.ccp".into(), a.done()), ("DEMO-BVC-2.ccp".into(), b.done())]
+}
+
+const BVC_JOBINFO: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<JobInfo Guid=\"0F8A2C1E-0000-4000-8000-000000000001\" Name=\"DEMO-BVC\" Material=\"Mild steel\" Thickness=\"3\" MeasurementSystem=\"Metric\" Parameter=\"DEMO-PAR\" ProcessGas=\"Oxygen\">\r\n  <PartInfos>\r\n    <PartInfo Id=\"1\" Name=\"DEMO-PLATE\" Quantity=\"5\" />\r\n    <PartInfo Id=\"2\" Name=\"DEMO-TAB\" Quantity=\"4\" />\r\n  </PartInfos>\r\n  <PlanInfos>\r\n    <PlanInfo Multiplicity=\"1\" Name=\"DEMO-BVC-1\" MaterialId=\"1\" />\r\n    <PlanInfo Multiplicity=\"3\" Name=\"DEMO-BVC-2\" MaterialId=\"1\" />\r\n  </PlanInfos>\r\n</JobInfo>\r\n";
+
+fn write_bvc(path: &Path, files: Vec<(String, String)>) {
+    std::fs::write(path, crate::blm::zip(&files)).unwrap();
+}
+
+fn demo_bvc(d: &Path, unit: f64) -> PathBuf {
+    let mut files = bvc_nests(unit);
+    files.push(("JobInfo.xml".into(), BVC_JOBINFO.into()));
+    let p = d.join(if unit == 1.0 { "DEMO-BVC.bvc" } else { "DEMO-BVC-INCH.bvc" });
+    write_bvc(&p, files);
+    p
+}
+
+fn open_bvc(s: &mut Session, d: &Path, path: &Path, job: &str) -> (Value, JobFile) {
+    let jp = d.join(job);
+    let r = call(s, "import-program", Some(jp.to_str().unwrap()), json!({"path": path.to_str().unwrap()}));
+    (r, jobfile::load(&jp).unwrap())
+}
+
+#[test]
+fn a_bvc_opens_as_a_job_with_its_parts_qualities_sheets_and_cut_off() {
+    let d = dir("bvc_open");
+    let mut s = Session::new(Ctx::builtin());
+    let (r, j) = open_bvc(&mut s, &d, &demo_bvc(&d, 1.0), "opened.snjob");
+    assert!(r["message"].as_str().unwrap().contains("Opened DEMO-BVC: 9 placed part(s) of 2 kind(s) on 4 sheets"), "{r}");
+    // The job file's name, material, thickness and gas.
+    assert_eq!((j.name.as_str(), j.spec.thickness, j.spec.gas), ("DEMO-BVC", 3.0, Some(crate::gas::Gas::Oxygen)));
+    assert_eq!(super::material::name_or(j.spec.material, "?"), super::material::name_or(super::imports::program_material("Mild steel"), "?"));
+    // Two parts with the job file's quantities and their sizes.
+    let parts: Vec<(&str, u32, f64, f64)> = j.parts.iter().map(|p| (p.name.as_str(), p.qty, (p.w * 1000.0).round() / 1000.0, (p.h * 1000.0).round() / 1000.0)).collect();
+    assert_eq!(parts, vec![("DEMO-PLATE", 5, 200.0, 100.0), ("DEMO-TAB", 4, 60.0, 40.0)]);
+    // The plate: two holes at their modes' qualities (4 and 3), the outline
+    // at 3, the engraved line as Mark; the tab's outline at 2 (mode 1).
+    let plate = j.parts[0].custom.as_ref().unwrap();
+    let rows: Vec<(bool, &str, Option<usize>)> = plate.contours.iter().map(|c| (c.closed, c.state.key(), c.quality.map(|q| q.number()))).collect();
+    assert_eq!(rows, vec![(true, "cut", Some(4)), (true, "cut", Some(3)), (true, "cut", Some(3)), (false, "mark", None)]);
+    assert_eq!((plate.holes.len(), plate.marks.len()), (2, 1));
+    // The Ø20 hole is round: every point 10 from its centre.
+    let hole = &plate.contours[0].pts;
+    assert!(hole.iter().all(|p| ((p[0] - 50.0).hypot(p[1] - 50.0) - 10.0).abs() < 1e-6), "{hole:?}");
+    let tab = j.parts[1].custom.as_ref().unwrap();
+    assert_eq!(tab.contours.iter().map(|c| c.quality.map(|q| q.number())).collect::<Vec<_>>(), vec![Some(2)]);
+    // Nest 1 once and nest 2 three times: four sheets of 3000 × 1500.
+    assert_eq!(j.sheets.len(), 4);
+    assert!(j.formats.iter().all(|f| (f.w, f.h) == (3000.0, 1500.0)));
+    assert_eq!(j.sheets.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 2, 2, 2]);
+    assert!(j.sheets[1] == j.sheets[2] && j.sheets[2] == j.sheets[3]);
+    // Placed by position and rotation: the plate's corner (0, 0) of its
+    // subprogram goes to the call's X, Y, turned by its Rotation.
+    let at = |k: usize, i: usize, q: P| {
+        let p = &j.sheets[k][i];
+        let m = p.map(q);
+        [(m[0] * 1000.0).round() / 1000.0, (m[1] * 1000.0).round() / 1000.0]
+    };
+    assert_eq!((j.sheets[0][0].turns, at(0, 0, [0.0, 0.0])), (0, [10.0, 10.0]));
+    assert_eq!((j.sheets[0][1].turns, at(0, 1, [0.0, 0.0]), at(0, 1, [200.0, 0.0])), (1, [400.0, 10.0], [400.0, 210.0]));
+    assert_eq!((j.sheets[1][1].turns, at(1, 1, [0.0, 0.0]), at(1, 1, [60.0, 40.0])), (2, [360.0, 50.0], [300.0, 10.0]));
+    // The cut-off (cut back out over the edge, then across) is one remnant
+    // line at X 1000 on its sheet.
+    assert_eq!(j.cut_lines[0].len(), 1);
+    let line = &j.cut_lines[0][0];
+    assert_eq!(line.kind, crate::cutoff::CutKind::Remnant);
+    assert!(line.pts.iter().all(|p| (p[0] - 1000.0).abs() < 1e-6), "{:?}", line.pts);
+    assert!(j.cut_lines.get(1).is_none_or(|v| v.is_empty()));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_same_part_cut_differently_in_two_nests_opens_as_two_parts() {
+    let d = dir("bvc_two_shapes");
+    let mut s = Session::new(Ctx::builtin());
+    let mut files = bvc_nests(1.0);
+    // Nest 2's plate has its small hole 10 mm further right.
+    files[1].1 = files[1].1.replace("X=\"155\"", "X=\"165\"").replace("X=\"145\"", "X=\"155\"");
+    files.push(("JobInfo.xml".into(), BVC_JOBINFO.into()));
+    let p = d.join("two.bvc");
+    write_bvc(&p, files);
+    let (r, j) = open_bvc(&mut s, &d, &p, "two.snjob");
+    let names: Vec<(&str, u32)> = j.parts.iter().map(|p| (p.name.as_str(), p.qty)).collect();
+    assert_eq!(names, vec![("DEMO-PLATE", 5), ("DEMO-TAB", 4), ("DEMO-PLATE (2)", 3)], "{r}");
+    assert!(r["message"].as_str().unwrap().contains("drawn or cut differently in nest DEMO-BVC-2"), "{r}");
+    let hole = |k: usize| { let c = &j.parts[k].custom.as_ref().unwrap().contours[1].pts; c.iter().map(|p| p[0]).sum::<f64>() / c.len() as f64 };
+    assert!((hole(0) - 150.0).abs() < 0.5 && (hole(2) - 160.0).abs() < 0.5);
+    assert!(j.sheets[1].iter().any(|p| p.part == 2) && !j.sheets[0].iter().any(|p| p.part == 2));
+    // Two parts of the job file with the same name keep their own quantities.
+    let mut files = bvc_nests(1.0);
+    files.push(("JobInfo.xml".into(), BVC_JOBINFO.replace("Name=\"DEMO-TAB\"", "Name=\"DEMO-PLATE\"")));
+    let p = d.join("same-name.bvc");
+    write_bvc(&p, files);
+    let (_, j) = open_bvc(&mut s, &d, &p, "same-name.snjob");
+    assert_eq!(j.parts.iter().map(|p| (p.name.as_str(), p.qty)).collect::<Vec<_>>(), vec![("DEMO-PLATE", 5), ("DEMO-PLATE (2)", 4)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_inch_bvc_opens_at_the_same_size_in_mm() {
+    let d = dir("bvc_inch");
+    let mut s = Session::new(Ctx::builtin());
+    let (_, mm) = open_bvc(&mut s, &d, &demo_bvc(&d, 1.0), "mm.snjob");
+    let (_, inch) = open_bvc(&mut s, &d, &demo_bvc(&d, 25.4), "inch.snjob");
+    let size = |j: &JobFile| j.parts.iter().map(|p| [(p.w * 1e3).round(), (p.h * 1e3).round()]).collect::<Vec<_>>();
+    assert_eq!(size(&inch), size(&mm));
+    assert!((inch.formats[0].w - 3000.0).abs() < 1e-6 && (inch.formats[0].h - 1500.0).abs() < 1e-6);
+    assert!((inch.sheets[0][1].x - mm.sheets[0][1].x).abs() < 1e-6);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_file_that_isnt_a_bvc_is_refused_with_its_reason() {
+    let d = dir("bvc_broken");
+    let mut s = Session::new(Ctx::builtin());
+    let refused = |s: &mut Session, name: &str, bytes: Vec<u8>| {
+        let p = d.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        s.call("import-program", Some(d.join("x.snjob").to_str().unwrap()), &json!({"path": p.to_str().unwrap()})).err().unwrap_or_else(|| panic!("{name} should be refused"))
+    };
+    let zip = |files: Vec<(String, String)>| crate::blm::zip(&files);
+    let e = refused(&mut s, "plain.bvc", b"not a zip".to_vec());
+    assert!(e.contains("not a zip archive"), "{e}");
+    let e = refused(&mut s, "nojob.bvc", zip(bvc_nests(1.0)));
+    assert!(e.contains("no job file (JobInfo.xml)"), "{e}");
+    let e = refused(&mut s, "noccp.bvc", zip(vec![("JobInfo.xml".into(), BVC_JOBINFO.into())]));
+    assert!(e.contains("no cut program"), "{e}");
+    let e = refused(&mut s, "broken.bvc", zip(vec![("JobInfo.xml".into(), BVC_JOBINFO.into()), ("DEMO-BVC-1.ccp".into(), "<CuttingControlProgram <LineTo".into())]));
+    assert!(e.contains("cut program DEMO-BVC-1.ccp can't be read"), "{e}");
+    let mut nowhere = bvc_nests(1.0);
+    nowhere[0].1 = nowhere[0].1.replace("PartNumber=\"2\"", "PartNumber=\"9\"");
+    nowhere.push(("JobInfo.xml".into(), BVC_JOBINFO.into()));
+    let e = refused(&mut s, "nowhere.bvc", zip(nowhere));
+    assert!(e.contains("names part 9, which isn't in its job file"), "{e}");
+    let mut missing = bvc_nests(1.0);
+    missing[0].1 = missing[0].1.replace("SubProgramName=\"2\"", "SubProgramName=\"7\"");
+    missing.push(("JobInfo.xml".into(), BVC_JOBINFO.into()));
+    let e = refused(&mut s, "missing.bvc", zip(missing));
+    assert!(e.contains("calls subprogram 7, which isn't in it"), "{e}");
+    // A cut program cut short after a whole command is refused too.
+    let mut short = bvc_nests(1.0);
+    let cut = short[0].1.rfind("<CallSubProgram").unwrap();
+    let end = cut + short[0].1[cut..].find("/>").unwrap() + 2;
+    short[0].1.truncate(end);
+    short.push(("JobInfo.xml".into(), BVC_JOBINFO.into()));
+    let e = refused(&mut s, "short.bvc", zip(short));
+    assert!(e.contains("cut short"), "{e}");
+    // A command the reader doesn't know is skipped and named in the note.
+    let mut odd = bvc_nests(1.0);
+    odd[0].1 = odd[0].1.replace("<SetClamps", "<ExecLaserDance Id=\"0\" />\r\n      <SetClamps");
+    odd.push(("JobInfo.xml".into(), BVC_JOBINFO.into()));
+    let p = d.join("odd.bvc");
+    write_bvc(&p, odd);
+    let (r, j) = open_bvc(&mut s, &d, &p, "odd.snjob");
+    assert!(r["message"].as_str().unwrap().contains("ExecLaserDance ×1"), "{r}");
+    assert_eq!(j.sheets.len(), 4);
+    let _ = std::fs::remove_dir_all(&d);
+}

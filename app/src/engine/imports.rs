@@ -257,9 +257,23 @@ pub struct ProgramJob {
     pub name: String,
     pub spec: SheetSpec,
     pub parts: Vec<Part>,
-    pub sheet: Vec<Placed>,
-    pub cuts: Vec<CutLine>,
+    /// Each sheet with its format and cut lines (a ByStar Fiber nest cut
+    /// more than once is that many identical sheets).
+    pub sheets: Vec<Vec<Placed>>,
+    pub formats: Vec<crate::nest::SheetFormat>,
+    pub cuts: Vec<Vec<CutLine>>,
     pub notes: Vec<String>,
+}
+
+impl ProgramJob {
+    /// Placed parts on all its sheets.
+    pub fn placed(&self) -> usize {
+        self.sheets.iter().map(Vec::len).sum()
+    }
+    /// Cut lines on all its sheets.
+    pub fn cut_count(&self) -> usize {
+        self.cuts.iter().map(Vec::len).sum()
+    }
 }
 
 /// GS18: the gas a job opened from an LC5 program set takes, and what to
@@ -303,6 +317,9 @@ pub fn program_gas(program: Option<&(String, String)>, xml: Option<&(String, Str
 /// cuts. The sheet is a new job's (`with_prefs` over `base`, GS12) with the
 /// header's sheet, material and thickness and the set's gas (GS18).
 pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) -> Result<ProgramJob, String> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("bvc")) {
+        return bvc_job(cfg, base, path, color0);
+    }
     let im = crate::progimport::open(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
     let mut spec = with_prefs(base, cfg);
     let m = cfg.machine();
@@ -343,17 +360,89 @@ pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usi
     meet_up(&mut cuts, spec.w, spec.h);
     let mut notes = im.notes;
     notes.extend(gas_notes);
-    Ok(ProgramJob { name: im.name, spec, parts, sheet, cuts, notes })
+    let formats = vec![crate::nest::SheetFormat::rect(spec.w, spec.h)];
+    Ok(ProgramJob { name: im.name, spec, parts, sheets: vec![sheet], formats, cuts: vec![cuts], notes })
+}
+
+/// The gas a ByStar Fiber job file names (`ProcessGas`), by its name on the
+/// list (any case) or as the LC5 writes it; None for none or another name.
+fn gas_named(name: &str) -> Option<crate::gas::Gas> {
+    let n = name.trim();
+    crate::gas::Gas::ALL.into_iter().find(|g| !n.is_empty() && (g.name().eq_ignore_ascii_case(n) || g.program_name().eq_ignore_ascii_case(n)))
+}
+
+/// Open a ByStar Fiber `.bvc` (BV1–BV20, JOB-73) as an editable job: each
+/// part subprogram a part with each contour's operation mode as its cut
+/// quality (engraving as Mark), each nest that many sheets with its parts
+/// placed by position and rotation, its cut-offs as remnant lines, and the
+/// job file's material, thickness and gas. The sheets are on the active
+/// machine (a new job's sheet, `with_prefs` over `base`).
+pub fn bvc_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) -> Result<ProgramJob, String> {
+    let b = crate::bvc::open(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+    let mut spec = with_prefs(base, cfg);
+    let mut notes = b.notes.clone();
+    if let Some(s) = b.sheets.first().filter(|s| s.w > 0.0 && s.h > 0.0) {
+        spec.w = s.w;
+        spec.h = s.h;
+    }
+    if b.thickness > 0.0 {
+        spec.thickness = b.thickness;
+    }
+    if !b.material.is_empty() {
+        spec.material = program_material(&b.material);
+        if crate::engine::material::like(&b.material).is_none() {
+            notes.push(format!("its material \"{}\" isn't in the material list, so the job takes {}: pick the right one on the Sheet tab", b.material, crate::engine::material::name_or(spec.material, "?")));
+        }
+    }
+    match gas_named(&b.gas) {
+        Some(g) => spec.gas = Some(g),
+        None if !b.gas.trim().is_empty() => notes.push(format!("its gas \"{}\" isn't one of the list's ({}), so the job keeps {}", b.gas.trim(), crate::gas::program_words(), spec.gas.map_or("the machine's gas".to_string(), |g| g.label()))),
+        None => {}
+    }
+    let parts: Vec<Part> = b
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(k, p)| Part {
+            name: p.name.clone(),
+            shape: Shape::Custom,
+            w: p.geo.w,
+            h: p.geo.h,
+            qty: p.qty,
+            rotate: true,
+            color: color0 + k,
+            tech: None,
+            texts: vec![],
+            group: String::new(),
+            erp: vec![],
+            custom: Some(std::sync::Arc::new(p.geo.clone())),
+            rots: Default::default(),
+        })
+        .collect();
+    let (mut sheets, mut formats, mut cuts) = (vec![], vec![], vec![]);
+    for s in &b.sheets {
+        let (w, h) = if s.w > 0.0 && s.h > 0.0 { (s.w, s.h) } else { (spec.w, spec.h) };
+        let mut lines: Vec<CutLine> = s.cuts.iter().filter_map(|c| program_cut(c, w, h)).collect();
+        meet_up(&mut lines, w, h);
+        for _ in 0..s.count.max(1) {
+            sheets.push(s.placed.clone());
+            formats.push(crate::nest::SheetFormat::rect(w, h));
+            cuts.push(lines.clone());
+        }
+    }
+    let name = if b.name.is_empty() { path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { b.name };
+    Ok(ProgramJob { name, spec, parts, sheets, formats, cuts, notes })
 }
 
 impl ProgramJob {
-    /// As a job file (one sheet, the cut-offs on it).
+    /// As a job file (its sheets, the cut-offs on them).
     pub fn into_jobfile(self) -> JobFile {
         let mut j = JobFile::new_job(&self.name, self.spec);
         j.week = "Opened programs".into();
         j.parts = self.parts;
-        j.sheets = vec![self.sheet];
-        j.cut_lines = vec![self.cuts];
+        j.sheets = self.sheets;
+        j.formats = self.formats;
+        j.cut_lines = self.cuts;
         j.method = "opened from machine program".into();
         j
     }

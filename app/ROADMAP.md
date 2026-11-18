@@ -101,7 +101,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Every ribbon command mapped to an operation, test-enforced (`nestpro ops --gui`) | Have | |
 | Window notices when an agent changed the open job file: reloads it, or asks when both changed | Have (`filewatch.rs`, once a second) | |
 | Each open job keeps its own file (Save no longer writes into the previous job's file) | Have | |
-| Lantek import XML (`import-xml`, one job file per material and thickness) and BLM program set back into a job (`import-program`) | Have — same rules as the window (`engine/imports.rs`) | |
+| Lantek import XML (`import-xml`, one job file per material and thickness) and a BLM program set or a ByStar Fiber `.bvc` back into a job (`import-program`, MECHANICS BV20) | Have — same rules as the window (`engine/imports.rs`) | |
 | Lantek database browser for agents | Missing (`todo:` in GUI_MAP; needs a Lantek SQL Server connection, Windows) | ★ |
 | Sheet stock / remnant stock operations | Have — `stock`, `stock-book` (with `refs=` for new remnants' names; changed remnant lines remake unused remnants), `sheet-add`, `sheet-change`, `sheet-delete`; `nest` takes from stock through the window's code, with the best sheet format / combination searches when the window's options are on (`engine/stockflow.rs`, MECHANICS SA1–SA6, BN6–BN8) | |
 | Semi-automatic remnant and rotate/flip remnant sheet for agents | Missing (`todo:` in GUI_MAP) | ★ |

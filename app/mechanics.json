@@ -7961,10 +7961,10 @@
   "source": "BV19; observed"
  },
  {
-  "name": "ByStar Fiber: Example files",
+  "name": "ByStar Fiber: Opening a .bvc as a job",
   "group": "bystar",
-  "value": "Example files built from these rules (made-up data) are in the study; a writer's test can rebuild the same shape.",
-  "source": "BV20; estimated"
+  "value": "Opening a .bvc as a job (JOB-73, import-program and Open CNC program): each part subprogram becomes a part — its closed cuts with arcs rebuilt from end point and sweep, the largest the outline and the rest holes, engraved lines (mode 2) as Mark, open cut lines as No cut; lead-ins, lead-outs and micro-joint markers are not part shape. Each contour's operation mode becomes its cut quality, set by hand on the contour: BV32 read backwards, 0 → 1, 1 → 2, 3–7 → the same. A part's name and quantity come from the job file (PartNumber = PartInfo Id, else the nest's PlanPartInfo); without a quantity, as many as are placed. Each cut program is a sheet of its SheetWidth × SheetHeight, PlanInfo Multiplicity times, its parts placed by CallSubProgram position and rotation. Cut-offs (cuts outside a part subprogram, or in ResidualSheetCuts) become remnant lines, the cut back out and the cut across joined into one. An Imperial program is read in inches. Material, thickness and gas come from the job file, and the sheets go to the active machine. Refused with one reason: not a zip, no job file, no cut program, a cut program that can't be read, a subprogram naming a part the job file hasn't, a call to a subprogram that isn't there. Commands the reader doesn't know are skipped and counted in the note; vaporize-all copies (BV54) are skipped; a full circle written as one arc can't be rebuilt (BV14) and is left out, with a note.",
+  "source": "BV20; rebuild"
  },
  {
   "name": "ByStar Fiber: What the post works from",

@@ -169,8 +169,8 @@ pub static OPS: &[Op] = &[
     Op { name: "import-xml", group: "Job", kind: Kind::Global, help: "Import a Lantek import XML (DXF Import / Parts Import): one new job file per material and thickness, each product's drawing (Fich) or its library product, with its quantity and rotations.", args: &[
         r("path", Ty::Path, "The XML file"), a("dir", Ty::Path, "Folder for the new job files (default: next to the XML)"), a("force", Ty::Bool, "Overwrite job files that exist"),
     ] },
-    Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) as a new editable job: its parts, where they sit, the sheet, material and thickness, the gas its programs name (else the machine's, as for a new job), and the cut-off as a remnant line.", args: &[
-        r("path", Ty::Path, "The program set (.zip / .XML / .nxp)"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
+    Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) or a ByStar Fiber .bvc as a new editable job: its parts, where they sit, the sheet(s), material and thickness, the gas its programs name (else the machine's, as for a new job), and the cut-offs as remnant lines. From a .bvc each contour's operation mode becomes its cut quality and engraving becomes Mark, and a nest cut several times becomes that many sheets.", args: &[
+        r("path", Ty::Path, "The program set (.zip / .XML / .nxp) or ByStar Fiber .bvc"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
     ] },
     Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Objects the drawing hides (frozen or off layers, invisible) or draws in a centre / hidden / dashed line type get their own row, such as `0 [CENTER]`, that starts as left out. Each part's size, holes and contours (numbered as part-info numbers them, with the state each starts in) are given as the part comes in with `layers`, so import-drawing's `contours` can be chosen before importing. Also answers to dxf-layers.", args: &[
         r("path", Ty::Path, "The drawing file"), c("format", FORMATS, "Read the file as this format (default: by its extension and content)"),
@@ -1311,16 +1311,15 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
         let path = PathBuf::from(a.need_str("path")?);
         let pj = imports::program_job(&ctx.cfg, &default_spec(), &path, 0)?;
         let m = format!(
-            "Opened {}: {} placed part(s) of {} kind(s) on a {:.0} × {:.0} mm sheet, {} {} mm, {}{}.{}",
+            "Opened {}: {} placed part(s) of {} kind(s) on {}, {} {} mm, {}{}.{}",
             pj.name,
-            pj.sheet.len(),
+            pj.placed(),
             pj.parts.len(),
-            pj.spec.w,
-            pj.spec.h,
+            if pj.sheets.len() > 1 { format!("{} sheets", pj.sheets.len()) } else { format!("a {:.0} × {:.0} mm sheet", pj.spec.w, pj.spec.h) },
             super::material::name_or(pj.spec.material, "?"),
             pj.spec.thickness,
             job_gas(&pj.spec, &ctx.blm).label(),
-            if pj.cuts.is_empty() { String::new() } else { format!(", {} cut line(s)", pj.cuts.len()) },
+            if pj.cut_count() == 0 { String::new() } else { format!(", {} cut line(s)", pj.cut_count()) },
             if pj.notes.is_empty() { String::new() } else { format!(" ({})", pj.notes.join("; ")) }
         );
         return Ok((pj.into_jobfile(), m));
