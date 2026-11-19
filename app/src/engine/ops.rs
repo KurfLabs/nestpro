@@ -271,18 +271,20 @@ pub static OPS: &[Op] = &[
     ] },
     Op { name: "unplace", group: "Nesting", kind: Kind::Write, help: "Take one placed part off its sheet.", args: &[SHEET, ITEM] },
     // --- technology ---
-    Op { name: "leads", group: "Technology", kind: Kind::Write, help: "Lead-ins: auto (placed by contour class — round, rectangular or other part or hole: round ones at the keypad position's angle, rectangles at its corner or nearest side, other shapes at the nearest valid corner, else the middle of the nearest long-enough line), machine (lengths and position from the machine's CT1), or delete.", args: &[
+    Op { name: "leads", group: "Technology", kind: Kind::Write, help: "Lead-ins: auto (placed by contour class — round, rectangular or other part or hole: round ones at the keypad position's angle, rectangles at its corner or nearest side, other shapes at the nearest valid corner, else the middle of the nearest long-enough line), machine (lengths and position from the machine's CT1), or delete. on=holes or on=outline does auto or delete on those cuts alone: the other side keeps the leads it has (part-info's tech shows hole_leads / outline_leads).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto, machine or delete", choices: &["auto", "machine", "delete"] }, PARTS,
         c("type", LEADS, "auto: lead type (default machine = the machine's lead tables per contour class and quality; line = inclined)"), a("position", Ty::Int, "auto: keypad position 1-9 (1 bottom-left, 9 top-right; default 1)"),
+        Arg { name: "on", ty: Ty::Str, required: false, help: "auto / delete: which cuts — all (default), holes (inside contours) or outline (the outside contour)", choices: &["all", "holes", "outline"] },
     ] },
     Op { name: "lead-at", group: "Technology", kind: Kind::Write, help: "Start a contour on one element of a part (see part-info for element numbers): by the third of a line nearest `at`, else at its middle.", args: &[PART, r("element", Ty::Int, "Element number from part-info"), a("at", Ty::Points, "Pick point \"x,y\" in part mm (optional)")] },
-    Op { name: "lead-edit", group: "Technology", kind: Kind::Write, help: "Change one contour's lead by hand, as the Part view does. type= gives it its own shape (clicking the lead and picking one); it keeps where it starts and about how far it reaches. The lengths and angles move its ends, as dragging them does: the lead-in's pierce and/or the lead-out's end, each as a length (mm, straight from where it meets the contour) and an angle from the contour into the scrap (lead-in: measured from the contour behind its start; lead-out: from the contour ahead; 90 = square off it). The contour keeps its start and lead type, and an arc lead keeps its arc into the contour; what you leave out stays as it is cut now (part-info lists each contour's lead_in / lead_out and the angles it can take). Every piece of the part type gets it. same=true (All the same contours) puts the lead on every hole of the same shape too (moved, not turned or mirrored; part-info's lead_same_as shows which share it), at the same place on each; without lengths or angles it shares the lead the contour has now. Sharing replaces their own moved leads and starts picked on an element; a hole given its own lead or start afterwards keeps that. mode=reset puts the contour's lead back (one it shares goes from all of them; with same=true the leads of every hole like it go too; without contour: every lead of the part).", args: &[
+    Op { name: "lead-edit", group: "Technology", kind: Kind::Write, help: "Change one contour's lead by hand, as the Part view does. type= gives it its own shape (clicking the lead and picking one); it keeps where it starts and about how far it reaches. The lengths and angles move its ends, as dragging them does: the lead-in's pierce and/or the lead-out's end, each as a length (mm, straight from where it meets the contour) and an angle from the contour into the scrap (lead-in: measured from the contour behind its start; lead-out: from the contour ahead; 90 = square off it). The contour keeps its start and lead type, and an arc lead keeps its arc into the contour; what you leave out stays as it is cut now (part-info lists each contour's lead_in / lead_out and the angles it can take). at=\"x,y\" (part mm) slides where the lead meets the contour to the nearest point of it, as dragging the lead's foot does; the lead keeps its shape and angles. mode=add puts a lead starting exactly at at= (a contour without one gets the part's shape at the machine table's length); mode=remove cuts the contour without a lead, piercing on it. Every piece of the part type gets it. same=true (All the same contours) puts the lead on every hole of the same shape too (moved, not turned or mirrored; part-info's lead_same_as shows which share it), at the same place on each; without lengths or angles it shares the lead the contour has now. Sharing replaces their own moved leads and starts picked on an element; a hole given its own lead or start afterwards keeps that. mode=reset puts the contour's lead back (one it shares goes from all of them; with same=true the leads of every hole like it go too; without contour: every lead of the part).", args: &[
         PART, a("contour", Ty::Int, "Contour number from part-info"),
         a("in_length", Ty::Num, "Lead-in: mm from the start to the pierce"), a("in_angle", Ty::Num, "Lead-in: degrees from the contour behind the start, into the scrap"),
         a("out_length", Ty::Num, "Lead-out: mm from where it leaves the contour to its end"), a("out_angle", Ty::Num, "Lead-out: degrees from the contour ahead, into the scrap"),
         a("same", Ty::Bool, "Every hole of the same shape too (default false)"),
         Arg { name: "type", ty: Ty::Str, required: false, help: "Give this one lead its own shape, keeping where it starts and about how far it reaches (ends moved by hand go): machine = the machine table's lead for the contour; perpendicular, line, arc, line-arc, corner", choices: LEADS },
-        Arg { name: "mode", ty: Ty::Str, required: false, help: "set (default) or reset", choices: &["set", "reset"] },
+        a("at", Ty::Points, "Where on the contour its lead starts, \"x,y\" in part mm: set moves the lead's start there, add puts a lead there"),
+        Arg { name: "mode", ty: Ty::Str, required: false, help: "set (default), add (a lead at at=), remove (no lead) or reset", choices: &["set", "add", "remove", "reset"] },
     ] },
     Op { name: "joints", group: "Technology", kind: Kind::Write, help: "Micro-joints: auto (one per the machine's maximum distance — 100 mm by default — on every contour, holes too, rounded up to an even number and centred on its line or arc, within the machine's fewest/most for the contour's size class) or delete.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
@@ -753,6 +755,16 @@ fn r1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
 }
 
+/// One side's leads (LE12): as the part's settings say, none, or its own
+/// automatic shape and position.
+fn side_json(s: &nest::SideLeads) -> Value {
+    match (s.off, s.auto) {
+        (true, _) => json!("none"),
+        (false, Some((k, pos))) => json!({"type": lead_key(k), "position": pos}),
+        (false, None) => json!("as the part"),
+    }
+}
+
 pub fn tech_json(t: &Option<PartTech>) -> Value {
     match t {
         None => json!("automatic (the sheet's default lead-in, no micro-joints)"),
@@ -762,6 +774,7 @@ pub fn tech_json(t: &Option<PartTech>) -> Value {
             "joint_type": format!("{:?}", t.joint_type).to_lowercase(), "joint_every": t.joint_every, "joint_lead": t.joint_lead, "joint_lead_out": t.joint_lead_out.unwrap_or(t.joint_lead), "joint_angle": t.joint_angle,
             "loops": t.loops, "loop_size": t.loop_size, "quality": t.quality.map_or(json!("auto"), |q| json!(q.number())),
             "leads_on_elements": t.starts.iter().flatten().count(), "leads_moved_by_hand": t.lead_edits.iter().flatten().count(), "joints_on_elements": t.joint_picks.iter().flatten().count(),
+            "hole_leads": side_json(&t.hole_leads), "outline_leads": side_json(&t.outline_leads),
             "cut_ranges": t.cut_ranges.iter().filter(|c| c.on).map(|c| format!("{}-{}:{}", c.min_r, c.max_r, c.quality.number())).collect::<Vec<_>>(),
         }),
     }
@@ -956,6 +969,12 @@ fn part_info(job: &JobFile, i: usize) -> Value {
                 v["lead_in"] = end(e.lead_in, e.in_angles);
                 v["lead_out"] = end(e.lead_out, e.out_angles);
                 v["lead_by_hand"] = json!(e.hand);
+                // LE10, LE11: where it starts (part mm), and a lead removed by hand.
+                let st = pc.lead_spots[0].frame.0;
+                v["lead_start"] = json!([r1(st[0]) + 0.0, r1(st[1]) + 0.0]);
+                if hand_lead(p, pc.contour).is_some_and(|(h, _)| h.off) {
+                    v["lead_removed"] = json!(true);
+                }
                 // LE9: the lead's shape, and whether it was picked for this lead alone.
                 let (k, own) = lead_shape(p, pc.contour);
                 v["lead_type"] = json!(lead_key(k));
@@ -1612,11 +1631,29 @@ fn who(job: &JobFile, t: &[usize]) -> String {
     if t.len() == 1 { format!("'{}'", job.parts[t[0]].name) } else { format!("{} parts", t.len()) }
 }
 
+/// `leads on=`: which cuts auto / delete act on (LE12).
+fn lead_scope(a: &Args) -> Result<nest::LeadScope, String> {
+    match a.str("on").as_deref().unwrap_or("all") {
+        "all" => Ok(nest::LeadScope::All),
+        "holes" => Ok(nest::LeadScope::Holes),
+        "outline" => Ok(nest::LeadScope::Outline),
+        o => Err(format!("on='{o}'? Use all, holes or outline.")),
+    }
+}
+
+fn scope_words(s: nest::LeadScope) -> &'static str {
+    match s {
+        nest::LeadScope::All => "",
+        nest::LeadScope::Holes => " on the holes",
+        nest::LeadScope::Outline => " on the outline",
+    }
+}
+
 fn edit_tech(job: &mut JobFile, args: &Args, e: TechEdit, what: &str) -> Result<Outcome, String> {
     let t = parts_sel(&job.parts, args.get("parts"), true)?;
     for &i in &t {
-        let bbox = job.parts[i].bbox();
-        e.apply(&mut job.parts[i].tech, bbox);
+        let holes = cut_holes(&job.parts[i]);
+        e.apply(&mut job.parts[i].tech, holes);
     }
     Ok(Outcome::msg(format!("{what} for {}.", who(job, &t))))
 }
@@ -3041,10 +3078,14 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 if !(1..=9).contains(&position) {
                     return Err("position is 1 to 9 (keypad)".into());
                 }
-                edit_tech(job, &a, TechEdit::AutoLeads { lead_type, position: position as u8 }, "Automatic lead-ins")
+                let scope = lead_scope(&a)?;
+                edit_tech(job, &a, TechEdit::AutoLeads { lead_type, position: position as u8, scope }, &format!("Automatic lead-ins{}", scope_words(scope)))
             }
             "machine" => edit_tech(job, &a, TechEdit::MachineLeads(crate::ct1::for_spec(&job.spec)), "Machine lead-ins"),
-            "delete" => edit_tech(job, &a, TechEdit::DeleteLeads, "Lead-ins removed"),
+            "delete" => {
+                let scope = lead_scope(&a)?;
+                edit_tech(job, &a, TechEdit::DeleteLeads(scope), &format!("Lead-ins removed{}", scope_words(scope)))
+            }
             m => Err(format!("leads mode '{m}'?")),
         },
         "lead-at" => {
@@ -3076,10 +3117,26 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         (None, n) => format!("{n} lead(s) of '{name}' back to their automatic place."),
                     }))
                 }
+                "add" => {
+                    let ci = ci.ok_or("Name the contour (see part-info).")?;
+                    let at = a.point("at")?.ok_or("Give at=\"x,y\" (part mm): where on the contour the lead starts.")?;
+                    Ok(Outcome::msg(add_lead_at(&mut job.parts, i, &job.spec, ci, at, same, crate::units::LenUnit::Mm)?))
+                }
+                "remove" => {
+                    let ci = ci.ok_or("Name the contour (see part-info).")?;
+                    Ok(Outcome::msg(remove_lead(&mut job.parts, i, &job.spec, ci, same)?))
+                }
                 "set" => {
                     let ci = ci.ok_or("Name the contour (see part-info).")?;
                     let (il, ia, ol, oa) = (a.num("in_length")?, a.num("in_angle")?, a.num("out_length")?, a.num("out_angle")?);
                     let mut msg = vec![];
+                    // LE10: the start first, so a shape or ends given with it act there.
+                    if let Some(at) = a.point("at")? {
+                        msg.push(move_lead_start(&mut job.parts, i, &job.spec, ci, at, 0.0, same, crate::units::LenUnit::Mm)?);
+                        if a.str("type").is_none() && il.is_none() && ia.is_none() && ol.is_none() && oa.is_none() {
+                            return Ok(Outcome::msg(msg.join(" ")));
+                        }
+                    }
                     // LE9: the shape first, so lengths given with it act on the new shape.
                     if let Some(k) = a.str("type") {
                         msg.push(set_lead_type(&mut job.parts, i, &job.spec, ci, lead_from(&k)?, same)?);
@@ -3091,7 +3148,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         if same {
                             return Ok(Outcome::msg(lead_to_same(&mut job.parts[i], ci)?));
                         }
-                        return Err("Give type for the lead's shape, in_length / in_angle for the lead-in, out_length / out_angle for the lead-out, same=true to put the lead it has on every hole of its shape (or mode=reset).".into());
+                        return Err("Give type for the lead's shape, at for where it starts, in_length / in_angle for the lead-in, out_length / out_angle for the lead-out, same=true to put the lead it has on every hole of its shape (or mode=add, remove or reset).".into());
                     }
                     if il.is_some() || ia.is_some() {
                         msg.push(set_lead_end(&mut job.parts, i, &job.spec, ci, LeadEnd::In, il, ia, same)?);
@@ -3101,7 +3158,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     }
                     Ok(Outcome::msg(msg.join(" ")))
                 }
-                m => Err(format!("lead-edit mode '{m}'? Use set or reset.")),
+                m => Err(format!("lead-edit mode '{m}'? Use set, add, remove or reset.")),
             }
         }
         "joints" => match a.need_str("mode")?.as_str() {
@@ -3560,6 +3617,12 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Lead-ins/Delete\nlead-ins", "leads"),
     ("Lead-ins/Standard\nleads", "leads"),
     ("Lead-ins/On element", "lead-at"),
+    // LE12: which cuts Auto and Delete lead-ins act on.
+    ("techui.rs/All", "leads"),
+    ("techui.rs/Holes", "leads"),
+    ("techui.rs/Outline", "leads"),
+    // LE11: one lead removed on its card.
+    ("partview.rs/Remove lead", "lead-edit"),
     ("Micro-joints/Auto\njoints", "joints"),
     ("Micro-joints/Delete\njoints", "joints"),
     ("Micro-joints/On element", "joint-at"),

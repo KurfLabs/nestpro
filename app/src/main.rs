@@ -321,6 +321,8 @@ pub struct App {
     /// Screenshots only (--lead-menu=<type>): the Type picker shown open on that type.
     pub lead_menu_demo: Option<nest::LeadType>,
     pub lead_pos: u8,
+    /// Which cuts Auto lead-ins and Delete lead-ins act on (LE12).
+    pub lead_scope: nest::LeadScope,
     pub tech_all: bool,
     /// The scope picked by hand on the sheet (Nesting): None until then,
     /// when the technology commands work on all part types.
@@ -689,6 +691,7 @@ impl App {
             lead_choice: nest::LeadType::Machine,
             lead_menu_demo: None,
             lead_pos: 1,
+            lead_scope: nest::LeadScope::All,
             tech_all: false,
             tech_nest_all: None,
             demo_open_menu: false,
@@ -4083,6 +4086,64 @@ fn main() -> eframe::Result {
                 app.order_pick.demo_card = arg("--order-card=");
                 app.order_pick.demo_menu = flag("--order-menu") || app.order_pick.demo_quality || app.order_pick.demo_card.is_some();
             }
+            // Placing leads by hand (screenshots, LE10–LE12), on the part shown
+            // (--part-name=<name> opens that one first), through the engine as
+            // the clicks do: --lead-scope=<all|holes|outline> picks the ribbon's
+            // row, --lead-delete runs Delete lead-ins with it on that part,
+            // --lead-slide=<contour>:<x>,<y> drags a lead's foot there,
+            // --lead-add=<contour>:<x>,<y> is the ring's Lead here, and
+            // --lead-remove=<contour> its card's Remove lead. Each shows the
+            // Technology ribbon.
+            {
+                let arg = |k: &str| std::env::args().find_map(|a| a.strip_prefix(k).map(str::to_string));
+                if let Some(i) = arg("--part-name=").and_then(|n| app.parts.iter().position(|p| p.name == n)) {
+                    app.open_part(i);
+                    app.sel_part = Some(i);
+                    if let Some(z) = arg("--part-zoom=").and_then(|v| v.parse::<f32>().ok()) {
+                        app.part_zoom = z.clamp(crate::partview::PART_ZOOM_MIN, crate::partview::PART_ZOOM_MAX);
+                    }
+                }
+                let at = |v: &str| -> Option<(usize, P)> {
+                    let (c, xy) = v.split_once(':')?;
+                    let (x, y) = xy.split_once(',')?;
+                    Some((c.parse().ok()?, [x.parse().ok()?, y.parse().ok()?]))
+                };
+                if ["--lead-scope=", "--lead-slide=", "--lead-add=", "--lead-remove="].iter().any(|k| arg(k).is_some()) {
+                    app.tab = Tab::Technology;
+                }
+                // --part-pan-px=<x>,<y>: the Part view moved by that many pixels.
+                if let Some((x, y)) = arg("--part-pan-px=").and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))) {
+                    app.part_pan = Vec2::new(x, y);
+                }
+                if let Some(sc) = arg("--lead-scope=") {
+                    app.lead_scope = match sc.as_str() {
+                        "holes" => nest::LeadScope::Holes,
+                        "outline" => nest::LeadScope::Outline,
+                        _ => nest::LeadScope::All,
+                    };
+                    app.tab = Tab::Technology;
+                }
+                if let Some(idx) = app.shown_part() {
+                    let spec = app.spec.clone();
+                    let u = app.unit();
+                    if std::env::args().any(|a| a == "--lead-delete") {
+                        app.tech_all = false;
+                        app.tech_nest_all = Some(false);
+                        let scope = app.lead_scope;
+                        app.edit_tech("Lead-ins removed", |t, h| engine::TechEdit::DeleteLeads(scope).apply(t, h));
+                    }
+                    if let Some((ci, p)) = arg("--lead-slide=").and_then(|v| at(&v)) {
+                        app.status = engine::move_lead_start(&mut app.parts, idx, &spec, ci, p, 0.0, false, u).unwrap_or_else(|e| e);
+                    }
+                    if let Some((ci, p)) = arg("--lead-add=").and_then(|v| at(&v)) {
+                        app.status = engine::add_lead_at(&mut app.parts, idx, &spec, ci, p, false, u).unwrap_or_else(|e| e);
+                    }
+                    if let Some(ci) = arg("--lead-remove=").and_then(|v| v.parse::<usize>().ok()) {
+                        app.status = engine::remove_lead(&mut app.parts, idx, &spec, ci, false).unwrap_or_else(|e| e);
+                    }
+                    app.refresh();
+                }
+            }
             // --lead-menu=<machine|perpendicular|line|arc|line-arc|corner>
             // (screenshots): the Technology tab with the lead Type picker
             // open, previewing that type.
@@ -5015,6 +5076,39 @@ mod element_tests {
         let t = a.parts[0].tech.unwrap();
         assert_eq!(t.starts.iter().flatten().count(), 1);
         assert_eq!(t.starts[0], Some((0, [200.0, 50.0])));
+    }
+
+    #[test]
+    fn lead_here_on_the_right_click_ring_starts_the_cut_exactly_there() {
+        // LE10: not by thirds like On element (LP3), but at the spot itself.
+        let mut a = rect_app();
+        pick(&mut a, &[0]);
+        a.sel_pick = Some((0, [37.0, 1.0]));
+        a.lead_here();
+        let plan = cnc::plan_part(&a.parts, 0, &a.spec);
+        let c = plan.contours.iter().find(|c| !c.inner).unwrap();
+        assert_eq!(c.lead_spots[0].frame.0, [37.0, 0.0], "{}", a.status);
+        assert!(c.lead_path.len() > 1, "{}", a.status);
+    }
+
+    #[test]
+    fn the_ribbons_holes_and_outline_choice_limits_auto_and_delete_lead_ins() {
+        // LE12, from the ribbon: Delete lead-ins on the outline leaves the holes' leads.
+        let mut a = rect_app();
+        a.parts[0].shape = Shape::PlateHole;
+        a.parts[0].h = 150.0;
+        a.sel_part = Some(0);
+        a.tech_all = false;
+        a.lead_choice = nest::LeadType::Line;
+        a.auto_leads();
+        a.lead_scope = nest::LeadScope::Outline;
+        a.edit_tech("Lead-ins removed", |t, h| crate::engine::TechEdit::DeleteLeads(nest::LeadScope::Outline).apply(t, h));
+        let plan = cnc::plan_part(&a.parts, 0, &a.spec);
+        assert!(plan.contours.iter().all(|c| (c.lead_path.len() > 1) == c.inner), "{:?}", a.parts[0].tech);
+        a.auto_leads();
+        let plan = cnc::plan_part(&a.parts, 0, &a.spec);
+        assert!(plan.contours.iter().all(|c| c.lead_path.len() > 1));
+        assert_eq!(a.parts[0].tech.unwrap().outline_leads.auto, Some((nest::LeadType::Line, 1)));
     }
 
     #[test]

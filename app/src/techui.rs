@@ -23,7 +23,8 @@ impl App {
         }
         let targets = self.tech_targets();
         let pcs: u32 = targets.iter().filter_map(|&i| self.parts.get(i)).map(|p| p.qty).sum();
-        let what = k.label();
+        let words = if k == TechRerun::AutoLeads { scope_words(self.lead_scope) } else { "" };
+        let what = format!("{}{words}", k.label());
         let (title, again) = if self.tech_all || targets.len() != 1 {
             (format!("{what} on all {} part types ({pcs} pcs)", targets.len()), None)
         } else {
@@ -49,8 +50,9 @@ impl App {
     /// Automatic lead-ins: placed by contour class (leads.rs), with the chosen
     /// type (by default the machine's tables) and position.
     pub fn auto_leads(&mut self) {
-        let e = TechEdit::AutoLeads { lead_type: self.lead_choice, position: self.lead_pos };
-        self.edit_tech("Automatic lead-ins", |t, b| e.apply(t, b));
+        let scope = self.lead_scope;
+        let e = TechEdit::AutoLeads { lead_type: self.lead_choice, position: self.lead_pos, scope };
+        self.edit_tech(&format!("Automatic lead-ins{}", scope_words(scope)), |t, h| e.apply(t, h));
     }
 
     /// The active machine's technology file (CT1), or the BLM file's values,
@@ -90,7 +92,7 @@ impl App {
         let mt = self.machine_tech();
         self.lead_pos = mt.zone;
         let e = TechEdit::MachineLeads(mt);
-        self.edit_tech("Machine lead-ins", |t, b| e.apply(t, b));
+        self.edit_tech("Machine lead-ins", |t, h| e.apply(t, h));
     }
 
     /// Automatic micro-joints: one per the machine's maximum distance (F150, by
@@ -99,17 +101,17 @@ impl App {
     pub fn auto_joints_now(&mut self) {
         let mt = self.machine_tech();
         let e = TechEdit::auto_joints(&mt, None);
-        self.edit_tech("Automatic micro-joints", |t, b| e.apply(t, b));
+        self.edit_tech("Automatic micro-joints", |t, h| e.apply(t, h));
     }
 
     /// Loops at sharp outer corners (toggles them).
     pub fn auto_loops(&mut self) {
         let on = self.tech_targets().first().and_then(|&i| self.parts[i].tech).is_some_and(|t| t.loops);
         let e = TechEdit::Loops(!on);
-        self.edit_tech(if on { "Loops removed" } else { "Loops added at sharp corners" }, |t, b| e.apply(t, b));
+        self.edit_tech(if on { "Loops removed" } else { "Loops added at sharp corners" }, |t, h| e.apply(t, h));
     }
 
-    pub(crate) fn edit_tech(&mut self, what: &str, f: impl Fn(&mut Option<PartTech>, (f64, f64))) {
+    pub(crate) fn edit_tech(&mut self, what: &str, f: impl Fn(&mut Option<PartTech>, usize)) {
         let targets = self.tech_targets();
         if targets.is_empty() {
             self.status = "Pick a part first, or choose All part types.".into();
@@ -117,8 +119,8 @@ impl App {
         }
         self.checkpoint();
         for &i in &targets {
-            let bbox = self.parts[i].bbox();
-            f(&mut self.parts[i].tech, bbox);
+            let holes = crate::engine::cut_holes(&self.parts[i]);
+            f(&mut self.parts[i].tech, holes);
         }
         self.refresh();
         let who = if targets.len() == 1 { format!("'{}'", self.parts[targets[0]].name) } else { format!("{} parts", targets.len()) };
@@ -185,14 +187,23 @@ impl App {
             });
         });
         ribbon_group_noted(ui, "Lead-ins", note, |ui| {
+            let scope = self.lead_scope;
+            let cuts = match scope {
+                crate::nest::LeadScope::All => "every cut, holes and outside",
+                crate::nest::LeadScope::Holes => "the holes only (the outside keeps its leads)",
+                crate::nest::LeadScope::Outline => "the outside only (the holes keep their leads)",
+            };
             if ribbon_button_ex(ui, Icon::LeadIn, "Auto\nlead-ins", false, has, true)
-                .on_hover_text(tip("Put a lead-in and lead-out on every cut, holes and outside, in the shape picked under Type, near the spot picked under Position. With Machine tables, each kind of contour (round hole, slot, rectangle…) gets the lead the machine is set up for. Leads you changed by hand stay as they are."))
+                .on_hover_text(tip(&format!("Put a lead-in and lead-out on {cuts}, in the shape picked under Type, near the spot picked under Position. With Machine tables, each kind of contour (round hole, slot, rectangle…) gets the lead the machine is set up for. Leads you changed by hand stay as they are.")))
                 .clicked()
             {
                 self.run_tech(TechRerun::AutoLeads);
             }
-            if ribbon_button(ui, Icon::Remove, "Delete\nlead-ins", false, has).on_hover_text(tip("Take every lead-in and lead-out off, including ones changed by hand. Each cut then pierces right on the part's edge.")).clicked() {
-                self.edit_tech("Lead-ins removed", |t, b| TechEdit::DeleteLeads.apply(t, b));
+            if ribbon_button(ui, Icon::Remove, "Delete\nlead-ins", false, has)
+                .on_hover_text(tip(&format!("Take the lead-ins and lead-outs off {cuts}, including ones changed by hand. Each of those cuts then pierces right on the part's edge.")))
+                .clicked()
+            {
+                self.edit_tech(&format!("Lead-ins removed{}", scope_words(scope)), |t, h| TechEdit::DeleteLeads(scope).apply(t, h));
             }
             if ribbon_button(ui, Icon::StandardLeads, "Standard\nleads", false, has).on_hover_text(tip(&self.machine_tech_tip())).clicked() {
                 self.run_tech(TechRerun::StandardLeads);
@@ -211,6 +222,23 @@ impl App {
                 ui.label(RichText::new("Type").size(11.0).color(th().text_dim));
                 let table = crate::leadmenu::table_lines(&self.machine_tech().leads.quality(1).recs, self.unit());
                 crate::leadmenu::picker(ui, &mut self.lead_choice, self.lead_menu_demo, "The lead shape Auto lead-ins puts on. Click to see each one.\nTo change just one lead, click that lead on the part.", &table);
+                // LE12: which cuts Auto and Delete lead-ins act on.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    use crate::nest::LeadScope;
+                    let on = self.lead_scope;
+                    let mut to = on;
+                    if ui.selectable_label(on == LeadScope::All, "All").on_hover_text("Auto lead-ins and Delete lead-ins act on every cut: holes and the outside.").clicked() {
+                        to = LeadScope::All;
+                    }
+                    if ui.selectable_label(on == LeadScope::Holes, "Holes").on_hover_text("Auto lead-ins and Delete lead-ins act on the holes only; the outside keeps the leads it has.").clicked() {
+                        to = LeadScope::Holes;
+                    }
+                    if ui.selectable_label(on == LeadScope::Outline, "Outline").on_hover_text("Auto lead-ins and Delete lead-ins act on the outside only; the holes keep the leads they have.").clicked() {
+                        to = LeadScope::Outline;
+                    }
+                    self.lead_scope = to;
+                });
             });
             ui.add_space(6.0);
             ui.vertical(|ui| {
@@ -228,7 +256,7 @@ impl App {
                 self.run_tech(TechRerun::AutoJoints);
             }
             if ribbon_button(ui, Icon::Remove, "Delete\njoints", false, has).on_hover_text(tip("Take every micro-joint off.")).clicked() {
-                self.edit_tech("Micro-joints removed", |t, b| TechEdit::DeleteJoints.apply(t, b));
+                self.edit_tech("Micro-joints removed", |t, h| TechEdit::DeleteJoints.apply(t, h));
             }
             if in_part
                 && ribbon_button(ui, Icon::OnElement, "On element", false, picked)
@@ -253,7 +281,7 @@ impl App {
                 self.run_tech(TechRerun::AutoLoops);
             }
             if ribbon_button(ui, Icon::Remove, "Delete\nloops", false, has).on_hover_text(tip("Take the corner loops off.")).clicked() {
-                self.edit_tech("Loops removed", |t, b| TechEdit::Loops(false).apply(t, b));
+                self.edit_tech("Loops removed", |t, h| TechEdit::Loops(false).apply(t, h));
             }
         });
         ribbon_group_noted(ui, "Cut technology", note, |ui| {
@@ -261,13 +289,13 @@ impl App {
                 .on_hover_text(tip("Give the part its own lead, joint and cut settings, starting from the defaults. Without them it is cut with the machine's automatic leads and no joints."))
                 .clicked()
             {
-                self.edit_tech("Own cut technology", |t, b| TechEdit::Own.apply(t, b));
+                self.edit_tech("Own cut technology", |t, h| TechEdit::Own.apply(t, h));
             }
             if ribbon_button(ui, Icon::Remove, "Remove own\ntechnology", false, has)
                 .on_hover_text(tip("Drop the part's own settings: it goes back to the machine's automatic leads and no joints."))
                 .clicked()
             {
-                self.edit_tech("Technology removed (automatic again)", |t, b| TechEdit::Delete.apply(t, b));
+                self.edit_tech("Technology removed (automatic again)", |t, h| TechEdit::Delete.apply(t, h));
             }
             if ribbon_button(ui, Icon::SizeBands, "Quality\nby size", self.show_cut_ranges, true)
                 .on_hover_text("Pick a cut quality by contour size, e.g. cut small holes at a finer, slower quality.")
@@ -950,5 +978,14 @@ impl TechRerun {
             TechRerun::AutoJoints => "Auto joints",
             TechRerun::AutoLoops => "Auto loops",
         }
+    }
+}
+
+/// " on the holes" / " on the outline" after a lead command's name (LE12).
+fn scope_words(s: crate::nest::LeadScope) -> &'static str {
+    match s {
+        crate::nest::LeadScope::All => "",
+        crate::nest::LeadScope::Holes => " on the holes",
+        crate::nest::LeadScope::Outline => " on the outline",
     }
 }

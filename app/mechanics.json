@@ -6560,6 +6560,42 @@
   "source": "MECHANICS LE8"
  },
  {
+  "name": "a lead's start dragged along its contour snaps to a corner within the capture distance",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE10"
+ },
+ {
+  "name": "Lead here on the right-click ring starts the lead exactly at the clicked spot (not by thirds)",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE10"
+ },
+ {
+  "name": "a lead added where there was none: inclined lead-in / lead-out when the machine table gives that contour none, mm",
+  "group": "leads",
+  "value": [5, 2],
+  "source": "MECHANICS LE10"
+ },
+ {
+  "name": "a removed lead pierces on the contour where its lead started",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE11"
+ },
+ {
+  "name": "Auto / Delete lead-ins can act on the holes or the outline alone",
+  "group": "leads",
+  "value": ["all", "holes", "outline"],
+  "source": "MECHANICS LE12"
+ },
+ {
+  "name": "Auto lead-ins on one side keeps leads changed by hand there",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE12"
+ },
+ {
   "name": "area unit with inches",
   "group": "units",
   "value": "ft²",

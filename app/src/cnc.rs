@@ -164,7 +164,7 @@ pub fn corner_at(pts: &[P], i: usize) -> (f64, bool) {
 }
 
 /// Nearest point on the closed polyline to `p`: (edge index, point, distance along the contour).
-fn project_on(pts: &[P], p: P) -> (usize, P, f64) {
+pub fn project_on(pts: &[P], p: P) -> (usize, P, f64) {
     let n = pts.len();
     let mut best = (0usize, pts[0], f64::MAX, 0.0);
     let mut acc = 0.0;
@@ -1096,8 +1096,11 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         let part = &parts[pl.part];
         // Parts without their own technology get the machine's automatic leads
         // (tables by contour class) and no joints.
-        let tech = part.tech.unwrap_or(auto_tech);
+        let base = part.tech.unwrap_or(auto_tech);
         let (mut pts, inner) = obst[i].1[ci].clone();
+        // Holes and outline may have leads of their own (LE12).
+        let side = base.side(inner);
+        let tech = base.for_side(inner);
         // The contour's cut quality (CQ1, CQ6), which picks its leads (AL1),
         // kerf row (KC5), joint distance, speed (CTM8) and LC5 codes (BL22).
         let (cq, _) = contour_quality(&tech, &mt, &pts, hand[pl.part].get(ci).copied().flatten());
@@ -1148,12 +1151,19 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             // A manual pick sets the start and direction; then a lead moved by
             // hand (LE4); then a lead-in picked on an element; otherwise the
             // automatic placement by contour class.
-            let edit = hand_leads[pl.part].get(ci).copied().flatten().filter(|_| man.is_none());
+            let own = hand_leads[pl.part].get(ci).copied().flatten();
+            // A lead removed by hand stays off whoever picks the start (LE11).
+            let removed = own.is_some_and(|e| e.off);
+            let edit = own.filter(|_| man.is_none());
             let picked = tech.starts.iter().flatten().find(|s| s.0 as usize == ci).map(|s| pl.map(s.1)).filter(|_| edit.is_none());
             let (class, circle) = crate::leads::classify(&pts, inner);
             let recs = lead_recs(&tech, &lq);
             let zone = lq.zone_for(inner, (tech.position >= 1).then_some(tech.position as i32));
-            let auto = tech.corner_start && man.is_none() && picked.is_none() && edit.is_none() && pts.len() >= 3;
+            // Leads deleted on this side alone (LE12): no lead unless one is
+            // picked on an element or placed by hand with a shape or ends of
+            // its own (a pierce only slid along stays bare, LE10).
+            let bare = side.off && picked.is_none() && edit.is_none_or(|e| e.kind.is_none() && e.lead_in.is_none() && e.lead_out.is_none());
+            let auto = tech.corner_start && !bare && man.is_none() && picked.is_none() && edit.is_none() && pts.len() >= 3;
             let mut placement = None;
             if let Some((sp, rev)) = man {
                 if rev {
@@ -1197,7 +1207,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             if let Some(k) = edit.and_then(|e| e.kind) {
                 rec = reshaped(rec, k, lq.recs[lead_rec]);
             }
-            if auto && placement.is_none() {
+            // No lead: found no place (AL3), deleted on this side (LE12), or
+            // removed from this contour by hand (LE11).
+            if (auto && placement.is_none()) || bare || removed {
                 rec.kind = 0;
             }
             let at_corner = |q: &[P]| (corner_at(q, 0).0 - 180.0).abs() > crate::nest::ELEMENT_CORNER_DEG;
@@ -1210,10 +1222,10 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             // contour (B187 tries) and/or shorten (B186 per step, floor
             // max(2·tol, B295)) until clear of every contour on the sheet. Without
             // the test (or for picked leads) a lead is still shortened when it
-            // crosses its own part (our safety rule). A lead moved by hand
-            // keeps its start and is only shortened, against every part when
-            // the machine tests leads (LE5).
-            let full = (auto || hand.is_some() || edit.is_some_and(|e| e.kind.is_some())) && mt.leads.test > 0;
+            // crosses its own part (our safety rule). A lead moved, reshaped
+            // or placed by hand keeps its start and is only shortened, against
+            // every part when the machine tests leads (LE5, LE10).
+            let full = (auto || edit.is_some()) && mt.leads.test > 0;
             // VP3: a lead that leaves the sheet collides with its edge, so it
             // moves or shortens like one that hits a part (ours; MAC-46).
             let off_sheet = |path: &[P]| spec.w > 0.0 && spec.h > 0.0 && path.iter().any(|q| q[0] < -0.01 || q[1] < -0.01 || q[0] > spec.w + 0.01 || q[1] > spec.h + 0.01);
@@ -1428,7 +1440,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             // offset path in place of the drawn one (KC8–KC15).
             let side = crate::kerf::side_for(&pts, inner, true);
             let comp = crate::kerf::resolve(&mt.comp, spec.kerf, inner, qn, cutter_r, side);
-            let mut con = Contour { lead_in, lead_path: path, lead_out, lead_out_path, loops, points: pts, inner, part_no: i + 1, joints, joint_leads, feed, manual: man.is_some(), punch: None, overlap, closing, comp, quality: qn, time: TimeSplit::default(), pierces: 0, contour: ci, lead_rec, lead_hand: hand.is_some(), lead_spots };
+            let mut con = Contour { lead_in, lead_path: path, lead_out, lead_out_path, loops, points: pts, inner, part_no: i + 1, joints, joint_leads, feed, manual: man.is_some(), punch: None, overlap, closing, comp, quality: qn, time: TimeSplit::default(), pierces: 0, contour: ci, lead_rec, lead_hand: edit.is_some(), lead_spots };
             match crate::kerf::compensate(&mut con, &comp, &sys_opts) {
                 Err(t) => {
                     // Not cut at all: no pierce, no time (our check, KC18).
@@ -2503,7 +2515,7 @@ mod hand_lead_tests {
     fn a_lead_moved_by_hand_keeps_its_start_and_lean_when_the_part_is_turned_or_mirrored() {
         // Plate with a hole: contour 0 the hole, 1 the outline. The outline's
         // lead-in swung round its bottom-left corner to −45° (LE1, LE2).
-        let e = LeadEdit { contour: 1, at: [0.0, 0.0], rec: 3, lead_in: Some((10.0, -45.0)), lead_out: None, same: false, kind: None };
+        let e = LeadEdit { contour: 1, at: [0.0, 0.0], rec: 3, lead_in: Some((10.0, -45.0)), lead_out: None, same: false, kind: None, off: false };
         let parts = vec![part(Shape::PlateHole, 200.0, 150.0, Some(with_edit(e)))];
         for (turns, mirror) in [(0, false), (1, false), (2, true), (3, true)] {
             let (w, h) = if turns % 2 == 1 { (150.0, 200.0) } else { (200.0, 150.0) };
@@ -2525,7 +2537,7 @@ mod hand_lead_tests {
     #[test]
     fn a_lead_moved_by_hand_is_shortened_not_moved_when_it_would_hit_a_neighbour() {
         // A 20 mm lead-in square off the right side, toward a part 5 mm away (LE5).
-        let e = LeadEdit { contour: 0, at: [100.0, 50.0], rec: 3, lead_in: Some((20.0, 90.0)), lead_out: None, same: false, kind: None };
+        let e = LeadEdit { contour: 0, at: [100.0, 50.0], rec: 3, lead_in: Some((20.0, 90.0)), lead_out: None, same: false, kind: None, off: false };
         let parts = vec![part(Shape::Rectangle, 100.0, 100.0, Some(with_edit(e))), part(Shape::Rectangle, 100.0, 100.0, None)];
         let a = Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         let b = Placed { part: 1, x: 205.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };

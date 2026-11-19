@@ -373,6 +373,14 @@ pub struct PartTech {
     /// The same for the spacing, `joint_every`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joint_every_machine: Option<f64>,
+    /// The holes' leads, when Auto or Delete lead-ins was used on the holes
+    /// alone (LE12).
+    #[serde(default, skip_serializing_if = "SideLeads::is_plain")]
+    pub hole_leads: SideLeads,
+    /// The outline's leads, when Auto or Delete lead-ins was used on the
+    /// outline alone (LE12).
+    #[serde(default, skip_serializing_if = "SideLeads::is_plain")]
+    pub outline_leads: SideLeads,
 }
 
 /// How many contours of one part can have a lead moved by hand.
@@ -405,6 +413,65 @@ pub struct LeadEdit {
     /// `None` = the shape the part's technology gives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<LeadType>,
+    /// This contour is cut with no lead: it pierces on the contour where it
+    /// starts (*Remove this lead* in the Part view, LE11).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off: bool,
+}
+
+/// Which of a part's cuts Auto lead-ins and Delete lead-ins act on (LE12).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum LeadScope {
+    /// Every cut: holes and the outline.
+    #[default]
+    All,
+    /// The holes (inside contours) only.
+    Holes,
+    /// The outline (outside contour) only.
+    Outline,
+}
+
+impl LeadScope {
+    pub const ALL: [LeadScope; 3] = [LeadScope::All, LeadScope::Holes, LeadScope::Outline];
+    pub fn label(self) -> &'static str {
+        match self {
+            LeadScope::All => "All",
+            LeadScope::Holes => "Holes",
+            LeadScope::Outline => "Outline",
+        }
+    }
+    /// Whether a cut contour (`inner` = a hole) is one this scope acts on.
+    pub fn takes(self, inner: bool) -> bool {
+        match self {
+            LeadScope::All => true,
+            LeadScope::Holes => inner,
+            LeadScope::Outline => !inner,
+        }
+    }
+}
+
+/// The leads of one side of a part, holes or outline, when Auto lead-ins or
+/// Delete lead-ins was used on that side alone (LE12). The default follows
+/// the part's own lead settings.
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct SideLeads {
+    /// No leads on these cuts: each pierces on its contour.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off: bool,
+    /// Automatic leads on these cuts with their own shape and keypad
+    /// position, whatever the part's lead type and position say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<(LeadType, u8)>,
+    /// Their own lead-in length, mm: Auto on this side alone when the
+    /// part's is 0 (its leads were deleted), so the other side stays bare.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_in: Option<f64>,
+}
+
+impl SideLeads {
+    pub fn is_plain(&self) -> bool {
+        *self == SideLeads::default()
+    }
 }
 
 /// One row of the automatic cut technology list (rule CT1): the technology
@@ -533,11 +600,39 @@ impl Default for PartTech {
             lead_edits: [None; LEAD_EDITS],
             joint_width_machine: None,
             joint_every_machine: None,
+            hole_leads: SideLeads::default(),
+            outline_leads: SideLeads::default(),
         }
     }
 }
 
 impl PartTech {
+    /// The leads of the holes (`inner`) or of the outline (LE12).
+    pub fn side(&self, inner: bool) -> SideLeads {
+        if inner { self.hole_leads } else { self.outline_leads }
+    }
+
+    pub fn side_mut(&mut self, inner: bool) -> &mut SideLeads {
+        if inner { &mut self.hole_leads } else { &mut self.outline_leads }
+    }
+
+    /// The technology one side's cuts are planned with (LE12): Auto lead-ins
+    /// used on that side alone gives it its own shape and position, placed
+    /// automatically.
+    pub fn for_side(&self, inner: bool) -> PartTech {
+        let mut t = *self;
+        let side = self.side(inner);
+        if let Some((k, pos)) = side.auto {
+            t.lead_type = k;
+            t.position = pos;
+            t.corner_start = true;
+        }
+        if let Some(l) = side.lead_in {
+            t.lead_in = l;
+        }
+        t
+    }
+
     /// Contour `ci`'s lead moved by hand, if any.
     pub fn lead_edit(&self, ci: usize) -> Option<LeadEdit> {
         self.lead_edits.iter().flatten().find(|e| e.contour as usize == ci).copied()

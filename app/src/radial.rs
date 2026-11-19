@@ -79,7 +79,7 @@ impl Act {
     pub fn label(self) -> &'static str {
         match self {
             Act::LeadAuto => "Automatic lead-ins",
-            Act::LeadOnElement => "Place a lead-in on this element (every piece of this part type gets it)",
+            Act::LeadOnElement => "Put a lead-in exactly where you right-clicked (every piece of this part type gets it)",
             Act::JointsAuto => "Automatic micro-joints",
             Act::JointOnElement => "Place a micro-joint on this element (every piece of this part type gets it)",
             Act::PlaceText => "Place text",
@@ -249,7 +249,7 @@ impl App {
                 self.run_tech(k);
                 self.tech_all = keep;
             }
-            Act::LeadOnElement => self.lead_on_element(),
+            Act::LeadOnElement => self.lead_here(),
             Act::JointOnElement => self.joint_on_elements(),
             // The text tools open the quick editor, ready to type.
             Act::PlaceText => match (rm.text_under, self.shown_part()) {
