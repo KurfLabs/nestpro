@@ -842,12 +842,14 @@ pub fn sheet_usage(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, f: &Sheet
 #[derive(Clone, Debug)]
 pub enum TechEdit {
     /// Automatic leads by contour class (leads.rs), with this lead type
-    /// (`Machine` = the machine's tables) and keypad position.
-    AutoLeads { lead_type: nest::LeadType, position: u8 },
+    /// (`Machine` = the machine's tables) and keypad position, on the cuts
+    /// `scope` names (LE12).
+    AutoLeads { lead_type: nest::LeadType, position: u8, scope: nest::LeadScope },
     /// Lead-in, lead-out, overlap and position from the machine's CT1
     /// (E044, E045, B156, E000).
     MachineLeads(crate::ct1::MachineTech),
-    DeleteLeads,
+    /// No leads on the cuts `scope` names (LE12).
+    DeleteLeads(nest::LeadScope),
     /// Automatic micro-joints (joints.rs): one per `every` mm of each contour,
     /// holes too — by default the machine's maximum distance for the part's
     /// quality (`dist`, CT1 F150) — within the machine's size-class limits
@@ -871,9 +873,12 @@ impl TechEdit {
         TechEdit::AutoJoints { dist: mt.joint_dist, gap: mt.joint_gap, every, gap_wins: mt.section.is_some() }
     }
 
-    pub fn apply(&self, t: &mut Option<PartTech>, _bbox: (f64, f64)) {
+    /// Apply the change to a part's technology `t`. `holes` is how many cut
+    /// holes the part has: cut contours below it are holes, the one at it
+    /// the outline (as `PartTech::starts` counts them).
+    pub fn apply(&self, t: &mut Option<PartTech>, holes: usize) {
         match self {
-            TechEdit::AutoLeads { lead_type, position } => {
+            TechEdit::AutoLeads { lead_type, position, scope: nest::LeadScope::All } => {
                 let mut x = t.unwrap_or_default();
                 x.corner_start = true;
                 x.lead_type = *lead_type;
@@ -881,6 +886,20 @@ impl TechEdit {
                 if x.lead_in <= 0.0 {
                     x.lead_in = PartTech::default().lead_in;
                 }
+                x.hole_leads = nest::SideLeads::default();
+                x.outline_leads = nest::SideLeads::default();
+                *t = Some(x);
+            }
+            TechEdit::AutoLeads { lead_type, position, scope } => {
+                // One side alone (LE12): it takes the shape and position as its
+                // own; the other side's leads stay as they are cut now. A part
+                // without its own technology starts from the machine's (LE4).
+                let inner = *scope == nest::LeadScope::Holes;
+                let mut x = t.unwrap_or_else(cnc::auto_tech);
+                // The part's lengths are 0 (its leads were deleted): this side
+                // takes a length of its own, so the other side stays bare.
+                let lead_in = (x.lead_in <= 0.0 && *lead_type != nest::LeadType::Machine).then_some(PartTech::default().lead_in);
+                *x.side_mut(inner) = nest::SideLeads { off: false, auto: Some((*lead_type, *position)), lead_in };
                 *t = Some(x);
             }
             TechEdit::MachineLeads(mt) => {
@@ -891,7 +910,7 @@ impl TechEdit {
                 x.position = mt.zone;
                 *t = Some(x);
             }
-            TechEdit::DeleteLeads => {
+            TechEdit::DeleteLeads(nest::LeadScope::All) => {
                 if let Some(x) = t.as_mut() {
                     x.lead_in = 0.0;
                     x.lead_out = 0.0;
@@ -900,9 +919,30 @@ impl TechEdit {
                     x.lead_type = nest::LeadType::Line;
                     x.starts = [None; 8];
                     x.lead_edits = [None; nest::LEAD_EDITS];
+                    x.hole_leads = nest::SideLeads::default();
+                    x.outline_leads = nest::SideLeads::default();
                 } else {
                     *t = Some(PartTech { lead_in: 0.0, lead_out: 0.0, ..Default::default() });
                 }
+            }
+            TechEdit::DeleteLeads(scope) => {
+                // One side alone (LE12): its leads go, those picked, moved or
+                // added by hand too; the other side keeps what it has.
+                let inner = *scope == nest::LeadScope::Holes;
+                let mut x = t.unwrap_or_else(cnc::auto_tech);
+                *x.side_mut(inner) = nest::SideLeads { off: true, ..Default::default() };
+                let on_side = |ci: u8| ((ci as usize) < holes) == inner;
+                for st in x.starts.iter_mut() {
+                    if st.is_some_and(|q| on_side(q.0)) {
+                        *st = None;
+                    }
+                }
+                let kept: Vec<nest::LeadEdit> = x.lead_edits.iter().flatten().filter(|e| !on_side(e.contour)).copied().collect();
+                x.lead_edits = [None; nest::LEAD_EDITS];
+                for (sl, e) in x.lead_edits.iter_mut().zip(kept) {
+                    *sl = Some(e);
+                }
+                *t = Some(x);
             }
             TechEdit::AutoJoints { dist, gap, every, gap_wins } => {
                 let mut x = t.unwrap_or_default();
@@ -1136,12 +1176,14 @@ fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, e
     // LE8), else a new one with its foot at the drawn contour's start.
     let mut e = hand_lead(part, ci).map(|(e, _)| e).unwrap_or_else(|| {
         let own = cut_contour(part, ci).unwrap_or_default();
-        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false, kind: None }
+        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false, kind: None, off: false }
     });
     match end {
         LeadEnd::In => e.lead_in = Some((len, ang)),
         LeadEnd::Out => e.lead_out = Some((len, ang)),
     }
+    // A lead removed by hand comes back with the end given (LE11).
+    e.off = false;
     let took = store_hand_lead(&mut parts[idx], ci, e, same)?;
     // Say what is cut now: a lead that would cross the part is shortened (LE5).
     let plan = cnc::plan_part(parts, idx, spec);
@@ -1171,14 +1213,169 @@ pub fn set_lead_type(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize
     }
     let mut e = hand_lead(part, ci).map(|(e, _)| e).unwrap_or_else(|| {
         let own = cut_contour(part, ci).unwrap_or_default();
-        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false, kind: None }
+        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false, kind: None, off: false }
     });
     e.kind = Some(kind);
     e.lead_in = None;
     e.lead_out = None;
+    e.off = false;
     let took = store_hand_lead(&mut parts[idx], ci, e, same)?;
     let also = if took > 0 { format!(", and on {} too", others(took)) } else { String::new() };
     Ok(format!("Contour {no}'s lead is now {}{also}.", lead_shape_words(kind)))
+}
+
+/// Contour `ci` as planned on the part alone, refused (with what to do
+/// instead) when it isn't cut, is punched, or starts at a micro-joint (MJ5).
+fn own_lead_contour(parts: &[Part], idx: usize, spec: &SheetSpec, ci: usize) -> Result<cnc::Contour, String> {
+    let part = parts.get(idx).ok_or("No such part.")?;
+    let no = contour_number(part, ci);
+    let plan = cnc::plan_part(parts, idx, spec);
+    let Some(c) = plan.contours.into_iter().find(|c| c.contour == ci) else {
+        return Err(format!("Contour {no} isn't cut (see part-info for the cut contours), so it has no lead."));
+    };
+    if c.punch.is_some() {
+        return Err(format!("Contour {no} is punched on this machine: it has no leads."));
+    }
+    if c.closing {
+        return Err(format!("Contour {no} starts at its first micro-joint's lead-in: delete the joints first to place its lead by hand."));
+    }
+    Ok(c)
+}
+
+/// Where on cut contour `ci` a pointer at `p` (part mm) puts the start: the
+/// nearest point of the drawn contour, or a corner within `snap` mm (LE10).
+fn start_on(part: &Part, ci: usize, p: P, snap: f64) -> Option<P> {
+    let pts = cut_contour(part, ci).filter(|c| c.len() >= 2)?;
+    let corner = pts.iter().copied().filter(|&q| (corner_at_pt(&pts, q) - 180.0).abs() > nest::ELEMENT_CORNER_DEG).min_by(|a, b| dist(*a, p).total_cmp(&dist(*b, p)));
+    if let Some(q) = corner.filter(|&q| snap > 0.0 && dist(q, p) <= snap) {
+        return Some(q);
+    }
+    Some(cnc::project_on(&pts, p).1)
+}
+
+fn dist(a: P, b: P) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+}
+
+/// The inside angle of the contour at its point `q` (180 = no corner).
+fn corner_at_pt(pts: &[P], q: P) -> f64 {
+    let k = pts.iter().position(|&x| x == q).unwrap_or(0);
+    cnc::corner_at(pts, k).0
+}
+
+/// The lead contour `ci` is cut with now, as one placed by hand (LE1): its
+/// own or the one it shares (LE8), else a new one built from the plan's.
+fn lead_now(part: &Part, ci: usize, c: &cnc::Contour) -> nest::LeadEdit {
+    hand_lead(part, ci).map(|(e, _)| e).unwrap_or_else(|| {
+        let own = cut_contour(part, ci).unwrap_or_default();
+        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false, kind: None, off: false }
+    })
+}
+
+/// How far along a contour `at` sits from its drawn start, in words for
+/// messages: "62.0 mm along it".
+fn along(part: &Part, ci: usize, at: P, unit: crate::units::LenUnit) -> String {
+    let s = cut_contour(part, ci).map_or(0.0, |pts| cnc::project_on(&pts, at).2);
+    format!("{} along it", unit.len(s, 1))
+}
+
+/// Ends placed by hand keep their length, but an angle the scrap at the
+/// lead's new start doesn't open to (a lead swung round a corner, slid onto
+/// a straight edge) is held inside it, as a drag would (LE2, LE10).
+fn fit_ends(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, mut e: nest::LeadEdit, same: bool) -> Result<(), String> {
+    if e.lead_in.is_none() && e.lead_out.is_none() {
+        return Ok(());
+    }
+    let plan = cnc::plan_part(parts, idx, spec);
+    let Some(c) = plan.contours.iter().find(|c| c.contour == ci) else { return Ok(()) };
+    let fit = |x: Option<(f64, f64)>, open: f64| x.map(|(l, a)| crate::leads::hand_clamp(l, a, open));
+    let (fi, fo) = (fit(e.lead_in, c.lead_spots[0].open), fit(e.lead_out, c.lead_spots[1].open));
+    if (fi, fo) != (e.lead_in, e.lead_out) {
+        e.lead_in = fi;
+        e.lead_out = fo;
+        store_hand_lead(&mut parts[idx], ci, e, same)?;
+    }
+    Ok(())
+}
+
+/// Slide where contour `ci`'s lead meets the contour to the point nearest
+/// `pointer`, part mm (LE10): the GUI's drag of the lead's foot, frame by
+/// frame, and `lead-edit at=`. The lead keeps its shape, length and angles;
+/// `snap` (mm) takes a corner that near. A contour without a lead pierces
+/// there. With `same`, every hole of its shape takes it too (LE8).
+#[allow(clippy::too_many_arguments)]
+pub fn move_lead_start(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, pointer: P, snap: f64, same: bool, unit: crate::units::LenUnit) -> Result<String, String> {
+    let c = own_lead_contour(parts, idx, spec, ci)?;
+    let part = &parts[idx];
+    let no = contour_number(part, ci);
+    let at = start_on(part, ci, pointer, snap).ok_or_else(|| format!("Contour {no} has no points to start on."))?;
+    let mut e = lead_now(part, ci, &c);
+    e.at = at;
+    let bare = c.lead_path.len() < 2;
+    let where_ = along(part, ci, at, unit);
+    let took = store_hand_lead(&mut parts[idx], ci, e, same)?;
+    fit_ends(parts, idx, spec, ci, e, same)?;
+    let also = if took > 0 { format!(", and on {} too", others(took)) } else { String::new() };
+    let what = if bare { "pierce" } else { "lead" };
+    Ok(format!("Contour {no}'s {what} moved to {where_}{also}."))
+}
+
+/// Put a lead on contour `ci` starting exactly at the point nearest `at`,
+/// part mm (LE10): the Part view's right-click *Lead here* and `lead-edit
+/// mode=add`. A lead it has keeps its shape; a contour without one (its
+/// leads deleted, removed, or 0 mm long) gets the part's shape for it, at
+/// the machine table's length. With `same`, every hole of its shape too.
+pub fn add_lead_at(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, at: P, same: bool, unit: crate::units::LenUnit) -> Result<String, String> {
+    let c = own_lead_contour(parts, idx, spec, ci)?;
+    let part = &parts[idx];
+    let no = contour_number(part, ci);
+    let at = start_on(part, ci, at, 0.0).ok_or_else(|| format!("Contour {no} has no points to start on."))?;
+    let before = part.clone();
+    let mut e = lead_now(part, ci, &c);
+    let had = !e.off && c.lead_path.len() >= 2;
+    e.at = at;
+    e.off = false;
+    if !had {
+        e.kind = Some(e.kind.unwrap_or_else(|| part.tech.map_or(nest::LeadType::Machine, |t| t.for_side(c.inner).lead_type)));
+        e.lead_in = None;
+        e.lead_out = None;
+    }
+    let where_ = along(part, ci, at, unit);
+    let took = store_hand_lead(&mut parts[idx], ci, e, same)?;
+    fit_ends(parts, idx, spec, ci, e, same)?;
+    // The machine's table may give this kind of contour no lead: then a plain one.
+    let has = |parts: &[Part]| cnc::plan_part(parts, idx, spec).contours.iter().any(|x| x.contour == ci && x.lead_path.len() >= 2);
+    if !has(parts) {
+        e.kind = Some(nest::LeadType::Line);
+        store_hand_lead(&mut parts[idx], ci, e, same)?;
+    }
+    // Shortened to nothing against its own part (LE5): nothing changes.
+    if !has(parts) {
+        parts[idx] = before;
+        return Err(format!("No lead fits at {where_} on contour {no}: it would cross the part. Try another spot."));
+    }
+    let also = if took > 0 { format!(", and on {} too", others(took)) } else { String::new() };
+    let shape = lead_shape(&parts[idx], ci).0;
+    Ok(if had { format!("Contour {no}'s lead moved to {where_}{also}.") } else { format!("Contour {no} has {} at {where_}{also}.", lead_shape_words(shape)) })
+}
+
+/// Cut contour `ci` without a lead (LE11): it pierces on the contour where
+/// it starts. The Part view's *Remove this lead* (and Delete on a picked
+/// lead), and `lead-edit mode=remove`. With `same`, every hole of its shape.
+pub fn remove_lead(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, same: bool) -> Result<String, String> {
+    let c = own_lead_contour(parts, idx, spec, ci)?;
+    let part = &parts[idx];
+    let no = contour_number(part, ci);
+    let mut e = lead_now(part, ci, &c);
+    if e.off || c.lead_path.len() < 2 {
+        return Err(format!("Contour {no} has no lead to remove: it already pierces on the contour."));
+    }
+    e.off = true;
+    e.lead_in = None;
+    e.lead_out = None;
+    let took = store_hand_lead(&mut parts[idx], ci, e, same)?;
+    let also = if took > 0 { format!(", and from {} too", others(took)) } else { String::new() };
+    Ok(format!("Contour {no}'s lead removed{also}: it pierces on the contour. Right-click it → Lead here to put one back."))
 }
 
 /// The shape contour `ci`'s lead is cut with, and whether it was picked for
@@ -1186,7 +1383,7 @@ pub fn set_lead_type(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize
 pub fn lead_shape(part: &Part, ci: usize) -> (nest::LeadType, bool) {
     match hand_lead(part, ci).and_then(|(e, _)| e.kind) {
         Some(k) => (k, true),
-        None => (part.tech.map_or(nest::LeadType::Machine, |t| t.lead_type), false),
+        None => (part.tech.map_or(nest::LeadType::Machine, |t| t.for_side(ci < cut_holes(part)).lead_type), false),
     }
 }
 
@@ -1217,6 +1414,15 @@ fn cut_contours(part: &Part) -> Vec<Vec<P>> {
     let mut v = g.holes;
     v.push(g.outline);
     v
+}
+
+/// How many cut holes a part has: its cut contours below this number are
+/// holes, the one at it is the outline (as `PartTech::starts` counts them).
+pub fn cut_holes(part: &Part) -> usize {
+    match (part.shape, &part.custom) {
+        (Shape::Custom, Some(c)) => c.holes.len(),
+        _ => part.geometry().holes.len(),
+    }
 }
 
 /// Cut contour `ci` of a part (see `cut_contours`), without making the rest.

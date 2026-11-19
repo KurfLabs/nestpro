@@ -3709,6 +3709,153 @@ fn an_agent_moves_one_contours_lead_by_hand_and_puts_it_back() {
 }
 
 #[test]
+fn an_agent_puts_leads_on_the_holes_or_the_outline_alone() {
+    // LE12: Auto lead-ins and Delete lead-ins on one side of the part.
+    let d = dir("lead_scope");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 200, "h": 150, "qty": 2}));
+    call(&mut s, "leads", None, json!({"mode": "auto", "type": "line"}));
+    // part-info: contour 1 = the hole, 2 = the outline.
+    let info = |s: &mut Session| call(s, "part-info", None, json!({"part": 1}))["data"].clone();
+    let c = info(&mut s)["contours"].clone();
+    let (hole, outline) = (c[0]["lead_in"].clone(), c[1]["lead_in"].clone());
+    assert!(hole.is_object() && outline.is_object(), "{c}");
+
+    // Delete on the holes: the hole pierces on its edge, the outline keeps its lead.
+    let r = call(&mut s, "leads", None, json!({"mode": "delete", "on": "holes"}));
+    assert!(r["message"].as_str().unwrap().contains("on the holes"), "{r}");
+    let c = info(&mut s)["contours"].clone();
+    assert_eq!((&c[0]["lead_in"], &c[1]["lead_in"]), (&Value::Null, &outline), "{c}");
+    assert_eq!(info(&mut s)["technology"]["hole_leads"], json!("none"));
+    // Sliding its pierce moves the pierce only: the hole stays without a lead.
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "at": "100,105"}));
+    assert!(info(&mut s)["contours"][0]["lead_in"].is_null());
+
+    // Auto on the holes with its own shape: the outline still keeps its own.
+    call(&mut s, "leads", None, json!({"mode": "auto", "on": "holes", "type": "perpendicular"}));
+    let d1 = info(&mut s);
+    let c = &d1["contours"];
+    assert_eq!(c[0]["lead_in"]["angle_deg"].as_f64(), Some(90.0), "{c}");
+    assert_eq!(c[1]["lead_in"], outline, "{c}");
+    assert_eq!(d1["technology"]["hole_leads"], json!({"type": "perpendicular", "position": 1}));
+
+    // Delete on the outline: the hole's perpendicular lead stays.
+    call(&mut s, "leads", None, json!({"mode": "delete", "on": "outline"}));
+    let c = info(&mut s)["contours"].clone();
+    assert_eq!((c[0]["lead_in"]["angle_deg"].as_f64(), &c[1]["lead_in"]), (Some(90.0), &Value::Null), "{c}");
+
+    // After deleting every lead, Auto on the outline brings back the outline's alone,
+    // even on a hole whose start was picked on an element.
+    call(&mut s, "leads", None, json!({"mode": "delete"}));
+    let hole_elem = info(&mut s)["elements"].as_array().map_or(1, |e| e.iter().position(|x| x["contour"] == json!(1)).unwrap_or(0) + 1);
+    call(&mut s, "lead-at", None, json!({"part": 1, "element": hole_elem}));
+    call(&mut s, "leads", None, json!({"mode": "auto", "on": "outline", "type": "line"}));
+    let c = info(&mut s)["contours"].clone();
+    assert!(c[0]["lead_in"].is_null() && c[1]["lead_in"].is_object(), "{c}");
+    // Sliding a bare hole's pierce moves the pierce only.
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "at": "100,95"}));
+    assert!(info(&mut s)["contours"][0]["lead_in"].is_null());
+    // Auto on all of them: both sides follow the part's settings again.
+    call(&mut s, "leads", None, json!({"mode": "auto", "type": "line"}));
+    let d2 = info(&mut s);
+    assert!(d2["contours"][0]["lead_in"].is_object() && d2["contours"][1]["lead_in"].is_object(), "{d2}");
+    assert_eq!((&d2["technology"]["hole_leads"], &d2["technology"]["outline_leads"]), (&json!("as the part"), &json!("as the part")));
+    // Saved with the job: every piece on a sheet is cut this way.
+    call(&mut s, "leads", None, json!({"mode": "delete", "on": "holes"}));
+    assert!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().hole_leads.off);
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let plans = jobfile::load(&job).unwrap().plans();
+    assert!(plans[0].contours.iter().all(|c| (c.lead_path.len() > 1) != c.inner), "holes bare, outlines with a lead");
+    assert!(err(&mut s, "leads", json!({"mode": "delete", "on": "inside"})).contains("Use all, holes or outline"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agent_slides_a_lead_along_its_edge_removes_it_and_adds_one_where_it_wants() {
+    // LE10, LE11.
+    let d = dir("lead_place");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 200, "h": 150, "qty": 2}));
+    call(&mut s, "leads", None, json!({"mode": "auto", "type": "line"}));
+    let info = |s: &mut Session| call(s, "part-info", None, json!({"part": 1}))["data"]["contours"].clone();
+    let before = info(&mut s)[1].clone();
+
+    // Slide the outline's lead to the middle of its bottom edge: same lead, new place.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "at": "120,-3"}));
+    assert!(r["message"].as_str().unwrap().contains("lead moved to"), "{r}");
+    let c = info(&mut s)[1].clone();
+    assert_eq!(c["lead_start"], json!([120.0, 0.0]), "{c}");
+    assert_eq!(c["lead_in"]["length_mm"], before["lead_in"]["length_mm"], "{c}");
+    assert_eq!(c["lead_type"], before["lead_type"], "{c}");
+    assert_eq!(c["lead_by_hand"], json!(true));
+
+    // Remove it: the outline pierces on its edge, where its lead started.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "mode": "remove"}));
+    assert!(r["message"].as_str().unwrap().contains("lead removed"), "{r}");
+    let c = info(&mut s)[1].clone();
+    assert_eq!((&c["lead_in"], &c["lead_out"], &c["lead_removed"], &c["lead_start"]), (&Value::Null, &Value::Null, &json!(true), &json!([120.0, 0.0])), "{c}");
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 2, "mode": "remove"})).contains("no lead to remove"));
+    // Giving it a length brings a lead back, no longer marked removed.
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "in_length": 6}));
+    let c = info(&mut s)[1].clone();
+    assert_eq!((c["lead_in"]["length_mm"].as_f64(), &c["lead_removed"]), (Some(6.0), &Value::Null), "{c}");
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "mode": "remove"}));
+    // The hole keeps its lead.
+    assert!(info(&mut s)[0]["lead_in"].is_object());
+
+    // Add one exactly where the agent says, on the left edge.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "mode": "add", "at": "0,40"}));
+    assert!(r["message"].as_str().unwrap().contains("lead at 660 mm along it"), "{r}");
+    let c = info(&mut s)[1].clone();
+    assert_eq!(c["lead_start"], json!([0.0, 40.0]), "{c}");
+    assert!(c["lead_in"]["length_mm"].as_f64().unwrap() > 1.0 && c["lead_removed"].is_null(), "{c}");
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 2, "mode": "add"})).contains("at="));
+
+    // A part whose leads are 0 mm long (deleted) gets a real one where it is added.
+    call(&mut s, "leads", None, json!({"mode": "delete"}));
+    assert!(info(&mut s)[1]["lead_in"].is_null());
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "mode": "add", "at": "200,75"}));
+    let c = info(&mut s)[1].clone();
+    assert!(c["lead_in"]["length_mm"].as_f64().unwrap() > 1.0, "{c}");
+    assert_eq!(c["lead_start"], json!([200.0, 75.0]), "{c}");
+    // Back to automatic puts it back where the technology puts it (none, here).
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "mode": "reset"}));
+    assert!(info(&mut s)[1]["lead_in"].is_null());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn dragging_a_leads_foot_slides_it_along_the_edge_and_snaps_to_corners() {
+    // LE10: the Part view's drag, frame by frame.
+    let mut parts = vec![Part { name: "P".into(), shape: Shape::PlateHole, w: 200.0, h: 150.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let outline = |parts: &[Part]| cnc::plan_part(parts, 0, &spec).contours.into_iter().find(|c| c.contour == 1).unwrap();
+    // Swing its lead-in by hand first: sliding keeps that length and angle.
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [-6.0, 4.0], false, crate::units::LenUnit::Mm).unwrap();
+    let swung = lead_ends(&outline(&parts)).lead_in.unwrap();
+    let m = move_lead_start(&mut parts, 0, &spec, 1, [60.0, 2.0], 0.0, false, crate::units::LenUnit::Mm).unwrap();
+    assert!(m.contains("Contour 2's lead moved to 60 mm along it"), "{m}");
+    let c = outline(&parts);
+    assert_eq!(c.lead_spots[0].frame.0, [60.0, 0.0]);
+    let now = lead_ends(&c).lead_in.unwrap();
+    // On a straight edge the scrap opens 180°, so an angle swung past it is held inside.
+    assert!((now.0 - swung.0).abs() < 1e-6 && (-1.0..=179.0).contains(&now.1), "{swung:?} → {now:?}");
+    // Near a corner it snaps onto it; without the snap it stays on the edge.
+    move_lead_start(&mut parts, 0, &spec, 1, [198.5, 1.0], 2.0, false, crate::units::LenUnit::Mm).unwrap();
+    assert_eq!(outline(&parts).lead_spots[0].frame.0, [200.0, 0.0]);
+    move_lead_start(&mut parts, 0, &spec, 1, [198.5, 1.0], 0.0, false, crate::units::LenUnit::Mm).unwrap();
+    assert_eq!(outline(&parts).lead_spots[0].frame.0, [198.5, 0.0]);
+    // The hole keeps the machine's lead; one moved lead takes one place (LE1).
+    assert_eq!(parts[0].tech.unwrap().lead_edits.iter().flatten().count(), 1);
+}
+
+#[test]
 fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     // A plate with a hole and no technology of its own: the machine's leads.
     let mut parts = vec![Part { name: "P".into(), shape: Shape::PlateHole, w: 200.0, h: 150.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];

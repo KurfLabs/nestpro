@@ -837,12 +837,6 @@ pub struct Hand {
     pub lead_out: Option<(f64, f64)>,
 }
 
-impl Hand {
-    pub fn is_some(&self) -> bool {
-        self.lead_in.is_some() || self.lead_out.is_some()
-    }
-}
-
 /// `build`, with the lead-in's pierce and/or the lead-out's end where `hand`
 /// puts them (LE3): the lead keeps its record's arc into (or out of) the
 /// contour, so it still meets the contour tangentially, and runs straight to

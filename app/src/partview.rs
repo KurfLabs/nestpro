@@ -206,6 +206,27 @@ impl App {
     }
 
     /// A micro-joint in the middle of every selected element.
+    /// The right-click ring's *Lead here* (LE10): a lead that starts exactly
+    /// where the element was right-clicked (its middle when there is no
+    /// such spot), on every hole like it with All the same contours.
+    pub fn lead_here(&mut self) {
+        let Some(i) = self.shown_part() else { return };
+        let Some(&k) = self.sel_elems.first() else {
+            self.status = "Right-click a line, arc or circle on the part first.".into();
+            return;
+        };
+        let elems = crate::nest::elements_of(&self.parts[i].geometry());
+        let Some(e) = elems.get(k) else { return };
+        let at = self.sel_pick.filter(|p| p.0 == k).map_or(e.midpoint(), |p| p.1);
+        self.checkpoint();
+        let u = self.unit();
+        self.status = match crate::engine::add_lead_at(&mut self.parts, i, &self.spec, e.contour, at, self.lead_same, u) {
+            Ok(m) => format!("{m} Drag the square to slide it, the dots to swing it."),
+            Err(m) => m,
+        };
+        self.refresh();
+    }
+
     pub fn joint_on_elements(&mut self) {
         let Some(i) = self.shown_part() else { return };
         if self.sel_elem_info.is_empty() {
@@ -523,6 +544,8 @@ impl App {
                     if !self.sel_elems.contains(&e) {
                         self.sel_elems = vec![e];
                     }
+                    // Lead here starts the cut at this very spot (LE10).
+                    self.sel_pick = Some((e, to_w(hp)));
                 }
                 self.open_radial(ui.ctx(), hp, crate::radial::Ring::Part);
                 if let Some(r) = self.radial.as_mut() {
@@ -695,6 +718,8 @@ impl App {
         let mut lead_drop: Option<usize> = None;
         // A lead end clicked (contour): that lead is picked (LE9).
         let mut lead_click: Option<usize> = None;
+        // The lead's foot dragged along its contour (contour, pointer) (LE10).
+        let mut lead_slide: Option<(usize, P)> = None;
         let sel_ci = self.sel_lead.filter(|s| s.0 == idx).map(|s| s.1);
         let shared_leads = crate::engine::hand_leads(&self.parts[idx]);
         let lead_out_col = Color32::from_rgb(129, 140, 248);
@@ -806,6 +831,40 @@ impl App {
                 use crate::engine::LeadEnd;
                 let ends = crate::engine::lead_ends(c);
                 let u = self.unit();
+                // LE10: the square where the lead meets the contour (or, with
+                // no lead, where it pierces) slides the start along the edge.
+                // Made before the end dots, so a short lead's dots stay on top.
+                {
+                    let foot = c.lead_spots[0].frame.0;
+                    let h = to_s(foot);
+                    let has_lead = c.lead_path.len() > 1;
+                    let hr = ui.interact(Rect::from_center_size(h, Vec2::splat(14.0)), ui.scope_id().with(("lead_foot", c.contour)), Sense::drag());
+                    let active = hr.hovered() || hr.dragged();
+                    if has_lead || active || sel_ci == Some(c.contour) {
+                        let r = Rect::from_center_size(h, Vec2::splat(if active { 9.0 } else { 6.0 }));
+                        painter.rect_filled(r, CornerRadius::same(1), if active { th().accent } else { Color32::WHITE });
+                        painter.rect_stroke(r, CornerRadius::same(1), Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Outside);
+                    }
+                    let hr = hr.on_hover_text(if has_lead {
+                        "Where the lead meets the part. Drag along the edge to move the lead there; it keeps its shape. It snaps to corners."
+                    } else {
+                        "Where this cut pierces (it has no lead). Drag along the edge to move it. Right-click the edge → Lead here to give it a lead."
+                    });
+                    if active {
+                        ui.ctx().set_cursor_icon(if hr.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Move });
+                    }
+                    if hr.drag_started() {
+                        self.checkpoint();
+                        self.part_ext_lock = Some((idx, ext));
+                        self.lead_offer = None;
+                    }
+                    if hr.drag_stopped() {
+                        lead_drop = Some(c.contour);
+                    }
+                    if let (true, Some(pp)) = (hr.dragged(), hr.interact_pointer_pos()) {
+                        lead_slide = Some((c.contour, to_w(pp)));
+                    }
+                }
                 let free = [(LeadEnd::In, (c.lead_path.len() > 1).then(|| c.lead_path[0]), ends.lead_in, pierce_col), (LeadEnd::Out, (c.lead_out_path.len() > 1).then(|| c.lead_out_path[c.lead_out_path.len() - 1]), ends.lead_out, lead_out_col)];
                 for (end, at, now, col) in free {
                     let (Some(at), Some((len, ang))) = (at, now) else { continue };
@@ -952,7 +1011,7 @@ impl App {
                     self.cfg.nesting.units.len(t.lead_out, 1)
                 ),
                 None => "Automatic sheet technology (machine lead tables)".into(),
-            },
+            } + &t.map_or(String::new(), |t| side_words(&t)),
             format!(
                 "Micro-joints {}{}  ·  loops {}  ·  quality: {}",
                 plan.contours.iter().map(|c| c.joints.len()).sum::<usize>(),
@@ -996,6 +1055,17 @@ impl App {
         if let Some((ci, end, p)) = lead_drag {
             let u = self.unit();
             self.status = match crate::engine::drag_lead_end(&mut self.parts, idx, &self.spec, ci, end, p, self.lead_same, u) {
+                Ok(m) => format!("{m} Double-click its end to put it back."),
+                Err(e) => e,
+            };
+            self.refresh();
+        }
+        // A lead's foot dragged: the lead starts there (LE10), snapping to a
+        // corner within the capture distance.
+        if let Some((ci, p)) = lead_slide {
+            let snap = (crate::drawing::SNAP_PX / s) as f64;
+            let u = self.unit();
+            self.status = match crate::engine::move_lead_start(&mut self.parts, idx, &self.spec, ci, p, snap, self.lead_same, u) {
                 Ok(m) => format!("{m} Double-click its end to put it back."),
                 Err(e) => e,
             };
@@ -1215,7 +1285,11 @@ impl App {
         // Beside the lead: right of it, or left when there is no room.
         let at = self.lead_card_at.filter(|a| a.0 == (idx, ci)).map(|a| a.1).unwrap_or(rect.left_top() + Vec2::new(12.0, 12.0));
         let mut pick = kind;
-        let (mut reset, mut close) = (false, false);
+        let (mut reset, mut close, mut remove) = (false, false, false);
+        // Delete (or Backspace) on the picked lead removes it (LE11).
+        if !ui.ctx().egui_wants_keyboard_input() && self.sel_texts.is_empty() && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+            remove = true;
+        }
         let shown = egui::Area::new(egui::Id::unique(("lead_card", idx, ci))).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
             egui::Frame::new().fill(th().card).stroke(Stroke::new(1.0, th().border)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
                 ui.set_width(LEAD_CARD_W);
@@ -1244,8 +1318,11 @@ impl App {
                     if hand {
                         reset = ui.button("Back to automatic").on_hover_text("Give this lead back the shape and place the part's technology gives it (double-clicking its end does the same).").clicked();
                     }
-                    ui.label(small("Drag its end dots to stretch or swing it.".into(), th().text_dim));
+                    if ui.button("Remove lead").on_hover_text("Cut this contour without a lead: it pierces right on the edge where it starts (Delete does the same). Right-click the edge → Lead here puts one back.").clicked() {
+                        remove = true;
+                    }
                 });
+                ui.label(small("Drag its end dots to stretch or swing it, the square where it meets the part to slide it along the edge.".into(), th().text_dim));
             });
         });
         // Placed beside the lead once its size is known: right of the
@@ -1276,6 +1353,12 @@ impl App {
             self.checkpoint();
             let n = crate::engine::reset_lead_edits(&mut self.parts[idx], Some(ci), self.lead_same);
             self.status = if n > 1 { format!("Contour {no}'s lead and {} more like it are back to automatic.", n - 1) } else { format!("Contour {no}'s lead is back to automatic.") };
+            self.refresh();
+        }
+        if remove {
+            self.checkpoint();
+            self.status = crate::engine::remove_lead(&mut self.parts, idx, &self.spec, ci, self.lead_same).unwrap_or_else(|e| e);
+            self.sel_lead = None;
             self.refresh();
         }
         if close {
@@ -1586,4 +1669,15 @@ mod view_tests {
         let leads = plan.contours.iter().flat_map(|c| c.lead_path.iter().chain(c.lead_out_path.iter()));
         assert!(leads.into_iter().all(|q| q[0] >= e[0] && q[1] >= e[1] && q[0] <= e[2] && q[1] <= e[3]));
     }
+}
+
+/// The holes' and outline's own leads on the Part view's summary card (LE12):
+/// "  ·  holes: no leads", "  ·  outline: Perpendicular, pos 3".
+fn side_words(t: &crate::nest::PartTech) -> String {
+    let one = |what: &str, sd: crate::nest::SideLeads| match (sd.off, sd.auto) {
+        (true, _) => format!("  ·  {what}: no leads"),
+        (false, Some((k, pos))) => format!("  ·  {what}: {}, pos {pos}", k.label()),
+        (false, None) => String::new(),
+    };
+    one("holes", t.hole_leads) + &one("outline", t.outline_leads)
 }
