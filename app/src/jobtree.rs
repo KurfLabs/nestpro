@@ -612,8 +612,7 @@ mod jobtree_tests {
 
     #[test]
     fn open_jobs_remember_their_saved_copy() {
-        let dir = std::env::temp_dir().join(format!("nestpro_lib_link_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("lib_link");
         crate::library::create(&dir).unwrap();
         let mut a = App::new(None);
         a.cfg.library_dir = dir.display().to_string();
@@ -645,9 +644,7 @@ mod jobtree_tests {
 
     #[test]
     fn saving_never_lands_on_another_jobs_file_or_drops_unsaved_edits() {
-        let dir = std::env::temp_dir().join(format!("nestpro_job_files_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testdir::TestDir::made("job_files");
         let mut a = App::new(None);
         crate::library::create(&dir.join("lib")).unwrap();
         a.cfg.library_dir = dir.join("lib").display().to_string();

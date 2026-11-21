@@ -200,8 +200,7 @@ mod db_tests {
 
     #[test]
     fn reads_settings_and_builds_expert_connection_strings() {
-        let dir = std::env::temp_dir().join("nestpro_db_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testdir::TestDir::made("db_test");
         std::fs::write(dir.join("LANTEKIN.CNI"), "R001 \"srv\\Lantek\"   ; x\nR002 \"SHOP\" ; db\nR003 \"\" ; Username.\nR004 \"\" ; Password.\nR008 \"share$\" ;\n").unwrap();
         std::fs::write(dir.join("DBConnect.lst"), "A000 \"OTHER,DB\" ;\nB000 \"Punch\" ;\nC000 \"\" ;\nA000 \"SRV\\LANTEK,shop\" ;\nB000 \"LC5 A\" ;\nB000 \"LC5 B\" ;\nC000 \"\" ;\n").unwrap();
         std::fs::write(dir.join("LANTEKPR.CFG"), "#\nA000 \"LC5 B\"\n").unwrap();

@@ -1395,9 +1395,8 @@ mod tests {
     use super::*;
     use crate::nest::{Part, Shape};
 
-    fn app_with_stock(tag: &str) -> (App, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("nestpro-stockui-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn app_with_stock(tag: &str) -> (App, crate::testdir::TestDir) {
+        let dir = crate::testdir::TestDir::new(&format!("stockui-{tag}"));
         crate::library::create(&dir).unwrap();
         let mut a = App::new(None);
         a.cfg.library_dir = dir.display().to_string();
@@ -1550,7 +1549,7 @@ mod tests {
     fn a_sheet_of_another_material_switches_the_job_to_it() {
         // ST16: picking a stainless 3 mm sheet for a mild steel 10 mm job
         // switches the job and puts the sheet on (nothing nested yet).
-        let (mut a, _) = app_with_stock("switch");
+        let (mut a, _dir) = app_with_stock("switch");
         a.result = Default::default();
         Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("SS3", 1, 3.0, 1486.0, 724.0, 1), true)).unwrap();
         a.use_stock_default("SS3");
@@ -1560,7 +1559,7 @@ mod tests {
         assert_eq!((a.spec.material, a.spec.thickness), (1, 3.0));
         assert_eq!(a.result.formats[0].stock_ref, "SS3");
         // With parts nested the usual question comes first; nothing is used yet.
-        let (mut b, _) = app_with_stock("switch-nested");
+        let (mut b, _dir_b) = app_with_stock("switch-nested");
         b.cfg.stock.use_stock = false;
         b.run_nesting();
         Stock::update(&b.library_at(), |s| s.add_sheet(Item::sheet("SS3", 1, 3.0, 1486.0, 724.0, 1), true)).unwrap();
@@ -1762,7 +1761,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn two_sizes(tag: &str) -> (App, std::path::PathBuf) {
+    fn two_sizes(tag: &str) -> (App, crate::testdir::TestDir) {
         let (mut a, dir) = app_with_stock(tag);
         let mut s = Stock::default();
         s.add_sheet(Item::sheet("BIG", 0, 10.0, 3000.0, 1500.0, 5), true).unwrap();
@@ -1819,15 +1818,14 @@ mod two_pcs {
     use crate::shared::{Clock, Who};
     use crate::stock::{self, Item, Stock};
     use crate::App;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::Duration;
 
     /// 2026-11-09 09:20 UTC: a test clock shows UTC.
     const NOV_9_0920: u64 = 1_794_216_000;
 
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nestpro_two_pcs_stock_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn scratch(tag: &str) -> crate::testdir::TestDir {
+        let dir = crate::testdir::TestDir::new(&format!("two_pcs_stock_{tag}"));
         dir
     }
 

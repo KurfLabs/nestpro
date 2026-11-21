@@ -1146,7 +1146,7 @@ pub fn default_dir() -> PathBuf {
     // change what they nest on): theirs is a folder of the test run's own,
     // not made, as on a PC without a Library.
     if cfg!(test) {
-        return std::env::temp_dir().join(format!("nestpro_test_library_{}", std::process::id()));
+        return crate::testdir::run_dir().join("library");
     }
     documents_dir().join("Library")
 }
@@ -1159,8 +1159,7 @@ mod library_tests {
 
     #[test]
     fn stores_products_and_jobs_like_record_folders() {
-        let dir = std::env::temp_dir().join(format!("nestpro_lib_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("lib_test");
         create(&dir).unwrap();
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
         let part = Part { name: "Bracket".into(), shape: Shape::LBracket, w: 120.0, h: 80.0, qty: 5, rotate: true, color: 1, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
@@ -1210,9 +1209,8 @@ mod library_tests {
     }
 
     /// A new, empty Library of the test's own.
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nestpro_shared_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn scratch(tag: &str) -> crate::testdir::TestDir {
+        let dir = crate::testdir::TestDir::new(&format!("shared_{tag}"));
         create(&dir).unwrap();
         dir
     }
@@ -1229,7 +1227,7 @@ mod library_tests {
         let start = std::sync::Arc::new(std::sync::Barrier::new(pcs));
         let runs: Vec<_> = (0..pcs)
             .map(|pc| {
-                let (dir, start) = (dir.clone(), start.clone());
+                let (dir, start) = (dir.to_path_buf(), start.clone());
                 std::thread::spawn(move || {
                     let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
                     start.wait();
@@ -1254,7 +1252,8 @@ mod library_tests {
     /// new Library (Settings, after asking) makes one.
     #[test]
     fn a_library_folder_that_isnt_there_is_never_made() {
-        let dir = scratch("not_there").join("Nesting");
+        let root = scratch("not_there");
+        let dir = root.join("Nesting");
         let (who, clock) = (Who::new("sam", "PROG-1"), Clock::pc());
         let refused = Library::open(&dir, &who, &clock).err().expect("a folder that isn't there was opened");
         assert!(refused.contains(&dir.display().to_string()) && refused.contains("can't be reached"), "{refused}");
@@ -1385,7 +1384,7 @@ mod library_tests {
         // takes over and saves the job as W14.
         let rec = lib.path(Kind::Job, first);
         {
-            let (dir, rec) = (dir.clone(), rec.clone());
+            let (dir, rec) = (dir.to_path_buf(), rec.clone());
             shared::hooks::set(move |s| {
                 if s == "record written" {
                     prog2_takes_over_and_saves(&dir, &rec, "Frames", "W14");
@@ -1404,7 +1403,7 @@ mod library_tests {
         std::fs::remove_file(dir.join(shared::LOCK_FILE)).unwrap();
         let next = lib.path(Kind::Job, first + 1);
         {
-            let (dir, next) = (dir.clone(), next.clone());
+            let (dir, next) = (dir.to_path_buf(), next.clone());
             shared::hooks::set(move |s| {
                 if s == "record written" {
                     prog2_takes_over_and_saves(&dir, &next, "Brackets", "W15");
@@ -1460,7 +1459,7 @@ mod library_tests {
         let part = Part { name: "DEMO-P1".into(), shape: Shape::LBracket, w: 120.0, h: 80.0, qty: 5, rotate: true, color: 1, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         // PROG-1 holds the lock; PROG-2's saves wait while the clock moves on 10 minutes.
         let held = prog1.lock().unwrap();
-        let (d, c) = (dir.clone(), clock.clone());
+        let (d, c) = (dir.to_path_buf(), clock.clone());
         let (waiting, waiting_rx) = std::sync::mpsc::channel::<()>();
         let prog2 = std::thread::spawn(move || {
             crate::shared::hooks::set(move |s| {
@@ -1617,7 +1616,7 @@ mod library_tests {
         let frames = lib.save_job(&job("Frames"), SaveTo::New).unwrap().id;
         lib.save_job(&job("Brackets"), SaveTo::New).unwrap();
         {
-            let dir = dir.clone();
+            let dir = dir.to_path_buf();
             shared::hooks::set(move |s| {
                 if s == "scanned" {
                     // PROG-2 renames one job and saves a new one.

@@ -1628,9 +1628,7 @@ mod backup_tests {
         ] {
             assert_eq!(parse(odd), None, "{odd}");
         }
-        let dir = std::env::temp_dir().join(format!("nestpro_backup_odd_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testdir::TestDir::made("backup_odd");
         std::fs::write(dir.join("Backup Acme 1a2b3c4d 2026-11-09 €1 PC-A.zip"), b"x").unwrap();
         assert_eq!(list(&dir, &ns()).unwrap(), vec![]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1716,8 +1714,7 @@ mod backup_tests {
     /// many, fails it.
     #[test]
     fn the_before_restore_check_counts_folders_too() {
-        let root = std::env::temp_dir().join(format!("nestpro_backup_verify_dirs_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::testdir::TestDir::new("backup_verify_dirs");
         let lib = root.join("Library");
         crate::library::create(&lib).unwrap();
         std::fs::create_dir_all(lib.join("Empty folder")).unwrap();

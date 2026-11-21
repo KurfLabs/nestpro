@@ -1541,7 +1541,7 @@ pub(crate) mod libui_tests {
     use crate::ui_parts::shown_text;
     use crate::App;
     use eframe::egui;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::Duration;
 
     /// 2026-11-09 09:20 UTC: a test clock shows UTC.
@@ -1569,9 +1569,8 @@ pub(crate) mod libui_tests {
     }
 
     /// A new, empty Library of the test's own (made as Settings would).
-    pub(crate) fn new_library(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nestpro_libui_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    pub(crate) fn new_library(tag: &str) -> crate::testdir::TestDir {
+        let dir = crate::testdir::TestDir::new(&format!("libui_{tag}"));
         library::create(&dir).unwrap();
         dir
     }
@@ -1625,7 +1624,7 @@ pub(crate) mod libui_tests {
     /// line; PROG-2's save at 09:35, with 40 parts and a remnant line, was
     /// refused.
     struct Refusal {
-        dir: std::path::PathBuf,
+        dir: crate::testdir::TestDir,
         clock: Clock,
         prog1: App,
         prog2: App,
@@ -2033,7 +2032,7 @@ pub(crate) mod libui_tests {
         assert!(held > 1, "DEMO-7 holds {held} sheets");
         prog1.parts[0].qty = 5;
         prog1.run_nesting();
-        let file = std::env::temp_dir().join(format!("nestpro_libui_lib_job_to_file_{}.snjob", std::process::id()));
+        let file = crate::testdir::run_dir().join("libui_lib_job_to_file.snjob");
         prog1.save_job_to(&file);
         assert_eq!(in_stock(&dir), stock, "saving to a file changed the stock: {}", prog1.status);
         let copy = crate::jobfile::load(&file).unwrap();
@@ -2087,7 +2086,7 @@ pub(crate) mod libui_tests {
         let mut prog1 = demo7(&dir, &clock);
         let held = holds(&prog1);
         assert_eq!(12 - in_stock(&dir).0, held, "DEMO-7 took its sheets");
-        let file = std::env::temp_dir().join(format!("nestpro_libui_lib_job_file_agent_{}.snjob", std::process::id()));
+        let file = crate::testdir::run_dir().join("libui_lib_job_file_agent.snjob");
         prog1.save_job_to(&file);
         assert!(prog1.job_path.is_none() && prog1.job_link.is_none(), "the copy became the job's own file");
         // An agent adds a part to the file (the CLI's way); the window looks.
@@ -2175,7 +2174,7 @@ pub(crate) mod libui_tests {
         let stock = std::fs::read_to_string(Stock::file(&dir)).unwrap();
         let away = dir.with_extension("away");
         {
-            let (dir, away) = (dir.clone(), away.clone());
+            let (dir, away) = (dir.to_path_buf(), away.clone());
             crate::shared::hooks::set(move |s| {
                 if s == "library reached" {
                     std::fs::rename(&dir, &away).unwrap();
@@ -2349,10 +2348,8 @@ pub(crate) mod libui_tests {
     }
 
     /// A folder of the test's own; the Library folder in it isn't made.
-    fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("nestpro_unreachable_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn scratch(tag: &str) -> crate::testdir::TestDir {
+        let d = crate::testdir::TestDir::made(&format!("unreachable_{tag}"));
         d
     }
 
@@ -2585,7 +2582,7 @@ pub(crate) mod libui_tests {
         // found the Library.
         let away = dir.with_extension("away");
         {
-            let (dir, away) = (dir.clone(), away.clone());
+            let (dir, away) = (dir.to_path_buf(), away.clone());
             crate::shared::hooks::set(move |s| {
                 if s == "library reached" {
                     std::fs::rename(&dir, &away).unwrap();
@@ -2621,7 +2618,7 @@ pub(crate) mod libui_tests {
         let (checked, checked_rx) = channel::<()>();
         let (waiting, waiting_rx) = channel::<()>();
         let prog1 = {
-            let (dir, clock) = (dir.clone(), clock.clone());
+            let (dir, clock) = (dir.to_path_buf(), clock.clone());
             std::thread::spawn(move || {
                 let mut a = app_on(&dir, "DEMO-001 frames", "sam", "PROG-1", &clock);
                 a.jobs[a.cur_job].week = "Acme".into();
@@ -2640,7 +2637,7 @@ pub(crate) mod libui_tests {
             })
         };
         let prog2 = {
-            let (dir, clock) = (dir.clone(), clock.clone());
+            let (dir, clock) = (dir.to_path_buf(), clock.clone());
             std::thread::spawn(move || {
                 let mut a = app_on(&dir, "demo-001 FRAMES", "kim", "PROG-2", &clock);
                 a.jobs[a.cur_job].week = "W12".into();
@@ -2715,7 +2712,7 @@ pub(crate) mod libui_tests {
         a.add_job_material(&read);
         assert_eq!((a.spec.material, material::name(a.spec.material).as_deref()), (3, Some("DEMO 904L")), "{}", a.status);
         assert!(a.status.starts_with("Added DEMO 904L to the material list"), "{}", a.status);
-        let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
+        let stored = crate::materials::read(&crate::materials::Home::Library(dir.to_path_buf()).file()).unwrap().unwrap();
         assert_eq!(stored.get(3).map(|m| (m.name.as_str(), m.standard)), Some(("DEMO 904L", 10)));
         assert_eq!(material::unknown_note(a.spec.material, ""), None, "no notice any more");
         let _ = std::fs::remove_file(&path);
@@ -2745,7 +2742,7 @@ pub(crate) mod libui_tests {
         let other = |name: &str| {
             let lib = Library::at(&dir, &Who::new("sam", "PROG-2"), &Clock::pc());
             let add = crate::engine::materialedit::Change::Add(material::for_unknown(name));
-            crate::materials::apply(&crate::materials::Home::Library(dir.clone()), &dir.with_extension("pc2"), &crate::settings::AppSettings::default(), || lib.saved(), &lib, &[add], &[]).unwrap();
+            crate::materials::apply(&crate::materials::Home::Library(dir.to_path_buf()), &dir.with_extension("pc2"), &crate::settings::AppSettings::default(), || lib.saved(), &lib, &[add], &[]).unwrap();
         };
         other("DEMO A");
         a.reload_materials(false);

@@ -409,7 +409,7 @@ impl AppSettings {
         // Tests never touch this PC's own settings: what they save goes to a
         // folder of the test run's own.
         if cfg!(test) {
-            return std::env::temp_dir().join(format!("nestpro_test_settings_{}", std::process::id())).join(FILE_NAME);
+            return crate::testdir::run_dir().join("settings").join(FILE_NAME);
         }
         // %APPDATA% on Windows; $XDG_CONFIG_HOME or ~/.config elsewhere.
         let base = std::env::var_os("APPDATA")
@@ -886,7 +886,7 @@ mod settings_tests {
     /// (Z076, whole minutes, 0 = off), kept in 1–1440.
     #[test]
     fn importing_a_lantek_install_takes_its_auto_refresh_period() {
-        let dir = std::env::temp_dir().join(format!("nestpro_z076_{}", std::process::id()));
+        let dir = crate::testdir::TestDir::new("z076");
         std::fs::create_dir_all(&dir).unwrap();
         for (line, want) in [("Z076 5                     ; auto-refresh", 5), ("Z076 0 ; off", 0), ("Z076 9000", 1440)] {
             std::fs::write(dir.join("LANTEKIN.CNI"), format!("R001 \"srv\\SQL\" ; server\r\nR002 \"DEMO\" ; db\r\n{line}\r\n")).unwrap();
@@ -906,7 +906,7 @@ mod settings_tests {
             assert_eq!(AppSettings::load().to_text(), AppSettings::default().to_text(), "the Lantek install in LANTEK_DIR was imported");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("nestpro_load_install_{}", std::process::id()));
+        let dir = crate::testdir::TestDir::new("load_install");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("LANTEKIN.CNI"), "R001 \"srv\\SQL\" ; server\r\nR002 \"DEMO\" ; db\r\nZ076 5 ; auto-refresh\r\n").unwrap();
         // Imported on purpose, the install does change the settings.
@@ -914,7 +914,7 @@ mod settings_tests {
         imported.import_lantek(&dir.display().to_string());
         assert_ne!(imported.to_text(), AppSettings::default().to_text());
         let name = "settings::settings_tests::tests_start_from_the_defaults_even_with_a_lantek_install";
-        let out = std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", name, "--test-threads=1"]).env("LANTEK_DIR", &dir).env("NESTPRO_LOAD_CHILD", "1").output().unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", name, "--test-threads=1"]).env("LANTEK_DIR", dir.as_os_str()).env("NESTPRO_LOAD_CHILD", "1").output().unwrap();
         let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         assert!(out.status.success() && said.contains("1 passed"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -951,8 +951,7 @@ mod settings_tests {
     /// never written; once it is answered they are.
     #[test]
     fn settings_are_not_saved_until_the_first_run_screen_is_answered() {
-        let d = std::env::temp_dir().join(format!("nestpro_setup_pending_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("setup_pending");
         let f = d.join("nestpro").join(FILE_NAME);
         let mut s = AppSettings { setup_pending: true, recent_jobs: vec!["DEMO-001.snjob".into()], ..AppSettings::default() };
         s.save_unless_pending(&f).unwrap();
@@ -1048,8 +1047,7 @@ mod settings_tests {
     #[test]
     fn a_machines_order_changes_survive_a_restart_and_use_the_machine_file_puts_the_files_values_back() {
         use crate::ct1::{HoleMode, MachineTech, OrderChanges, OrderSettings};
-        let d = std::env::temp_dir().join(format!("nestpro_settings_order_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("settings_order");
         std::fs::create_dir_all(d.join("MchFiles")).unwrap();
         // A made-up machine file: start bottom off (not followed, CZ6), 20 × 10
         // zones, By proximity.
@@ -1103,9 +1101,7 @@ mod settings_tests {
     #[test]
     fn a_saved_order_value_that_cant_be_taken_is_left_out_and_the_machines_other_changes_are_kept() {
         use crate::ct1::OrderChanges;
-        let d = std::env::temp_dir().join(format!("nestpro_settings_bad_order_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testdir::TestDir::made("settings_bad_order");
         let path = d.join("settings.ini");
         // A hand-edited line: a negative zone count, a mode and a corner the
         // settings don't have, a negative tolerance, too many zones, a word

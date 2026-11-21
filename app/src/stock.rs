@@ -1307,8 +1307,7 @@ mod tests {
 
     #[test]
     fn saves_and_loads() {
-        let dir = std::env::temp_dir().join(format!("nestpro-stock-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("stock");
         crate::library::create(&dir).unwrap();
         let s = stock();
         s.save(&dir).unwrap();
@@ -1324,8 +1323,7 @@ mod tests {
     /// when it is written (as LB5), and one that changes nothing isn't.
     #[test]
     fn every_stock_change_records_who_made_it_and_when() {
-        let dir = std::env::temp_dir().join(format!("nestpro-stock-signed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("stock-signed");
         crate::library::create(&dir).unwrap();
         let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
         let prog1 = crate::library::Library::at(&dir, &Who::new("sam", "PROG-1"), &clock);
@@ -1336,7 +1334,7 @@ mod tests {
         .unwrap();
         // PROG-1 holds the lock; PROG-2's change waits while 10 minutes pass.
         let held = prog1.lock().unwrap();
-        let (d, c) = (dir.clone(), clock.clone());
+        let (d, c) = (dir.to_path_buf(), clock.clone());
         let (waiting, waiting_rx) = std::sync::mpsc::channel::<()>();
         let prog2 = std::thread::spawn(move || {
             crate::shared::hooks::set(move |s| {
@@ -1388,8 +1386,7 @@ mod tests {
 
     #[test]
     fn two_pcs_changing_the_stock_at_once_both_count() {
-        let dir = std::env::temp_dir().join(format!("nestpro-stock-two-pcs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("stock-two-pcs");
         crate::library::create(&dir).unwrap();
         let mut s = Stock::default();
         s.add_sheet(Item::sheet("S1", 0, 3.0, 2000.0, 1000.0, 1), true).unwrap();
@@ -1398,7 +1395,7 @@ mod tests {
         let start = std::sync::Arc::new(std::sync::Barrier::new(pcs));
         let runs: Vec<_> = (0..pcs)
             .map(|_| {
-                let (dir, start) = (dir.clone(), start.clone());
+                let (dir, start) = (dir.to_path_buf(), start.clone());
                 std::thread::spawn(move || {
                     start.wait();
                     (0..changes).map(|_| Stock::update(&as_sam(&dir), |s| s.change_qty("S1", 1))).collect::<Vec<_>>()

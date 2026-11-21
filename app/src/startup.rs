@@ -583,8 +583,7 @@ mod first_run_tests {
     /// first-run screen.
     #[test]
     fn only_a_new_pc_gets_the_first_run_screen() {
-        let d = std::env::temp_dir().join(format!("nestpro_first_run_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("first_run");
         let (settings, lib) = (d.join("config").join("nestpro").join("settings.ini"), d.join("Documents").join("Library"));
         // A new PC: nothing at all.
         assert!(first_run(&settings, &lib));
@@ -622,8 +621,7 @@ mod first_run_tests {
     /// folder or those above it (a share gone since it was checked).
     #[test]
     fn a_library_is_never_made_in_place_of_a_folder_that_went() {
-        let d = std::env::temp_dir().join(format!("nestpro_create_existing_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("create_existing");
         let gone = d.join("srv").join("Nesting");
         let e = crate::library::create_in_existing(&gone).unwrap_err();
         assert!(e.contains("can't be reached") && !d.exists(), "{e}");

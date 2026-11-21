@@ -6,10 +6,8 @@ use super::*;
 use crate::shared::{Clock, Who};
 use serde_json::{json, Value};
 
-fn dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("nestpro_engine_{name}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
+fn dir(name: &str) -> crate::testdir::TestDir {
+    let d = crate::testdir::TestDir::made(&format!("engine_{name}"));
     d
 }
 
@@ -7636,7 +7634,7 @@ fn listed(s: &mut Session, name: &str) -> Value {
     l["data"]["materials"].as_array().unwrap().iter().find(|m| m["name"] == name).cloned().unwrap_or_else(|| panic!("{name} isn't listed: {l}"))
 }
 
-fn page_session(name: &str) -> (PathBuf, PathBuf, Session) {
+fn page_session(name: &str) -> (crate::testdir::TestDir, PathBuf, Session) {
     let d = dir(name);
     let lib = stock_ctx(&d).library_dir;
     let s = Session::new(stock_ctx_again(&lib));
@@ -12195,7 +12193,7 @@ fn the_before_restore_backup_counts_and_stays_its_first_day() {
 // without its fix.
 
 /// A test shop with one backup of today, and the backup's file name.
-fn restore_shop(tag: &str, clock: &Clock) -> (PathBuf, Session, PathBuf, String) {
+fn restore_shop(tag: &str, clock: &Clock) -> (crate::testdir::TestDir, Session, PathBuf, String) {
     let d = dir(tag);
     let (mut s, lib) = backup_shop(&d, clock);
     let chosen = file_of(&call(&mut s, "shop", None, json!({"mode": "backup"})));

@@ -308,9 +308,7 @@ mod xmlimport_tests {
 
     #[test]
     fn an_import_file_makes_one_job_per_material_and_thickness() {
-        let dir = std::env::temp_dir().join(format!("nestpro_xml_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testdir::TestDir::made("xml");
         let dxf = "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n200\n20\n0\n10\n200\n20\n100\n10\n0\n20\n100\n0\nENDSEC\n0\nEOF\n";
         std::fs::write(dir.join("brk.dxf"), dxf).unwrap();
         std::fs::write(dir.join("order.xml"), SAMPLE).unwrap();

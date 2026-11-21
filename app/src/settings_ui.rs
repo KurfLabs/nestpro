@@ -1948,8 +1948,7 @@ mod settings_ui_tests {
     #[test]
     fn join_a_shop_is_offered_on_a_pc_in_a_shop() {
         use crate::shared::{Clock, Who};
-        let d = std::env::temp_dir().join(format!("nestpro_join_offered_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("join_offered");
         crate::library::create(&d).unwrap();
         crate::engine::shop::start(&d, "Other", &Who::new("kim", "PC-B"), &Clock::at(1_794_216_000), "0.1.0").unwrap();
         let st = crate::engine::shop::status(&d);
@@ -1988,10 +1987,8 @@ mod settings_ui_tests {
         (u, h, lib)
     }
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("nestpro_upd_state_{name}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn tmp(name: &str) -> crate::testdir::TestDir {
+        let d = crate::testdir::TestDir::made(&format!("upd_state_{name}"));
         d
     }
 
@@ -2095,7 +2092,7 @@ mod settings_ui_tests {
         assert_eq!(a.setui.mat_locked, None);
         a.save_materials();
         assert_eq!(crate::engine::material::name(1).as_deref(), Some("DEMO Inox"));
-        let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
+        let stored = crate::materials::read(&crate::materials::Home::Library(dir.to_path_buf()).file()).unwrap().unwrap();
         assert_eq!(stored.get(1).unwrap().name, "DEMO Inox");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2107,8 +2104,7 @@ mod settings_ui_tests {
     fn saving_backup_settings_never_holds_the_window_up() {
         use crate::libui::libui_tests::window;
         use crate::shared::{Clock, Who, WriteLock};
-        let root = std::env::temp_dir().join(format!("nestpro_backup_save_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::testdir::TestDir::new("backup_save");
         let lib = root.join("Library");
         crate::library::create(&lib).unwrap();
         crate::engine::shop::start(&lib, "Acme", &Who::new("sam", "PC-A"), &Clock::pc(), "0.1.0").unwrap();
@@ -2138,8 +2134,7 @@ mod settings_ui_tests {
     fn backup_settings_saved_with_settings_closed_are_kept() {
         use crate::libui::libui_tests::window;
         use crate::shared::Clock;
-        let root = std::env::temp_dir().join(format!("nestpro_backup_save_closed_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::testdir::TestDir::new("backup_save_closed");
         let lib = root.join("Library");
         crate::library::create(&lib).unwrap();
         let mut a = window(&lib, "sam", "PC-A", &Clock::pc());
@@ -3247,7 +3242,8 @@ pub fn shop_demo_dir() -> Option<std::path::PathBuf> {
 /// folder had: made with create-dir, so a folder already there (another
 /// run's, whatever it holds) is never used, and nothing is deleted.
 pub fn new_temp_folder(stem: &str) -> Option<std::path::PathBuf> {
-    let base = std::env::temp_dir();
+    // A test's demo shop goes in the test run's folder, deleted after the run.
+    let base = if cfg!(test) { crate::testdir::run_dir().to_path_buf() } else { std::env::temp_dir() };
     for n in 0..1000u32 {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
         let d = base.join(format!("{stem}-{}-{nanos:09}-{n}", std::process::id()));

@@ -1084,10 +1084,8 @@ mod tests {
     use crate::shared::{Clock, Who};
     use std::time::{Duration, Instant};
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("nestpro_rolloutui_{name}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn tmp(name: &str) -> crate::testdir::TestDir {
+        let d = crate::testdir::TestDir::made(&format!("rolloutui_{name}"));
         d
     }
 
