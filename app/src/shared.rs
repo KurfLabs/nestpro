@@ -1096,10 +1096,8 @@ pub fn may_write_over(path: &Path, versions: &Versions, what: &str) -> Result<()
 mod shared_tests {
     use super::*;
 
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nestpro_lock_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    fn scratch(tag: &str) -> crate::testdir::TestDir {
+        let dir = crate::testdir::TestDir::made(&format!("lock_{tag}"));
         dir
     }
 
@@ -1138,7 +1136,7 @@ mod shared_tests {
         let let_go = Arc::new(AtomicBool::new(false));
         let (busy, busy_rx) = std::sync::mpsc::channel::<()>();
         let other = {
-            let (dir, let_go) = (dir.clone(), let_go.clone());
+            let (dir, let_go) = (dir.to_path_buf(), let_go.clone());
             std::thread::spawn(move || {
                 let (mut times, mut busy) = (0, Some(busy));
                 let taken_over = Arc::new(AtomicBool::new(false));
@@ -1268,7 +1266,7 @@ mod shared_tests {
         let lock = WriteLock::take_with(&dir, abandoned, Duration::from_secs(10)).unwrap();
         let t0 = Instant::now();
         let prog2 = {
-            let (dir, file) = (dir.clone(), file.clone());
+            let (dir, file) = (dir.to_path_buf(), file.clone());
             std::thread::spawn(move || {
                 let l = WriteLock::take_with(&dir, abandoned, Duration::from_secs(10)).unwrap();
                 let got = t0.elapsed();
@@ -1350,7 +1348,7 @@ mod shared_tests {
             };
             // PROG-1 takes it over once PROG-2 has reached its step.
             let pc1 = {
-                let (dir, holding, both) = (dir.clone(), holding.clone(), both.clone());
+                let (dir, holding, both) = (dir.to_path_buf(), holding.clone(), both.clone());
                 std::thread::spawn(move || {
                     let mut first = true;
                     hooks::set(move |s| {
@@ -1365,7 +1363,7 @@ mod shared_tests {
             };
             // PROG-2 stops at `step` until PROG-1 holds the lock (or a while).
             let pc2 = {
-                let (dir, holding, both) = (dir.clone(), holding.clone(), both.clone());
+                let (dir, holding, both) = (dir.to_path_buf(), holding.clone(), both.clone());
                 std::thread::spawn(move || {
                     let mut first = true;
                     hooks::set(move |s| {
@@ -1403,7 +1401,7 @@ mod shared_tests {
         let mut lock = WriteLock::take_holding(&dir, short, short, Duration::from_secs(30)).unwrap();
         let let_go = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
         let waiter = {
-            let (dir, let_go) = (dir.clone(), let_go.clone());
+            let (dir, let_go) = (dir.to_path_buf(), let_go.clone());
             std::thread::spawn(move || {
                 let got = WriteLock::take_with(&dir, short, Duration::from_secs(30)).unwrap();
                 let at = Instant::now();
@@ -1506,7 +1504,7 @@ mod version_tests {
     /// is judged as itself.
     #[test]
     fn a_release_rolled_back_from_counts_as_the_shop_versions_only_in_the_shop_folder() {
-        let d = std::env::temp_dir().join("nestpro-version-scope");
+        let d = crate::testdir::TestDir::new("version-scope");
         let v = Versions { this: "0.4.0".into(), shop: Some("0.4.0".into()), rolled_back_from: vec!["0.5.0".into()], shop_dir: Some(d.join("shop")), ..Default::default() };
         assert!(v.at(&d.join("shop").join("Jobs").join("DEMO-001.snjob")).newer(Some("0.5.0")).is_none());
         assert!(v.at(&d.join("desktop").join("DEMO-002.snjob")).newer(Some("0.5.0")).is_some());
@@ -1517,8 +1515,7 @@ mod version_tests {
     /// restart to go back to the shop version.
     #[test]
     fn a_pc_newer_than_the_shop_version_writes_nothing_and_says_to_go_back() {
-        let d = std::env::temp_dir().join(format!("nestpro_version_ahead_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("version_ahead");
         std::fs::create_dir_all(d.join("shop")).unwrap();
         let v = Versions { this: "0.5.0".into(), shop: Some("0.4.0".into()), back_to: Some("0.4.0".into()), shop_dir: Some(d.join("shop")), ..Default::default() };
         let n = v.newer(Some("0.4.0")).expect("a file of the shop version was writable on a newer PC");
@@ -1539,8 +1536,7 @@ mod version_tests {
     /// folder, a new file neither, whatever the versions; elsewhere it does.
     #[test]
     fn a_trial_writes_nothing_in_the_real_shop_folder() {
-        let d = std::env::temp_dir().join(format!("nestpro_version_trial_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("version_trial");
         std::fs::create_dir_all(d.join("shop").join("Jobs")).unwrap();
         let v = Versions { this: "0.5.0".into(), trial_of: Some(d.join("shop")), ..Default::default() };
         let e = may_write_over(&d.join("shop").join("Jobs").join("..").join("a.snjob"), &v, "The job file a.snjob").unwrap_err();
@@ -1567,9 +1563,7 @@ mod version_tests {
     #[test]
     fn a_newer_file_is_never_written_over_and_a_missing_one_is_written() {
         // UP7.
-        let d = std::env::temp_dir().join(format!("nestpro_version_guard_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testdir::TestDir::made("version_guard");
         let f = d.join("stock.json");
         let v = on("0.4.0", None);
         may_write_over(&f, &v, "The sheet stock").unwrap();

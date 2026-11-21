@@ -1165,8 +1165,7 @@ mod tests {
         assert_eq!((r[0].made.clone(), r[0].made_from), (vec!["C".to_string()], OUTDATED));
         // Automatic sheet numbers skip kept names: blank references keep
         // working, through the same stock update the window and agents use.
-        let dir = std::env::temp_dir().join(format!("nestpro-reserved-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("reserved");
         crate::library::create(&dir).unwrap();
         let mut st = Stock::default();
         st.replaced.insert("1".into(), vec!["R".into()]);
@@ -1189,8 +1188,7 @@ mod tests {
     fn a_rebuilt_remnant_never_takes_its_predecessors_name() {
         // RN6: a fixed reference format ("R"), the remnant rebuilt, the new
         // one deleted by hand, then undo: it must not be remade.
-        let dir = std::env::temp_dir().join(format!("nestpro-selfloop-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("selfloop");
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
@@ -1234,8 +1232,7 @@ mod tests {
         // RN6: one remnant "R" stored from a remnant line; the sheet changes
         // (still one piece). Marks, the naming suggestion and the stored name
         // must all be the same new name, never the outgoing "R".
-        let dir = std::env::temp_dir().join(format!("nestpro-marknames-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("marknames");
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
@@ -1269,8 +1266,7 @@ mod tests {
     fn marks_on_several_sheets_follow_the_store_order() {
         // RN6: two sheets both storing (new or rebuilt) remnants with
         // automatic numbers: each sheet's preview is what storing gives it.
-        let dir = std::env::temp_dir().join(format!("nestpro-marknames2-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("marknames2");
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
@@ -1332,8 +1328,7 @@ mod tests {
 
     #[test]
     fn reconciling_moves_each_reference_once() {
-        let dir = std::env::temp_dir().join(format!("nestpro-stockflow-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("stockflow");
         crate::library::create(&dir).unwrap();
         let mut s = Stock::default();
         s.add_sheet(Item::sheet("S1", 0, 3.0, 1500.0, 750.0, 5), true).unwrap();

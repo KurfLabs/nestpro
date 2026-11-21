@@ -1634,10 +1634,8 @@ mod tests {
     // The starting list (MA29).
     // -----------------------------------------------------------------------
 
-    fn settings_dir(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("nestpro_material_start_{name}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn settings_dir(name: &str) -> crate::testdir::TestDir {
+        let d = crate::testdir::TestDir::made(&format!("material_start_{name}"));
         d
     }
 

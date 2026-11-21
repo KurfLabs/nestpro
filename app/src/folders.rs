@@ -595,8 +595,7 @@ mod folders_tests {
     /// nothing is written there.
     #[test]
     fn the_folders_of_a_library_that_cant_be_reached_are_refused_never_made() {
-        let d = std::env::temp_dir().join(format!("nestpro_folders_unreachable_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("folders_unreachable");
         let (who, clock) = (crate::shared::Who::new("sam", "PROG-1"), crate::shared::Clock::pc());
         let gone = d.join("Nesting");
         let lib = Library::at(&gone, &who, &clock);

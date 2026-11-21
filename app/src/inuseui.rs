@@ -758,15 +758,14 @@ mod inuseui_tests {
     use crate::library::{self, Kind, Library, SaveTo};
     use crate::shared::{Clock, Who};
     use crate::App;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::Duration;
 
     /// 2026-11-09 09:14 UTC: a test clock shows UTC.
     const NOV_9_0914: u64 = 1_794_215_640;
 
-    fn new_library(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nestpro_inuseui_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn new_library(tag: &str) -> crate::testdir::TestDir {
+        let dir = crate::testdir::TestDir::new(&format!("inuseui_{tag}"));
         library::create(&dir).unwrap();
         dir
     }
@@ -1004,7 +1003,7 @@ mod inuseui_tests {
             let mut pc2 = window(&dir, "sam", "PROG-1", &clock, true, allow);
             pc2.lib_refresh();
             {
-                let (dir, clock) = (dir.clone(), clock.clone());
+                let (dir, clock) = (dir.to_path_buf(), clock.clone());
                 crate::shared::hooks::set(move |s| {
                     if s == "opening" {
                         // PC 1 opens it in the same moment.
@@ -1096,7 +1095,7 @@ mod inuseui_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let (done, done_rx) = std::sync::mpsc::channel::<()>();
         let held_by_other = {
-            let dir = dir.clone();
+            let dir = dir.to_path_buf();
             std::thread::spawn(move || {
                 let lock = crate::shared::WriteLock::take(&dir).unwrap();
                 tx.send(()).unwrap();
@@ -1290,8 +1289,7 @@ mod inuseui_tests {
     /// hold is renewed.
     #[test]
     fn out_of_reach_while_holding_is_said_once_and_the_job_stays_open() {
-        let d = std::env::temp_dir().join(format!("nestpro_inuseui_reach_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("inuseui_reach");
         let dir = d.join("Nesting");
         library::create(&dir).unwrap();
         let id = saved(&dir, "DEMO-7");

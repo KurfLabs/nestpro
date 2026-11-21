@@ -220,7 +220,8 @@ mod jobfile_tests {
         let outline = crate::stock::Outline { outer: vec![[0.0, 0.0], [2000.0, 0.0], [2000.0, 1000.0], [800.0, 1000.0], [800.0, 400.0], [0.0, 400.0]], holes: vec![] };
         let formats = vec![crate::nest::SheetFormat { w: 2000.0, h: 1000.0, outline: Some(outline), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 }];
         let j = JobFile { program_version: None, format: FORMAT.into(), version: VERSION, name: "Frames".into(), week: "W12".into(), parts, spec, sheets, formats, held: Default::default(), cut_lines: cuts, method: "Modules".into(), manual_cuts: vec![vec![crate::cnc::ManualCut { placed: 0, contour: 0, start: [5.0, 5.0], reverse: true, whole: None }]], stale: true, booked: false, erp: None, saved: None, library: None, library_parts: Default::default(), material_name: String::new() };
-        let path = std::env::temp_dir().join("nestpro_test_job.snjob");
+        let d = crate::testdir::TestDir::made("test_job");
+        let path = d.join("test_job.snjob");
         save(&path, &j).unwrap();
         let k = load(&path).unwrap();
         assert_eq!((k.name.as_str(), k.week.as_str(), k.parts.len()), ("Frames", "W12", 2));
@@ -258,7 +259,7 @@ mod jobfile_tests {
         assert_eq!(version(&j), Some(1));
         j.sheets[0].push(Placed { x: 300.0, y: 10.0, ..crate::nest::oriented(&part, 0, 30.0, false) });
         assert_eq!(version(&j), Some(2));
-        let d = std::env::temp_dir().join(format!("nestpro_layout_{}", std::process::id()));
+        let d = crate::testdir::TestDir::new("layout");
         std::fs::create_dir_all(&d).unwrap();
         let path = d.join("DEMO-001.snjob");
         save(&path, &j).unwrap();

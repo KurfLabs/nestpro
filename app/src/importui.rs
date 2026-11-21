@@ -1689,14 +1689,12 @@ mod tests {
 
     #[test]
     fn a_unit_change_reads_the_preview_again() {
-        let d = std::env::temp_dir().join(format!("nestpro_importui_units_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testdir::TestDir::made("importui_units");
         // No $INSUNITS: read in the app's unit (IU1).
         let f = d.join("DEMO-RECT.dxf");
         std::fs::write(&f, "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n100\n20\n0\n10\n100\n20\n50\n10\n0\n20\n50\n0\nENDSEC\n0\nEOF\n").unwrap();
         let mut iu = ImportUi { sync: true, ..Default::default() };
-        assert!(iu.go(d.clone()));
+        assert!(iu.go(d.to_path_buf()));
         iu.focus = Some(f.clone());
         let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let width = |iu: &ImportUi| match iu.cache.get(&f) {
@@ -1715,10 +1713,8 @@ mod tests {
 
     /// The window open on a folder holding the made-up layered plate, the
     /// plate picked and its preview read, with a job of no parts behind it.
-    fn window_on_layered_plate(name: &str) -> (App, PathBuf, PathBuf) {
-        let d = std::env::temp_dir().join(format!("nestpro_importui_{name}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn window_on_layered_plate(name: &str) -> (App, crate::testdir::TestDir, PathBuf) {
+        let d = crate::testdir::TestDir::made(&format!("importui_{name}"));
         let f = d.join("DEMO-LAYERED-PLATE.dxf");
         std::fs::write(&f, include_str!("../../examples/drawings/DEMO-LAYERED-PLATE.dxf")).unwrap();
         let mut a = App::new(None);
@@ -1728,7 +1724,7 @@ mod tests {
         a.refresh();
         a.undo.clear();
         a.importui.sync = true;
-        a.importui.show(std::slice::from_ref(&d));
+        a.importui.show(std::slice::from_ref(&d.to_path_buf()));
         a.importui.focus = Some(f.clone());
         a.importui.picked.insert(f.clone());
         a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
@@ -1951,13 +1947,12 @@ mod tests {
 
     #[test]
     fn the_window_lists_a_folder_and_previews_a_drawing() {
-        let d = std::env::temp_dir().join(format!("nestpro_importui_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("importui");
         std::fs::create_dir_all(d.join("INCH")).unwrap();
         std::fs::write(d.join("DEMO-PLATE.dxf"), crate::dxf::SAMPLE_DXF).unwrap();
         std::fs::write(d.join("readme.txt"), "x").unwrap();
         let mut iu = ImportUi::default();
-        assert!(iu.go(d.clone()));
+        assert!(iu.go(d.to_path_buf()));
         let v = iu.visible();
         assert_eq!(v.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["INCH", "DEMO-PLATE.dxf"]);
         // Down twice: past the folder to the drawing, which is picked.
@@ -1979,7 +1974,7 @@ mod tests {
         // Up from the folder lands on it in its parent.
         assert!(iu.go(d.join("INCH")));
         iu.up();
-        assert_eq!(iu.dir, d);
+        assert_eq!(iu.dir, *d);
         assert_eq!(iu.focus.as_deref(), Some(d.join("INCH").as_path()));
         let _ = std::fs::remove_dir_all(&d);
     }

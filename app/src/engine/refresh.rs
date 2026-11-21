@@ -206,8 +206,7 @@ mod refresh_tests {
     /// and nothing is made there.
     #[test]
     fn the_stamp_follows_the_librarys_list_folders_and_stock() {
-        let dir = std::env::temp_dir().join(format!("nestpro_stamp_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("stamp");
         let gone = stamp(&dir).unwrap_err();
         assert_eq!(gone, crate::library::unreachable(&dir));
         assert!(!dir.exists(), "nothing made");

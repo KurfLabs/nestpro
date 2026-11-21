@@ -884,9 +884,7 @@ mod tests {
         let _drawn = on_machine("B565 0\n");
         use crate::engine::{session::Session, Ctx};
         use serde_json::{json, Value};
-        let d = std::env::temp_dir().join(format!("nestpro_orderpick_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testdir::TestDir::made("orderpick");
         let job = d.join("plate.snjob");
         let call = |s: &mut Session, op: &str, job: Option<&str>, args: Value| s.call(op, job, &args).unwrap_or_else(|e| panic!("{op} {args}: {e}")).json;
         let mut s = Session::new(Ctx::builtin());

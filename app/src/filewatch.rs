@@ -177,9 +177,7 @@ pub(crate) mod filewatch_tests {
 
     #[test]
     fn an_agent_change_reloads_the_window_unless_both_changed() {
-        let dir = std::env::temp_dir().join(format!("nestpro_watch_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testdir::TestDir::made("watch");
         let path = dir.join("w.snjob");
         let mut a = App::new(None);
         a.save_job_to(&path);

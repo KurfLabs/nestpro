@@ -613,9 +613,8 @@ mod inuse_tests {
     /// 2026-11-09 09:14 UTC: a test clock shows UTC.
     const NOV_9_0914: u64 = 1_794_215_640;
 
-    fn new_library(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nestpro_inuse_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn new_library(tag: &str) -> crate::testdir::TestDir {
+        let dir = crate::testdir::TestDir::new(&format!("inuse_{tag}"));
         library::create(&dir).unwrap();
         dir
     }
@@ -705,7 +704,7 @@ mod inuse_tests {
             let runs: Vec<_> = ["PROG-1", "PROG-2"]
                 .into_iter()
                 .map(|p| {
-                    let (dir, clock, gate) = (dir.clone(), clock.clone(), gate.clone());
+                    let (dir, clock, gate) = (dir.to_path_buf(), clock.clone(), gate.clone());
                     std::thread::spawn(move || {
                         let lib = pc(&dir, p, p, &clock);
                         gate.wait();
@@ -900,7 +899,7 @@ mod inuse_tests {
         mine.parts.push(crate::engine::shape_part(crate::nest::Shape::Disc, 1, 1));
         let taking: std::sync::Arc<Mutex<Option<std::thread::JoinHandle<Result<Option<Hold>, String>>>>> = Default::default();
         {
-            let (dir, clock, taking) = (dir.clone(), clock.clone(), taking.clone());
+            let (dir, clock, taking) = (dir.to_path_buf(), clock.clone(), taking.clone());
             shared::hooks::set(move |s| {
                 if s == "revision checked" {
                     // PROG-2 takes over while PROG-1's save holds the lock.

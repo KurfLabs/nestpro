@@ -687,7 +687,7 @@ mod refreshui_tests {
         later(&clock, QUICK_S);
         pc2.refresh_tick(false);
         save_new_job(&dir, &clock, "DEMO-9");
-        let (d, c) = (dir.clone(), clock.clone());
+        let (d, c) = (dir.to_path_buf(), clock.clone());
         let mut once = true;
         crate::shared::hooks::set(move |step| {
             if step == "refresh reads a record" && std::mem::take(&mut once) {
@@ -817,7 +817,7 @@ mod refreshui_tests {
     /// with a remnant line at 09:30. PC 2's next check asks, and drops
     /// nothing.
     struct Asked {
-        dir: std::path::PathBuf,
+        dir: crate::testdir::TestDir,
         clock: Clock,
         pc1: App,
         pc2: App,
@@ -1348,7 +1348,7 @@ mod refreshui_tests {
         assert_eq!(pc2.setui.mat_locked, None);
         assert_eq!(pc2.setui.mat_draft.as_ref().unwrap().rows[1].m.name, "DEMO Inox", "what was typed stays");
         pc2.save_materials();
-        let stored = crate::materials::read(&crate::materials::Home::Library(dir.clone()).file()).unwrap().unwrap();
+        let stored = crate::materials::read(&crate::materials::Home::Library(dir.to_path_buf()).file()).unwrap().unwrap();
         assert_eq!(stored.get(1).unwrap().name, "DEMO Inox");
         let _ = std::fs::remove_dir_all(&dir);
     }

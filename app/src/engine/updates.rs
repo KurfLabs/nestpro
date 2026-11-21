@@ -311,9 +311,7 @@ mod tests {
     /// shop's.
     #[test]
     fn an_own_library_that_cant_be_looked_at_isnt_taken_for_none() {
-        let d = std::env::temp_dir().join(format!("nestpro_shop_of_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testdir::TestDir::made("shop_of");
         let missing = d.join("Library");
         assert_eq!(shop_of(&missing, &missing), Ok(None));
         // Looking at it fails, but not with "not found": under a file on

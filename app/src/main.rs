@@ -76,6 +76,7 @@ mod progimport;
 mod qualities;
 mod partview;
 mod techui;
+mod testdir;
 mod theme;
 mod turnbar;
 mod ui_parts;
@@ -4381,8 +4382,7 @@ mod job_tests {
     /// shop folder and books nothing.
     #[test]
     fn a_roll_back_landing_while_a_save_waits_leaves_the_shop_untouched() {
-        let dir = std::env::temp_dir().join(format!("nestpro_save_during_rollback_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("save_during_rollback");
         let lib = dir.join("Nesting");
         library::create(&lib).unwrap();
         let sam = shared::Who::new("sam", "PC-A");
@@ -4416,7 +4416,7 @@ mod job_tests {
     #[test]
     fn saving_over_a_newer_job_file_books_no_sheets() {
         // S2 (UP7): the destination is checked before the stock is booked.
-        let dir = std::env::temp_dir().join(format!("nestpro_newer_dest_books_nothing_{}", std::process::id()));
+        let dir = crate::testdir::TestDir::new("newer_dest_books_nothing");
         let (newer, lib) = newer_shop(&dir);
         let mut a = App::new(None);
         a.cfg.library_dir = lib.display().to_string();
@@ -4438,7 +4438,7 @@ mod job_tests {
     fn new_job_from_a_read_only_job_starts_a_job_of_its_own() {
         // S3 (UP9): never emptied in place, so Undo can't bring the newer
         // version's job back as one this PC saves.
-        let dir = std::env::temp_dir().join(format!("nestpro_read_only_new_job_{}", std::process::id()));
+        let dir = crate::testdir::TestDir::new("read_only_new_job");
         let (newer, lib) = newer_shop(&dir);
         let src = dir.join("DEMO-001.snjob");
         let mut j = jobfile::JobFile::new_job("DEMO-001", engine::default_spec());
@@ -4460,7 +4460,7 @@ mod job_tests {
     #[test]
     fn the_window_says_when_a_library_part_is_a_newer_versions_and_when_it_cant_add_parts() {
         // S4 (UP9, UP7).
-        let dir = std::env::temp_dir().join(format!("nestpro_newer_part_window_{}", std::process::id()));
+        let dir = crate::testdir::TestDir::new("newer_part_window");
         let (newer, lib) = newer_shop(&dir);
         let at_newer = crate::library::Library::at(&lib, &shared::Who::new("sam", "PC-A"), &shared::Clock::at(1_794_216_000)).on_version(&newer);
         let id = at_newer.save_product(&engine::shape_part(Shape::Rectangle, 1, 0), "Acme", 0, 3.0, crate::library::SaveTo::New).unwrap().id;
@@ -4482,7 +4482,7 @@ mod job_tests {
     fn a_newer_save_that_changes_only_the_version_makes_the_open_job_read_only() {
         // S7 (UP9): the file watcher takes the version from the same read as
         // the job.
-        let dir = std::env::temp_dir().join(format!("nestpro_newer_stamp_watch_{}", std::process::id()));
+        let dir = crate::testdir::TestDir::new("newer_stamp_watch");
         let (newer, lib) = newer_shop(&dir);
         let path = dir.join("DEMO-001.snjob");
         let mut a = App::new(None);
@@ -4511,8 +4511,7 @@ mod job_tests {
         // shop's version are one major release ahead.
         let major: u64 = updates::VERSION.split('.').next().unwrap().parse().unwrap();
         let newer = format!("{}.0.0", major + 1);
-        let dir = std::env::temp_dir().join(format!("nestpro_read_only_window_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testdir::TestDir::new("read_only_window");
         let lib = dir.join("library");
         crate::library::create(&lib).unwrap();
         engine::shop::start(&lib, "Acme", &shared::Who::new("sam", "PC-A"), &shared::Clock::at(1_794_216_000), &newer).unwrap();
@@ -4549,9 +4548,7 @@ mod job_tests {
         // Invariant 3, MA17: a job in a material this PC's list doesn't have
         // shows `?`, and the window saves it back with the name it came with,
         // to a file and to the Library, after switching jobs too.
-        let dir = std::env::temp_dir().join(format!("nestpro_unknown_material_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testdir::TestDir::made("unknown_material");
         let src = dir.join("DEMO-904.snjob");
         let mut j = jobfile::JobFile::new_job("DEMO-904", engine::default_spec());
         j.spec.material = 41;
@@ -4594,8 +4591,7 @@ mod job_tests {
     /// of its own, never the configured one.
     #[test]
     fn the_shop_demo_never_touches_a_real_library() {
-        let lib = std::env::temp_dir().join(format!("nestpro_shop_demo_real_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&lib);
+        let lib = crate::testdir::TestDir::new("shop_demo_real");
         crate::library::create(&lib).unwrap();
         let mut a = App::new(None);
         a.cfg.library_dir = lib.display().to_string();
@@ -4604,7 +4600,7 @@ mod job_tests {
         // Its own folder is made fresh for the run: never one already there.
         let demo = settings_ui::shop_demo_dir().unwrap();
         let fresh = demo.parent().unwrap().to_path_buf();
-        assert!(fresh.starts_with(std::env::temp_dir()) && demo != lib);
+        assert!(fresh.starts_with(std::env::temp_dir()) && demo != *lib);
         assert_eq!(std::fs::read_dir(&fresh).unwrap().count(), 0, "the demo's folder wasn't made fresh");
         a.cfg.library_dir = demo.display().to_string();
         a.demo_shop("");
@@ -4616,17 +4612,16 @@ mod job_tests {
         std::fs::write(one.join("keep.txt"), "someone's").unwrap();
         let three = settings_ui::new_temp_folder("nestpro-test-alloc").unwrap();
         assert!(three != one && one.join("keep.txt").is_file());
-        for d in [&lib, &fresh, &one, &two, &three] {
+        for d in [&fresh, &one, &two, &three] {
             let _ = std::fs::remove_dir_all(d);
         }
     }
 
     /// A window as kim on PC-B whose Library is a shop Acme (admin PC-A),
     /// in a new folder named after `tag`.
-    fn shop_window(tag: &str) -> (App, std::path::PathBuf) {
+    fn shop_window(tag: &str) -> (App, crate::testdir::TestDir) {
         use crate::shared::{Clock, Who};
-        let d = std::env::temp_dir().join(format!("nestpro_add_pc_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new(&format!("add_pc_{tag}"));
         let lib = d.join("Nesting");
         crate::library::create(&lib).unwrap();
         crate::engine::shop::start(&lib, "Acme", &Who::new("sam", "PC-A"), &Clock::pc(), "0.1.0").unwrap();
@@ -4708,8 +4703,7 @@ mod job_tests {
     #[cfg(unix)]
     #[test]
     fn start_the_shop_keeps_why_this_pc_isnt_listed() {
-        let d = std::env::temp_dir().join(format!("nestpro_start_here_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TestDir::new("start_here");
         let lib = d.join("Nesting");
         crate::library::create(&lib).unwrap();
         let pcs = lib.join(crate::shop::PCS);
@@ -4759,10 +4753,8 @@ mod job_tests {
 
     /// The window on one made-up machine saved with gas `gas` (number,
     /// name), its Library in a folder that isn't there.
-    fn app_on_gas(tag: &str, gas: (u32, &str)) -> (App, PathBuf) {
-        let d = std::env::temp_dir().join(format!("nestpro_newjob_gas_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn app_on_gas(tag: &str, gas: (u32, &str)) -> (App, crate::testdir::TestDir) {
+        let d = crate::testdir::TestDir::made(&format!("newjob_gas_{tag}"));
         let mut a = App::new(None);
         a.cfg.library_dir = d.join("no-library").display().to_string();
         a.cfg.machines = vec![settings::Machine { name: "Demo laser".into(), gas_id: gas.0, gas_name: gas.1.into(), ..Default::default() }];

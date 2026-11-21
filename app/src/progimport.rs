@@ -598,9 +598,7 @@ mod progimport_tests {
 
     #[test]
     fn an_spf_picked_from_a_folder_opens_that_sheet() {
-        let d = std::env::temp_dir().join(format!("nestpro_spf_pick_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testdir::TestDir::made("spf_pick");
         for (n, w) in [("A", 1000), ("B", 2000)] {
             std::fs::write(d.join(format!("{n}.SPF")), format!(";ADILAS\n;STEEL,{w},500,3\nINITNEST\nORIG(10,10,0)\nN1 CALL\"/_n_wks_dir/_n_sheet_wpd/_n_{n}701_spf\"\nENDNEST\n")).unwrap();
             std::fs::write(d.join(format!("{n}701.SPF")), "NEXT_L(0,0,0,2,3)\nPROFILE\nG01 X50 Y0\nG01 X50 Y50\nG01 X0 Y50\nLASTLINE(0,0,0,1,0,50,0,0,0,0)\nENDGEO\n").unwrap();

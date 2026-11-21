@@ -441,20 +441,19 @@ mod libtree_tests {
     use crate::libui::LibItem;
     use crate::shared::{Clock, Who};
     use crate::App;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     /// 2026-11-09 09:20 UTC: a test clock shows UTC.
     const NOV_9_0920: u64 = 1_794_216_000;
 
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nestpro_libtree_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn scratch(tag: &str) -> crate::testdir::TestDir {
+        let dir = crate::testdir::TestDir::new(&format!("libtree_{tag}"));
         dir
     }
 
     /// A new, empty Library in a scratch folder: made once, as in Settings
     /// (LB12).
-    fn library(tag: &str) -> PathBuf {
+    fn library(tag: &str) -> crate::testdir::TestDir {
         let dir = scratch(tag);
         crate::library::create(&dir).unwrap();
         dir

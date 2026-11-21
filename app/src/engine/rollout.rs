@@ -913,10 +913,8 @@ mod tests {
     use super::*;
     use crate::engine::shop as eshop;
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("nestpro_rollout_{name}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn tmp(name: &str) -> crate::testdir::TestDir {
+        let d = crate::testdir::TestDir::made(&format!("rollout_{name}"));
         d
     }
 

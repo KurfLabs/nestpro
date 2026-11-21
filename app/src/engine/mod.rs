@@ -444,11 +444,11 @@ impl Ctx {
         // Built-in machine values only, never the tables of a Lantek install on
         // this PC (LANTEK_DIR or C:\Lantek\Expert): they would be set for every
         // test running at the same time.
-        let cfg = AppSettings { lantek_dir: std::env::temp_dir().join("nestpro_test_no_lantek").to_string_lossy().into_owned(), ..AppSettings::default() };
+        let cfg = AppSettings { lantek_dir: crate::testdir::run_dir().join("no_lantek").to_string_lossy().into_owned(), ..AppSettings::default() };
         let mut c = Ctx::from_settings(cfg);
         // Never the shop's real stock: an empty library of the test's own.
-        c.library_dir = std::env::temp_dir().join(format!("nestpro_test_nolib_{}_{:?}", std::process::id(), std::thread::current().id()));
-        c.pc_dir = std::env::temp_dir().join(format!("nestpro_test_pc_{}_{:?}", std::process::id(), std::thread::current().id()));
+        c.library_dir = crate::testdir::run_dir().join(format!("nolib_{:?}", std::thread::current().id()));
+        c.pc_dir = crate::testdir::run_dir().join(format!("pc_{:?}", std::thread::current().id()));
         // Never the network: a test gives a made-up release list (UP11).
         c.releases = crate::updates::Source::Off("tests never read GitHub");
         // The material list of a new install, on this test's thread.
