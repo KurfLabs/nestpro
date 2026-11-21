@@ -295,9 +295,11 @@ impl ShopFile {
 /// the whole shop read-only (UP21).
 pub fn versions(dir: &Path, this: &str) -> shared::Versions {
     let read = read(dir);
-    // A folder that can't be reached is said by the write itself (LB11).
+    // A folder that isn't there is said by the write itself (LB11). One
+    // that didn't answer (LB18) may answer again before the write: its
+    // shop file counts as unread (UP27).
     let unreadable = match &read {
-        Err(e) if crate::library::reachable(dir) => Some((dir.to_path_buf(), e.clone())),
+        Err(e) if crate::library::reach(dir) != crate::library::Reach::NotThere => Some((dir.to_path_buf(), e.clone())),
         _ => None,
     };
     let s = read.ok().flatten();

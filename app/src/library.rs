@@ -1308,9 +1308,9 @@ mod reach_tests {
         let t = Instant::now();
         assert_eq!(reach_by(&dir, Duration::from_millis(50), Duration::from_secs(60), share), Reach::NoAnswer);
         assert!(t.elapsed() < Duration::from_millis(300), "waited {:?}", t.elapsed());
-        let t = Instant::now();
-        assert_eq!(reach_by(&dir, Duration::from_millis(50), Duration::from_secs(60), share), Reach::NoAnswer);
-        assert!(t.elapsed() < Duration::from_millis(20), "asked again: {:?}", t.elapsed());
+        // Not asked again: asked, the share would answer "there" well within
+        // this wait.
+        assert_eq!(reach_by(&dir, Duration::from_secs(2), Duration::from_secs(60), share), Reach::NoAnswer);
         // The first look is still waiting; from now on the share answers at once.
         play(&dir, 0, true);
         assert!(soon(|| reach_by(&dir, Duration::from_millis(50), Duration::from_secs(60), share) == Reach::There));
@@ -1327,9 +1327,9 @@ mod reach_tests {
         // The late answer (not there) comes; the share comes back quickly.
         std::thread::sleep(Duration::from_millis(300));
         play(&dir, 100, true);
-        let t = Instant::now();
-        assert_eq!(reach_by(&dir, wait, Duration::ZERO, share), Reach::NoAnswer);
-        assert!(t.elapsed() < Duration::from_millis(50), "looked on the caller's thread: {:?}", t.elapsed());
+        // Looked at again in the background: on the caller's thread, the
+        // share would answer "there" well within this wait.
+        assert_eq!(reach_by(&dir, Duration::from_secs(2), Duration::ZERO, share), Reach::NoAnswer);
         play(&dir, 0, true);
         assert!(soon(|| reach_by(&dir, wait, Duration::from_secs(60), share) == Reach::There));
     }
@@ -1375,7 +1375,14 @@ mod reach_tests {
         assert_eq!(crate::shop::read(&dir).err(), Some(said.clone()));
         assert!(crate::shop::records(&dir).is_err());
         assert!(Library::open(&dir, &Who::this_pc(), &Clock::pc()).is_err());
-        assert!(t.elapsed() < Duration::from_millis(200), "waited {:?}", t.elapsed());
+        // UP27: the shop file counts as unread, so nothing is written in the
+        // Library on versions judged while it didn't answer.
+        let v = crate::shop::versions(&dir, "0.2.0");
+        assert_eq!(v.unreadable.as_ref().map(|(d, _)| d), Some(&dir));
+        assert!(crate::shared::shop_file_read(&dir.join("index.json"), &v, "The list").is_err());
+        // A job saved on this PC is let through without waiting on the share.
+        assert!(crate::shared::shop_file_read(&std::env::temp_dir().join("DEMO-001.snjob"), &v, "The job").is_ok());
+        assert!(t.elapsed() < REACH_WAIT, "waited {:?}", t.elapsed());
     }
 }
 

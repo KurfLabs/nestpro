@@ -974,7 +974,18 @@ impl Newer {
 pub fn shop_file_read(path: &Path, versions: &Versions, what: &str) -> Result<(), String> {
     let Some((lib, e)) = &versions.unreadable else { return Ok(()) };
     let in_a_shop = || std::path::absolute(path).is_ok_and(|p| p.ancestors().skip(1).any(|d| d.join(crate::shop::FILE).is_file()));
-    if inside(path, lib) || in_a_shop() {
+    // LB18: a Library that doesn't answer is never looked into (resolving
+    // its real path would wait on it): judged by the folder's name.
+    let in_library = if crate::library::reach(lib) == crate::library::Reach::NoAnswer {
+        let text = |p: &Path| {
+            let t = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().into_owned();
+            PathBuf::from(if cfg!(windows) { t.to_lowercase() } else { t })
+        };
+        text(path).starts_with(text(lib))
+    } else {
+        inside(path, lib)
+    };
+    if in_library || in_a_shop() {
         let e = e.trim_end();
         let what = if what.is_empty() { "It" } else { what };
         return Err(format!("{e}{} {what} is written only once it can be read. Nothing was saved.", if e.ends_with('.') { "" } else { "." }));

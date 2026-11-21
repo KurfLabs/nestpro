@@ -792,7 +792,9 @@ impl Stock {
         if let Some(s) = CACHE.with(|c| c.borrow().as_ref().filter(|(p, t, _)| *p == f && *t == mtime).map(|x| x.2.clone())) {
             return s;
         }
-        let s = Stock::load(library_dir).unwrap_or_default();
+        // Only a stock that was read is kept: one that couldn't be is read
+        // again next time (LB18: the share may answer again).
+        let Ok(s) = Stock::load(library_dir) else { return Stock::default() };
         CACHE.with(|c| *c.borrow_mut() = Some((f, mtime, s.clone())));
         s
     }
