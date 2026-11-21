@@ -168,7 +168,7 @@ fn name_key(pc: &str) -> u64 {
 /// can't be reached is refused, naming it (SH8, LB11): never taken for a
 /// folder without a shop.
 pub fn read(dir: &Path) -> Result<Option<ShopFile>, String> {
-    if !dir.is_dir() {
+    if !crate::library::reachable(dir) {
         return Err(crate::library::unreachable(dir));
     }
     let f = file(dir);
@@ -297,7 +297,7 @@ pub fn versions(dir: &Path, this: &str) -> shared::Versions {
     let read = read(dir);
     // A folder that can't be reached is said by the write itself (LB11).
     let unreadable = match &read {
-        Err(e) if dir.is_dir() => Some((dir.to_path_buf(), e.clone())),
+        Err(e) if crate::library::reachable(dir) => Some((dir.to_path_buf(), e.clone())),
         _ => None,
     };
     let s = read.ok().flatten();
@@ -330,14 +330,17 @@ pub fn write_record(dir: &Path, rec: &PcRecord, lock: &WriteLock) -> Result<(), 
 /// (the share dropped while reading it) is an error naming it, never an
 /// empty list.
 pub fn records(dir: &Path) -> Result<Vec<PcRecord>, String> {
+    if !crate::library::reachable(dir) {
+        return Err(crate::library::unreachable(dir));
+    }
     let pcs = dir.join(PCS);
     let failed = |e: std::io::Error| {
-        if dir.is_dir() { format!("The PCs list in {} can't be read ({e}). Check the network or the server.", pcs.display()) } else { crate::library::unreachable(dir) }
+        if crate::library::reachable(dir) { format!("The PCs list in {} can't be read ({e}). Check the network or the server.", pcs.display()) } else { crate::library::unreachable(dir) }
     };
     let list = match std::fs::read_dir(&pcs) {
         // Starting a shop makes it: one that's missing was taken away or
         // can't be seen, never "no PCs".
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir.is_dir() => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && crate::library::reachable(dir) => {
             return Err(format!("The PCs list folder {} is missing. A PC adds it again when it adds itself to the shop.", pcs.display()))
         }
         r => r.map_err(failed)?,

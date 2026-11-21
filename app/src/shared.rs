@@ -490,8 +490,8 @@ impl WriteLock {
             return Ok(WriteLock(lease));
         }
         // A folder that isn't there is never made here: the share may be
-        // down (LB11).
-        if !dir.is_dir() {
+        // down (LB11), and one that doesn't answer isn't waited on (LB18).
+        if !crate::library::reachable(dir) {
             return Err(crate::library::unreachable(dir));
         }
         let (token, text) = claim();

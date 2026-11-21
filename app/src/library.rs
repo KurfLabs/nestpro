@@ -363,6 +363,115 @@ pub fn no_library(dir: &Path) -> String {
     format!("{} holds no Library. Pick the Library's folder in Settings → Folders, or make a new Library there.", dir.display())
 }
 
+/// LB18: how long the window waits for the Library folder to answer before
+/// it counts as unreachable. A share whose server is off takes Windows about
+/// 20 s to give up on, for every look.
+pub const REACH_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// LB18: how often an unreachable Library folder is looked at again, in the
+/// background, after the last look gave up.
+pub const REACH_AGAIN: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// LB18: Library folders that didn't answer in time: since when they were
+/// last looked at, and whether a look is still waiting for its answer.
+struct Slow {
+    looked: std::time::Instant,
+    looking: bool,
+}
+
+fn slow_folders() -> std::sync::MutexGuard<'static, std::collections::HashMap<PathBuf, Slow>> {
+    static SLOW: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Slow>>> = std::sync::OnceLock::new();
+    SLOW.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// LB18: what the Library folder answered when looked at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    There,
+    /// Answered: no such folder (this PC's own Library not made yet, a
+    /// folder moved).
+    NotThere,
+    /// No answer in time: the share, the server or the network is down.
+    NoAnswer,
+}
+
+/// LB18: is the Library folder there? Windows is asked on a thread of its
+/// own and waited for at most `REACH_WAIT`, so a share that's down never
+/// holds up the window for long. One that didn't answer by then counts as
+/// unreachable at once from then on, without asking again, until a look in
+/// the background (every `REACH_AGAIN`) finds it there again.
+pub fn reachable(dir: &Path) -> bool {
+    reach(dir) == Reach::There
+}
+
+/// LB18: `reachable`, telling a folder that isn't there from one that
+/// doesn't answer.
+pub fn reach(dir: &Path) -> Reach {
+    reach_by(dir, REACH_WAIT, REACH_AGAIN, |d| d.is_dir())
+}
+
+/// `reach`, with the look, the wait and the time between looks given
+/// (tests play a slow share).
+pub(crate) fn reach_by(dir: &Path, wait: std::time::Duration, again: std::time::Duration, there: fn(&Path) -> bool) -> Reach {
+    let said = |there: bool| if there { Reach::There } else { Reach::NotThere };
+    let key = dir.to_path_buf();
+    {
+        let mut slow = slow_folders();
+        if let Some(s) = slow.get_mut(&key) {
+            if !s.looking && s.looked.elapsed() >= again {
+                s.looking = true;
+                look_in_background(key, there, None);
+            }
+            return Reach::NoAnswer;
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    look_in_background(key.clone(), there, Some(tx));
+    match rx.recv_timeout(wait) {
+        Ok(answer) => said(answer),
+        Err(_) => {
+            // The answer is sent, and this note made, under the lock, and
+            // nobody listens once the lock is let go: a late answer either
+            // comes here or finds the note.
+            let mut slow = slow_folders();
+            let late = rx.try_recv().ok();
+            drop(rx);
+            if let Some(answer) = late {
+                return said(answer);
+            }
+            slow.insert(key, Slow { looked: std::time::Instant::now(), looking: true });
+            Reach::NoAnswer
+        }
+    }
+}
+
+/// One look at `dir`: the answer goes to `tx` while someone waits for it;
+/// otherwise it settles the folder's note (there again: forgotten; still
+/// not: looked at again later).
+fn look_in_background(dir: PathBuf, there: fn(&Path) -> bool, tx: Option<std::sync::mpsc::Sender<bool>>) {
+    std::thread::spawn(move || {
+        let answer = there(&dir);
+        let mut slow = slow_folders();
+        if tx.is_some_and(|tx| tx.send(answer).is_ok()) {
+            return;
+        }
+        if answer {
+            slow.remove(&dir);
+        } else if let Some(s) = slow.get_mut(&dir) {
+            s.looking = false;
+            s.looked = std::time::Instant::now();
+        }
+    });
+}
+
+/// LB18: Try again: the folder is asked again now (waiting as `reachable`
+/// does), unless a look at it is still waiting for its answer.
+pub fn look_again(dir: &Path) {
+    let mut slow = slow_folders();
+    if slow.get(dir).is_some_and(|s| !s.looking) {
+        slow.remove(dir);
+    }
+}
+
 /// The folder holds a Library: its list, or its record or stock folders
 /// (LB12). A Library from before the list was kept still counts.
 pub fn holds_library(dir: &Path) -> bool {
@@ -372,7 +481,7 @@ pub fn holds_library(dir: &Path) -> bool {
 /// The Library in `dir` can be used: the folder is there (LB11) and holds a
 /// Library (LB12). Nothing is made either way.
 pub fn usable(dir: &Path) -> Result<(), String> {
-    if !dir.is_dir() {
+    if !reachable(dir) {
         return Err(unreachable(dir));
     }
     if !holds_library(dir) {
@@ -403,7 +512,7 @@ pub fn create(dir: &Path) -> Result<(), String> {
 /// folders above it are ever made, so a share that went away after it was
 /// checked is never made again in its place (LB11).
 pub fn create_in_existing(dir: &Path) -> Result<(), String> {
-    if !dir.is_dir() {
+    if !reachable(dir) {
         return Err(format!("{} can't be reached any more. Nothing was made; check the network or the server and try again.", dir.display()));
     }
     if holds_library(dir) {
@@ -1149,6 +1258,125 @@ pub fn default_dir() -> PathBuf {
         return crate::testdir::run_dir().join("library");
     }
     documents_dir().join("Library")
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A made-up share per test folder: how long it takes to answer, and
+    /// whether the folder is there.
+    fn plays() -> std::sync::MutexGuard<'static, std::collections::HashMap<PathBuf, (u64, bool)>> {
+        static PLAY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, bool)>>> = std::sync::OnceLock::new();
+        PLAY.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn play(dir: &Path, ms: u64, there: bool) {
+        plays().insert(dir.to_path_buf(), (ms, there));
+    }
+
+    fn share(dir: &Path) -> bool {
+        let (ms, there) = plays().get(dir).copied().unwrap_or((0, false));
+        std::thread::sleep(Duration::from_millis(ms));
+        there
+    }
+
+    fn folder(name: &str) -> PathBuf {
+        PathBuf::from(format!(r"\\srv\Nesting\reach-{name}-{}", std::process::id()))
+    }
+
+    /// Waits up to 3 s for `f`.
+    fn soon(f: impl Fn() -> bool) -> bool {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(3) {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// LB18: a share that doesn't answer is waited on once, for at most the
+    /// wait, then said unreachable at once; it counts again as soon as the
+    /// late answer says it's there.
+    #[test]
+    fn a_share_that_does_not_answer_is_waited_on_once() {
+        let dir = folder("once");
+        play(&dir, 400, true);
+        let t = Instant::now();
+        assert_eq!(reach_by(&dir, Duration::from_millis(50), Duration::from_secs(60), share), Reach::NoAnswer);
+        assert!(t.elapsed() < Duration::from_millis(300), "waited {:?}", t.elapsed());
+        let t = Instant::now();
+        assert_eq!(reach_by(&dir, Duration::from_millis(50), Duration::from_secs(60), share), Reach::NoAnswer);
+        assert!(t.elapsed() < Duration::from_millis(20), "asked again: {:?}", t.elapsed());
+        // The first look is still waiting; from now on the share answers at once.
+        play(&dir, 0, true);
+        assert!(soon(|| reach_by(&dir, Duration::from_millis(50), Duration::from_secs(60), share) == Reach::There));
+    }
+
+    /// LB18: one that's still down is looked at again in the background,
+    /// never on the caller's thread, and counts once it answers.
+    #[test]
+    fn a_share_that_stays_down_is_looked_at_again_in_the_background() {
+        let dir = folder("again");
+        play(&dir, 150, false);
+        let wait = Duration::from_millis(30);
+        assert_eq!(reach_by(&dir, wait, Duration::ZERO, share), Reach::NoAnswer);
+        // The late answer (not there) comes; the share comes back quickly.
+        std::thread::sleep(Duration::from_millis(300));
+        play(&dir, 100, true);
+        let t = Instant::now();
+        assert_eq!(reach_by(&dir, wait, Duration::ZERO, share), Reach::NoAnswer);
+        assert!(t.elapsed() < Duration::from_millis(50), "looked on the caller's thread: {:?}", t.elapsed());
+        play(&dir, 0, true);
+        assert!(soon(|| reach_by(&dir, wait, Duration::from_secs(60), share) == Reach::There));
+    }
+
+    /// LB18: Try again asks again now once the last look has answered; a
+    /// folder that answers at once is never remembered, there or not.
+    #[test]
+    fn try_again_asks_again_and_quick_answers_are_not_kept() {
+        let dir = folder("retry");
+        play(&dir, 150, false);
+        let (wait, again) = (Duration::from_millis(30), Duration::from_secs(60));
+        assert_eq!(reach_by(&dir, wait, again, share), Reach::NoAnswer);
+        look_again(&dir);
+        assert_eq!(reach_by(&dir, wait, again, share), Reach::NoAnswer, "still waiting for the first look");
+        std::thread::sleep(Duration::from_millis(300));
+        play(&dir, 0, false);
+        look_again(&dir);
+        assert_eq!(reach_by(&dir, wait, again, share), Reach::NotThere);
+        play(&dir, 0, true);
+        assert_eq!(reach_by(&dir, wait, again, share), Reach::There);
+        let local = std::env::temp_dir().join(format!("nestpro_reach_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&local);
+        assert_eq!(reach(&local), Reach::NotThere);
+        std::fs::create_dir_all(&local).unwrap();
+        assert_eq!(reach(&local), Reach::There);
+        let _ = std::fs::remove_dir_all(&local);
+    }
+
+    /// LB11, LB18: while the Library doesn't answer, what the window reads
+    /// from it is refused at once, naming the folder: the Library, its
+    /// stock and the shop file.
+    #[test]
+    fn a_library_that_does_not_answer_is_refused_at_once() {
+        let dir = folder("library");
+        play(&dir, 2_000, false);
+        assert_eq!(reach_by(&dir, Duration::from_millis(20), Duration::from_secs(60), share), Reach::NoAnswer);
+        let t = Instant::now();
+        let said = unreachable(&dir);
+        assert!(said.contains("can't be reached"), "{said}");
+        assert_eq!(usable(&dir), Err(said.clone()));
+        assert_eq!(crate::stock::Stock::load(&dir).err(), Some(said.clone()));
+        assert_eq!(crate::stock::Stock::load_cached(&dir).items.len(), 0);
+        assert_eq!(crate::shop::read(&dir).err(), Some(said.clone()));
+        assert!(crate::shop::records(&dir).is_err());
+        assert!(Library::open(&dir, &Who::this_pc(), &Clock::pc()).is_err());
+        assert!(t.elapsed() < Duration::from_millis(200), "waited {:?}", t.elapsed());
+    }
 }
 
 #[cfg(test)]

@@ -172,13 +172,15 @@ pub fn join(home: &Home, pc_dir: &Path, cfg: &crate::settings::AppSettings, by: 
         return Ok(None);
     }
     let own = own_list(pc_dir, cfg)?;
+    // Looked at before the Library's list is read: one that can't be
+    // reached is never waited on (LB18).
+    crate::library::usable(d).map_err(|e| format!("{e} This PC's materials will join the Library's material list once it can be reached."))?;
     // Settings from before the list: only a Library with no list yet needs
     // them (looked at again under the lock).
     if own.is_none() && read(&home.file())?.is_some() {
         return Ok(None);
     }
     let own = own.unwrap_or_else(|| List::seed(cfg));
-    crate::library::usable(d).map_err(|e| format!("{e} This PC's materials will join the Library's material list once it can be reached."))?;
     let lock = WriteLock::take(d)?;
     let joined = match read(&home.file())? {
         None => crate::engine::material::Joined { same: own.materials.iter().map(|m| (m.id, m.id)).collect(), added: vec![], list: own.clone() },
