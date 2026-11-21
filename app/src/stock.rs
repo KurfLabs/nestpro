@@ -766,6 +766,10 @@ impl Stock {
 
     /// The stock in a library folder (empty if there's none yet).
     pub fn load(library_dir: &Path) -> Result<Self, String> {
+        // LB18: a Library that doesn't answer isn't waited on.
+        if crate::library::reach(library_dir) == crate::library::Reach::NoAnswer {
+            return Err(crate::library::unreachable(library_dir));
+        }
         let f = Self::file(library_dir);
         match std::fs::read_to_string(&f) {
             Ok(t) => serde_json::from_str::<Stock>(&t).map(Stock::with_materials).map_err(|e| format!("{}: {e}", f.display())),
@@ -779,12 +783,18 @@ impl Stock {
         thread_local! {
             static CACHE: std::cell::RefCell<Option<(PathBuf, Option<std::time::SystemTime>, Stock)>> = const { std::cell::RefCell::new(None) };
         }
+        // LB18: a Library that doesn't answer has no stock to show.
+        if crate::library::reach(library_dir) == crate::library::Reach::NoAnswer {
+            return Stock::default();
+        }
         let f = Self::file(library_dir);
         let mtime = std::fs::metadata(&f).and_then(|m| m.modified()).ok();
         if let Some(s) = CACHE.with(|c| c.borrow().as_ref().filter(|(p, t, _)| *p == f && *t == mtime).map(|x| x.2.clone())) {
             return s;
         }
-        let s = Stock::load(library_dir).unwrap_or_default();
+        // Only a stock that was read is kept: one that couldn't be is read
+        // again next time (LB18: the share may answer again).
+        let Ok(s) = Stock::load(library_dir) else { return Stock::default() };
         CACHE.with(|c| *c.borrow_mut() = Some((f, mtime, s.clone())));
         s
     }

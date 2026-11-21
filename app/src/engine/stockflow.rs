@@ -298,7 +298,7 @@ pub fn nest_on(spec: &SheetSpec, u: &StockUse, grouped: bool) -> NestOn {
     }
     // This PC's own default folder that was never made: no stock yet, not a
     // share that's down.
-    if !u.dir.is_dir() && u.dir == crate::library::default_dir() {
+    if u.dir == crate::library::default_dir() && !u.dir.is_dir() {
         return none(NestOnMode::NoLibrary);
     }
     if let Err(e) = crate::library::usable(&u.dir) {

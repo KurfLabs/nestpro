@@ -5863,6 +5863,18 @@
   "source": "MECHANICS LB11; estimated"
  },
  {
+  "name": "Library folder: longest wait for an answer",
+  "group": "shared library",
+  "value": "3 s, on a thread of its own; no answer = unreachable (LB11), at once from then on",
+  "source": "MECHANICS LB18; own design"
+ },
+ {
+  "name": "Library that does not answer: looked at again",
+  "group": "shared library",
+  "value": "in the background every 15 s after the last look gave up; counts again as soon as one finds it; Try again asks at once",
+  "source": "MECHANICS LB18; own design"
+ },
+ {
   "name": "lists while the Library can't be reached",
   "group": "shared library",
   "value": "the message naming the folder, with Try again and the Library folder setting, never an empty list; looked at again only on Try again or another folder",

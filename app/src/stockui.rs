@@ -370,7 +370,11 @@ impl App {
                 ui.add_space(12.0);
                 let (again, folder) = crate::libui::unreachable_note(ui, &e);
                 if again {
-                    action = Some(Box::new(|app: &mut App| app.stockui.loaded = false));
+                    action = Some(Box::new(|app: &mut App| {
+                        // LB18: asked again now.
+                        crate::library::look_again(&app.library_dir());
+                        app.stockui.loaded = false;
+                    }));
                 }
                 if folder {
                     action = Some(Box::new(|app: &mut App| app.open_settings(crate::settings_ui::Section::Folders)));

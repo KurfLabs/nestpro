@@ -211,7 +211,7 @@ impl App {
     pub fn new_library_window(&mut self, ctx: &egui::Context) {
         let Some(setting) = self.lib_new_ask.clone() else { return };
         let dir = library_dir_of(&setting);
-        let what = if !dir.is_dir() {
+        let what = if !crate::library::reachable(&dir) {
             format!("There's no folder {} yet.", dir.display())
         } else if std::fs::read_dir(&dir).map_or(false, |mut d| d.next().is_none()) {
             format!("{} is empty: there's no Library in it.", dir.display())
@@ -288,6 +288,8 @@ impl App {
 
     /// Look for the Library again (Try again).
     pub fn lib_retry(&mut self) {
+        // LB18: asked again now, not only by the look in the background.
+        crate::library::look_again(&self.library_dir());
         self.lib_refresh();
         if let Some(e) = &self.libui.error {
             self.status = e.clone();

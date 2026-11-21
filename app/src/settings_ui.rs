@@ -1766,6 +1766,8 @@ impl App {
 
         match act {
             Some(Act::TryAgain) => {
+                // LB18: asked again now.
+                crate::library::look_again(&self.library_dir());
                 self.reload_materials(false);
                 self.setui.mat_locked = crate::materials::can_change(&home).err();
             }
