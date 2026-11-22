@@ -3575,6 +3575,12 @@
   "source": "MECHANICS F36; Fulcrum API (nesting-setup replaces the step's nest)"
  },
  {
+  "name": "ERP API token order",
+  "group": "erp (fulcrum)",
+  "value": "this session, then remembered, then the environment variable",
+  "source": "MECHANICS F37; design"
+ },
+ {
   "name": "ERP units sent",
   "group": "erp (fulcrum)",
   "value": "inch (setting)",

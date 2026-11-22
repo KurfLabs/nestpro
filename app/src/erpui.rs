@@ -1125,7 +1125,8 @@ impl App {
                         match crate::settings::protect(self.erp.token_input.trim()) {
                             Ok(enc) => {
                                 i.token_enc = enc;
-                                self.erp.session_token = self.erp.token_input.trim().to_string();
+                                // F37: the remembered token is the one used from now on.
+                                self.erp.session_token.clear();
                                 self.erp.token_input.clear();
                                 self.erp.check_msg = "Token remembered (encrypted for your Windows account).".into();
                             }
@@ -1140,14 +1141,24 @@ impl App {
                 }
             });
             row(ui, "", |ui| {
-                if !i.token_enc.is_empty() {
-                    chip(ui, "remembered", t.ok_bg, t.ok_fg);
-                }
+                // F37: the token in use is marked; one it comes before is greyed.
+                let env_val = std::env::var(env).ok();
+                let used = erp::token_from(i, &self.erp.session_token, env_val.as_deref());
+                let source = |ui: &mut egui::Ui, from: erp::TokenFrom, name: &str| {
+                    if used == Some(from) {
+                        chip(ui, &format!("{name} · in use"), t.ok_bg, t.ok_fg);
+                    } else {
+                        chip(ui, name, t.hover, t.text_dim).on_hover_text("Not used: the token marked \"in use\" comes first (typed this session, then remembered, then the environment)");
+                    }
+                };
                 if !self.erp.session_token.is_empty() {
-                    chip(ui, "this session", t.ok_bg, t.ok_fg);
+                    source(ui, erp::TokenFrom::Session, "this session");
+                }
+                if !i.token_enc.is_empty() {
+                    source(ui, erp::TokenFrom::Remembered, "remembered");
                 }
                 if env_set {
-                    chip(ui, &format!("from {env}"), t.ok_bg, t.ok_fg);
+                    source(ui, erp::TokenFrom::Env, &format!("from {env}"));
                 }
                 if (!i.token_enc.is_empty() || !self.erp.session_token.is_empty()) && ui.small_button("Forget").clicked() {
                     i.token_enc.clear();

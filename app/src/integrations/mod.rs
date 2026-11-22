@@ -214,21 +214,49 @@ impl Integration {
     }
 }
 
-/// Where the API token comes from, first match wins: typed this session,
-/// the environment variable, then the one remembered (encrypted) in settings.
-pub fn token(i: &Integration, session: &str) -> Result<String, String> {
+/// Where the API token is taken from (F37).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenFrom {
+    /// Typed in Settings with "Use this session".
+    Session,
+    /// Remembered (encrypted) in this PC's settings.
+    Remembered,
+    /// The provider's environment variable.
+    Env,
+}
+
+/// F37: which token is used, first match wins: typed this session, then
+/// the one remembered in settings, then the environment variable. A token
+/// someone remembered in Settings is their own, newer choice, so a
+/// variable left set in the environment never hides it. `env`: the
+/// variable's value, when it is set.
+pub fn token_from(i: &Integration, session: &str, env: Option<&str>) -> Option<TokenFrom> {
     if !session.trim().is_empty() {
-        return Ok(session.trim().to_string());
+        Some(TokenFrom::Session)
+    } else if !i.token_enc.is_empty() {
+        Some(TokenFrom::Remembered)
+    } else if env.is_some_and(|t| !t.trim().is_empty()) {
+        Some(TokenFrom::Env)
+    } else {
+        None
     }
-    if let Ok(t) = std::env::var(i.provider.token_env()) {
-        if !t.trim().is_empty() {
-            return Ok(t.trim().to_string());
-        }
+}
+
+/// The API token, taken as [`token_from`] says (F37). A remembered token
+/// that can't be read back (saved by another Windows user or PC) gives way
+/// to the environment variable when that is set.
+pub fn token(i: &Integration, session: &str) -> Result<String, String> {
+    token_with(i, session, std::env::var(i.provider.token_env()).ok().as_deref(), crate::settings::unprotect)
+}
+
+fn token_with(i: &Integration, session: &str, env: Option<&str>, unprotect: impl Fn(&str) -> Result<String, String>) -> Result<String, String> {
+    let env = env.map(str::trim).filter(|t| !t.is_empty());
+    match token_from(i, session, env) {
+        Some(TokenFrom::Session) => Ok(session.trim().to_string()),
+        Some(TokenFrom::Remembered) => unprotect(&i.token_enc).or_else(|e| env.map(str::to_string).ok_or(e)),
+        Some(TokenFrom::Env) => Ok(env.unwrap_or_default().to_string()),
+        None => Err(format!("No {} API token yet — add it in Settings → ERP / MES. {}", i.provider.name(), i.provider.token_hint())),
     }
-    if !i.token_enc.is_empty() {
-        return crate::settings::unprotect(&i.token_enc);
-    }
-    Err(format!("No {} API token yet — add it in Settings → ERP / MES. {}", i.provider.name(), i.provider.token_hint()))
 }
 
 /// The token only travels encrypted: https, or plain http to this PC (tests,
@@ -1300,6 +1328,35 @@ mod tests {
     fn the_token_comes_from_the_session_first() {
         let i = Integration::new(Provider::Fulcrum);
         assert_eq!(token(&i, "  abc ").unwrap(), "abc");
-        // (The environment variable and DPAPI paths need a real environment.)
+    }
+
+    /// F37: a token remembered in Settings is used before one left in the
+    /// environment, so it still works after the program is opened again.
+    #[test]
+    fn a_remembered_token_comes_before_the_environment() {
+        let read = |enc: &str| if enc == "0a0b" { Ok("remembered".to_string()) } else { Err("can't read it".to_string()) };
+        let mut i = Integration::new(Provider::Fulcrum);
+        assert_eq!(token_with(&i, "", Some(" from-env "), read).unwrap(), "from-env");
+        assert!(token_with(&i, "", Some("  "), read).unwrap_err().starts_with("No Fulcrum API token yet"));
+        i.token_enc = "0a0b".into();
+        assert_eq!(token_from(&i, "", Some("from-env")), Some(TokenFrom::Remembered));
+        assert_eq!(token_with(&i, "", Some("from-env"), read).unwrap(), "remembered");
+        assert_eq!(token_with(&i, " typed ", Some("from-env"), read).unwrap(), "typed");
+        // One that can't be read back gives way to the environment's.
+        i.token_enc = "ffff".into();
+        assert_eq!(token_with(&i, "", Some("from-env"), read).unwrap(), "from-env");
+        assert_eq!(token_with(&i, "", None, read).unwrap_err(), "can't read it");
+    }
+
+    /// F37 on Windows: a token really remembered (DPAPI) is read back and
+    /// used before the environment's. Needs a signed-in Windows account
+    /// (CI's runner can't encrypt with DPAPI): `cargo test -- --ignored`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs a signed-in Windows account for DPAPI"]
+    fn a_token_remembered_with_windows_comes_before_the_environment() {
+        let mut i = Integration::new(Provider::Fulcrum);
+        i.token_enc = crate::settings::protect("DEMO-remembered-token").unwrap();
+        assert_eq!(token_with(&i, "", Some("DEMO-env-token"), crate::settings::unprotect).unwrap(), "DEMO-remembered-token");
     }
 }
