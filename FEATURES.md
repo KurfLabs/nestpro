@@ -286,6 +286,7 @@ original (or a real job).
 | JOB-96 | Library folder names may hold "/" (a work order named "DEMO-7/8 …", JX21): its path in the Library window and agents' `library` list ("Fulcrum/DEMO-7/8 …") reads as one more level, and `job-folders` can't find it by path (by `#number` it can) | Estimate | ★ | MECHANICS JX14, JX21 |
 | JOB-99 | A Library job opened from a folder inside a folder ("Fulcrum/WO-7") sits in Open jobs under its own folder's name only ("WO-7", JX15), not inside "Fulcrum" as it was before it was saved (JX21) | Estimate | ★ | MECHANICS JX15, JX21 |
 | JOB-100 | **Every Library read behind the time-limited look (LB18).** The lists, stock, materials, shop file and write lock wait at most 3 s for a share that's down; some reads still go straight to the share on the window's thread (renewing the holds on jobs in use, the auto-refresh look, opening or saving a Library job, Settings → Shop and roll-out pages), and a share that drops between the look and the read still stops the window for about 20 s per read. Move them off the window's thread or behind the look | Partial | ★★ | MECHANICS LB18 (own design); found when an installed copy stopped responding with the Library share down |
+| JOB-101 | Settings → ERP / MES marks a remembered token "in use" even when it can't be read back (saved by another Windows user or PC); the connection then uses the environment variable's token, or says it can't read it. Telling for sure needs the token decrypted off the screen's thread | Estimate | ★ | MECHANICS F37 |
 
 ## Part drawing (DRW)
 

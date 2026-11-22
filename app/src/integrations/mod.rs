@@ -250,11 +250,11 @@ pub fn token(i: &Integration, session: &str) -> Result<String, String> {
 }
 
 fn token_with(i: &Integration, session: &str, env: Option<&str>, unprotect: impl Fn(&str) -> Result<String, String>) -> Result<String, String> {
-    let env_token = || env.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+    let env = env.map(str::trim).filter(|t| !t.is_empty());
     match token_from(i, session, env) {
         Some(TokenFrom::Session) => Ok(session.trim().to_string()),
-        Some(TokenFrom::Remembered) => unprotect(&i.token_enc).or_else(|e| env_token().ok_or(e)),
-        Some(TokenFrom::Env) => Ok(env_token().unwrap_or_default()),
+        Some(TokenFrom::Remembered) => unprotect(&i.token_enc).or_else(|e| env.map(str::to_string).ok_or(e)),
+        Some(TokenFrom::Env) => Ok(env.unwrap_or_default().to_string()),
         None => Err(format!("No {} API token yet — add it in Settings → ERP / MES. {}", i.provider.name(), i.provider.token_hint())),
     }
 }
