@@ -1349,9 +1349,11 @@ mod tests {
     }
 
     /// F37 on Windows: a token really remembered (DPAPI) is read back and
-    /// used before the environment's.
+    /// used before the environment's. Needs a signed-in Windows account
+    /// (CI's runner can't encrypt with DPAPI): `cargo test -- --ignored`.
     #[cfg(windows)]
     #[test]
+    #[ignore = "needs a signed-in Windows account for DPAPI"]
     fn a_token_remembered_with_windows_comes_before_the_environment() {
         let mut i = Integration::new(Provider::Fulcrum);
         i.token_enc = crate::settings::protect("DEMO-remembered-token").unwrap();
