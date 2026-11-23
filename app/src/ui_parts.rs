@@ -1809,6 +1809,11 @@ impl App {
                     self.options_open = false;
                     self.open_db_browser();
                 }
+                // FB1: Feedback on every screen, beside Options.
+                ui.add_space(4.0);
+                if ui.button("Feedback").on_hover_text("Tell us about a problem, an idea or a question").clicked() {
+                    self.open_feedback(ui.ctx());
+                }
             });
         });
     }

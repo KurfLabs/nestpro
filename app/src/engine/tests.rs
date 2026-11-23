@@ -13532,3 +13532,74 @@ fn a_session_started_before_a_trial_follows_this_pcs_library() {
     assert_eq!(s.ctx.library_dir, live);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Feedback (FB1–FB10): notes in the Library's Feedback folder.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn feedback_is_saved_in_the_librarys_feedback_folder_and_listed_newest_first() {
+    let d = dir("feedback_library");
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("kim", "PROG-1").as_agent();
+    ctx.clock = Clock::at(1_794_216_000);
+    let clock = ctx.clock.clone();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-001 frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    // FB2: a folder of its own, by time, PC and kind, with the job attached.
+    let r = call(&mut s, "feedback", None, json!({"mode": "send", "kind": "bug", "text": "  Nest all put two parts on top of each other.\n", "attach_job": jp.to_str().unwrap()}));
+    let folder = std::path::PathBuf::from(r["data"]["folder"].as_str().unwrap());
+    assert_eq!(r["data"]["in_library"], json!(true), "{r}");
+    assert_eq!(folder.parent().unwrap(), d.join("library").join("Feedback"));
+    assert!(folder.file_name().unwrap().to_string_lossy().ends_with("PROG-1 Problem"), "{}", folder.display());
+    let txt = std::fs::read_to_string(folder.join("note.txt")).unwrap();
+    assert!(txt.starts_with("Problem\n\nNest all put two parts on top of each other.\n"), "{txt}");
+    assert!(txt.contains("Who: kim on PROG-1 (agent)") && txt.contains("Screen: agent") && txt.contains("Attached: job.snjob"), "{txt}");
+    assert_eq!(std::fs::read(folder.join("job.snjob")).unwrap(), std::fs::read(&jp).unwrap());
+    // FB5: the public link carries the text and version, never who or the job.
+    let link = r["data"]["github_link"].as_str().unwrap();
+    assert!(link.starts_with("https://github.com/KurfLabs/nestpro/issues/new?title=Problem%3A%20Nest%20all"), "{link}");
+    assert!(!link.contains("PROG-1") && !link.contains("kim") && !link.contains("DEMO-001"), "{link}");
+    // FB2: a second note in the same minute gets a folder of its own.
+    let r2 = call(&mut s, "feedback", None, json!({"mode": "send", "kind": "idea", "text": "Remember the last sheet size"}));
+    assert_ne!(r2["data"]["folder"], r["data"]["folder"]);
+    clock.advance(std::time::Duration::from_secs(60));
+    call(&mut s, "feedback", None, json!({"mode": "send", "kind": "question", "text": "How do I turn a part by 45°?"}));
+    // FB9: newest first; limit keeps the newest.
+    let l = call(&mut s, "feedback", None, json!({"mode": "list"}));
+    let kinds: Vec<&str> = l["data"]["notes"].as_array().unwrap().iter().map(|n| n["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds[0], "question", "{l}");
+    assert_eq!(kinds.len(), 3);
+    let l = call(&mut s, "feedback", None, json!({"mode": "list", "limit": 1}));
+    assert_eq!(l["data"]["notes"].as_array().unwrap().len(), 1);
+    assert_eq!(l["data"]["notes"][0]["who"], json!("kim on PROG-1 (agent)"));
+    // Refused, saving nothing: no text, an unknown kind, a file that isn't a job.
+    assert!(err(&mut s, "feedback", json!({"mode": "send", "text": "  "})).contains("Nothing was saved"));
+    assert!(err(&mut s, "feedback", json!({"mode": "send", "kind": "rant", "text": "x"})).contains("problem, idea or question"));
+    let not_job = d.join("notes.txt");
+    std::fs::write(&not_job, "hello").unwrap();
+    assert!(err(&mut s, "feedback", json!({"mode": "send", "text": "x", "attach_job": not_job.to_str().unwrap()})).contains("not a job file"));
+    assert_eq!(std::fs::read_dir(d.join("library").join("Feedback")).unwrap().count(), 3, "nothing saved by a refusal");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn feedback_without_a_library_is_saved_on_this_pc() {
+    // FB3: no Library to put it in: this PC's own Feedback folder, and it says so.
+    let d = dir("feedback_no_library");
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = d.join("gone");
+    ctx.who = Who::new("kim", "PROG-NOLIB").as_agent();
+    let mut s = Session::new(ctx);
+    let r = call(&mut s, "feedback", None, json!({"mode": "send", "text": "The share dropped"}));
+    assert_eq!(r["data"]["in_library"], json!(false), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("saved on this PC"), "{r}");
+    let folder = std::path::PathBuf::from(r["data"]["folder"].as_str().unwrap());
+    assert_eq!(folder.parent().unwrap(), crate::engine::feedback::own_dir());
+    assert!(!d.join("gone").exists(), "no Library folder is made for it");
+    let l = call(&mut s, "feedback", None, json!({"mode": "list"}));
+    assert!(l["data"]["notes"].as_array().unwrap().iter().any(|n| n["text"] == json!("The share dropped")), "{l}");
+    let _ = std::fs::remove_dir_all(&folder);
+    let _ = std::fs::remove_dir_all(&d);
+}

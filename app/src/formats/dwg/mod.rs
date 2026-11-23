@@ -49,7 +49,7 @@ impl Default for Options {
 pub fn read(bytes: &[u8], opts: &Options) -> Result<Vec<super::ReadPart>, String> {
     // DW15: the reader checks every read; should a case still slip through, the
     // import fails with a message instead of closing the program.
-    let native = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read_native(bytes, opts)))
+    let native = crate::engine::feedback::caught(|| read_native(bytes, opts))
         .unwrap_or_else(|_| Err("This DWG could not be read (it looks damaged). Open it in a CAD program and save it as DXF.".into()));
     let drawing = match native {
         Ok(d) => d,

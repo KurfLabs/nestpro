@@ -90,6 +90,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | **DNC — sending programs to the machine** (one link per control maker) | Missing | ★★ |
 | Importing other CAM programs (Amada, Trumpf, Messer…) and other makers' tech tables | Missing | ★ |
 | Pallet / suction-cup unloading | Missing | ★ |
+| Help files and support | Part — a Feedback button on every screen saves problems, ideas and questions in the Library's Feedback folder, or posts the text as a public GitHub issue; the next start after a crash offers a note (MECHANICS FB1–FB10); agents' `feedback`. No help files | ★★ |
 
 ## Agents and scripts (command line + MCP)
 

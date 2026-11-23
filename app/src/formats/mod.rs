@@ -185,7 +185,7 @@ fn essi_options(o: &ReadOpts) -> Result<essi::Options, String> {
 pub fn read_bytes(fmt: Format, bytes: &[u8], cfg: &crate::settings::AppSettings, opts: &ReadOpts) -> Result<Vec<ReadPart>, String> {
     // A reader that trips over a damaged file gives a message instead of closing
     // the program (as DW15 for every format).
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read_unguarded(fmt, bytes, cfg, opts)))
+    crate::engine::feedback::caught(|| read_unguarded(fmt, bytes, cfg, opts))
         .unwrap_or_else(|_| Err(format!("This {} could not be read (it looks damaged). Open it in the program that made it and save it again, or export it as DXF.", fmt.label())))
 }
 
