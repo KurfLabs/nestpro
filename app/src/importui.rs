@@ -390,7 +390,7 @@ fn read_preview(cfg: &AppSettings, spec: &crate::nest::SheetSpec, path: &Path) -
         }
         drawing_preview(cfg, spec, path).map(|d| Shown::Drawing(Arc::new(d)))
     };
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or_else(|_| Err("This file could not be read (it looks damaged).".into())).unwrap_or_else(Shown::Failed)
+    crate::engine::feedback::caught(read).unwrap_or_else(|_| Err("This file could not be read (it looks damaged).".into())).unwrap_or_else(Shown::Failed)
 }
 
 pub struct ImportUi {

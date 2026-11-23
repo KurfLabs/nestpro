@@ -89,10 +89,11 @@ pub struct Op {
 impl Op {
     /// Changes a file: the job, the sheet stock (`stock`), the material list
     /// (`material`), the Library's job or part folders (`job-folders`,
-    /// `part-folders`), a test Library folder (`library-check`), or the
-    /// shop's files (`shop` records this PC in it, `setup` starts one).
+    /// `part-folders`), a test Library folder (`library-check`), the
+    /// shop's files (`shop` records this PC in it, `setup` starts one), or a
+    /// feedback note (`feedback`).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "material" | "library-check" | "job-folders" | "part-folders" | "shop" | "setup")
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "material" | "library-check" | "job-folders" | "part-folders" | "shop" | "setup" | "feedback")
     }
 
     /// MCP tool name (underscores).
@@ -406,6 +407,13 @@ pub static OPS: &[Op] = &[
         a("leave", Ty::Bool, "join: this PC is in another shop and leaves it (refused without it, naming that shop)"),
         a("start", Ty::Path, "Start a shop in this Library folder (e.g. \\\\srv\\Nesting)"),
         a("name", Ty::Str, "start: the shop's name (e.g. Acme)"),
+    ] },
+    Op { name: "feedback", group: "Help", kind: Kind::Global, help: "Feedback from the people who use the program (the Feedback button on every screen). mode=send saves a note (kind problem, idea or question, and the text) in the Library's Feedback folder, in a folder of its own named by its time, PC and kind, holding note.txt to read and note.json; it records who, when, the version and system, the active machine and \"agent\" as the screen. attach_job= adds a job file to it (job.snjob). It never needs the Library's write lock. A Library that can't be reached or holds no Library saves it in this PC's Documents\\Sheet Nesting\\Feedback instead, and says so. An empty text is refused. Every send also gives github_link: a link that opens a new public issue on GitHub with only the kind, the text and the version (never the PC, user, machine, job or attachments; text over 4000 characters cut and marked). Agents never open it; give it to a person, who decides whether to post. mode=list gives the notes in the Library's Feedback folder (or this PC's when the Library can't be used), newest first: folder, kind, when, who, version, screen, machine, job name, text, a crash's details and the files attached; limit= keeps the newest that many.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["send", "list"] },
+        a("kind", Ty::Str, "send: problem, idea or question (default problem)"),
+        a("text", Ty::Str, "send: what happened, or what you'd like, in the person's words"),
+        a("attach_job", Ty::Path, "send: a job file (.snjob) to save with the note"),
+        a("limit", Ty::Int, "list: only the newest this many notes"),
     ] },
     Op { name: "catalog", group: "Reference", kind: Kind::Global, help: "Choices the other operations take: shapes, materials, thicknesses, nesting levels, machine types, lead/joint types, qualities, text kinds and fields, layer roles.", args: &[] },
     Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, its gas as saved (the gas a new job starts with; gas_note when its number and name aren't one of the list's pairs, written as saved until a gas is picked in Settings → Machines), the sheet and hole order changed for it in Settings → Machines (order_changes), and the active machine's technology (CT1) values, with how it orders the parts on a sheet (sheet_order: start corner, columns or rows, zig-zag, zones) and a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits); for each, where the value comes from (Settings → Machines, the machine file or the default) and what the machine file alone gives.", args: &[] },
@@ -1471,6 +1479,7 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value, open: Option<&JobFile>) -
         "job-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Job),
         "part-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Product),
         "shop" => super::shop::run(ctx, &a),
+        "feedback" => super::feedback::run(ctx, &a),
         "setup" => super::shop::setup(ctx, &a),
         "library-check" => {
             let rounds = match a.int("rounds")? {
@@ -3781,6 +3790,14 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("libui.rs/Cut", "part-folders"),
     ("libui.rs/Delete from the library", "library"),
     ("libui.rs/🗑", "library"),
+    // Feedback (FB1–FB10)
+    ("ui_parts.rs/Feedback", "feedback"),
+    ("feedbackui.rs/Save note", "feedback"),
+    ("feedbackui.rs/Post on GitHub…", "feedback"),
+    ("feedbackui.rs/Attach the open job", "feedback"),
+    ("feedbackui.rs/Attach a picture of the window", "gui: an agent has no window to picture; feedback attach_job= sends a job"),
+    ("feedbackui.rs/Show folder", "view: opens the saved note's folder; feedback gives its folder"),
+    ("feedbackui.rs/Write a note…", "feedback"),
     // --- combo boxes that change the job (parity::JOB_COMBOS) ---
     ("Combo/Machine", "export"),
     ("Combo/Material", "set-sheet"),

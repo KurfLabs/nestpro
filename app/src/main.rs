@@ -12,6 +12,7 @@ mod cnc;
 mod engine;
 mod filewatch;
 mod gas;
+mod feedbackui;
 mod grainui;
 mod mcp;
 mod ct1;
@@ -413,6 +414,8 @@ pub struct App {
     pub clock: shared::Clock,
     /// Lists and open jobs that update by themselves (JX8, LB14–LB16).
     pub autorefresh: refreshui::AutoRefresh,
+    /// The Feedback window and the note after a crash (FB1–FB8).
+    pub feedback: feedbackui::FeedbackUi,
     /// The Drawing module's view state (axes, colours, simulation, measuring…).
     pub dv: drawing::DrawView,
     /// The cut technology panel on the part's drawing screen (CS6).
@@ -734,6 +737,7 @@ impl App {
             who: shared::Who::this_pc(),
             clock: shared::Clock::pc(),
             autorefresh: Default::default(),
+            feedback: Default::default(),
             dv: drawing::DrawView::default(),
             cut_panel: Default::default(),
             order_pick: Default::default(),
@@ -2939,6 +2943,8 @@ impl eframe::App for App {
             self.hold_frame(&ctx);
         }
         self.reload_note_card(&ctx);
+        self.crash_card(&ctx);
+        self.feedback_window(&ctx);
         self.restore_note_card(&ctx);
         self.unknown_material_card(&ctx);
         self.db_browser(&ctx);
@@ -3208,6 +3214,20 @@ fn main() -> eframe::Result {
     }
     let args: Vec<String> = std::env::args().collect();
     let shot = args.iter().position(|a| a == "--screenshot").and_then(|i| args.get(i + 1)).map(PathBuf::from);
+    // FB7, FB8: an error that closes the window is remembered in this PC's
+    // settings folder, so the next start can offer to send a note about it.
+    // Screenshot runs never write it.
+    if shot.is_none() {
+        let dir = feedbackui::pc_dir();
+        std::panic::set_hook(Box::new(move |info| {
+            eprintln!("panic: {info}");
+            if engine::feedback::closes_window() {
+                let (message, place) = engine::feedback::panic_message(info);
+                let when = shared::Clock::pc().now();
+                engine::feedback::record_crash(&dir, &engine::feedback::Crash { when, version: updates::VERSION.into(), message, place });
+            }
+        }));
+    }
     // SH9: a PC with no settings yet starts at the first-run screen. Looked
     // at before anything could save them; never in a screenshot run, nor
     // with a Library folder given on the command line.
@@ -3343,6 +3363,14 @@ fn main() -> eframe::Result {
             }
             if std::env::args().any(|a| a == "--options") {
                 app.options_open = true;
+            }
+            // FB7: the crash this PC remembers from last time; screenshots
+            // never read this PC's own (--crash-note shows a made-up one).
+            if app.shot.is_none() {
+                app.feedback.crash_card = engine::feedback::last_crash(&feedbackui::pc_dir());
+            }
+            if std::env::args().any(|a| a == "--crash-note") {
+                app.demo_crash_note();
             }
             // --machine-gas=<number>:<name>: the active machine saved with
             // that gas number and name, as settings from before the gas was
@@ -3501,6 +3529,10 @@ fn main() -> eframe::Result {
             // folder): an open library job another PC saved reloads by
             // itself, with its note (LB15).
             // --reload-note=ask: it has unsaved changes here, so it asks.
+            // --feedback (screenshots): the Feedback window open (FB1).
+            if std::env::args().any(|a| a == "--feedback") {
+                app.demo_feedback();
+            }
             if let Some(a) = std::env::args().find(|a| a == "--reload-note" || a == "--reload-note=ask") {
                 app.demo_reload_note(a.ends_with("=ask"));
             }

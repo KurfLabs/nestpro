@@ -7899,6 +7899,48 @@
   "group": "shop",
   "value": "a shop file that can't be read while the Library folder can decides nothing: no save, folder change, program, picture, backup or hold in the Library folder or any shop folder (The shop file <path> can't be read … Nothing was saved); files elsewhere save as usual",
   "source": "UP27; own design"
+ },
+ {
+  "name": "feedback folder",
+  "group": "feedback",
+  "value": "<Library>\\Feedback\\<YYYY-MM-DD HH-MM> <PC> <Kind>[ (n)]\\ with note.txt, note.json, screen.png, job.snjob",
+  "source": "FB2; own design"
+ },
+ {
+  "name": "feedback without a Library",
+  "group": "feedback",
+  "value": "Documents\\Sheet Nesting\\Feedback on this PC",
+  "source": "FB3; own design"
+ },
+ {
+  "name": "feedback write lock",
+  "group": "feedback",
+  "value": "none: a note is a new folder nothing else reads",
+  "source": "FB4; own design"
+ },
+ {
+  "name": "public link contents",
+  "group": "feedback",
+  "value": "kind, text, version and operating system only; title = kind + first line (70 characters); text cut at 4000 characters",
+  "source": "FB5; own design"
+ },
+ {
+  "name": "feedback kinds",
+  "group": "feedback",
+  "value": ["Problem", "Idea", "Question"],
+  "source": "FB1; own design"
+ },
+ {
+  "name": "crash file",
+  "group": "feedback",
+  "value": "last-crash.json in this PC's settings folder, the last one only",
+  "source": "FB7; own design"
+ },
+ {
+  "name": "crash counted",
+  "group": "feedback",
+  "value": "an error on the window's own thread that the program doesn't catch itself",
+  "source": "FB8; own design"
  }
 ]
 }

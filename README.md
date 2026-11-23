@@ -99,6 +99,11 @@ nestpro ops --gui      # which GUI ribbon command each operation stands for
   Library section does. **Part folders** are a tree of their own:
   `part-folders` does the same for library parts (`move --library_part=…`),
   as the Library window's Products tab does.
+- **Feedback.** `nestpro feedback --mode=send --kind=problem --text "…"` saves
+  a note in the Library's `Feedback` folder, as the window's Feedback button
+  does (`--attach_job=` adds a job file), and gives a `github_link` a person
+  can open to post the text publicly. `--mode=list` shows the notes, newest
+  first.
 - Agents may create and change jobs, use the Library, and write programs to the
   export folder. They never send anything to a machine and don't change
   settings (machines, posts, materials are set in the app).

@@ -11,6 +11,7 @@ pub mod catalogue;
 pub mod contours;
 pub mod cutorder;
 pub mod drops;
+pub mod feedback;
 pub mod folderops;
 pub mod grain;
 pub mod imports;
