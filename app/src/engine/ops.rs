@@ -1259,7 +1259,7 @@ fn machines(ctx: &Ctx) -> Value {
         "active": ctx.cfg.active_machine + 1,
         "machines": ctx.cfg.machines.iter().enumerate().map(|(i, m)| {
             let mut v = json!({
-                "machine": i + 1, "name": m.name, "does": m.kind.key(), "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name, "gas_no": m.gas_id,
+                "machine": i + 1, "name": m.name, "does": m.kind.key(), "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name, "gas_no": m.gas_id, "programs_folder": super::overflow::programs_base(&ctx.cfg, i),
                 "order_changes": m.order.valid(),
             });
             // GS17: a saved gas that isn't one of the list's pairs, as Settings shows it.

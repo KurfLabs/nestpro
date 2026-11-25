@@ -142,7 +142,21 @@ fn fit(cfg: &AppSettings, k: usize, job: JobRef, on: &CallMachine) -> Result<(Ve
 pub fn check(cfg: &AppSettings, k: usize, job: JobRef) -> Result<(), String> {
     let m = cfg.machines.get(k).ok_or_else(|| format!("there's no machine {} in Settings → Machines", k + 1))?;
     let on = CallMachine::load_in(&cfg.lantek_dir, m, String::new());
-    fit(cfg, k, job, &on).map(|_| ())
+    let (parts, plans) = fit(cfg, k, job, &on)?;
+    // BL39: what an LC5's writer would refuse shows here, not only at export.
+    if on.blm.on {
+        let blm = blm_for(job.spec, &on.blm, job.name);
+        for (s, (sheet, plan)) in job.sheets.iter().zip(&plans).enumerate() {
+            let spec = job.spec.for_format(&format_at(job.formats, job.spec, s));
+            let cuts = job.cuts.get(s).map_or(&[][..], |v| v.as_slice());
+            let set = crate::blm::sheet_set(s + 1, &parts, sheet, &spec, plan, cuts, &blm);
+            let issues = readback::check_set(&set, &parts, sheet, plan, cuts);
+            if !issues.is_empty() {
+                return Err(readback::refusal(s + 1, &issues));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// EXP4: write the job's programs for machine `k` into `base\<job>` (its
@@ -174,13 +188,14 @@ pub struct Earlier {
 
 /// This job's program files in `dir` as `post` and the LC5 job name
 /// `blm_job` name them (sheets 1–999): plain G-code, OMAX `.omx`, LC5 `.zip`
-/// and `.XML`. One look at the folder, not one per name.
-fn job_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm_job: &str) -> Result<Vec<PathBuf>, String> {
+/// and `.XML`. One look at the folder, not one per name. With what was
+/// found, why the folder couldn't be read to the end, if it couldn't.
+fn job_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm_job: &str) -> (Vec<PathBuf>, Option<String>) {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         // No job folder there: nothing of this job's.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (vec![], None),
+        Err(e) => return (vec![], Some(e.to_string())),
     };
     let mut names = std::collections::HashSet::new();
     for k in 1..=999 {
@@ -190,15 +205,29 @@ fn job_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm_
         }
     }
     let mut out: Vec<PathBuf> = vec![];
+    let mut unread = None;
     for e in rd {
-        // A folder only partly read could keep programs back unseen: said.
-        let e = e.map_err(|e| e.to_string())?;
-        if names.contains(&e.file_name().to_string_lossy().to_lowercase()) && e.file_type().map_err(|e| e.to_string())?.is_file() {
-            out.push(e.path());
+        // A folder only partly read could keep programs back unseen: said,
+        // and what was found still goes.
+        let e = match e {
+            Ok(e) => e,
+            Err(err) => {
+                unread.get_or_insert(err.to_string());
+                continue;
+            }
+        };
+        if names.contains(&e.file_name().to_string_lossy().to_lowercase()) {
+            match e.file_type() {
+                Ok(t) if t.is_file() => out.push(e.path()),
+                Ok(_) => {}
+                Err(err) => {
+                    unread.get_or_insert(err.to_string());
+                }
+            }
         }
     }
     out.sort();
-    Ok(out)
+    (out, unread)
 }
 
 /// EXP6: the job folders of the machines in Settings that aren't among
@@ -211,10 +240,13 @@ pub fn earlier_elsewhere(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, wr
             continue;
         }
         let blm = blm_for(spec, &blm_base(m), job_name);
-        let (files, unread) = match job_programs(&dir, job_name, &load_post(m), &blm.job) {
-            Ok(f) => (f, None),
-            Err(e) => (vec![], Some(e)),
-        };
+        let post = load_post(m);
+        let (files, mut unread) = job_programs(&dir, job_name, &post, &blm.job);
+        // Its program names come from its post: one that can't be read
+        // leaves them unknown (EXP2).
+        if !post.missing.is_empty() && unread.is_none() {
+            unread = Some(format!("its post file {} can't be read, so the names of its programs aren't known", post.missing.join(", ")));
+        }
         // Machines with no folder of their own share the export folder.
         match out.iter_mut().find(|e| e.dir == dir) {
             Some(e) => {

@@ -9378,6 +9378,14 @@ fn an_agent_exports_the_same_sheets_for_a_second_machine_into_its_own_folder() {
     assert!(job_in("m1").join("SQUARESX1.CNC").is_file(), "{e}");
     assert!(!job_in("shared").join("SQUARESX1.CNC").exists(), "EXP6: {e}");
     assert_eq!(s.ctx.cfg, cfg);
+    // What the LC5's writer would refuse (micro-joints, BL39) shows before
+    // export, as the review's reason, not only when writing.
+    call(&mut s, "joints", None, json!({"mode": "auto", "every": 50}));
+    let j = jobfile::load(&d.join("squares.snjob")).unwrap();
+    let why = crate::engine::overflow::check(&s.ctx.cfg, 1, crate::engine::overflow::JobRef::of(&j)).unwrap_err();
+    assert!(why.contains("micro-joints"), "{why}");
+    assert!(crate::engine::overflow::check(&s.ctx.cfg, 3, crate::engine::overflow::JobRef::of(&j)).is_ok(), "the G-code laser takes it");
+    assert_eq!(crate::ct1::active(), tech);
     let _ = std::fs::remove_dir_all(&d);
 }
 

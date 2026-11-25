@@ -274,6 +274,9 @@ pub struct App {
     /// are for, GS16: "3 programs written: Mild steel 12.7 mm, Oxygen"),
     /// shown on the sheet until closed so the files can be found.
     pub last_export: Option<(PathBuf, Vec<String>, Option<String>, String)>,
+    /// EXP4, EXP6: what the last export did for the other machines, a line
+    /// each (true = went as asked), shown on its card.
+    pub export_also_lines: Vec<(String, bool)>,
     /// A placed part to bring to the middle of the view (Show next problem).
     pub focus_placed: Option<usize>,
     /// Which problem part "Show next" shows next.
@@ -666,6 +669,7 @@ impl App {
             collision: true,
             overlaps: vec![],
             last_export: None,
+            export_also_lines: vec![],
             focus_placed: None,
             problem_cursor: 0,
             carry: None,
@@ -2058,11 +2062,22 @@ impl App {
             })
             .collect();
         // EXP4: machines ticked before (a machine picked in the review) stay ticked.
+        // A machine whose folder still holds this job's programs starts ticked,
+        // so exporting again doesn't take them away unasked (EXP6).
         let ticked: Vec<usize> = match &self.pending {
             Some(Pending::ExportReview { also, .. }) => also.iter().filter(|r| r.ticked).map(|r| r.machine).collect(),
-            _ => vec![],
+            _ => {
+                let here = self.export_dir().join(engine::safe_name(&self.job_name));
+                engine::overflow::earlier_elsewhere(&self.cfg, &self.job_name, &self.spec, &[here]).into_iter().filter(|e| !e.files.is_empty()).flat_map(|e| e.machines).collect()
+            }
         };
-        let also = self.also_rows(&ticked);
+        let mut also = self.also_rows(&ticked);
+        // Never two ticked on one folder.
+        for i in 0..also.len() {
+            if also[i].ticked && also[..i].iter().any(|r| r.ticked && engine::overflow::same_folder(&r.dir, &also[i].dir)) {
+                also[i].ticked = false;
+            }
+        }
         self.pending = Some(Pending::ExportReview { problems: bad, checks, also, earlier: vec![] });
         self.review_earlier();
     }
@@ -2081,30 +2096,31 @@ impl App {
         // Documents\Sheet Nesting.
         let base = self.export_dir();
         // UP16: in a trial nothing reaches the shop folder, programs neither.
-        if let Some(shop) = self.versions().trial_of {
-            if let Err(e) = shared::trial_may_write(&base, &shop, "The programs") {
-                self.status = e;
-                return;
+        let refused = self.versions().trial_of.and_then(|shop| shared::trial_may_write(&base, &shop, "The programs").err());
+        let res = match refused {
+            Some(e) => Err(e),
+            None => {
+                // EXP2: post files that couldn't be read are read again first, so a
+                // shop folder that is back is picked up; still missing, export refuses.
+                if !self.post.missing.is_empty() {
+                    self.apply_settings(true);
+                }
+                // Every sheet's program (or BLM LC5 set) and the CSV parts report.
+                let blm = self.blm_now();
+                let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
+                engine::export(&base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &self.post, Some(&blm), self.cfg.stock.line.edge_offset)
             }
-        }
-        // EXP2: post files that couldn't be read are read again first, so a
-        // shop folder that is back is picked up; still missing, export refuses.
-        if !self.post.missing.is_empty() {
-            self.apply_settings(true);
-        }
-        // Every sheet's program (or BLM LC5 set) and the CSV parts report.
-        let blm = self.blm_now();
-        let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
-        let res = engine::export(&base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &self.post, Some(&blm), self.cfg.stock.line.edge_offset);
+        };
         let n = self.result.sheets.len();
-        self.status = match res {
+        let mut wrote = false;
+        let status = match res {
             Ok(ex) => {
                 // GS16: the message names the material, thickness and gas.
                 let names = ex.files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().to_string())).collect();
                 let what = engine::programs_written(n, &self.spec, &self.blm, self.unit());
                 self.last_export = Some((ex.dir.clone(), names, ex.warning.clone(), what));
-                let note = engine::export_note(&ex, n, &self.spec, &self.blm, self.unit());
-                note + &self.export_also(ex.dir.clone(), also)
+                wrote = true;
+                engine::export_note(&ex, n, &self.spec, &self.blm, self.unit())
             }
             Err(e) => {
                 // A refused export takes the job's programs with it (BL39).
@@ -2112,16 +2128,22 @@ impl App {
                 e
             }
         };
+        // EXP4: the machines ticked are tried even when this one failed.
+        let lines = if n > 0 { self.export_also(base.join(engine::safe_name(&self.job_name)), wrote, also) } else { vec![] };
+        self.status = lines.iter().fold(status, |s, l| format!("{s} {}", l.0));
+        self.export_also_lines = lines;
     }
 
-    /// EXP4, EXP6: after the machine in use's programs went to `here`, the
-    /// same sheets for each of `also`, then this job's programs left in the
-    /// other machines' folders removed. What happened, for the status line.
-    fn export_also(&self, here: PathBuf, also: &[usize]) -> String {
+    /// EXP4, EXP6: after the machine in use's export into `here` (`wrote`:
+    /// it went), the same sheets for each of `also`, then, when any machine
+    /// was written, this job's programs left in the other machines' folders
+    /// removed. What happened, a line each (true = as asked).
+    fn export_also(&self, here: PathBuf, wrote: bool, also: &[usize]) -> Vec<(String, bool)> {
         use engine::overflow;
-        let mut said = String::new();
+        let mut said: Vec<(String, bool)> = vec![];
+        // The machine in use's folder is never cleaned here: export did that.
         let mut written = vec![here];
-        let mut names = vec![overflow::machine_name(&self.cfg, self.cfg.active_machine)];
+        let mut names = if wrote { vec![overflow::machine_name(&self.cfg, self.cfg.active_machine)] } else { vec![] };
         let trial = self.versions().trial_of;
         let n = self.result.sheets.len();
         for &k in also {
@@ -2129,30 +2151,41 @@ impl App {
             let base = overflow::programs_base(&self.cfg, k);
             let dir = base.join(engine::safe_name(&self.job_name));
             if written.iter().any(|w| overflow::same_folder(w, &dir)) {
-                said += &format!(" Not written for {name}: it writes into the same folder as another machine here ({}).", dir.display());
+                said.push((format!("Not written for {name}: it writes into the same folder as another machine here ({}).", dir.display()), false));
                 continue;
             }
-            // UP16: in a trial nothing reaches the shop folder (its job folder judged).
-            if let Some(Err(e)) = trial.as_ref().map(|shop| shared::trial_may_write(&dir, shop, "The programs")) {
-                said += &format!(" Not written for {name}: {e}");
+            // UP16: in a trial nothing reaches the shop folder (its folder and its job folder judged).
+            if let Some(e) = trial.as_ref().and_then(|shop| shared::trial_may_write(&base, shop, "The programs").and_then(|_| shared::trial_may_write(&dir, shop, "The programs")).err()) {
+                said.push((format!("Not written for {name}: {e}"), false));
                 continue;
             }
             let marks = || (0..n).map(|i| self.remnant_marks(i)).collect();
             match overflow::write(&self.cfg, k, self.job_ref(), &base, &marks, self.cfg.stock.line.edge_offset) {
                 Ok((ex, blm)) => {
-                    said += &format!(" {name}: {}", engine::export_note(&ex, n, &self.spec, &blm, self.unit()));
+                    said.push((format!("{name}: {}", engine::export_note(&ex, n, &self.spec, &blm, self.unit())), true));
                     written.push(ex.dir);
                     names.push(name);
                 }
-                Err(e) => said += &format!(" Not written for {name}: {e}."),
+                Err(e) => said.push((format!("Not written for {name}: {e}."), false)),
             }
         }
-        said += &overflow::cut_once_note(&names);
+        let once = overflow::cut_once_note(&names);
+        if !once.is_empty() {
+            said.push((once.trim().to_string(), false));
+        }
+        if names.is_empty() {
+            return said;
+        }
         let earlier: Vec<_> = overflow::earlier_elsewhere(&self.cfg, &self.job_name, &self.spec, &written)
             .into_iter()
             .filter(|e| trial.as_ref().is_none_or(|shop| shared::trial_may_write(&e.dir, shop, "The programs").is_ok()))
             .collect();
-        said + &overflow::remove_earlier(&self.cfg, &earlier)
+        let gone = overflow::remove_earlier(&self.cfg, &earlier);
+        if !gone.is_empty() {
+            let ok = earlier.iter().all(|e| e.unread.is_none()) && !gone.contains("couldn't");
+            said.push((gone.trim().to_string(), ok));
+        }
+        said
     }
 
     pub fn run_nesting(&mut self) {
@@ -3019,6 +3052,10 @@ impl App {
                     ui.label(RichText::new(dir.display().to_string()).size(11.5).color(th().text_dim));
                     if let Some(w) = &warning {
                         ui.label(RichText::new(w).size(12.0).color(th().warn_fg));
+                    }
+                    // EXP4, EXP6: each other machine, written or not and why.
+                    for (line, ok) in &self.export_also_lines {
+                        ui.label(RichText::new(line).size(12.0).color(if *ok { th().text_dim } else { th().warn_fg }));
                     }
                     ui.add_space(4.0);
                     if ui.button("📂 Open folder").clicked() {
@@ -4535,9 +4572,17 @@ mod tests {
         a.export_with(&[1]);
         assert!(programs("m1") > 0 && programs("m2") > 0 && programs("shared") == 0, "{}", a.status);
         assert!(a.status.contains("Demo laser 2:") && a.status.contains("one machine only"), "{}", a.status);
-        // The next export for the first laser only: the review says the
-        // second's programs will go, and they do.
+        assert!(a.export_also_lines.iter().any(|(l, ok)| *ok && l.starts_with("Demo laser 2:")), "{:?}", a.export_also_lines);
+        // Opened again, the second laser starts ticked: its folder has the
+        // job's programs. Unticked, the review says they will go.
+        a.pending = None;
         a.export_checked();
+        let Some(Pending::ExportReview { also, earlier, .. }) = a.pending.clone() else { panic!("no review") };
+        assert!(also[0].ticked && !also[1].ticked && earlier.is_empty());
+        if let Some(Pending::ExportReview { also, .. }) = a.pending.as_mut() {
+            also[0].ticked = false;
+        }
+        a.review_earlier();
         let Some(Pending::ExportReview { earlier, .. }) = a.pending.clone() else { panic!("no review") };
         assert_eq!(earlier.iter().map(|e| e.machines.clone()).collect::<Vec<_>>(), [vec![1]]);
         a.export();
