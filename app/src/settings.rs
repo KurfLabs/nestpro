@@ -84,6 +84,9 @@ pub struct Machine {
     /// The shop's own "pick quality by size" rows (CQ9). Empty = the machine
     /// file's size bands only.
     pub sizes: Vec<crate::qualities::SizeRule>,
+    /// EXP3: the folder this machine's programs go under (`<folder>\<job>`);
+    /// empty = Settings → Folders' export folder, as for every machine before.
+    pub programs_dir: String,
 }
 
 impl Machine {
@@ -124,7 +127,7 @@ impl Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default(), qualities: Default::default(), sizes: vec![] }
+        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default(), qualities: Default::default(), sizes: vec![], programs_dir: String::new() }
     }
 }
 
@@ -506,6 +509,10 @@ impl AppSettings {
             if !m.sizes.is_empty() {
                 s += &format!("sizes = {}\n", esc(&crate::qualities::sizes_to_line(&m.sizes)));
             }
+            // EXP3: only a machine with its own programs folder writes one.
+            if !m.programs_dir.is_empty() {
+                s += &format!("programs_dir = {}\n", esc(&m.programs_dir));
+            }
         }
         for i in &self.integrations {
             s += &format!(
@@ -658,6 +665,7 @@ impl AppSettings {
                             "order" => m.order = crate::ct1::OrderChanges::read(&v),
                             "qualities" => m.qualities = crate::qualities::ShopQualities::read(&v),
                             "sizes" => m.sizes = crate::qualities::sizes_read(&v),
+                            "programs_dir" => m.programs_dir = v,
                             _ => {}
                         }
                     }

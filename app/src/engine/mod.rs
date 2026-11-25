@@ -17,6 +17,7 @@ pub mod grain;
 pub mod imports;
 pub mod inuse;
 pub mod librarycheck;
+pub mod overflow;
 pub mod material;
 pub mod materialedit;
 pub mod materialops;
@@ -262,9 +263,15 @@ impl CallMachine {
 
     /// `m`'s post and technology files, read now, for this call only.
     fn load(ctx: &Ctx, m: &settings::Machine, note: String) -> CallMachine {
+        Self::load_in(&ctx.cfg.lantek_dir, m, note)
+    }
+
+    /// EXP4: machine `m` of the settings (Lantek folder `lantek_dir`) in use
+    /// until this is dropped: its post, BLM post values and technology file.
+    pub fn load_in(lantek_dir: &str, m: &settings::Machine, note: String) -> CallMachine {
         let back = AdiBack(crate::blm::adi());
         crate::blm::set_adi(crate::blm::AdiParams::from_files(&m.blm_ps1, &m.blm_cf1));
-        let tech = crate::ct1::use_for_now(crate::ct1::MachineTech::for_machine(m, &ctx.cfg.lantek_dir));
+        let tech = crate::ct1::use_for_now(crate::ct1::MachineTech::for_machine(m, lantek_dir));
         CallMachine { post: load_post(m), blm: blm_base(m), note, _tech: Some((tech, back)) }
     }
 }
@@ -479,10 +486,6 @@ impl Ctx {
     /// remnants it cut itself are never nested on).
     pub fn stock_use<'a>(&'a self, job: &'a JobFile) -> stockflow::StockUse<'a> {
         stockflow::StockUse { dir: self.library_dir.clone(), st: &self.cfg.stock, held: &job.held, exclude: job.formats.iter().flat_map(|f| f.made.iter().cloned()).collect() }
-    }
-
-    pub fn export_dir(&self) -> PathBuf {
-        if self.cfg.export_dir.is_empty() { crate::library::documents_dir() } else { PathBuf::from(&self.cfg.export_dir) }
     }
 }
 
