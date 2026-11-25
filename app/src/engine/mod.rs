@@ -732,7 +732,13 @@ pub fn sheets_text(formats: &[SheetFormat], n_sheets: usize) -> String {
     if cut == n_sheets {
         return format!("{n_sheets} sheet(s)");
     }
-    let many: Vec<String> = (0..n_sheets).filter(|&k| nest::runs_at(formats, k) > 1).map(|k| format!("sheet {} ×{}", k + 1, nest::runs_at(formats, k))).collect();
+    let mut many: Vec<String> = (0..n_sheets).filter(|&k| nest::runs_at(formats, k) > 1).map(|k| format!("sheet {} ×{}", k + 1, nest::runs_at(formats, k))).collect();
+    // A long list is cut short: three, then how many more.
+    if many.len() > 3 {
+        let more = many.len() - 3;
+        many.truncate(3);
+        many.push(format!("{more} more cut several times"));
+    }
     format!("{cut} sheets ({n_sheets} nesting{}: {})", if n_sheets == 1 { "" } else { "s" }, many.join(", "))
 }
 

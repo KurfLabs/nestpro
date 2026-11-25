@@ -1624,7 +1624,7 @@ impl App {
                         egui::Grid::new("export_review").num_columns(2).spacing([14.0, 6.0]).show(ui, |ui| {
                             ui.label(RichText::new("Sheets").color(th().text_dim));
                             // SR1, SR21: one program per nesting, the sheets cut counted with their cycles.
-                            ui.label(RichText::new(format!("all {} of {}", engine::sheets_text(&self.result.formats, n), self.job_name)).strong());
+                            ui.add(egui::Label::new(RichText::new(format!("all {} of {}", engine::sheets_text(&self.result.formats, n), self.job_name)).strong()).wrap());
                             ui.end_row();
                             // The machine can be changed here, without leaving the review;
                             // its program format comes with it (MK1).

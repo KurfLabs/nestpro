@@ -13979,3 +13979,14 @@ fn remnants_stored_per_cycle_go_back_whole_and_stay_once_used() {
     assert_eq!(qty(&made[0]), 1);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// SR1: the sheets said in a message, a long list of sheets cut several
+/// times cut short.
+#[test]
+fn sheets_text_names_the_sheets_cut_several_times() {
+    let f = |c: u32| SheetFormat { cycles: c, ..SheetFormat::rect(1000.0, 500.0) };
+    assert_eq!(sheets_text(&[f(1), f(1)], 2), "2 sheet(s)");
+    assert_eq!(sheets_text(&[f(2), f(1)], 2), "3 sheets (2 nestings: sheet 1 ×2)");
+    let long: Vec<SheetFormat> = (0..6).map(|_| f(2)).collect();
+    assert_eq!(sheets_text(&long, 6), "12 sheets (6 nestings: sheet 1 ×2, sheet 2 ×2, sheet 3 ×2, 3 more cut several times)");
+}
