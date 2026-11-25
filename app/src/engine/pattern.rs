@@ -4,7 +4,7 @@
 //! (or the agent) chooses: add extras, or place only the pieces left. The GUI
 //! drops one copy per click (Ctrl+C, `arrange_ui.rs`); agents use `repeat`.
 
-use crate::nest::{Part, Placed};
+use crate::nest::{Part, Placed, SheetFormat};
 
 /// One part type in a pattern: how many pieces one copy uses, and how many
 /// of it are still to place.
@@ -13,6 +13,8 @@ pub struct Use {
     pub part: usize,
     pub per: u32,
     pub left: u32,
+    /// Pieces each placement takes: the sheet's cycles (SR20).
+    pub runs: u32,
 }
 
 /// What to do with a copy that needs more pieces than are left (HM20).
@@ -24,15 +26,18 @@ pub enum Over {
     OnlyLeft,
 }
 
-/// What one copy of `pattern` uses, per part type, in the pattern's order.
-pub fn uses(parts: &[Part], sheets: &[Vec<Placed>], pattern: &[Placed]) -> Vec<Use> {
+/// What one copy of `pattern` uses on sheet `s`, per part type, in the
+/// pattern's order: a sheet cut several times takes a piece for every cycle
+/// (SR20).
+pub fn uses(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], s: usize, pattern: &[Placed]) -> Vec<Use> {
+    let runs = crate::nest::runs_at(formats, s) as u32;
     let mut v: Vec<Use> = vec![];
     for p in pattern {
         match v.iter_mut().find(|u| u.part == p.part) {
-            Some(u) => u.per += 1,
+            Some(u) => u.per += runs,
             None => {
-                let left = parts.get(p.part).map_or(0, |q| q.qty.saturating_sub(super::placed_count(sheets, p.part) as u32));
-                v.push(Use { part: p.part, per: 1, left });
+                let left = parts.get(p.part).map_or(0, |q| q.qty.saturating_sub(super::placed_count(sheets, formats, p.part) as u32));
+                v.push(Use { part: p.part, per: runs, left, runs });
             }
         }
     }
@@ -49,9 +54,10 @@ pub fn short(uses: &[Use]) -> u32 {
     uses.iter().map(|u| u.per.saturating_sub(u.left)).sum()
 }
 
-/// Pieces one copy can take from those left (what "place only those left" places).
+/// Pieces one copy can take from those left (what "place only those left"
+/// places): whole placements only, each taking one piece per cycle.
 pub fn placeable(uses: &[Use]) -> u32 {
-    uses.iter().map(|u| u.per.min(u.left)).sum()
+    uses.iter().map(|u| u.per.min(u.left / u.runs.max(1) * u.runs.max(1))).sum()
 }
 
 /// Which of the pattern's pieces go down for one copy (indices into
@@ -78,8 +84,10 @@ pub fn pick(uses: &[Use], pattern: &[Placed], held: usize, over: Option<Over>) -
     let mut out = vec![];
     for i in order {
         if let Some(k) = uses.iter().position(|u| u.part == pattern[i].part) {
-            if taken[k] < uses[k].left {
-                taken[k] += 1;
+            // A placement takes a piece for every cycle of the sheet (SR20).
+            let runs = uses[k].runs.max(1);
+            if taken[k] + runs <= uses[k].left {
+                taken[k] += runs;
                 out.push(i);
             }
         }
@@ -88,15 +96,17 @@ pub fn pick(uses: &[Use], pattern: &[Placed], held: usize, over: Option<Over>) -
     Some(out)
 }
 
-/// Put copy pieces on sheet `s`: each takes a piece still to place, and only
-/// a piece beyond the order makes it grow by one (HM19). Returns how many
-/// pieces were extras.
-pub fn put(parts: &mut [Part], sheets: &mut [Vec<Placed>], s: usize, pieces: &[Placed]) -> u32 {
+/// Put copy pieces on sheet `s`: each takes a piece still to place (one for
+/// every cycle of the sheet, SR20), and only the pieces beyond the order make
+/// it grow (HM19). Returns how many pieces were extras.
+pub fn put(parts: &mut [Part], sheets: &mut [Vec<Placed>], formats: &[SheetFormat], s: usize, pieces: &[Placed]) -> u32 {
+    let runs = crate::nest::runs_at(formats, s) as u32;
     let mut extras = 0;
     for p in pieces {
-        if super::placed_count(sheets, p.part) as u32 >= parts[p.part].qty {
-            parts[p.part].qty += 1;
-            extras += 1;
+        let after = super::placed_count(sheets, formats, p.part) as u32 + runs;
+        if after > parts[p.part].qty {
+            extras += after - parts[p.part].qty.max(after - runs);
+            parts[p.part].qty = after;
         }
         sheets[s].push(*p);
     }
@@ -164,15 +174,15 @@ mod tests {
         // HM19: two of 18 placed as a pattern of two: 16 left, 8 copies.
         let parts = vec![part("Gusset", 18)];
         let sheets = vec![vec![at(0, 0.0), at(0, 0.0)]];
-        let u = uses(&parts, &sheets, &sheets[0]);
-        assert_eq!(u, vec![Use { part: 0, per: 2, left: 16 }]);
+        let u = uses(&parts, &sheets, &[], 0, &sheets[0]);
+        assert_eq!(u, vec![Use { part: 0, per: 2, left: 16, runs: 1 }]);
         assert_eq!((copies_left(&u), short(&u)), (8, 0));
         assert_eq!(label(&parts, &u, None), "2 × Gusset per copy · 16 left · 8 copies to go");
         assert_eq!(pick(&u, &sheets[0], 0, None), Some(vec![0, 1]));
         // Put down: the order stays at 18.
         let (mut parts, mut sheets) = (parts, sheets);
         let pat = sheets[0].clone();
-        assert_eq!(put(&mut parts, &mut sheets, 0, &pat), 0);
+        assert_eq!(put(&mut parts, &mut sheets, &[], 0, &pat), 0);
         assert_eq!((parts[0].qty, sheets[0].len()), (18, 4));
     }
 
@@ -182,8 +192,8 @@ mod tests {
         let parts = vec![part("Gusset", 3), part("Bracket", 5)];
         let pat = vec![at(0, 0.0), at(1, 150.0), at(0, 300.0)];
         let sheets = vec![vec![at(0, 0.0), at(0, 300.0)]];
-        let u = uses(&parts, &sheets, &pat);
-        assert_eq!(u, vec![Use { part: 0, per: 2, left: 1 }, Use { part: 1, per: 1, left: 5 }]);
+        let u = uses(&parts, &sheets, &[], 0, &pat);
+        assert_eq!(u, vec![Use { part: 0, per: 2, left: 1, runs: 1 }, Use { part: 1, per: 1, left: 5, runs: 1 }]);
         assert_eq!((copies_left(&u), short(&u), placeable(&u)), (0, 1, 2));
         assert_eq!(pick(&u, &pat, 2, None), None, "asks first");
         assert_eq!(question(&parts, &u), "This copy needs 2 × Gusset (1 left).");
@@ -194,15 +204,34 @@ mod tests {
         assert_eq!(pick(&u, &pat, 0, Some(Over::OnlyLeft)), Some(vec![0, 1]));
         // Extras grow the order by the pieces beyond it only.
         let (mut parts, mut sheets) = (parts, sheets);
-        assert_eq!(put(&mut parts, &mut sheets, 0, &pat), 1);
+        assert_eq!(put(&mut parts, &mut sheets, &[], 0, &pat), 1);
         assert_eq!((parts[0].qty, parts[1].qty), (4, 5));
+    }
+
+    #[test]
+    fn on_a_sheet_cut_three_times_only_whole_placements_of_those_left_go_down() {
+        // SR20: 4 Gussets left, the sheet is cut 3 times: one placement (3
+        // pieces) fits, a second would grow the order.
+        let parts = vec![part("Gusset", 4)];
+        let pat = vec![at(0, 0.0), at(0, 300.0)];
+        let formats = vec![crate::nest::SheetFormat { cycles: 3, ..crate::nest::SheetFormat::rect(1000.0, 1000.0) }];
+        let sheets = vec![vec![]];
+        let u = uses(&parts, &sheets, &formats, 0, &pat);
+        assert_eq!(u, vec![Use { part: 0, per: 6, left: 4, runs: 3 }]);
+        assert_eq!(placeable(&u), 3);
+        let only = pick(&u, &pat, 0, Some(Over::OnlyLeft)).unwrap();
+        assert_eq!(only, vec![0]);
+        let (mut parts, mut sheets) = (parts, sheets);
+        let pieces: Vec<Placed> = only.iter().map(|&i| pat[i]).collect();
+        assert_eq!(put(&mut parts, &mut sheets, &formats, 0, &pieces), 0, "the order doesn't grow");
+        assert_eq!(parts[0].qty, 4);
     }
 
     #[test]
     fn nothing_left_says_a_drop_asks_before_adding_extras() {
         let parts = vec![part("Clip", 1)];
         let sheets = vec![vec![at(0, 0.0)]];
-        let u = uses(&parts, &sheets, &sheets[0]);
+        let u = uses(&parts, &sheets, &[], 0, &sheets[0]);
         assert_eq!((copies_left(&u), placeable(&u)), (0, 0));
         assert!(label(&parts, &u, None).ends_with("0 left · a drop asks before adding extras"), "{}", label(&parts, &u, None));
         assert_eq!(question(&parts, &u), "This copy needs 1 × Clip (none left).");

@@ -509,6 +509,10 @@ pub struct StockSettings {
     pub combination_min: f64,
     /// "Maximum time to look for the best sheets" (seconds).
     pub max_seconds: f64,
+    /// "Deal with equal sheets" (SR13, on by default): Nest all cuts a sheet
+    /// again, as one nesting with several cycles, while the parts left fill
+    /// the same layout.
+    pub equal_sheets: bool,
     /// Put the automatic remnant line on every sheet after nesting
     /// ("Generate remnants after nesting", manual p. 213).
     pub lines_after_nesting: bool,
@@ -607,6 +611,7 @@ impl Default for StockSettings {
             best_combination: false,
             combination_min: 0.7,
             max_seconds: 60.0,
+            equal_sheets: true,
         }
     }
 }

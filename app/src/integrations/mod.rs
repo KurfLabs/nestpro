@@ -841,7 +841,8 @@ pub fn nest_report(provider: Provider, job_name: &str, machine: &str, parts: &[P
         }
         numbers.push(n);
     }
-    let placed: Vec<u32> = (0..parts.len()).map(|i| sheets.iter().flatten().filter(|p| p.part == i).count() as u32).collect();
+    // SR1: a sheet cut several times places its parts each time.
+    let placed: Vec<u32> = (0..parts.len()).map(|i| crate::nest::placed_on(sheets, formats, i) as u32).collect();
     let others: Vec<&str> = parts.iter().enumerate().filter(|(i, p)| !mine(p) && placed[*i] > 0).map(|(_, p)| p.name.as_str()).collect();
     if !others.is_empty() {
         r.notes.push(format!("{} part kind(s) not from {} left out of the report: {}", others.len(), provider.name(), others.join(", ")));

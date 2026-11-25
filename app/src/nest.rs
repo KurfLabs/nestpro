@@ -1676,6 +1676,18 @@ pub struct SheetFormat {
     /// Fingerprint of the remnant lines they were made from.
     #[serde(default)]
     pub made_from: u64,
+    /// How many times this sheet's layout is cut (SR1): one nesting run as
+    /// several identical sheets. 0 and 1 both mean once; read it with `runs`.
+    #[serde(default, skip_serializing_if = "once")]
+    pub cycles: u32,
+    /// How many of each remnant in `made` were stored (its cycles then, SS16);
+    /// 0 and 1 both mean one.
+    #[serde(default, skip_serializing_if = "once")]
+    pub made_each: u32,
+}
+
+fn once(c: &u32) -> bool {
+    *c <= 1
 }
 
 impl SheetFormat {
@@ -1691,8 +1703,45 @@ impl SheetFormat {
     }
     /// A stock item as a sheet format.
     pub fn from_stock(it: &crate::stock::Item) -> Self {
-        SheetFormat { w: it.length, h: it.width, outline: it.outline.clone(), stock_ref: it.reference.clone(), remnant: it.kind.is_remnant(), made: vec![], made_from: 0 }
+        SheetFormat { w: it.length, h: it.width, outline: it.outline.clone(), stock_ref: it.reference.clone(), remnant: it.kind.is_remnant(), ..Default::default() }
     }
+    /// How many times the sheet is cut (SR1), at least once.
+    pub fn runs(&self) -> usize {
+        self.cycles.max(1) as usize
+    }
+}
+
+/// How many times sheet `k` is cut (SR1); once when it has no format.
+pub fn runs_at(formats: &[SheetFormat], k: usize) -> usize {
+    formats.get(k).map_or(1, SheetFormat::runs)
+}
+
+/// How many of a part the sheets hold, each sheet counted as often as it is
+/// cut (SR1).
+pub fn placed_on(sheets: &[Vec<Placed>], formats: &[SheetFormat], part: usize) -> usize {
+    sheets.iter().enumerate().map(|(k, s)| s.iter().filter(|p| p.part == part).count() * runs_at(formats, k)).sum()
+}
+
+/// Every part placed, each sheet counted as often as it is cut (SR1).
+pub fn pieces_on(sheets: &[Vec<Placed>], formats: &[SheetFormat]) -> usize {
+    sheets.iter().enumerate().map(|(k, s)| s.len() * runs_at(formats, k)).sum()
+}
+
+/// The physical sheets the layouts are cut on (SR1).
+pub fn sheets_cut(formats: &[SheetFormat], n_sheets: usize) -> usize {
+    (0..n_sheets).map(|k| runs_at(formats, k)).sum()
+}
+
+/// How many more times a sheet's layout can be cut from the parts still to
+/// nest (SR3): for each part on it, what is left of the part's quantity ÷
+/// how many the sheet holds, the smallest of those; 0 for an empty sheet.
+/// `left` is what is left once every sheet, this one at its cycles, is counted.
+pub fn more_runs(sheet: &[Placed], left: &[u32]) -> usize {
+    let mut on: std::collections::BTreeMap<usize, usize> = Default::default();
+    for p in sheet {
+        *on.entry(p.part).or_default() += 1;
+    }
+    on.iter().map(|(&part, &n)| left.get(part).copied().unwrap_or(0) as usize / n).min().unwrap_or(0)
 }
 
 impl NestResult {
@@ -2574,7 +2623,7 @@ pub fn nest(parts: &[Part], spec: &SheetSpec) -> NestResult {
 /// counted against each format's quantity. A remnant is filled inside its real
 /// shape.
 pub fn nest_plan(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot]) -> NestResult {
-    nest_plan_opt(parts, spec, plan, None)
+    nest_plan_opt(parts, spec, plan, None, false)
 }
 
 /// One sheet of format `fmt` filled by the best method from what is left:
@@ -2599,7 +2648,12 @@ fn fill_sheet(eng: &mut Engine, methods: &[Method], fmt: &SheetFormat, base: &Sh
 /// would be used less than that (part area ÷ sheet area), the other formats
 /// with sheets left are filled too and the first reaching it is taken — or, if
 /// none does, the one placing the most part area, when that is more.
-pub fn nest_plan_opt(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], combo_min: Option<f64>) -> NestResult {
+///
+/// `equal` is Do All's "Deal with equal sheets" (SR13): as soon as a sheet is
+/// nested, it is cut again as many times as the parts left fill exactly the
+/// same layout and that format has sheets left (SR3, SR4), and the next sheet
+/// starts from what is left after those.
+pub fn nest_plan_opt(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], combo_min: Option<f64>, equal: bool) -> NestResult {
     let level = spec.nest_level();
     let methods = methods_for(level);
     let mut out = NestResult { tried: methods.len(), ..Default::default() };
@@ -2649,11 +2703,24 @@ pub fn nest_plan_opt(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], comb
                 for p in &placed {
                     left[p.part] = left[p.part].saturating_sub(1);
                 }
-                out.sheets.push(placed);
-                out.formats.push(plan[pick].format.clone());
+                let mut f = plan[pick].format.clone();
                 if let Some(q) = slots[pick].as_mut() {
                     *q -= 1;
                 }
+                if equal {
+                    let more = more_runs(&placed, &left).min(slots[pick].unwrap_or(usize::MAX));
+                    if more > 0 {
+                        for p in &placed {
+                            left[p.part] = left[p.part].saturating_sub(more as u32);
+                        }
+                        if let Some(q) = slots[pick].as_mut() {
+                            *q -= more;
+                        }
+                        f.cycles = (1 + more) as u32;
+                    }
+                }
+                out.sheets.push(placed);
+                out.formats.push(f);
                 let n = methods[mi].name();
                 if !names.contains(&n) {
                     names.push(n);
@@ -2778,7 +2845,7 @@ mod tests {
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         // An L-shaped remnant: 1000 × 1000 with the top-left 600 × 600 gone.
         let l = crate::stock::Outline { outer: vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [600.0, 1000.0], [600.0, 400.0], [0.0, 400.0]], holes: vec![] };
-        let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 };
+        let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "2-16".into(), remnant: true, ..Default::default() };
         let plan = [FormatSlot { format: rem, qty: Some(1) }, FormatSlot { format: SheetFormat::rect(2000.0, 1000.0), qty: None }];
         let res = nest_plan(&parts, &spec, &plan);
         assert_eq!(res.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
@@ -2804,12 +2871,12 @@ mod tests {
         let plan = [FormatSlot { format: big, qty: Some(2) }, FormatSlot { format: small, qty: Some(2) }];
         let plain = nest_plan(&parts, &spec, &plan);
         assert_eq!(plain.formats.iter().map(|f| f.stock_ref.as_str()).collect::<Vec<_>>(), ["BIG"]);
-        let combo = nest_plan_opt(&parts, &spec, &plan, Some(0.5));
+        let combo = nest_plan_opt(&parts, &spec, &plan, Some(0.5), false);
         assert_eq!(combo.formats.iter().map(|f| f.stock_ref.as_str()).collect::<Vec<_>>(), ["SMALL"]);
         assert_eq!(combo.sheets[0].len(), 4);
         // Nothing reaches a 95 % minimum: the format placing more part area wins
         // (here both place all four, so the next in order stays).
-        let strict = nest_plan_opt(&parts, &spec, &plan, Some(0.95));
+        let strict = nest_plan_opt(&parts, &spec, &plan, Some(0.95), false);
         assert_eq!(strict.formats[0].stock_ref, "BIG");
     }
 
@@ -2821,7 +2888,7 @@ mod tests {
         let parts = vec![Part { name: "L".into(), shape: Shape::LBracket, w: 220.0, h: 180.0, qty: 25, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 1, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         let l = crate::stock::Outline { outer: vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [600.0, 1000.0], [600.0, 400.0], [0.0, 400.0]], holes: vec![] };
-        let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "R".into(), remnant: true, made: vec![], made_from: 0 };
+        let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "R".into(), remnant: true, ..Default::default() };
         let plan = [FormatSlot { format: rem, qty: Some(1) }, FormatSlot { format: SheetFormat::rect(2000.0, 1000.0), qty: None }];
         let res = nest_plan(&parts, &spec, &plan);
         assert_eq!(res.sheets.iter().map(|s| s.len()).sum::<usize>(), 25);

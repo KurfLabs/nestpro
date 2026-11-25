@@ -453,7 +453,7 @@ impl App {
             let n = self.result.sheets[si].len();
             let copies = arrange::copies(&self.result.sheets[si], &sel, [0.0, 0.0]);
             qty0 = self.parts.iter().map(|p| p.qty).collect();
-            pattern::put(&mut self.parts, &mut self.result.sheets, si, &copies);
+            pattern::put(&mut self.parts, &mut self.result.sheets, &self.result.formats, si, &copies);
             grab_idx = n + sel.iter().position(|&i| i == grab_idx).unwrap_or(0);
             sel = (n..self.result.sheets[si].len()).collect();
             copied_from = Some(n);
@@ -510,7 +510,7 @@ impl App {
         let g = copies[held];
         let at = at.unwrap_or([g.x + g.w / 2.0, g.y + g.h / 2.0]);
         let names = copies.iter().map(|p| self.parts[p.part].name.clone()).collect();
-        let u = pattern::uses(&self.parts, &self.result.sheets, &copies);
+        let u = pattern::uses(&self.parts, &self.result.sheets, &self.result.formats, si, &copies);
         self.carry = Some(Carry { sheet: si, base: sheet.clone(), limits: self.sheet_limits(), copies, grab_idx: held, grab: [at[0] - g.x, at[1] - g.y], off: [0.0, 0.0], last: None, valid: false, orig: sel, repeat: Some(Repeat { names, ..Default::default() }) });
         self.status = format!("Pattern on the pointer: {}. Click to drop a copy; Esc puts it away.", pattern::label(&self.parts, &u, None));
     }
@@ -520,7 +520,7 @@ impl App {
     pub fn pattern_uses(&self) -> Option<(Vec<pattern::Use>, Option<Over>)> {
         let c = self.carry.as_ref()?;
         let r = c.repeat.as_ref()?;
-        Some((pattern::uses(&self.parts, &self.result.sheets, &c.copies), r.over))
+        Some((pattern::uses(&self.parts, &self.result.sheets, &self.result.formats, c.sheet, &c.copies), r.over))
     }
 
     /// A pattern is on the pointer (the keys for the selection wait).
@@ -607,7 +607,7 @@ impl App {
         let going = c
             .repeat
             .as_ref()
-            .and_then(|r| pattern::pick(&pattern::uses(&self.parts, &self.result.sheets, &c.copies), &c.copies, c.grab_idx, r.over))
+            .and_then(|r| pattern::pick(&pattern::uses(&self.parts, &self.result.sheets, &self.result.formats, c.sheet, &c.copies), &c.copies, c.grab_idx, r.over))
             .filter(|g| !g.is_empty())
             .unwrap_or_else(|| (0..c.copies.len()).collect());
         all.extend(going.iter().map(|&k| c.copies[k]));
@@ -645,7 +645,7 @@ impl App {
         let si = c.sheet;
         let n = self.result.sheets[si].len();
         let pieces = arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off);
-        let extras = pattern::put(&mut self.parts, &mut self.result.sheets, si, &pieces);
+        let extras = pattern::put(&mut self.parts, &mut self.result.sheets, &self.result.formats, si, &pieces);
         self.set_selection((n..self.result.sheets[si].len()).collect());
         self.refresh();
         self.status = self.copied_status(n, extras);
@@ -658,7 +658,7 @@ impl App {
     /// parts has a piece left and `keep` (Shift) isn't held.
     fn pattern_drop(&mut self, mut c: Carry, keep: bool) -> bool {
         let Some(mut rep) = c.repeat.take() else { return false };
-        let u = pattern::uses(&self.parts, &self.result.sheets, &c.copies);
+        let u = pattern::uses(&self.parts, &self.result.sheets, &self.result.formats, c.sheet, &c.copies);
         let Some(pick) = pattern::pick(&u, &c.copies, c.grab_idx, rep.over) else {
             // Short, and not asked yet: the copy waits for the answer.
             rep.asking = true;
@@ -677,7 +677,7 @@ impl App {
         self.checkpoint();
         let si = c.sheet;
         let n = self.result.sheets[si].len();
-        let extras = pattern::put(&mut self.parts, &mut self.result.sheets, si, &pieces);
+        let extras = pattern::put(&mut self.parts, &mut self.result.sheets, &self.result.formats, si, &pieces);
         rep.drops += 1;
         self.set_selection((n..self.result.sheets[si].len()).collect());
         self.refresh();
@@ -686,7 +686,7 @@ impl App {
             what += &format!(", {extras} extra — the order grew");
         }
         what += ")";
-        let u = pattern::uses(&self.parts, &self.result.sheets, &c.copies);
+        let u = pattern::uses(&self.parts, &self.result.sheets, &self.result.formats, c.sheet, &c.copies);
         if u.iter().all(|x| x.left == 0) && !keep {
             self.status = format!("{what}. Every {} is placed — pattern put away (Shift + click keeps it on the pointer).", self.pattern_names(&u));
             return true;
@@ -775,7 +775,7 @@ impl App {
     pub fn pattern_window(&mut self, ctx: &egui::Context) {
         let Some((pos, u)) = self.carry.as_ref().and_then(|c| {
             let r = c.repeat.as_ref().filter(|r| r.asking)?;
-            Some((r.ask_pos, pattern::uses(&self.parts, &self.result.sheets, &c.copies)))
+            Some((r.ask_pos, pattern::uses(&self.parts, &self.result.sheets, &self.result.formats, c.sheet, &c.copies)))
         }) else {
             return;
         };
@@ -828,7 +828,7 @@ impl App {
         let tone = if c.valid { Color32::from_rgb(74, 222, 128) } else { Color32::from_rgb(248, 80, 90) };
         // A pattern short of pieces with "only those left" chosen: the pieces
         // that won't go down are drawn faint (HM20).
-        let going = c.repeat.as_ref().and_then(|r| pattern::pick(&pattern::uses(&self.parts, &self.result.sheets, &c.copies), &c.copies, c.grab_idx, r.over));
+        let going = c.repeat.as_ref().and_then(|r| pattern::pick(&pattern::uses(&self.parts, &self.result.sheets, &self.result.formats, c.sheet, &c.copies), &c.copies, c.grab_idx, r.over));
         for (k, p) in arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off).into_iter().enumerate() {
             let part = &self.parts[p.part];
             let (alpha, stroke) = match &going {

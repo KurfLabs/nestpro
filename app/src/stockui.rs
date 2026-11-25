@@ -193,6 +193,21 @@ impl App {
             self.status = format!("Sheet {reference} is {}; this job is {}.", self.mat_thk(it.material, it.thickness), self.mat_thk(self.spec.material, self.spec.thickness));
             return;
         }
+        // SR4: the sheet needs a stock sheet for every cycle it is cut (a
+        // job's first sheet: one), unless sheets with no stock left are allowed.
+        let k = self.cur_sheet;
+        if !self.cfg.stock.allow_no_stock {
+            let (free, runs) = stockflow::free_for_sheet(&it, &self.held, &self.result.formats, self.result.sheets.len(), k);
+            if free < runs {
+                self.status = if runs > 1 {
+                    format!("Sheet {} is cut {runs} times, but only {free} of {reference} are free for it — lower its cycles first, or add sheets to stock.", k + 1)
+                } else {
+                    format!("{reference} has none left in stock for this job — add sheets to stock, or turn on \"Use sheets with no stock left\".")
+                };
+                self.stockui.note = Some((self.status.clone(), false));
+                return;
+            }
+        }
         self.checkpoint();
         let f = SheetFormat::from_stock(&it);
         let was = (self.spec.w, self.spec.h, self.spec.pick);
@@ -204,7 +219,9 @@ impl App {
             self.empty_sheet_kept = Some(0);
         } else {
             self.result.normalise(&self.spec);
-            self.result.formats[self.cur_sheet] = f;
+            // SR1: another sheet under the same layout is still cut as often.
+            let cycles = self.result.formats[self.cur_sheet].cycles;
+            self.result.formats[self.cur_sheet] = SheetFormat { cycles, ..f };
         }
         let i = self.cur_sheet;
         let misfits = self.result.sheets[i].iter().filter(|p| !self.fits_sheet(p, i)).count();
@@ -256,8 +273,12 @@ impl App {
         };
         let why = if it.material != self.spec.material || (it.thickness - self.spec.thickness).abs() > stock::TOL {
             Some(format!("{reference} is {}; this job is {}.", self.mat_thk(it.material, it.thickness), self.mat_thk(self.spec.material, self.spec.thickness)))
-        } else if it.qty == 0 && !self.cfg.stock.allow_no_stock {
-            Some(format!("None of {reference} is left in stock."))
+        } else if !self.cfg.stock.allow_no_stock && {
+            // SR4: what the job holds counts as free; one for every cycle.
+            let (free, need) = stockflow::free_for_sheet(&it, &self.held, &self.result.formats, self.result.sheets.len(), self.cur_sheet);
+            free < need
+        } {
+            Some(format!("Not enough of {reference} is left in stock for sheet {}.", self.cur_sheet + 1))
         } else {
             None
         };
@@ -340,12 +361,7 @@ impl App {
         let u = self.cfg.nesting.units;
         let job_mat = self.mat_thk(mat, thk);
         // What the open job uses now, and held at its last save.
-        let mut using: BTreeMap<String, i32> = BTreeMap::new();
-        for f in self.result.formats.iter().take(self.result.sheets.len()) {
-            if !f.stock_ref.is_empty() {
-                *using.entry(f.stock_ref.clone()).or_default() += 1;
-            }
-        }
+        let using = stockflow::sheets_used(&self.result.formats, self.result.sheets.len());
         let held = self.held.clone();
         let clock = self.clock.clone();
         egui::Window::new(RichText::new("Sheet stock").size(16.0).strong()).id(egui::Id::unique("sheet_stock")).pivot(egui::Align2::CENTER_TOP).default_pos(crate::ui_parts::dialog_pos(ctx)).open(&mut open).default_size([1080.0, 600.0]).collapsible(false).show(ctx, |ui| {
@@ -387,6 +403,7 @@ impl App {
             let allow_empty = self.cfg.stock.allow_no_stock;
             let refs = self.cfg.stock.with_references;
             let on_cur: &[crate::nest::Placed] = self.result.sheets.get(cur).map_or(&[][..], |v| &v[..]);
+            let (formats, n_sheets) = (&self.result.formats, self.result.sheets.len());
             let spec = &self.spec;
             ui.horizontal_top(|ui| {
                 // Left: the material shelf picks what the list shows.
@@ -606,7 +623,8 @@ impl App {
                     let why = match &selected {
                         None => Some("Pick a sheet or remnant in the list (double-click puts it on straight away).".to_string()),
                         Some(i) if other.is_some() => Some(format!("{} is {}; this job is {job_mat}.", i.reference, other.as_deref().unwrap_or(""))),
-                        Some(i) if i.qty == 0 && !allow_empty => Some("None of it left in stock.".to_string()),
+                        // SR4: what the job holds counts as free; one for every cycle.
+                        Some(i) if !allow_empty && { let (free, need) = stockflow::free_for_sheet(i, &held, formats, n_sheets, cur); free < need } => Some("Not enough of it left in stock for this sheet.".to_string()),
                         _ => None,
                     };
                     let placed_n = on_cur.len();
@@ -853,6 +871,8 @@ pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings, u: crate:
     // Two cards, like Settings: what Nest all takes from stock, and what goes back.
     crate::settings_ui::card(ui, "Automatic nesting (Nest all)", "Which sheets from stock Nest all uses, and in what order.", |ui| {
         ui.checkbox(&mut st.use_stock, "Nest on sheets from stock");
+        // SR13: on whether or not the stock is used.
+        ui.checkbox(&mut st.equal_sheets, "Deal with equal sheets").on_hover_text("When the parts left fill a sheet's layout again, cut that sheet several times (one nesting, its cycles) instead of nesting the next sheet");
         ui.add_enabled_ui(st.use_stock, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Order of sheets");
@@ -1452,6 +1472,35 @@ mod tests {
         a.stockui.open = true;
         ctx.run_pass(egui::RawInput::default(), |c| a.stock_window(c)).textures_delta.clear();
         assert_eq!(a.stockui.shelf, Some(Shelf::Thickness(0, 10.0)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// SR4: a stock sheet put on a nesting needs one free for every time the
+    /// nesting is cut, a job's first sheet one, unless sheets with no stock
+    /// left are allowed.
+    #[test]
+    fn a_stock_sheet_needs_one_free_for_every_cycle() {
+        let (mut a, dir) = app_with_stock("cycles_free");
+        Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("Z", 0, 10.0, 3000.0, 1500.0, 0), true)).unwrap();
+        a.result = Default::default();
+        a.use_stock_item_on_sheet("Z");
+        assert!(a.result.sheets.is_empty() && a.status.contains("none left"), "{}", a.status);
+        a.use_stock_item_on_sheet("1");
+        assert_eq!(a.result.sheets.len(), 1, "{}", a.status);
+        a.result.formats[0].cycles = 3;
+        a.use_stock_item_on_sheet("1");
+        assert!(a.status.contains("cut 3 times, but only 2"), "{}", a.status);
+        a.cfg.stock.allow_no_stock = true;
+        a.result = Default::default();
+        a.use_stock_item_on_sheet("Z");
+        assert_eq!(a.result.sheets.len(), 1, "allowed: {}", a.status);
+        // None on the rack, but the job holds one since its last save: it can
+        // go back on (a double-click goes the same way).
+        a.cfg.stock.allow_no_stock = false;
+        a.result = Default::default();
+        a.held.insert("Z".into(), 1);
+        a.use_stock_default("Z");
+        assert_eq!(a.result.sheets.len(), 1, "held: {}", a.status);
         let _ = std::fs::remove_dir_all(dir);
     }
 

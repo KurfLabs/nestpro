@@ -511,7 +511,7 @@ mod progimport_tests {
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         let plan = crate::cnc::plan(&parts, &sheet, &spec);
         let cut = crate::cutoff::CutLine { pts: vec![[200.0, 0.0], [200.0, 500.0]], kind: crate::cutoff::CutKind::Remnant };
-        let set = crate::blm::sheet_set(1, &parts, &sheet, &spec, &plan, &[cut], &crate::blm::BlmSettings::for_spec(&spec, "LC5", "J-1"));
+        let set = crate::blm::sheet_set(1, &parts, &sheet, &spec, &plan, &[cut], &crate::blm::BlmSettings::for_spec(&spec, "LC5", "J-1"), 1);
         // Through the zip, like the real files.
         let files: Vec<(String, String)> = read_zip(&crate::blm::zip(&set.spf)).unwrap().into_iter().map(|(n, d)| (n, String::from_utf8(d).unwrap())).collect();
         let im = parse_set(&files, Some(&set.xml)).unwrap();

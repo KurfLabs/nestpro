@@ -229,6 +229,7 @@ pub static OPS: &[Op] = &[
     Op { name: "nest", group: "Nesting", kind: Kind::Write, help: "Nest all parts automatically (Do All; replaces the sheets, cut lines and hand-picked cut order). When the sheet stock has sheets or remnants for the job's material and thickness, they are taken in the stock's order (remnants first, then by size or priority; locked ones never), one sheet at a time, each filled by the best method; stock sheets below the minimum efficiency are dropped; with the window's options on, the best sheet combination and the best sheet format are searched within the maximum time (Sheet stock → Options; see stock mode=rules).", args: &[
         a("group", Ty::Bool, "Nest each part group in its own zone (default: the machine's CT1 setting)"), a("level", Ty::Int, "Nesting level 1-5 for this run (kept)"),
         c("stock", &["auto", "only", "off"], "auto (default): the window's Do All options (use the stock, then the job's own sheet when it runs out if that option is on); only: stock sheets only; off: every sheet the job's size"),
+        a("equal_sheets", Ty::Bool, "Deal with equal sheets (default: the shop's Do All option, on unless turned off): a sheet whose layout the parts left fill again is cut several times (one nesting, its cycles) instead of nested again"),
     ] },
     Op { name: "sheet-add", group: "Nesting", kind: Kind::Write, help: "Add an empty sheet to place parts on (Sheets → New): a stock sheet or remnant by reference, a size of its own, or the job's sheet. A whole stock sheet also becomes the job's sheet, as in the window: nest then nests on its size (ST18).", args: &[
         a("ref", Ty::Str, "Stock reference (see stock mode=list)"), a("w", Ty::Num, "Or: length X, mm"), a("h", Ty::Num, "Width Y, mm"),
@@ -242,6 +243,9 @@ pub static OPS: &[Op] = &[
         a("ref", Ty::Str, "add: a stock sheet, remnant or drop by reference (see stock mode=list)"), a("w", Ty::Num, "add: or a size of its own, length X, mm"), a("h", Ty::Num, "add: width Y, mm"),
         a("qty", Ty::Int, "add / qty: how many sheets (default 1 for add); leave out with as_needed=true"), a("as_needed", Ty::Bool, "add / qty: as many as needed instead of a number"),
         a("line", Ty::Int, "remove / qty / move: the line, from 1"), a("to", Ty::Int, "move: the place to move it to, from 1"),
+    ] },
+    Op { name: "sheet-cycles", group: "Nesting", kind: Kind::Write, help: "How many times a nested sheet is cut (its cycles, Sheets → Cycles): one layout run as several identical sheets. Its parts count as nested and its stock sheet as taken that many times over (the stock follows on save or stock-book), and edits to the sheet change every cycle. Raising it is refused beyond what the parts left fill (raise their quantities first) or, for a stock sheet, what the stock has free; lowering gives the parts back. Without cycles it says how many it is cut now and the most it can be.", args: &[
+        r("sheet", Ty::Int, "Sheet number, from 1"), a("cycles", Ty::Int, "How many times to cut it, from 1"),
     ] },
     Op { name: "clear-sheets", group: "Nesting", kind: Kind::Write, help: "Take every part off the sheets.", args: &[] },
     Op { name: "compact", group: "Nesting", kind: Kind::Write, help: "Slide every part on a sheet left, then down, along the real contours, to leave one big remnant.", args: &[SHEET] },
@@ -860,7 +864,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let n = placed_count(&job.sheets, i);
+            let n = placed_count(&job.sheets, &job.formats, i);
             json!({
                 "part": i + 1, "name": p.name, "shape": p.shape.label(), "w": r1(p.bbox().0), "h": r1(p.bbox().1), "qty": p.qty, "nested": n,
                 "missing": (p.qty as usize).saturating_sub(n), "rotate": p.rotate, "mirror": p.rots.mirrored.iter().any(|m| *m), "group": p.group,
@@ -877,12 +881,15 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
             let f = job.format(k);
             let (u, ur, cx) = sheet_usage(&job.parts, s, &job.spec, &f);
             let pl = &plans[k];
-            tot.0 += pl.cut_len;
-            tot.1 += pl.rapid_len;
-            tot.2 += pl.pierces;
-            tot.3 += pl.seconds;
+            // SR1: a sheet cut several times counts each time in the totals;
+            // its own figures are for one sheet (SR18).
+            let runs = f.runs();
+            tot.0 += pl.cut_len * runs as f64;
+            tot.1 += pl.rapid_len * runs as f64;
+            tot.2 += pl.pierces * runs;
+            tot.3 += pl.seconds * runs as f64;
             let mut v = json!({
-                "sheet": k + 1, "parts": s.len(), "usage_pct": r1(u), "usage_to_remnant_pct": r1(ur), "used_up_to_x": r1(cx),
+                "sheet": k + 1, "cycles": runs, "parts": s.len(), "usage_pct": r1(u), "usage_to_remnant_pct": r1(ur), "used_up_to_x": r1(cx),
                 "cut_len_mm": r1(pl.cut_len), "mark_len_mm": r1(pl.mark_len), "rapid_len_mm": r1(pl.rapid_len), "pierces": pl.pierces, "time_s": r1(pl.seconds),
                 "times_s": times_json(&pl.times),
                 "manual_cuts": job.manual_cuts.get(k).map_or(0, |v| v.len()), "cut_lines": job.cuts(k).len(),
@@ -898,13 +905,13 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         })
         .collect();
     let need: u32 = job.parts.iter().map(|p| p.qty).sum();
-    let placed: usize = job.sheets.iter().map(|s| s.len()).sum();
+    let placed: usize = nest::pieces_on(&job.sheets, &job.formats);
     let mut warnings = vec![];
     if job.stale {
         warnings.push("Parts or the sheet changed since the last nest — nest again (or check the sheets).".to_string());
     }
     for (i, p) in job.parts.iter().enumerate() {
-        let n = placed_count(&job.sheets, i);
+        let n = placed_count(&job.sheets, &job.formats, i);
         if (n as u32) < p.qty && !job.sheets.is_empty() {
             let (w, h) = p.bbox();
             let fits = |a: f64, b: f64| a <= job.spec.w - 2.0 * job.spec.margin && b <= job.spec.h - 2.0 * job.spec.margin;
@@ -930,7 +937,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         "job": job.name, "week": job.week, "changed_since_nest": job.stale, "sheet": sheet,
         "machine": { "name": ctx.cfg.machine().name, "output": if ctx.blm.on { "BLM LC5 (Siemens 840D set)" } else if ctx.post.omax { "OMAX waterjet (.omx)" } else { "ISO G-code" } },
         "parts": parts, "sheets": sheets,
-        "totals": { "ordered": need, "nested": placed, "sheets": job.sheets.len(), "cut_len_mm": r1(tot.0), "rapid_len_mm": r1(tot.1), "pierces": tot.2, "time_s": r1(tot.3), "method": job.method },
+        "totals": { "ordered": need, "nested": placed, "sheets": nest::sheets_cut(&job.formats, job.sheets.len()), "nestings": job.sheets.len(), "cut_len_mm": r1(tot.0), "rapid_len_mm": r1(tot.1), "pierces": tot.2, "time_s": r1(tot.3), "method": job.method },
         "warnings": warnings,
         "nest_on": nest_on_json(job, ctx),
         // JS1: the job's own sheets, nested on first.
@@ -1701,6 +1708,13 @@ fn sheet_source(job: &JobFile, ctx: &Ctx, a: &Args, replacing: Option<usize>) ->
             let used = job.formats.iter().take(job.sheets.len()).filter(|f| f.stock_ref == r).count();
             return Err(format!("'{r}' has no more in stock ({} on the rack, the job already uses {used}).", it.qty));
         }
+        // SR4: a sheet cut several times needs a stock sheet for every cycle.
+        if let Some(k) = replacing.filter(|_| !ctx.cfg.stock.allow_no_stock) {
+            let (runs, free) = (job.runs(k), stockflow::free_beyond(it, &job.held, &job.formats, job.sheets.len(), Some(k)));
+            if free < runs as i32 {
+                return Err(format!("Sheet {} is cut {runs} times, but only {free} of '{r}' are free for it — lower its cycles first (sheet-cycles), or add sheets to stock.", k + 1));
+            }
+        }
         return Ok(SheetFormat::from_stock(it));
     }
     match (a.num("w")?, a.num("h")?) {
@@ -1888,7 +1902,7 @@ fn rules_json(st: &crate::stock::StockSettings) -> Value {
         // SD1: the shop's standard drop sizes (mm), set in the window.
         "standard_drops": {"on": st.drops.on, "sizes": st.drops.sizes.iter().map(|z| json!([r1(z[0]), r1(z[1])])).collect::<Vec<_>>(), "keep_odd_when_none_fits": st.drops.keep_odd},
         "best_sheet_format": st.best_format, "best_sheet_combination": st.best_combination, "combination_min_efficiency": st.combination_min,
-        "max_search_seconds": st.max_seconds, "prompt_remnant_refs": st.prompt_remnant_ref,
+        "max_search_seconds": st.max_seconds, "prompt_remnant_refs": st.prompt_remnant_ref, "equal_sheets": st.equal_sheets,
         "criteria": { "min_w": st.criteria.min_length, "max_w": st.criteria.max_length, "min_h": st.criteria.min_width, "max_h": st.criteria.max_width },
     })
 }
@@ -2728,12 +2742,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             // fallback to the job's sheet; off: no stock at all).
             let mode = a.str("stock").unwrap_or_else(|| "auto".into());
             let mut st = ctx.cfg.stock.clone();
+            if let Some(e) = a.bool("equal_sheets")? {
+                st.equal_sheets = e;
+            }
             if mode == "only" {
                 st.use_stock = true;
                 st.fallback_job_size = false;
             }
             let stock = (mode != "off").then(|| stockflow::StockUse { st: &st, ..ctx.stock_use(job) });
-            let r = nest_all(&job.parts, &job.spec, group, stock.as_ref());
+            let r = nest_all(&job.parts, &job.spec, group, stock.as_ref(), st.equal_sheets);
             let grouped = group && nest::part_groups(&job.parts).len() > 1;
             let mut unreachable = stock.as_ref().filter(|_| !grouped).and_then(stockflow::stock_unreachable_note).unwrap_or_default();
             // JS4: a line of the job's sheet list that couldn't be used is said.
@@ -2761,11 +2778,13 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
             }
             let need: u32 = job.parts.iter().map(|p| p.qty).sum();
-            let placed: usize = job.sheets.iter().map(|s| s.len()).sum();
-            let from_stock = job.formats.iter().filter(|f| !f.stock_ref.is_empty()).count();
+            let placed: usize = nest::pieces_on(&job.sheets, &job.formats);
+            // SR1: every sheet counted as often as it is cut.
+            let from_stock: usize = job.formats.iter().filter(|f| !f.stock_ref.is_empty()).map(|f| f.runs()).sum();
             // JS3: sizes of their own from the job's sheet list.
-            let own = job.formats.iter().filter(|f| f.stock_ref.is_empty() && !job.spec.is_size(f.w, f.h)).count();
-            let on_job_sheet = job.sheets.len() - from_stock - own;
+            let own: usize = job.formats.iter().filter(|f| f.stock_ref.is_empty() && !job.spec.is_size(f.w, f.h)).map(|f| f.runs()).sum();
+            let on_job_sheet = nest::sheets_cut(&job.formats, job.sheets.len()) - from_stock - own;
+            let on = sheets_text(&job.formats, job.sheets.len());
             let mut kinds = vec![];
             if from_stock > 0 {
                 kinds.push(format!("{from_stock} from stock"));
@@ -2778,13 +2797,13 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let from = if kinds.is_empty() { String::new() } else { format!(" ({})", kinds.join(", ")) };
             let m = if placed as u32 == need {
-                format!("Nesting done: {placed} parts on {} sheet(s){from} — level {}, best of {} methods.", job.sheets.len(), job.spec.nest_level().name, r.tried)
+                format!("Nesting done: {placed} parts on {on}{from} — level {}, best of {} methods.", job.spec.nest_level().name, r.tried)
             } else if from_stock > 0 && on_job_sheet == 0 {
-                format!("{placed} of {need} parts nested on {} sheet(s){from} — the stock ran out or the rest don't fit its sheets; add sheets to stock, or nest with stock=auto and \"nest on the job's sheet size when stock runs out\" on.", job.sheets.len())
+                format!("{placed} of {need} parts nested on {on}{from} — the stock ran out or the rest don't fit its sheets; add sheets to stock, or nest with stock=auto and \"nest on the job's sheet size when stock runs out\" on.")
             } else {
-                format!("{placed} of {need} parts nested on {} sheet(s){from} — some are larger than the sheet.", job.sheets.len())
+                format!("{placed} of {need} parts nested on {on}{from} — some are larger than the sheet.")
             };
-            let usage: Vec<Value> = job.sheets.iter().enumerate().map(|(k, s)| { let f = job.format(k); json!({"sheet": k + 1, "parts": s.len(), "usage_pct": r1(sheet_usage(&job.parts, s, &job.spec, &f).0), "stock_ref": (!f.stock_ref.is_empty()).then(|| f.stock_ref.clone())}) }).collect();
+            let usage: Vec<Value> = job.sheets.iter().enumerate().map(|(k, s)| { let f = job.format(k); json!({"sheet": k + 1, "cycles": f.runs(), "parts": s.len(), "usage_pct": r1(sheet_usage(&job.parts, s, &job.spec, &f).0), "stock_ref": (!f.stock_ref.is_empty()).then(|| f.stock_ref.clone())}) }).collect();
             let mut o = Outcome::msg(m + &unreachable);
             o.data = json!({ "sheets": usage, "method": job.method });
             Ok(o)
@@ -2814,13 +2833,35 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let picked = picks_job_sheet(job, &f);
             job.normalise_formats();
-            job.formats[s] = f;
+            // SR1: another sheet under the same layout is still cut as often.
+            let cycles = job.formats[s].cycles;
+            job.formats[s] = SheetFormat { cycles, ..f };
             job.sheet_changed(s);
             Ok(Outcome::msg(format!("Sheet {} is now {what}{}.{picked}", s + 1, if had_cut { " — its remnant line was removed, add a new one" } else { "" })))
         }
+        "sheet-cycles" => {
+            let s = sheet_idx(job, &a)?;
+            let u = ctx.stock_use(job);
+            let cap = stockflow::stock_cap(&u.dir, u.st, &job.held, &job.formats, job.sheets.len(), s);
+            let limit = cycles_limit(&job.parts, &job.sheets, &job.formats, s, cap);
+            let data = |job: &JobFile| json!({"sheet": s + 1, "cycles": job.runs(s), "most": limit.most(), "most_by_parts": limit.by_parts, "most_by_stock": limit.by_stock, "sheets": nest::sheets_cut(&job.formats, job.sheets.len())});
+            let Some(n) = a.int("cycles")? else {
+                let mut o = Outcome::msg(format!("Sheet {} is cut {} time(s); it can be cut at most {}.", s + 1, job.runs(s), limit.most()));
+                o.data = data(job);
+                return Ok(o);
+            };
+            if n < 1 {
+                return Err("cycles is 1 or more — to stop cutting a sheet, use sheet-delete.".into());
+            }
+            let n_sheets = job.sheets.len();
+            let m = set_cycles(&mut job.formats, &job.spec, n_sheets, s, n as usize, &limit)?;
+            let mut o = Outcome::msg(m);
+            o.data = data(job);
+            Ok(o)
+        }
         "sheet-delete" => {
             let s = sheet_idx(job, &a)?;
-            let n = job.sheets[s].len();
+            let n = job.sheets[s].len() * job.runs(s);
             job.remove_sheet(s);
             Ok(Outcome::msg(format!("Sheet {} deleted — {n} part(s) are no longer nested.", s + 1)))
         }
@@ -2995,9 +3036,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 },
                 _ => return Err("give both x and y, or neither".into()),
             };
-            let extra = placed_count(&job.sheets, pi) as u32 >= job.parts[pi].qty;
+            // SR20: a sheet cut several times takes a piece for every cycle;
+            // the order grows only by those beyond it.
+            let need = placed_count(&job.sheets, &job.formats, pi) as u32 + job.runs(s) as u32;
+            let extra = need > job.parts[pi].qty;
             if extra {
-                job.parts[pi].qty += 1;
+                job.parts[pi].qty = need;
             }
             job.sheets[s].push(c);
             job.sheet_changed(s);
@@ -3106,7 +3150,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let d = arrange::copy_spot(&job.sheets[s], &sel, &job.spec, &f).ok_or("No free spot on this sheet for a copy.")?;
             let first = job.sheets[s].len() + 1;
             let copies = arrange::copies(&job.sheets[s], &sel, d);
-            let extras = pattern::put(&mut job.parts, &mut job.sheets, s, &copies);
+            let extras = pattern::put(&mut job.parts, &mut job.sheets, &job.formats, s, &copies);
             job.sheet_changed(s);
             let c = job.sheets[s][first - 1];
             let grew = if extras > 0 { format!("; {extras} beyond the order, which grew to match") } else { "; from the pieces still to place".to_string() };
@@ -3125,7 +3169,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 t => t.map(|t| t as u32),
             };
             let pat: Vec<Placed> = sel.iter().map(|&i| job.sheets[s][i]).collect();
-            let u = pattern::uses(&job.parts, &job.sheets, &pat);
+            let u = pattern::uses(&job.parts, &job.sheets, &job.formats, s, &pat);
             let whole = pattern::copies_left(&u);
             // How many copies: as asked, or what the pieces left make — whole
             // copies, or with an answer for a short one, until none is left (HM19, HM20).
@@ -3150,7 +3194,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let first = job.sheets[s].len() + 1;
             let (mut done, mut placed, mut extras, mut full) = (0u32, 0usize, 0u32, false);
             while done < want {
-                let u = pattern::uses(&job.parts, &job.sheets, &pat);
+                let u = pattern::uses(&job.parts, &job.sheets, &job.formats, s, &pat);
                 let pick = pattern::pick(&u, &pat, 0, over).unwrap_or_default();
                 if pick.is_empty() {
                     break;
@@ -3162,14 +3206,18 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 };
                 let pieces = arrange::copies(&job.sheets[s], &sub, d);
                 placed += pieces.len();
-                extras += pattern::put(&mut job.parts, &mut job.sheets, s, &pieces);
+                extras += pattern::put(&mut job.parts, &mut job.sheets, &job.formats, s, &pieces);
                 done += 1;
+            }
+            if done == 0 && !full {
+                // SR20: each placement takes a piece for every cycle of the sheet.
+                return Err(format!("Sheet {} is cut {} times, so each piece placed on it takes {} — the pieces left of {} don't make one. Say extras=true to add the missing pieces to the order, or place them on another sheet.", s + 1, job.runs(s), job.runs(s), names(&sel)));
             }
             if done == 0 {
                 return Err(format!("No free spot on sheet {} for a copy of {}.", s + 1, names(&sel)));
             }
             job.sheet_changed(s);
-            let u = pattern::uses(&job.parts, &job.sheets, &pat);
+            let u = pattern::uses(&job.parts, &job.sheets, &job.formats, s, &pat);
             let left: Vec<String> = u.iter().map(|x| format!("{} {}", x.left, job.parts[x.part].name)).collect();
             let mut msg = format!("Placed {done} cop{} of {} as #{first}–#{} ({placed} piece{}", if done == 1 { "y" } else { "ies" }, names(&sel), job.sheets[s].len(), if placed == 1 { "" } else { "s" });
             if extras > 0 {
@@ -3613,7 +3661,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 return Err(stop_refusal(s + 1, &stops));
             }
             let text = if on.blm.on {
-                let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &on.blm, &job.name));
+                let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &on.blm, &job.name), job.runs(s));
                 // BL39: the same refusal as export.
                 let issues = readback::check_set(&set, &job.parts, &job.sheets[s], &plans[s], job.cuts(s));
                 if !issues.is_empty() {
@@ -3850,6 +3898,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Job/Save job", "gui: every change is saved to the job file"),
     ("Sheets/Previous\nsheet", "view: sheets are named by number"),
     ("Sheets/Next\nsheet", "view: sheets are named by number"),
+    ("Sheets/Sheet\ncycles", "sheet-cycles"),
     ("Sheets/Sheet\nstock", "stock"),
     ("Nest/Sheet\nstock", "stock"),
     ("Nest/Re-nest\nsheet", "renest-sheet"),
@@ -4027,6 +4076,8 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("sheetlistui.rs/⇄", "gui: swaps the typed length and width before adding (sheet-list w= h=)"),
     ("sheetlistui.rs/Clear the list", "sheet-list"),
     ("sheetlistui.rs/As many as needed", "sheet-list"),
+    ("ui_parts.rs/Cycles…", "sheet-cycles"),
+    ("stockui.rs/Deal with equal sheets", "nest"),
     // Settings → Machines → Pick quality by size (CQ9): agents read the rows (`qualities`).
     ("settings_ui.rs/+ Add row", "todo: [TEC-37] machine settings are changed in the app only"),
     ("settings_ui.rs/↑", "todo: [TEC-37] machine settings are changed in the app only"),

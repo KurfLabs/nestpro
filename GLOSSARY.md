@@ -112,6 +112,10 @@ _Avoid_: marquee, rubber band, box select
 A box dragged to the left from open space; it takes everything it touches, even what sticks out of it.
 _Avoid_: capture, lasso, touch select
 
+**Cycles**:
+How many times one nested sheet's layout is cut: a sheet with 2 cycles is two identical sheets cut from one program, shown as `(×2)`. The parts on it count once per cycle.
+_Avoid_: repetitions, sheet quantity, copies (for the count)
+
 **Remnant**:
 A piece of a cut sheet that goes back into the sheet stock to be nested on later. A cut-off line frees it from the rest of the sheet.
 _Avoid_: offcut, leftover (for the stored piece)

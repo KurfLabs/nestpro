@@ -152,7 +152,7 @@ pub fn check(cfg: &AppSettings, k: usize, job: JobRef) -> Result<(), String> {
         for (s, (sheet, plan)) in job.sheets.iter().zip(&plans).enumerate() {
             let spec = job.spec.for_format(&format_at(job.formats, job.spec, s));
             let cuts = job.cuts.get(s).map_or(&[][..], |v| v.as_slice());
-            let set = crate::blm::sheet_set(s + 1, &parts, sheet, &spec, plan, cuts, &blm);
+            let set = crate::blm::sheet_set(s + 1, &parts, sheet, &spec, plan, cuts, &blm, crate::nest::runs_at(job.formats, s));
             let issues = readback::check_set(&set, &parts, sheet, plan, cuts);
             if !issues.is_empty() {
                 return Err(readback::refusal(s + 1, &issues));

@@ -2435,11 +2435,11 @@ mod kerf_plan_tests {
         assert!(sub[..at_profile].contains("G01 G42 X"), "{sub}");
         // Two copies whose leads differ get a subprogram each.
         let set = crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J");
-        let one = crate::blm::sheet_set(1, &parts, &placed, &spec(), &p, &[], &set);
+        let one = crate::blm::sheet_set(1, &parts, &placed, &spec(), &p, &[], &set, 1);
         assert_eq!(one.spf.iter().filter(|f| f.0.contains("70")).count(), 1, "same leads: one subprogram");
         let c2 = p.contours.iter_mut().find(|c| c.part_no == 2).unwrap();
         c2.lead_path[0][0] -= 3.0;
-        let two = crate::blm::sheet_set(1, &parts, &placed, &spec(), &p, &[], &set);
+        let two = crate::blm::sheet_set(1, &parts, &placed, &spec(), &p, &[], &set, 1);
         assert_eq!(two.spf.iter().filter(|f| f.0.contains("70")).count(), 2, "{:?}", two.spf.iter().map(|f| &f.0).collect::<Vec<_>>());
     }
 }

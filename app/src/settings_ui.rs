@@ -1233,7 +1233,7 @@ impl App {
             let text = if self.blm.on {
                 match (self.result.sheets.get(self.cur_sheet), self.plans.get(self.cur_sheet)) {
                     (Some(s), Some(pl)) => {
-                        let set = crate::blm::sheet_set(sheet_no, &self.parts, s, &self.sheet_spec(sheet_no - 1), pl, self.cut_list(), &self.blm_now());
+                        let set = crate::blm::sheet_set(sheet_no, &self.parts, s, &self.sheet_spec(sheet_no - 1), pl, self.cut_list(), &self.blm_now(), self.runs(sheet_no - 1));
                         format!("{}  +  {}.XML\n\n{}", set.spf.iter().map(|f| f.0.clone()).collect::<Vec<_>>().join(", "), set.nest, set.spf[0].1.replace("\r\n", "\n"))
                     }
                     _ => "Nest a job to see its program.".into(),

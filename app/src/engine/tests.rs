@@ -596,7 +596,8 @@ fn a_jobs_own_sheet_list_is_nested_on_first() {
     call(&mut s, "stock", None, json!({"mode": "create", "ref": "THICK", "w": 1000, "h": 500, "thickness": 6, "qty": 2}));
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 30}));
     let job = || jobfile::load(Path::new(jp)).unwrap();
-    let sizes = |j: &JobFile| j.formats.iter().map(|f| (f.w, f.h, f.stock_ref.clone())).collect::<Vec<_>>();
+    // Every sheet as often as it is cut (SR1): equal sheets come out as one cut twice.
+    let sizes = |j: &JobFile| j.formats.iter().flat_map(|f| std::iter::repeat_n((f.w, f.h, f.stock_ref.clone()), f.runs())).collect::<Vec<_>>();
 
     let r = call(&mut s, "sheet-list", None, json!({}));
     assert!(r["message"].as_str().unwrap().contains("is empty"), "{r}");
@@ -623,7 +624,7 @@ fn a_jobs_own_sheet_list_is_nested_on_first() {
     assert_eq!(&f[..4], &[(1000.0, 500.0, "D1".to_string()), (1000.0, 500.0, "D1".into()), (1200.0, 800.0, String::new()), (1200.0, 800.0, String::new())], "{r}");
     assert!(f[4..].iter().all(|x| x.2 == "BIG"), "then the stock: {f:?}");
     assert_eq!(f.iter().filter(|x| x.2 == "D1").count(), 2, "the stock doesn't offer the listed drops again");
-    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+    assert_eq!(crate::nest::pieces_on(&j.sheets, &j.formats), 30);
     assert!(r["message"].as_str().unwrap().contains("of sizes from the job's sheet list"), "{r}");
     check_sheets(&j);
 
@@ -634,7 +635,7 @@ fn a_jobs_own_sheet_list_is_nested_on_first() {
     call(&mut s, "nest", None, json!({}));
     let j = job();
     assert_eq!(&sizes(&j)[..4], &f[..4], "the list's four sheets first, as listed");
-    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+    assert_eq!(crate::nest::pieces_on(&j.sheets, &j.formats), 30);
     s.ctx.cfg.stock = was;
 
     // The list's order is the nesting order.
@@ -647,7 +648,7 @@ fn a_jobs_own_sheet_list_is_nested_on_first() {
     call(&mut s, "nest", None, json!({}));
     let j = job();
     assert!(j.formats.iter().all(|f| (f.w, f.h) == (1200.0, 800.0)), "{:?}", sizes(&j));
-    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+    assert_eq!(crate::nest::pieces_on(&j.sheets, &j.formats), 30);
 
     // Without the stock (stock=off) a stock line can't be read: said, sizes still used.
     call(&mut s, "sheet-list", None, json!({"mode": "qty", "line": 1, "qty": 1}));
@@ -3241,7 +3242,7 @@ fn a_job_file_booked_before_its_save_into_the_library_leaves_the_stock_to_the_re
     window.save_job(&theirs, SaveTo::Read(theirs.library.unwrap())).unwrap();
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 1900, "h": 900, "qty": 2, "name": "DEMO-P2"}));
     call(&mut s, "nest", None, json!({}));
-    assert_eq!(jobfile::load(&jp).unwrap().sheets.len(), 3);
+    assert_eq!(jobfile::load(&jp).unwrap().formats.iter().map(|f| f.runs()).sum::<usize>(), 3, "3 sheets, the 2 equal ones as one cut twice (SR13)");
     let e = err(&mut s, "library", json!({"mode": "save-job"}));
     assert!(e.contains("kim on PROG-1") && e.contains("Nothing was saved"), "{e}");
     // The stock matches the record: 1 sheet out, not 3.
@@ -3313,7 +3314,7 @@ fn an_agents_save_job_books_the_stock_as_the_windows_save_does() {
     // Re-nested on 3 sheets: the save takes the 2 more, not 3 again.
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 1900, "h": 900, "qty": 2, "name": "DEMO-P2"}));
     call(&mut s, "nest", None, json!({}));
-    assert_eq!(jobfile::load(&jp).unwrap().sheets.len(), 3);
+    assert_eq!(jobfile::load(&jp).unwrap().formats.iter().map(|f| f.runs()).sum::<usize>(), 3, "3 sheets, the 2 equal ones as one cut twice (SR13)");
     assert_eq!(in_stock(), 9, "a change to a library job file booked by itself");
     let r = call(&mut s, "library", None, json!({"mode": "save-job"}));
     assert!(r["message"].as_str().unwrap().contains("Stock booked:"), "{r}");
@@ -3443,7 +3444,7 @@ fn an_agents_save_job_that_cannot_write_its_record_fails_and_keeps_its_booking()
     assert_eq!(in_stock(), 9);
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 1900, "h": 900, "qty": 2, "name": "DEMO-P2"}));
     call(&mut s, "nest", None, json!({}));
-    assert_eq!(jobfile::load(&jp).unwrap().sheets.len(), 3);
+    assert_eq!(jobfile::load(&jp).unwrap().formats.iter().map(|f| f.runs()).sum::<usize>(), 3, "3 sheets, the 2 equal ones as one cut twice (SR13)");
 
     // The jobs folder can't be written: the sheets are booked, the record isn't.
     let jobs = window.path(Kind::Job, id).parent().unwrap().to_path_buf();
@@ -13817,4 +13818,175 @@ fn feedback_without_a_library_is_saved_on_this_pc() {
     assert!(l["data"]["notes"].as_array().unwrap().iter().any(|n| n["text"] == json!("The share dropped")), "{l}");
     let _ = std::fs::remove_dir_all(&folder);
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SR13: Nest all cuts a sheet again, as one nesting with cycles, while the
+/// parts left fill the same layout; with equal_sheets=false every sheet is
+/// its own nesting. Totals count every cycle (SR1).
+#[test]
+fn agent_nest_cuts_equal_sheets_as_cycles() {
+    let d = dir("equal_sheets");
+    let jp = d.join("e.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(stock_ctx(&d));
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 100}));
+    let r = call(&mut s, "nest", None, json!({"stock": "off"}));
+    let i = call(&mut s, "info", None, json!({}));
+    let sheets = i["data"]["sheets"].as_array().unwrap();
+    let per = sheets[0]["parts"].as_u64().unwrap();
+    let cycles = sheets[0]["cycles"].as_u64().unwrap();
+    assert!(cycles >= 2, "{i}");
+    assert_eq!(cycles, 100 / per, "the parts left fill sheet 1 {} times", 100 / per);
+    assert_eq!(i["data"]["totals"]["nested"], 100, "{i}");
+    let cut: u64 = sheets.iter().map(|x| x["cycles"].as_u64().unwrap()).sum();
+    assert_eq!(i["data"]["totals"]["sheets"], cut);
+    assert_eq!(i["data"]["totals"]["nestings"], sheets.len());
+    assert!(r["message"].as_str().unwrap().contains(&format!("sheet 1 ×{cycles}")), "{r}");
+    // Off: the same layout comes out as separate sheets.
+    call(&mut s, "nest", None, json!({"stock": "off", "equal_sheets": false}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert!(j.sheets.len() as u64 > sheets.len() as u64);
+    assert!(j.formats.iter().all(|f| f.runs() == 1));
+    assert_eq!(crate::nest::pieces_on(&j.sheets, &j.formats), 100);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SR3, SR7, SR8, SR10, SR20: sheet-cycles cuts a sheet more times only as
+/// far as the parts left fill it, gives the parts back when lowered, and a
+/// part placed on a sheet cut several times takes a piece for every cycle.
+#[test]
+fn agent_sheet_cycles_follow_the_parts_left() {
+    let d = dir("sheet_cycles");
+    let jp = d.join("c.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(stock_ctx(&d));
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 40}));
+    call(&mut s, "nest", None, json!({"stock": "off", "equal_sheets": false}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    let per = j.sheets[0].len() as u64;
+    assert!(per < 40 && j.sheets.len() == 2, "{per} on sheet 1, {} sheets", j.sheets.len());
+    let q = call(&mut s, "sheet-cycles", None, json!({"sheet": 1}));
+    assert_eq!((q["data"]["cycles"].as_u64(), q["data"]["most"].as_u64()), (Some(1), Some(1)), "{q}");
+    let e = err(&mut s, "sheet-cycles", json!({"sheet": 1, "cycles": 2}));
+    assert!(e.contains("at most 1") && e.contains("raise their quantities"), "{e}");
+    assert!(err(&mut s, "sheet-cycles", json!({"sheet": 1, "cycles": 0})).contains("sheet-delete"));
+    // Enough parts for sheet 1 twice more.
+    call(&mut s, "edit-part", None, json!({"part": 1, "qty": 40 + 2 * per}));
+    let r = call(&mut s, "sheet-cycles", None, json!({"sheet": 1, "cycles": 3}));
+    assert_eq!(r["data"]["cycles"], 3, "{r}");
+    let i = call(&mut s, "info", None, json!({}));
+    assert_eq!(i["data"]["totals"]["nested"], 40 + 2 * per, "{i}");
+    assert_eq!(i["data"]["totals"]["sheets"], 4);
+    assert_eq!(i["data"]["parts"][0]["missing"], 0);
+    // A small part ordered once, put on sheet 1, takes one piece for each of
+    // its three cycles: the order grows by the two beyond it.
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 10, "h": 10, "qty": 1}));
+    call(&mut s, "place", None, json!({"sheet": 1, "part": 2}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert_eq!(j.parts[1].qty, 3);
+    assert_eq!(crate::nest::placed_on(&j.sheets, &j.formats, 1), 3);
+    // Lowering gives the parts back.
+    call(&mut s, "sheet-cycles", None, json!({"sheet": 1, "cycles": 1}));
+    let i = call(&mut s, "info", None, json!({}));
+    assert_eq!(i["data"]["totals"]["sheets"], 2, "{i}");
+    assert_eq!(i["data"]["parts"][0]["missing"], 2 * per, "{i}");
+    assert_eq!(i["data"]["parts"][1]["missing"], 2, "{i}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SR2, SR4, SS16: a stock sheet cut several times takes a stock sheet each
+/// time and leaves its remnants that many times; the stock caps the cycles.
+#[test]
+fn agent_sheet_cycles_take_stock_and_store_remnants_per_cycle() {
+    let d = dir("cycles_stock");
+    let jp = d.join("k.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut ctx = stock_ctx(&d);
+    ctx.cfg.stock.fallback_job_size = false;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S", "w": 1000, "h": 500, "thickness": 3, "qty": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 10}));
+    call(&mut s, "nest", None, json!({"stock": "only"}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert_eq!((j.sheets.len(), j.sheets[0].len()), (1, 10));
+    let mx = j.sheets[0].iter().map(|p| p.x + p.w).fold(0.0, f64::max);
+    call(&mut s, "remnant", None, json!({"mode": "line", "x": mx + 20.0}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "qty": 40}));
+    // The stock has 3 sheets: the parts would fill 4.
+    let q = call(&mut s, "sheet-cycles", None, json!({"sheet": 1}));
+    assert_eq!((q["data"]["most_by_parts"].as_u64(), q["data"]["most_by_stock"].as_u64(), q["data"]["most"].as_u64()), (Some(4), Some(3), Some(3)), "{q}");
+    let e = err(&mut s, "sheet-cycles", json!({"sheet": 1, "cycles": 4}));
+    assert!(e.contains("at most 3") && e.contains("stock"), "{e}");
+    call(&mut s, "sheet-cycles", None, json!({"sheet": 1, "cycles": 2}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let list = call(&mut s, "stock", None, json!({"mode": "list", "show_zero": true}));
+    let items = list["data"]["sheets"].as_array().unwrap();
+    let qty = |r: &str| items.iter().find(|x| x["ref"] == r).map(|x| x["qty"].as_i64().unwrap());
+    assert_eq!(qty("S"), Some(1), "two sheets taken: {list}");
+    let rem: Vec<&Value> = items.iter().filter(|x| x["remnant"] == true).collect();
+    assert_eq!(rem.len(), 1, "{list}");
+    assert_eq!(rem[0]["qty"], 2, "one remnant for each cycle: {list}");
+    // Back to once: a sheet and a remnant go back.
+    call(&mut s, "sheet-cycles", None, json!({"sheet": 1, "cycles": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let list = call(&mut s, "stock", None, json!({"mode": "list", "show_zero": true}));
+    let items = list["data"]["sheets"].as_array().unwrap();
+    assert_eq!(items.iter().find(|x| x["ref"] == "S").map(|x| x["qty"].as_i64().unwrap()), Some(2), "{list}");
+    let rem: Vec<&Value> = items.iter().filter(|x| x["remnant"] == true && x["qty"].as_i64().unwrap() > 0).collect();
+    assert_eq!((rem.len(), rem[0]["qty"].as_i64()), (1, Some(1)), "{list}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SS16, ST12 with cycles: a sheet cut twice stores 2 of its remnant; release
+/// takes both back, and once one is used elsewhere a change of cycles keeps
+/// the batch instead of making it again.
+#[test]
+fn remnants_stored_per_cycle_go_back_whole_and_stay_once_used() {
+    let d = dir("cycles_remnants");
+    let jp = d.join("r.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut ctx = stock_ctx(&d);
+    ctx.cfg.stock.fallback_job_size = false;
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S", "w": 1000, "h": 500, "thickness": 3, "qty": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 10}));
+    call(&mut s, "nest", None, json!({"stock": "only"}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "qty": 20}));
+    call(&mut s, "sheet-cycles", None, json!({"sheet": 1, "cycles": 2}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert_eq!((j.sheets.len(), j.runs(0)), (1, 2));
+    let mx = j.sheets[0].iter().map(|p| p.x + p.w).fold(0.0, f64::max);
+    call(&mut s, "remnant", None, json!({"mode": "line", "x": mx + 20.0}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let made = jobfile::load(Path::new(jp)).unwrap().formats[0].made.clone();
+    let qty = |r: &str| crate::stock::Stock::load(&lib).unwrap().get(r).map_or(0, |it| it.qty);
+    assert_eq!((made.len(), qty(&made[0]), qty("S")), (1, 2, 1));
+    call(&mut s, "stock-book", None, json!({"mode": "release"}));
+    assert_eq!((qty(&made[0]), qty("S")), (0, 3), "both remnants and both sheets back");
+    // Booked again, then another job takes one of the two remnants.
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let made = jobfile::load(Path::new(jp)).unwrap().formats[0].made.clone();
+    let lib_w = crate::library::Library::at(&lib, &crate::shared::Who::new("sam", "PROG-1"), &crate::shared::Clock::pc());
+    crate::stock::Stock::update(&lib_w, |st| st.change_qty(&made[0], -1)).unwrap();
+    call(&mut s, "sheet-cycles", None, json!({"sheet": 1, "cycles": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].made, made, "the used batch is kept");
+    assert_eq!(qty(&made[0]), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SR1: the sheets said in a message, a long list of sheets cut several
+/// times cut short.
+#[test]
+fn sheets_text_names_the_sheets_cut_several_times() {
+    let f = |c: u32| SheetFormat { cycles: c, ..SheetFormat::rect(1000.0, 500.0) };
+    assert_eq!(sheets_text(&[f(1), f(1)], 2), "2 sheet(s)");
+    assert_eq!(sheets_text(&[f(2), f(1)], 2), "3 sheets (2 nestings: sheet 1 ×2)");
+    let long: Vec<SheetFormat> = (0..6).map(|_| f(2)).collect();
+    assert_eq!(sheets_text(&long, 6), "12 sheets (6 nestings: sheet 1 ×2, sheet 2 ×2, sheet 3 ×2, 3 more cut several times)");
 }
