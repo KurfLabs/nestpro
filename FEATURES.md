@@ -27,6 +27,8 @@ original (or a real job).
 
 **Reserved:** spec #179 (the same settings on every PC) holds APP-19–APP-25 here, and SG1–SG40 in `app/MECHANICS.md`.
 
+**Reserved:** spec #228 (drawing parts, DRW-1 first slice) holds DRW-13–DRW-24 here (DRW-21–DRW-24 are the spec's own gaps), and DD1–DD60 in `app/MECHANICS.md`.
+
 ## Sheets and stock (STK)
 
 | ID | What | Status | Pri | Notes / source |
@@ -300,7 +302,7 @@ original (or a real job).
 
 | ID | What | Status | Pri | Notes / source |
 |---|---|---|---|---|
-| DRW-1 | Drafting: points, shapes, delete geometry, modify, transform, figures | Missing | ★★ | full list in the app: Drawing → "What's still missing" (`MISSING` in `drawing.rs`) |
+| DRW-1 | Drafting: points, shapes, delete geometry, modify, transform, figures | Missing | ★★ | full list in the app: Drawing → "What's still missing" (`MISSING` in `drawing.rs`). Planned 2026-11-25 (spec #228, ADR 0008): first slice = draw a new part with an AutoCAD-style command line (lines, arcs, circles, polylines, rectangles, slots, polygons, object snaps, Erase/Move/Copy/Rotate/Mirror, undo); Offset, Trim, Extend, Fillet and Chamfer next |
 | DRW-2 | Dimension notes on the part drawing | Missing | ★ | |
 | DRW-3 | Move / edit one text | Missing | ★ | add / delete work |
 | DRW-4 | Utilities: contours, compare parts, lifting | Missing | ★ | |
@@ -311,6 +313,10 @@ original (or a real job).
 | DRW-10 | Which way a selection box is dragged (SW1) follows CAD programs: to the right takes what is wholly inside, to the left what it touches. The original's nesting and drawing screens aren't studied for this, and its new import assistant's notes give the opposite (dragged right = touching, JOB-46). If the shop wants the original's way it could be a setting | Estimate | ★ | MECHANICS SW1–SW5 |
 | DRW-11 | A machined part or sheet shows by its cut contours turning from the plain contour colour to their cut quality's colours (CS8). The original turns them its technology colour (red by default); a fixed "machined" colour (the original's red) could be a setting for shops that want it | Estimate | ★ | MECHANICS CS8, CS7 |
 | DRW-12 | Turning a part's drawing goes in quarter turns only (GR3): Transform → Rotate to any angle and Mirror of the drawing aren't built (DRW-1) | Missing | ★ | MECHANICS GR3 |
+| DRW-21 | Drawing snaps that wait for a later point: a line tangent to two circles, a perpendicular solved once the other end is known; and Tab to step between snaps that are near each other. The first drawing slice snaps tangent and perpendicular from a point already given | Missing | ★ | spec #228 (DRW-1) |
+| DRW-22 | Keeping technology set by hand (a drawn part's own leads, joints, picked starts, hand-set cut order, picked sheet cuts) when its drawing is changed. The first slice asks to remove that technology before the part can be drawn on, and moves nothing onto changed contours | Missing | ★★ | spec #228 (DRW-1), #236 |
+| DRW-23 | Drafting extras not in the first drawing slice: polar and object-snap tracking, input at the cursor, grips, a snap grid, splines, ellipses, hatches, blocks, layers beyond Cut / Mark / Construction, infinite construction lines | Missing | ★ | spec #228 (DRW-1) |
+| DRW-24 | Drawing on an imported part, or one saved before drawing came in: such a part has no objects, so the drawing commands can't open it; keeping an imported drawing's true arcs as objects (so it can be drawn on) isn't built either | Missing | ★★ | spec #228 (DRW-1), ADR 0008 |
 | DRW-7 | Export DXF writes only the cut and marked contours: No cut contours and Bend lines aren't in it (a bending program would want the bend lines) | Missing | ★ | MECHANICS DF1, CS3 |
 
 ## Simulation, reports, machine link (OUT)

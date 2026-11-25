@@ -23,6 +23,20 @@ _Avoid_: scheduler, nester
 A file from the customer or engineering (DXF, DWG…) that a part's geometry is read from. It arrives with no reliable cut or mark information; the programmer adds that.
 _Avoid_: print, CAD file
 
+**Drawn part**:
+A part drawn in the app with the drawing commands rather than imported. It keeps its objects, and its contours are built from them.
+
+**Object**:
+One line, arc, circle or polyline drawn in the app, in a draft or a drawn part, as the drawing commands make and select it ("Select objects"). A drawn part's contours are built from its objects.
+_Avoid_: entity, element, shape
+
+**Draft**:
+A drawing in the app that isn't a part yet, because it doesn't pass the drawing check (an open outline, crossing lines, a hole touching the outline…). It is saved with the job but never nested or cut.
+_Avoid_: sketch, unfinished part
+
+**Construction line**:
+An object drawn only to help place others. It is never part of the part and is never cut or marked.
+
 **Part**:
 One shape to be cut, with its quantity, inside a job.
 _Avoid_: piece
