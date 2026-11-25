@@ -2036,7 +2036,7 @@ Not built: several attributes at once (A786), start corner and direction, and re
 | JX7 | The default name is "New folder" (next to "New job"). |
 
 → `jobtree.rs` + `jobs.rs` Job Explorer:
-- **Open jobs** right-click: New ▸ Folder / Job.
+- **Open jobs** right-click: New ▸ Folder / Job (a job in no folder). Jobs in no folder sit right under Open jobs, after its folders; a job's sheet count shows once it has sheets.
 - **Folder** right-click: New ▸ Folder / Job, Change name, Delete (only when empty). Hovering a folder shows its job count.
 - **Job** right-click: Open, **Add nesting (new sheet)**, Copy, Change name, Delete… (asks first). Hovering a job shows a tooltip: folder, products, pieces, nestings, material, thickness, sheet size. Double-click renames.
 - Names are typed in place: Enter keeps, Esc cancels.
