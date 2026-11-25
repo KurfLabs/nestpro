@@ -239,6 +239,8 @@ impl App {
 
     pub(crate) fn open_job_forced(&mut self, i: usize) {
         let j = self.jobs[i].clone();
+        // JS1: the Add sheets window belongs to the job it was opened for.
+        self.sheet_list_ui.open = false;
         self.cur_job = i;
         self.job_name = j.name;
         self.parts = j.parts;

@@ -678,7 +678,7 @@ mod tests {
     /// SD6, SD7: nothing fits, other shapes, and drops off.
     #[test]
     fn what_cut_off_leftover_does_with_drops() {
-        let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+        let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         let parts = vec![Part { name: "A".into(), shape: crate::nest::Shape::Rectangle, w: 2500.0, h: 1400.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let sheet = vec![Placed { part: 0, x: 5.0, y: 5.0, w: 2500.0, h: 1400.0, turns: 0, mirror: false, spin: Default::default() }];
         let mut st = crate::stock::StockSettings { line: LineSettings { shape: LineShape::VerticalStrip, ..Default::default() }, ..Default::default() };
@@ -707,7 +707,7 @@ mod tests {
     /// shared cut takes a drop under the minimum area, isn't offered.
     #[test]
     fn layouts_that_would_store_odd_pieces_are_left_out() {
-        let spec = |w: f64, h: f64| SheetSpec { w, h, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+        let spec = |w: f64, h: f64| SheetSpec { w, h, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         let k = crate::kerf::kerf_mm(&spec(3000.0, 1500.0));
         // An L: the strip from x 1599.55, the leg from y 900; the leg's
         // 1599.4 wide drop puts its side cut on the strip's line.

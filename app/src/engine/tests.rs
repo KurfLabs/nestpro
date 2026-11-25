@@ -583,6 +583,105 @@ fn a_size_picked_for_the_job_is_what_nest_nests_on() {
 }
 
 #[test]
+fn a_jobs_own_sheet_list_is_nested_on_first() {
+    // JS1–JS4: the job's sheet list (sizes and stock sheets, each with how
+    // many) is filled first, in its order, then the stock and the job's size.
+    let d = dir("sheet_list");
+    let jp = d.join("demo.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(stock_ctx(&d));
+    call(&mut s, "new", Some(jp), json!({"w": 3000, "h": 1500, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "BIG", "w": 3000, "h": 1500, "thickness": 3, "qty": 5}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "D1", "w": 1000, "h": 500, "thickness": 3, "qty": 2}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "THICK", "w": 1000, "h": 500, "thickness": 6, "qty": 2}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 30}));
+    let job = || jobfile::load(Path::new(jp)).unwrap();
+    let sizes = |j: &JobFile| j.formats.iter().map(|f| (f.w, f.h, f.stock_ref.clone())).collect::<Vec<_>>();
+
+    let r = call(&mut s, "sheet-list", None, json!({}));
+    assert!(r["message"].as_str().unwrap().contains("is empty"), "{r}");
+
+    // A stock drop twice, a size of its own; the same size again adds to its line.
+    call(&mut s, "sheet-list", None, json!({"mode": "add", "ref": "D1", "qty": 2}));
+    call(&mut s, "sheet-list", None, json!({"mode": "add", "w": 1200, "h": 800}));
+    let r = call(&mut s, "sheet-list", None, json!({"mode": "add", "w": 1200, "h": 800}));
+    assert!(r["message"].as_str().unwrap().contains("Line 2"), "{r}");
+    let list = job().spec.sheet_list;
+    assert_eq!(list.len(), 2, "{list:?}");
+    assert_eq!((list[0].stock_ref.as_str(), list[0].qty, list[1].qty), ("D1", Some(2), Some(2)));
+
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!(info["data"]["sheet_list"].as_array().unwrap().len(), 2, "{info}");
+    let n = &info["data"]["nest_on"];
+    assert_eq!(n["listed"], 2, "{n}");
+    assert!(n["line"].as_str().unwrap().starts_with("Job's sheet list (2), then stock first"), "{n}");
+
+    // Nest: the two drops, the two 1200 × 800, then the stock's big sheets.
+    let r = call(&mut s, "nest", None, json!({}));
+    let j = job();
+    let f = sizes(&j);
+    assert_eq!(&f[..4], &[(1000.0, 500.0, "D1".to_string()), (1000.0, 500.0, "D1".into()), (1200.0, 800.0, String::new()), (1200.0, 800.0, String::new())], "{r}");
+    assert!(f[4..].iter().all(|x| x.2 == "BIG"), "then the stock: {f:?}");
+    assert_eq!(f.iter().filter(|x| x.2 == "D1").count(), 2, "the stock doesn't offer the listed drops again");
+    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+    assert!(r["message"].as_str().unwrap().contains("of sizes from the job's sheet list"), "{r}");
+    check_sheets(&j);
+
+    // The searches never swap a listed sheet for another, however low its
+    // usage: best combination, best format, minimum efficiency (JS3).
+    let was = s.ctx.cfg.stock.clone();
+    (s.ctx.cfg.stock.best_combination, s.ctx.cfg.stock.combination_min, s.ctx.cfg.stock.best_format, s.ctx.cfg.stock.min_efficiency) = (true, 0.99, true, 0.99);
+    call(&mut s, "nest", None, json!({}));
+    let j = job();
+    assert_eq!(&sizes(&j)[..4], &f[..4], "the list's four sheets first, as listed");
+    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+    s.ctx.cfg.stock = was;
+
+    // The list's order is the nesting order.
+    call(&mut s, "sheet-list", None, json!({"mode": "move", "line": 2, "to": 1}));
+    call(&mut s, "nest", None, json!({}));
+    assert_eq!(sizes(&job())[0], (1200.0, 800.0, String::new()));
+
+    // As many as needed: everything that fits goes on that size.
+    call(&mut s, "sheet-list", None, json!({"mode": "qty", "line": 1, "as_needed": true}));
+    call(&mut s, "nest", None, json!({}));
+    let j = job();
+    assert!(j.formats.iter().all(|f| (f.w, f.h) == (1200.0, 800.0)), "{:?}", sizes(&j));
+    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+
+    // Without the stock (stock=off) a stock line can't be read: said, sizes still used.
+    call(&mut s, "sheet-list", None, json!({"mode": "qty", "line": 1, "qty": 1}));
+    let r = call(&mut s, "nest", None, json!({"stock": "off"}));
+    assert!(r["message"].as_str().unwrap().contains("Line 2 (D1) of the job's sheet list wasn't used"), "{r}");
+    let f = sizes(&job());
+    assert_eq!(f[0], (1200.0, 800.0, String::new()));
+    assert!(f[1..].iter().all(|x| (x.0, x.1, x.2.as_str()) == (3000.0, 1500.0, "")), "then the job's size: {f:?}");
+
+    // Refused: no such sheet, another thickness, too small for the margin, a bad line.
+    assert!(err(&mut s, "sheet-list", json!({"mode": "add", "ref": "NOPE"})).contains("No sheet 'NOPE'"));
+    assert!(err(&mut s, "sheet-list", json!({"mode": "add", "ref": "THICK"})).contains("the job is"));
+    assert!(err(&mut s, "sheet-list", json!({"mode": "add", "w": 8, "h": 8})).contains("edge margin"));
+    assert!(err(&mut s, "sheet-list", json!({"mode": "add", "ref": "D1", "w": 8, "h": 8})).contains("not both"));
+    assert!(err(&mut s, "sheet-list", json!({"mode": "qty", "line": 9, "qty": 2})).contains("from 1 to 2"));
+    assert!(err(&mut s, "sheet-list", json!({"mode": "add", "w": 900, "h": 900, "qty": 0})).contains("1 or more"));
+
+    // A drop gone from stock is left out, and said.
+    call(&mut s, "stock", None, json!({"mode": "remove", "ref": "D1", "qty": 2}));
+    let r = call(&mut s, "nest", None, json!({}));
+    assert!(r["message"].as_str().unwrap().contains("no longer in the sheet stock"), "{r}");
+
+    // Remove, undo brings it back, clear.
+    call(&mut s, "sheet-list", None, json!({"mode": "remove", "line": 2}));
+    assert_eq!(job().spec.sheet_list.len(), 1);
+    call(&mut s, "undo", None, json!({}));
+    assert_eq!(job().spec.sheet_list.len(), 2);
+    call(&mut s, "sheet-list", None, json!({"mode": "clear"}));
+    assert!(job().spec.sheet_list.is_empty());
+    assert_eq!(call(&mut s, "info", None, json!({}))["data"]["nest_on"]["listed"], 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn undoing_a_booked_sheet_renest_brings_its_remnant_back() {
     // RN4, RN6: book → re-nest (its remnant is replaced) → undo.
     let d = dir("renest_book");
@@ -1243,7 +1342,7 @@ fn overlapping_parts_are_reported_and_the_export_warns() {
     let d = dir("overlap");
     let p = Part { name: "Plate".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 3, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let at = |x: f64| Placed { part: 0, x, y: 10.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
-    let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
     let parts = vec![p];
     let clear = vec![at(10.0), at(115.0)];
     assert!(overlapping(&parts, &clear, &spec).is_empty());
@@ -1362,7 +1461,7 @@ fn parts_of_one_file_keep_their_own_names() {
     // must not read as reference DEMO, quantity 2: part data comes from the file name.
     let mut cfg = AppSettings::default();
     cfg.name_format = "[Reference]-[Quantity]".into();
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
     let square = |x: f64| crate::dxf::Piece { layer: "0".into(), pts: vec![[x, 0.0], [x + 10.0, 0.0], [x + 10.0, 10.0], [x, 10.0]], closed: true };
     let part = |x: f64| crate::formats::ReadPart { drawing: crate::dxf::Drawing { pieces: vec![square(x)], ..Default::default() }, meta: Default::default(), mark_layers: vec![] };
     let inc = crate::formats::incoming("DEMO", vec![part(0.0), part(50.0)]);
@@ -1551,7 +1650,7 @@ fn an_agent_saving_into_the_library_under_a_name_another_job_holds_is_refused() 
     let d = dir("unique_job_names");
     let mut s = Session::new(stock_ctx(&d));
     // A programmer saved DEMO-001 frames in folder Acme.
-    let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
     let mut theirs = JobFile::new_job("DEMO-001 frames", spec);
     theirs.week = "Acme".into();
     crate::library::Library::open(&s.ctx.library_dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&theirs, crate::library::SaveTo::New).unwrap();
@@ -1585,7 +1684,7 @@ fn the_library_check_refuses_a_real_library() {
     let mut s = Session::new(Ctx::builtin());
     // A Library with a real job in it.
     let real = d.join("Library");
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
     crate::library::create(&real).unwrap();
     crate::library::Library::open(&real, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&JobFile::new_job("Frames", spec), crate::library::SaveTo::New).unwrap();
     let before = listing(&real);
@@ -1669,7 +1768,7 @@ fn check_folder(s: &mut Session, d: &Path, name: &str) -> PathBuf {
 fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
     let d = dir("check_unsure");
     let mut s = Session::new(Ctx::builtin());
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
     let refused = |s: &mut Session, f: &Path, why: &str| {
         let before = listing(f);
         let e = err(s, "library-check", json!({"folder": f.to_str().unwrap(), "rounds": 1}));
@@ -3832,7 +3931,7 @@ fn an_agent_slides_a_lead_along_its_edge_removes_it_and_adds_one_where_it_wants(
 fn dragging_a_leads_foot_slides_it_along_the_edge_and_snaps_to_corners() {
     // LE10: the Part view's drag, frame by frame.
     let mut parts = vec![Part { name: "P".into(), shape: Shape::PlateHole, w: 200.0, h: 150.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
     let outline = |parts: &[Part]| cnc::plan_part(parts, 0, &spec).contours.into_iter().find(|c| c.contour == 1).unwrap();
     // Swing its lead-in by hand first: sliding keeps that length and angle.
     drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [-6.0, 4.0], false, crate::units::LenUnit::Mm).unwrap();
@@ -3857,7 +3956,7 @@ fn dragging_a_leads_foot_slides_it_along_the_edge_and_snaps_to_corners() {
 fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     // A plate with a hole and no technology of its own: the machine's leads.
     let mut parts = vec![Part { name: "P".into(), shape: Shape::PlateHole, w: 200.0, h: 150.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
     let before = cnc::plan_part(&parts, 0, &spec);
     let hole0 = before.contours.iter().find(|c| c.contour == 0).unwrap().lead_path.clone();
     // Drag the outline's pierce (it starts at the bottom-left corner) out to the left.
@@ -4072,7 +4171,7 @@ fn an_agent_puts_one_holes_lead_on_every_hole_of_the_same_shape() {
 fn dragging_with_all_the_same_contours_moves_every_hole_of_that_shape() {
     // A flange plate with no technology of its own: the machine's leads.
     let mut parts = vec![Part { name: "F".into(), shape: Shape::Flange, w: 300.0, h: 200.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
     assert!(has_same_holes(&parts[0]));
     assert_eq!(same_holes(&parts[0], 0), vec![1, 2, 3]);
     assert!(same_holes(&parts[0], 4).is_empty() && same_holes(&parts[0], 5).is_empty(), "the centre hole and the outline");
@@ -5713,7 +5812,7 @@ fn an_agent_sees_another_pcs_save_at_once() {
     call(&mut s, "new", Some(jp), json!({"w": 3000, "h": 1500, "thickness": 10}));
     let names = |s: &mut Session| call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| format!("{} ({})", e["name"].as_str().unwrap(), e["saved_by"].as_str().unwrap_or("-"))).collect::<Vec<_>>();
     assert!(names(&mut s).is_empty());
-    let mut j = JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() });
+    let mut j = JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] });
     let rec = lib.save_job(&j, crate::library::SaveTo::New).unwrap();
     assert_eq!(names(&mut s), ["DEMO-7 (sam on PROG-1)"]);
     j.parts = vec![crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 4, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];

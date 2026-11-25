@@ -34,7 +34,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 
 | Original | Rebuild | Pri |
 |---|---|---|
-| Sheets: New, Delete (current / subjob / job), Previous/Next/Go to, Change quantity, Change data, Unblock | Part — a stock sheet or remnant on the current sheet (Sheet stock window), previous/next, clear sheets; agents also have New / Change / Delete sheet (`sheet-add`, `sheet-change`, `sheet-delete`) | ★★ |
+| Sheets: New, Delete (current / subjob / job), Previous/Next/Go to, Change quantity, Change data, Unblock | Part — a stock sheet or remnant on the current sheet (Sheet stock window), previous/next, clear sheets; agents also have New / Change / Delete sheet (`sheet-add`, `sheet-change`, `sheet-delete`). A job's own list of sheets to nest on (sizes, stock sheets, remnants, drops, each with how many), added by right-clicking the job in the Nesting Explorer and filled first by Nest all (MECHANICS JS1–JS6; agents: `sheet-list`) | ★★ |
 | Sheet set-up: material, thickness, machine, sheet size, margin and gap | **Have** — the Sheet tab, one grid of named fields; its *Nest on* line says before nesting whether Nest all takes the stock first (with its sheets and remnants for the job) or this size, and why; the size and thickness lists show what's in stock, with counts (agents: `info` → `nest_on`). A size picked in that list, typed, or taken from the Sheet stock window is the one Nest all nests on from then on, the stock's sheets of it first (ST18); *Any size in stock* goes back. Stock from an ERP's inventory missing (STK-20) | ★★ |
 | Nesting: Do All (on selected sheets / filling sheets), Active subjob, One Sheet (redo), Delete | Part — Nest all with 5 levels; **Nest sheet** re-nests the current sheet with only its own parts (RN1, also right-click the sheet in the Nesting Explorer); Do All on selected sheets missing | |
 | **One Window** (nest only inside a window you draw) | Missing | ★★ |
@@ -97,14 +97,14 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Feature | Rebuild | Pri |
 |---|---|---|
 | Headless engine shared by the window, CLI and MCP (`src/engine/`) | Have | |
-| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, leads moved by hand, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 56 operations (`nestpro ops`; `machine-tech` reports the machine-file section for the job; `library-check` is the two-PC test of a shared Library folder; `job-folders` and `part-folders` file Library jobs and parts in folders) | |
+| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, leads moved by hand, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 65 operations (`nestpro ops`; `machine-tech` reports the machine-file section for the job; `library-check` is the two-PC test of a shared Library folder; `job-folders` and `part-folders` file Library jobs and parts in folders) | |
 | Pictures for the agent (sheet/part PNG or SVG, numbered elements) | Have | |
 | Every ribbon command mapped to an operation, test-enforced (`nestpro ops --gui`) | Have | |
 | Window notices when an agent changed the open job file: reloads it, or asks when both changed | Have (`filewatch.rs`, once a second) | |
 | Each open job keeps its own file (Save no longer writes into the previous job's file) | Have | |
 | Lantek import XML (`import-xml`, one job file per material and thickness) and BLM program set back into a job (`import-program`) | Have — same rules as the window (`engine/imports.rs`) | |
 | Lantek database browser for agents | Missing (`todo:` in GUI_MAP; needs a Lantek SQL Server connection, Windows) | ★ |
-| Sheet stock / remnant stock operations | Have — `stock`, `stock-book` (with `refs=` for new remnants' names; changed remnant lines remake unused remnants), `sheet-add`, `sheet-change`, `sheet-delete`; `nest` takes from stock through the window's code, with the best sheet format / combination searches when the window's options are on (`engine/stockflow.rs`, MECHANICS SA1–SA6, BN6–BN8) | |
+| Sheet stock / remnant stock operations | Have — `stock`, `stock-book` (with `refs=` for new remnants' names; changed remnant lines remake unused remnants), `sheet-add`, `sheet-change`, `sheet-delete`, `sheet-list` (the job's own sheets to nest on, JS6); `nest` takes from stock through the window's code, with the best sheet format / combination searches when the window's options are on (`engine/stockflow.rs`, MECHANICS SA1–SA6, BN6–BN8) | |
 | Semi-automatic remnant and rotate/flip remnant sheet for agents | Missing (`todo:` in GUI_MAP) | ★ |
 | True-shape nesting, automatic leads and micro-joints for agents | Have — `nest`, `leads` (default type: the machine's tables), `joints` (`every=`) run the window's code (`nest::nest_plan`, `engine::TechEdit`, `cnc::plan`); the joint size classes are the machine's (FEATURES TEC-9) | |
 

@@ -524,7 +524,7 @@ mod tests {
     }
 
     fn spec() -> crate::nest::SheetSpec {
-        crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: crate::machine::MachineKind::Waterjet, kerf: Default::default(), gas: None, pick: Default::default() }
+        crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: crate::machine::MachineKind::Waterjet, kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] }
     }
 
     fn plan(contours: Vec<Contour>) -> SheetPlan {
