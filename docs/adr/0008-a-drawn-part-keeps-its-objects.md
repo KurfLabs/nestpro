@@ -1,7 +1,8 @@
 # A drawn part keeps its objects; its contours are built from them
 
-Parts can now be drawn in the app, with an AutoCAD-style command line on the Part screen. Today every part
-is kept as point lists: an importer turns each arc into short straight pieces at 0.1 mm, and the
+Parts are to be drawn in the app, with an AutoCAD-style command line on the Part screen (spec #228).
+Today an imported part is kept as point lists: the importer turns each arc into short straight
+pieces (0.1 mm chord error), the built-in shapes make their points from their sizes, and the
 nesting, kerf, leads, joints and posts all work on those points. A drawing tool needs the real
 lines, arcs and circles. Snaps to a tangent or a centre, Offset, Trim and Fillet, and an exact DXF
 all need them, and point lists can't give them back reliably.
@@ -31,7 +32,9 @@ exported as a DXF and imported, and drawing changes no machine program.
 - A drawn part's points are only ever rebuilt from its objects. Turn left and Turn right turn the
   objects and rebuild the points, so the two never drift apart.
 - An older program never saves over a job written by a newer one (UP7), so it can't silently drop
-  the objects.
+  the objects. The exception is a shop that rolls back (UP10, UP25): the shop version then saves
+  over what the rolled-back release wrote. Rolling back past the release that brought drawing turns
+  drawn parts into plain parts (their points kept, their objects gone), and drafts are lost.
 - Importers keep turning arcs into points for now. Editing an imported drawing with the drawing
   commands, and keeping its true arcs, is later work.
 - Exact arcs stop at the contour. Kerf, leads and the posts keep working on points and fitting arcs

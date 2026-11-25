@@ -27,11 +27,11 @@ _Avoid_: print, CAD file
 A part drawn in the app with the drawing commands rather than imported. It keeps its objects, and its contours are built from them.
 
 **Object**:
-One line, arc, circle or polyline in a drawn part, as the drawing commands make and select it ("Select objects"). A contour is built from one or more objects.
+One line, arc, circle or polyline drawn in the app, in a draft or a drawn part, as the drawing commands make and select it ("Select objects"). A drawn part's contours are built from its objects.
 _Avoid_: entity, element, shape
 
 **Draft**:
-A drawing in the app that isn't a part yet, because it has no closed outline or its lines cross. It is saved with the job but never nested or cut.
+A drawing in the app that isn't a part yet, because it doesn't pass the drawing check (an open outline, crossing lines, a hole touching the outline…). It is saved with the job but never nested or cut.
 _Avoid_: sketch, unfinished part
 
 **Construction line**:
