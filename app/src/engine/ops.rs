@@ -3762,7 +3762,8 @@ fn export_machines(ctx: &Ctx, job: &JobFile, a: &Args) -> Result<Outcome, String
         let name = overflow::machine_name(&ctx.cfg, k);
         let base = base_of(k);
         let kind = ctx.cfg.machines.get(k).map(|m| m.kind);
-        let res = trial_guard(ctx, &base, "The programs").and_then(|_| {
+        // UP16: the job folder judged, so a link in it can't lead a trial into the shop.
+        let res = trial_guard(ctx, &base, "The programs").and_then(|_| trial_guard(ctx, d, "The programs")).and_then(|_| {
             // EXP4: the job's process on every machine, the one in use too.
             if kind.is_some_and(|kind| kind != job.spec.machine) {
                 let kind = kind.unwrap_or_default();

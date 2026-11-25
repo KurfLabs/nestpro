@@ -189,7 +189,14 @@ fn job_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm_
             names.insert(n.to_lowercase());
         }
     }
-    let mut out: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.file_name().is_some_and(|n| names.contains(&n.to_string_lossy().to_lowercase()))).collect();
+    let mut out: Vec<PathBuf> = vec![];
+    for e in rd {
+        // A folder only partly read could keep programs back unseen: said.
+        let e = e.map_err(|e| e.to_string())?;
+        if names.contains(&e.file_name().to_string_lossy().to_lowercase()) && e.file_type().map_err(|e| e.to_string())?.is_file() {
+            out.push(e.path());
+        }
+    }
     out.sort();
     Ok(out)
 }
@@ -217,6 +224,9 @@ pub fn earlier_elsewhere(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, wr
                         e.files.push(f);
                     }
                 }
+                if e.unread.is_none() {
+                    e.unread = unread;
+                }
             }
             None => out.push(Earlier { machines: vec![i], dir, files, unread }),
         }
@@ -243,7 +253,6 @@ pub fn remove_earlier(cfg: &AppSettings, list: &[Earlier]) -> String {
         let who = e.machines.iter().map(|&k| machine_name(cfg, k)).collect::<Vec<_>>().join(", ");
         if e.unread.is_some() {
             said.push(format!(" {}", earlier_line(cfg, e)));
-            continue;
         }
         // One already gone counts as removed.
         let failed: Vec<String> = e
@@ -252,6 +261,9 @@ pub fn remove_earlier(cfg: &AppSettings, list: &[Earlier]) -> String {
             .filter(|f| std::fs::remove_file(f).is_err_and(|err| err.kind() != std::io::ErrorKind::NotFound))
             .map(|f| f.file_name().map_or_else(|| f.display().to_string(), |n| n.to_string_lossy().into_owned()))
             .collect();
+        if e.files.is_empty() {
+            continue;
+        }
         if failed.is_empty() {
             said.push(format!(" Removed this job's {} earlier program file(s) from {who}'s folder {}, so they can't be cut there too.", e.files.len(), e.dir.display()));
         } else {

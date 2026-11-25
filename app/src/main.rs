@@ -1625,6 +1625,11 @@ impl App {
                             if self.cfg.active_machine != review_machine {
                                 rebuild = true;
                             }
+                            // Machines changed in Settings would leave the rows behind:
+                            // the review closes; Export CNC shows it again.
+                            if self.setui.open {
+                                close = true;
+                            }
                             ui.end_row();
                             ui.label(RichText::new("Program format").color(th().text_dim));
                             ui.label(self.cfg.machines.get(self.cfg.active_machine).map_or("—", |m| crate::settings_ui::output_name(m.output)));
@@ -2127,8 +2132,8 @@ impl App {
                 said += &format!(" Not written for {name}: it writes into the same folder as another machine here ({}).", dir.display());
                 continue;
             }
-            // UP16: in a trial nothing reaches the shop folder.
-            if let Some(Err(e)) = trial.as_ref().map(|shop| shared::trial_may_write(&base, shop, "The programs")) {
+            // UP16: in a trial nothing reaches the shop folder (its job folder judged).
+            if let Some(Err(e)) = trial.as_ref().map(|shop| shared::trial_may_write(&dir, shop, "The programs")) {
                 said += &format!(" Not written for {name}: {e}");
                 continue;
             }
