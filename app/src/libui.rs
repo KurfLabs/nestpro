@@ -1311,10 +1311,9 @@ impl App {
         // job saved with Save job is found here too.
         let recent: Vec<String> = self.cfg.recent_jobs.clone();
         let mut open_file: Option<std::path::PathBuf> = None;
-        if recent.is_empty() {
-            ui.label(RichText::new("📂 Job files — none yet").color(th().text_dim)).on_hover_text("Jobs you save with Save job, or open from a file, are listed here");
-        } else {
-            egui::CollapsingHeader::new(RichText::new(format!("📂 Recent job files ({})", recent.len())).strong()).id_salt("recent_files_root").default_open(true).show(ui, |ui| {
+        // None yet: no row at all, so an empty list adds nothing to read.
+        if !recent.is_empty() {
+            egui::CollapsingHeader::new(RichText::new(format!("Recent job files ({})", recent.len())).strong()).id_salt("recent_files_root").default_open(true).show(ui, |ui| {
                 for r in &recent {
                     let p = std::path::PathBuf::from(r);
                     let name = p.file_stem().map_or(r.clone(), |n| n.to_string_lossy().to_string());
@@ -1328,10 +1327,12 @@ impl App {
         if let Some(p) = open_file {
             self.open_job_file(&p);
         }
-        ui.add_space(4.0);
+        if !recent.is_empty() {
+            ui.add_space(4.0);
+        }
         // Unreachable, not empty (LB11).
         if let Some(e) = self.libui.error.clone() {
-            ui.label(RichText::new("📚 Saved jobs (Library) — can't be reached").color(th().text_dim));
+            ui.label(RichText::new("Saved jobs — can't be reached").color(th().text_dim));
             ui.add_space(2.0);
             let (again, folder) = unreachable_note(ui, &e);
             if again {
@@ -2395,7 +2396,7 @@ pub(crate) mod libui_tests {
         assert!(!window.contains("No jobs in the Library yet"), "shown as empty:\n{window}");
         let explorer = shown_in_panel(&ctx, |ui| a.library_job_tree(ui));
         assert!(explorer.contains(&said), "Job Explorer:\n{explorer}");
-        assert!(!explorer.contains("Saved jobs (Library) — none yet"), "shown as empty:\n{explorer}");
+        assert!(!explorer.contains("Saved jobs — none yet"), "shown as empty:\n{explorer}");
         let add = shown_in_panel(&ctx, |ui| {
             crate::ui_parts::library_parts_section(&mut a, ui);
         });
@@ -2420,6 +2421,36 @@ pub(crate) mod libui_tests {
         a.lib_retry();
         assert!(a.libui.error.is_none());
         assert!(a.libui.entries.iter().any(|e| e.kind == Kind::Job && e.name == "DEMO-001"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The Job Explorer with one new job and nothing saved yet: the job sits
+    /// straight under Open jobs (no nameless folder row above it), with no
+    /// sheet count, and no empty "Job files" row.
+    #[test]
+    fn a_new_job_sits_straight_under_open_jobs_without_empty_rows() {
+        let d = scratch("explorer_tidy");
+        let dir = d.join("Library");
+        library::create(&dir).unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = dir.display().to_string();
+        a.cfg.recent_jobs.clear();
+        a.cfg.connections.clear();
+        a.jobs.truncate(1);
+        a.jobs[0].week = String::new();
+        a.jobs[0].name = "DEMO-NEW".into();
+        a.cur_job = 0;
+        a.job_name = "DEMO-NEW".into();
+        a.result = Default::default();
+        let ctx = egui::Context::default();
+        let text = shown_in_panel(&ctx, |ui| a.job_tree_body(ui));
+        let lines: Vec<&str> = text.lines().collect();
+        let head = lines.iter().position(|l| *l == "Open jobs (1)").unwrap_or_else(|| panic!("no Open jobs heading:\n{text}"));
+        assert_eq!(lines.get(head + 1), Some(&"DEMO-NEW"), "the job right under Open jobs:\n{text}");
+        for gone in ["this window", "Job files", " sh", "(Library)"] {
+            assert!(!text.contains(gone), "{gone:?} still shown:\n{text}");
+        }
+        assert!(text.contains("Saved jobs — none yet"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

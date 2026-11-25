@@ -246,8 +246,6 @@ impl App {
                 }
             }
             ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
-                ui.painter().rect_stroke(r.shrink(2.0), CornerRadius::same(2), Stroke::new(1.3, th().accent_fg), egui::StrokeKind::Middle);
                 let txt = if i == self.cur_job { RichText::new(name).strong() } else { RichText::new(name) };
                 let row = ui.selectable_label(i == self.cur_job, txt).on_hover_text(&cx.tips[i]);
                 if row.clicked() {
@@ -265,7 +263,7 @@ impl App {
                         *act = Some(Act::AddNesting(i));
                         ui.close();
                     }
-                    if ui.button("💾 Save to library").on_hover_text("Keep this job on disk under Saved jobs (Library)").clicked() {
+                    if ui.button("💾 Save to library").on_hover_text("Keep this job in the Library, under Saved jobs").clicked() {
                         *act = Some(Act::SaveToLib(i));
                         ui.close();
                     }
@@ -279,7 +277,7 @@ impl App {
                         ui.close();
                     }
                     let saved = if i == self.cur_job { self.job_lib_id.is_some() } else { j.lib_id.is_some() };
-                    if ui.add_enabled(saved, egui::Button::new("Close")).on_hover_text("Take it out of Open jobs; it stays in Saved jobs (Library)").on_disabled_hover_text("Save it to the library first — or Delete it").clicked() {
+                    if ui.add_enabled(saved, egui::Button::new("Close")).on_hover_text("Take it out of Open jobs; it stays in Saved jobs").on_disabled_hover_text("Save it to the library first — or Delete it").clicked() {
                         *act = Some(Act::CloseJob(i));
                         ui.close();
                     }
@@ -288,7 +286,10 @@ impl App {
                         ui.close();
                     }
                 });
-                ui.label(RichText::new(format!("{sheets} sh")).size(11.0).color(th().text_dim));
+                // A new job has no sheets yet: nothing to count.
+                if sheets > 0 {
+                    ui.label(RichText::new(format!("{sheets} sh")).size(11.0).color(th().text_dim)).on_hover_text(format!("{sheets} sheet(s) nested"));
+                }
                 let saved = if i == self.cur_job { self.job_lib_id.is_some() } else { j.lib_id.is_some() };
                 if saved {
                     ui.label(RichText::new("✔").size(11.0).color(th().accent_fg)).on_hover_text("Saved in the library");
@@ -327,10 +328,13 @@ impl App {
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             // The jobs open right now (examples, new, opened from files or the library).
-            let root = egui::CollapsingHeader::new(RichText::new(format!("Open jobs ({}) — this window", self.jobs.len())).strong()).id_salt("jobs_root").default_open(true).show(ui, |ui| {
-                for (top, kids) in &tops {
+            let root = egui::CollapsingHeader::new(RichText::new(format!("Open jobs ({})", self.jobs.len())).strong()).id_salt("jobs_root").default_open(true).show(ui, |ui| {
+                // Named folders first, then the jobs in no folder, straight
+                // under Open jobs (no nameless folder row).
+                for (top, kids) in tops.iter().filter(|t| !t.0.is_empty()) {
                     self.open_jobs_folder(ui, top, kids, &cx, &mut act);
                 }
+                self.open_jobs_rows(ui, "", &cx, &mut act);
             });
             root.header_response.on_hover_text("Open jobs: the jobs loaded in this window now (examples, new jobs, opened files and programs, jobs opened from the library). ✔ = saved in the library; others are lost when the app closes unless you Save job or Save to library.\nRight-click: New ▸ Folder / Job").context_menu(|ui| {
                 ui.menu_button("New", |ui| {
@@ -339,7 +343,8 @@ impl App {
                         ui.close();
                     }
                     if ui.button("Job").clicked() {
-                        act = Some(Act::NewJob(weeks.first().cloned().unwrap_or_else(|| "W01".into())));
+                        // Open jobs' own New ▸ Job: a job in no folder, right under it.
+                        act = Some(Act::NewJob(String::new()));
                         ui.close();
                     }
                 });
@@ -419,11 +424,11 @@ impl App {
         let mut connect = false;
         let mut settings = false;
         let mut show: Option<String> = None;
-        let title = format!("🗄 {} (Lantek)", conn.database);
+        let title = format!("{} database", conn.database);
         let needle = self.job_search.to_lowercase();
         if self.dbb.jobs.rows.is_empty() {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&title).color(th().text_dim));
+                ui.label(RichText::new(&title).color(th().text_dim)).on_hover_text(format!("The jobs in {} on {}", conn.database, conn.server));
                 if loading {
                     ui.spinner();
                 } else {
@@ -447,6 +452,7 @@ impl App {
         }
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
+            let server_tip = format!("The jobs in {} on {}", conn.database, conn.server);
             egui::CollapsingHeader::new(RichText::new(title).strong()).id_salt("db_jobs_root").default_open(true).show(ui, |ui| {
                 let t = &self.dbb.jobs;
                 if t.rows.is_empty() {
@@ -473,8 +479,6 @@ impl App {
                     let job = r.first().cloned().unwrap_or_default();
                     let name = r.get(1).cloned().unwrap_or_default();
                     ui.horizontal(|ui| {
-                        let (b, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::hover());
-                        ui.painter().rect_stroke(b.shrink(2.0), CornerRadius::same(2), Stroke::new(1.3, th().text_dim), egui::StrokeKind::Middle);
                         let label = if name.is_empty() || name == job { job.clone() } else { format!("{job} {name}") };
                         if ui.selectable_label(false, crate::dbquery::cell(&label)).on_hover_text("Open in the Database window").clicked() {
                             *show = Some(job.clone());
@@ -519,7 +523,9 @@ impl App {
                 for &j in &tree.loose {
                     row(ui, j, &mut show);
                 }
-            });
+            })
+            .header_response
+            .on_hover_text(server_tip);
         });
         if connect {
             if self.db_ready() {

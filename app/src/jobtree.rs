@@ -305,7 +305,7 @@ impl App {
         let next = if self.cur_job == i { i.min(self.jobs.len() - 1) } else if self.cur_job > i { self.cur_job - 1 } else { self.cur_job };
         self.cur_job = usize::MAX;
         self.open_job_forced(next);
-        self.status = format!("Closed {name} — it stays in Saved jobs (Library).");
+        self.status = format!("Closed {name} — it stays in Saved jobs in the Library.");
     }
 
     /// Add nesting: the job opens in the Nesting module on a new, empty sheet

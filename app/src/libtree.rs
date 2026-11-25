@@ -256,9 +256,9 @@ impl App {
     pub(crate) fn library_folder_tree(&mut self, ui: &mut egui::Ui, jobs: &[Entry], needle: &str) -> Option<u64> {
         let lib_tip = format!("Saved jobs: kept in the Library ({}), the same on every PC that shares it. Click one to open it (it joins Open jobs).", self.library_dir().display());
         let look = TreeLook {
-            title: format!("📚 Saved jobs (Library) ({})", jobs.len()),
+            title: format!("Saved jobs ({})", jobs.len()),
             tip: format!("{lib_tip}\nRight-click: New ▸ Folder, Paste, Refresh"),
-            empty: "📚 Saved jobs (Library) — none yet".into(),
+            empty: "Saved jobs — none yet".into(),
             empty_tip: format!("Jobs saved in {}.\nRight-click an open job → Save to library (or Jobs → Save to library) to keep it here; right-click here for New ▸ Folder.", self.library_dir().display()),
             salt: "lib_jobs_root",
         };
@@ -270,7 +270,9 @@ impl App {
         let notes: std::collections::BTreeMap<u64, String> = self.inuse.others.keys().filter_map(|&id| self.in_use_note(id).map(|n| (id, n))).collect();
         let job_row = move |ui: &mut egui::Ui, e: &Entry, path: Option<&str>, act: &mut Option<TreeAct>| {
             let open_now = open_ids.contains(&e.id);
-            let mut label = format!("{}  ·  {} sh{}", e.name, e.count_b, if open_now { "  · open" } else { "" });
+            // A job with no sheets yet: no count, as in Open jobs.
+            let sheets = if e.count_b > 0 { format!("  ·  {} sh", e.count_b) } else { String::new() };
+            let mut label = format!("{}{sheets}{}", e.name, if open_now { "  · open" } else { "" });
             if let Some(p) = path.filter(|p| !p.is_empty()) {
                 label = format!("{label}  ·  {p}");
             }
