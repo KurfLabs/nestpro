@@ -9346,6 +9346,9 @@ fn an_agent_exports_the_same_sheets_for_a_second_machine_into_its_own_folder() {
     assert!(why(2).contains("part gap 800 mm") && why(2).contains("nest the job for it"), "{e}");
     assert!(why(3).contains("no table for Mild steel 3 mm"), "{e}");
     assert!(why(4).contains("no technology file of its own"), "{e}");
+    // A machine's own programs folder that can't be reached isn't taken as
+    // empty: it is named, to be checked by hand.
+    assert!(m.contains("Demo laser 7's folder") && m.contains("can't be reached"), "{m}");
     for n in ["m3", "m5", "m6", "m7"] {
         assert!(!job_in(n).exists(), "{n}: {e}");
     }

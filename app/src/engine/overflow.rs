@@ -102,6 +102,9 @@ fn fit(cfg: &AppSettings, k: usize, job: JobRef, on: &CallMachine) -> Result<(Ve
     if !own {
         return Err("no technology file of its own was found (a .CT1 beside its post files; the BLM post's in the Lantek folder is the LC5's), so its lead-ins, micro-joints and part gap aren't known".into());
     }
+    if t.file.sections.is_empty() && t.file.globals.is_empty() {
+        return Err("its technology file is empty".into());
+    }
     if !t.file.sections.is_empty() && t.applied().is_none() {
         let gas = job.spec.gas.map_or(String::new(), |g| format!(" with {}", g.name()));
         return Err(format!("its technology file has no table for {} {} mm{gas}", material::name_or(job.spec.material, "?"), job.spec.thickness));
@@ -242,9 +245,16 @@ pub fn earlier_elsewhere(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, wr
         let blm = blm_for(spec, &blm_base(m), job_name);
         let post = load_post(m);
         let (files, mut unread) = job_programs(&dir, job_name, &post, &blm.job);
-        // Its program names come from its post: one that can't be read
-        // leaves them unknown (EXP2).
-        if !post.missing.is_empty() && unread.is_none() {
+        let base = programs_base(cfg, i);
+        if unread.is_none() && !dir.exists() {
+            // No job folder: none of its programs, unless its own programs
+            // folder can't be reached (a control switched off, a share offline).
+            if !m.programs_dir.trim().is_empty() && !base.is_dir() {
+                unread = Some(format!("its programs folder {} can't be reached", base.display()));
+            }
+        } else if unread.is_none() && !post.missing.is_empty() {
+            // Its program names come from its post: one that can't be read
+            // leaves them unknown (EXP2).
             unread = Some(format!("its post file {} can't be read, so the names of its programs aren't known", post.missing.join(", ")));
         }
         // Machines with no folder of their own share the export folder.

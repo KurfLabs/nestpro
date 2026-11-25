@@ -3665,6 +3665,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             };
             let base = a.str("dir").map(PathBuf::from).unwrap_or_else(|| super::overflow::programs_base(&ctx.cfg, k));
             trial_guard(ctx, &base, "The programs")?;
+            // EXP6: with nothing nested, export removes this job's programs
+            // (EXP1); the other machines' folders lose theirs too.
+            if job.sheets.is_empty() && a.str("dir").is_none() {
+                let gone = remove_earlier_from(ctx, job, &[]);
+                return export_one(ctx, job, named.as_deref(), &base).map(|_| Outcome::msg("")).map_err(|e| format!("{e}{gone}"));
+            }
             let (ex, blm, note) = export_one(ctx, job, named.as_deref(), &base)?;
             // GS16: the material, thickness and gas they're for.
             let mut msg = format!("{}{note}", export_note(&ex, job.sheets.len(), &job.spec, &blm, crate::units::LenUnit::Mm));

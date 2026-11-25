@@ -2129,8 +2129,15 @@ impl App {
             }
         };
         // EXP4: the machines ticked are tried even when this one failed.
-        let lines = if n > 0 { self.export_also(base.join(engine::safe_name(&self.job_name)), wrote, also) } else { vec![] };
-        self.status = lines.iter().fold(status, |s, l| format!("{s} {}", l.0));
+        let (mut lines, first) = if n > 0 { self.export_also(base.join(engine::safe_name(&self.job_name)), wrote, also) } else { (vec![], None) };
+        self.status = lines.iter().fold(status.clone(), |s, l| format!("{s} {}", l.0));
+        // A machine written while this one's export stopped still gets the
+        // card, with this one's reason first.
+        if let (false, Some((dir, files, warning))) = (wrote, first) {
+            let what = engine::programs_written(n, &self.spec, &self.blm, self.unit());
+            self.last_export = Some((dir, files, warning, what));
+            lines.insert(0, (format!("Not written for {}: {status}", engine::overflow::machine_name(&self.cfg, self.cfg.active_machine)), false));
+        }
         self.export_also_lines = lines;
     }
 
@@ -2138,11 +2145,15 @@ impl App {
     /// it went), the same sheets for each of `also`, then, when any machine
     /// was written, this job's programs left in the other machines' folders
     /// removed. What happened, a line each (true = as asked).
-    fn export_also(&self, here: PathBuf, wrote: bool, also: &[usize]) -> Vec<(String, bool)> {
+    /// With the first other machine written: its folder, file names and warning.
+    #[allow(clippy::type_complexity)]
+    fn export_also(&self, here: PathBuf, wrote: bool, also: &[usize]) -> (Vec<(String, bool)>, Option<(PathBuf, Vec<String>, Option<String>)>) {
         use engine::overflow;
         let mut said: Vec<(String, bool)> = vec![];
-        // The machine in use's folder is never cleaned here: export did that.
-        let mut written = vec![here];
+        let mut first = None;
+        // The machine in use's folder is cleaned here only when its export
+        // stopped (a post file it can't read is said, EXP2): export did the rest.
+        let mut written = if wrote { vec![here] } else { vec![] };
         let mut names = if wrote { vec![overflow::machine_name(&self.cfg, self.cfg.active_machine)] } else { vec![] };
         let trial = self.versions().trial_of;
         let n = self.result.sheets.len();
@@ -2163,6 +2174,10 @@ impl App {
             match overflow::write(&self.cfg, k, self.job_ref(), &base, &marks, self.cfg.stock.line.edge_offset) {
                 Ok((ex, blm)) => {
                     said.push((format!("{name}: {}", engine::export_note(&ex, n, &self.spec, &blm, self.unit())), true));
+                    if first.is_none() {
+                        let files = ex.files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().to_string())).collect();
+                        first = Some((ex.dir.clone(), files, ex.warning.clone()));
+                    }
                     written.push(ex.dir);
                     names.push(name);
                 }
@@ -2174,7 +2189,7 @@ impl App {
             said.push((once.trim().to_string(), false));
         }
         if names.is_empty() {
-            return said;
+            return (said, first);
         }
         let earlier: Vec<_> = overflow::earlier_elsewhere(&self.cfg, &self.job_name, &self.spec, &written)
             .into_iter()
@@ -2185,7 +2200,7 @@ impl App {
             let ok = earlier.iter().all(|e| e.unread.is_none()) && !gone.contains("couldn't");
             said.push((gone.trim().to_string(), ok));
         }
-        said
+        (said, first)
     }
 
     pub fn run_nesting(&mut self) {
@@ -4558,6 +4573,10 @@ mod tests {
         };
         let waterjet = settings::Machine { name: "Demo waterjet".into(), kind: crate::machine::MachineKind::Waterjet, output: settings::Output::Omax, programs_dir: folder("m4"), ..Default::default() };
         a.cfg.machines = vec![m("Demo laser 1", folder("m1")), m("Demo laser 2", folder("m2")), m("Demo laser 3", String::new()), waterjet];
+        // The controls' folders are there; one that isn't would be said (EXP6).
+        for n in ["m1", "m2", "m4"] {
+            std::fs::create_dir_all(d.join(n)).unwrap();
+        }
         a.cfg.active_machine = 0;
         a.job_name = "DEMO-001".into();
         a.parts = vec![Part { name: "A".into(), shape: Shape::Rectangle, w: 300.0, h: 200.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
