@@ -487,11 +487,6 @@ impl Ctx {
     pub fn stock_use<'a>(&'a self, job: &'a JobFile) -> stockflow::StockUse<'a> {
         stockflow::StockUse { dir: self.library_dir.clone(), st: &self.cfg.stock, held: &job.held, exclude: job.formats.iter().flat_map(|f| f.made.iter().cloned()).collect() }
     }
-
-    pub fn export_dir(&self) -> PathBuf {
-        // EXP3: the machine in use's own programs folder, else the export folder.
-        overflow::programs_base(&self.cfg, self.cfg.active_machine)
-    }
 }
 
 // ---------------------------------------------------------------------------

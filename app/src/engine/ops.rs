@@ -3761,8 +3761,13 @@ fn export_machines(ctx: &Ctx, job: &JobFile, a: &Args) -> Result<Outcome, String
     for (&k, d) in ks.iter().zip(&dirs) {
         let name = overflow::machine_name(&ctx.cfg, k);
         let base = base_of(k);
+        let kind = ctx.cfg.machines.get(k).map(|m| m.kind);
         let res = trial_guard(ctx, &base, "The programs").and_then(|_| {
-            if k == ctx.cfg.active_machine {
+            // EXP4: the job's process on every machine, the one in use too.
+            if kind.is_some_and(|kind| kind != job.spec.machine) {
+                let kind = kind.unwrap_or_default();
+                Err(format!("it is a {} machine and this job is set for {}: the same nest can't go to another kind of machine yet (FEATURES MAC-109)", kind.process().to_lowercase(), job.spec.machine.process().to_lowercase()))
+            } else if k == ctx.cfg.active_machine {
                 export_one(ctx, job, None, &base).map(|(ex, blm, _)| (ex, blm))
             } else {
                 overflow::write(&ctx.cfg, k, overflow::JobRef::of(job), &base, &marks, ctx.cfg.stock.line.edge_offset)

@@ -1688,8 +1688,7 @@ impl App {
                         }
                         // EXP6: said before, so nobody is surprised a program went.
                         for e in &earlier {
-                            let who = e.machines.iter().map(|&k| engine::overflow::machine_name(&self.cfg, k)).collect::<Vec<_>>().join(", ");
-                            ui.add(egui::Label::new(RichText::new(format!("⚠ {who}'s folder has {} program file(s) of this job from an earlier export — they will be removed, so no sheet is cut on two machines.", e.files.len())).size(12.5).color(th().warn_fg)).wrap());
+                            ui.add(egui::Label::new(RichText::new(format!("⚠ {}", engine::overflow::earlier_line(&self.cfg, e))).size(12.5).color(th().warn_fg)).wrap());
                         }
                         let ticked: Vec<usize> = also.iter().filter(|r| r.ticked).map(|r| r.machine).collect();
                         if !problems.is_empty() {
@@ -1733,8 +1732,15 @@ impl App {
                                     close = true;
                                 }
                             }
-                            if ui.button("Change folder…").on_hover_text("Settings → Folders").clicked() {
-                                self.open_settings(settings_ui::Section::Folders);
+                            // EXP3: the machine's own programs folder, when it has one.
+                            let own = self.cfg.machines.get(self.cfg.active_machine).is_some_and(|m| !m.programs_dir.trim().is_empty());
+                            if ui.button("Change folder…").on_hover_text(if own { "Settings → Machines: this machine's programs folder" } else { "Settings → Folders" }).clicked() {
+                                if own {
+                                    self.setui.sel_machine = self.cfg.active_machine;
+                                    self.open_settings(settings_ui::Section::Machines);
+                                } else {
+                                    self.open_settings(settings_ui::Section::Folders);
+                                }
                                 close = true;
                             }
                             if ui.button("Cancel").clicked() {
@@ -1801,10 +1807,21 @@ impl App {
             self.pending = None;
             self.tech_all_box = false;
         } else if rebuild {
+            // The machine picked, its technology in use, before the review is built again.
+            self.apply_settings(false);
             self.export_checked();
         } else if let (Some((i, on)), Some(Pending::ExportReview { also, .. })) = (flip, self.pending.as_mut()) {
             if let Some(r) = also.get_mut(i) {
                 r.ticked = on && r.ready.is_ok();
+            }
+            // EXP4: two machines can't write into one folder: ticking one
+            // unticks another that shares it.
+            if let Some(dir) = also.get(i).filter(|r| r.ticked).map(|r| r.dir.clone()) {
+                for (j, r) in also.iter_mut().enumerate() {
+                    if j != i && engine::overflow::same_folder(&r.dir, &dir) {
+                        r.ticked = false;
+                    }
+                }
             }
             self.review_earlier();
         }
@@ -3363,7 +3380,7 @@ pub fn open_folder(dir: &std::path::Path) {
 pub fn export_tip(app: &App) -> String {
     let n = app.result.sheets.len();
     let what = if app.blm.on { "BLM LC5 program set" } else { "CNC program" };
-    format!("Writes a {what} for each of the {n} sheet(s), plus a parts report, to\n{}\n(Settings → Folders to change it).", app.export_dir().display())
+    format!("Writes a {what} for each of the {n} sheet(s), plus a parts report, to\n{}\n(Settings → Folders, or the machine's own programs folder in Settings → Machines, to change it).", app.export_dir().display())
 }
 
 fn main() -> eframe::Result {
@@ -4489,7 +4506,14 @@ mod tests {
         let folder = |n: &str| d.join(n).to_string_lossy().into_owned();
         a.cfg.lantek_dir = folder("Lantek");
         a.cfg.export_dir = folder("shared");
-        let m = |name: &str, dir: String| settings::Machine { name: name.into(), programs_dir: dir, ..Default::default() };
+        // Each laser on a post of its own with its technology file beside it.
+        std::fs::create_dir_all(d.join("posts")).unwrap();
+        let m = |name: &str, dir: String| {
+            let post = d.join("posts").join(format!("{}.CFF", name.replace(' ', "_")));
+            std::fs::write(&post, "").unwrap();
+            std::fs::write(post.with_extension("CT1"), "# Demo laser\nB056 1.0\n").unwrap();
+            settings::Machine { name: name.into(), programs_dir: dir, post_lib: post.to_string_lossy().into_owned(), ..Default::default() }
+        };
         let waterjet = settings::Machine { name: "Demo waterjet".into(), kind: crate::machine::MachineKind::Waterjet, output: settings::Output::Omax, programs_dir: folder("m4"), ..Default::default() };
         a.cfg.machines = vec![m("Demo laser 1", folder("m1")), m("Demo laser 2", folder("m2")), m("Demo laser 3", String::new()), waterjet];
         a.cfg.active_machine = 0;

@@ -9298,7 +9298,7 @@ fn an_agent_exports_the_same_sheets_for_a_second_machine_into_its_own_folder() {
     // Machine 5 has its own technology file: a part gap far wider than the
     // squares are apart. Machine 6's has a table for stainless steel only.
     std::fs::create_dir_all(d.join("posts")).unwrap();
-    for (n, ct1) in [("WIDE", "# Demo wide\nB056 800\n"), ("STAINLESS", "# Demo stainless\nZ000 \"##MATEXP0100##\"\nZ001 0.4\nZ002 20.1\nZ006 9\nZ999 0\n")] {
+    for (n, ct1) in [("L2", "# Demo laser 2\nB056 6.0\n"), ("WIDE", "# Demo wide\nB056 800\n"), ("STAINLESS", "# Demo stainless\nZ000 \"##MATEXP0100##\"\nZ001 0.4\nZ002 20.1\nZ006 9\nZ999 0\n")] {
         std::fs::write(d.join("posts").join(format!("{n}.CFF")), "").unwrap();
         std::fs::write(d.join("posts").join(format!("{n}.CT1")), ct1).unwrap();
     }
@@ -9310,9 +9310,11 @@ fn an_agent_exports_the_same_sheets_for_a_second_machine_into_its_own_folder() {
         mach("Demo laser", Output::Iso, MachineKind::Laser, "m1"),
         mach("Demo LC5", Output::BlmSiemens, MachineKind::Laser, "m2"),
         mach("Demo waterjet", Output::Omax, MachineKind::Waterjet, "m3"),
-        mach("Demo laser 2", Output::Iso, MachineKind::Laser, ""),
+        with_post(mach("Demo laser 2", Output::Iso, MachineKind::Laser, ""), "L2"),
         with_post(mach("Demo wide", Output::Iso, MachineKind::Laser, "m5"), "WIDE"),
         with_post(mach("Demo stainless", Output::Iso, MachineKind::Laser, "m6"), "STAINLESS"),
+        // No technology file of its own: the LC5's in the Lantek folder isn't its.
+        mach("Demo laser 7", Output::Iso, MachineKind::Laser, "m7"),
     ];
     let mut cfg = shop_settings(&d.join("Lantek"), "# Demo laser\nB056 6.0\n", machines);
     cfg.export_dir = folder("shared");
@@ -9336,14 +9338,15 @@ fn an_agent_exports_the_same_sheets_for_a_second_machine_into_its_own_folder() {
     // A waterjet, a part gap the nest doesn't keep, no table for the material:
     // each says why and gets nothing; the laser is still written, and the
     // LC5's programs from the export before go, so no sheet is cut twice.
-    let e = call(&mut s, "export", None, json!({"machines": [1, 3, 5, 6]}));
+    let e = call(&mut s, "export", None, json!({"machines": [1, 3, 5, 6, 7]}));
     let m = e["message"].as_str().unwrap();
-    assert!(m.contains("Written for 1 of 4") && m.contains("NOT written for Demo waterjet"), "{m}");
+    assert!(m.contains("Written for 1 of 5") && m.contains("NOT written for Demo waterjet"), "{m}");
     let why = |k: usize| e["data"][k]["why"].as_str().unwrap().to_string();
     assert!(why(1).contains("waterjet machine and this job is set for laser") && why(1).contains("MAC-109"), "{e}");
     assert!(why(2).contains("part gap 800 mm") && why(2).contains("nest the job for it"), "{e}");
     assert!(why(3).contains("no table for Mild steel 3 mm"), "{e}");
-    for n in ["m3", "m5", "m6"] {
+    assert!(why(4).contains("no technology file of its own"), "{e}");
+    for n in ["m3", "m5", "m6", "m7"] {
         assert!(!job_in(n).exists(), "{n}: {e}");
     }
     assert!(m.contains("Removed this job's 2 earlier program file(s) from Demo LC5's folder"), "{m}");
@@ -9361,6 +9364,11 @@ fn an_agent_exports_the_same_sheets_for_a_second_machine_into_its_own_folder() {
     assert!(err(&mut s, "export", json!({"machines": "2", "machine": 1})).contains("not both"));
     let e = err(&mut s, "export", json!({"machines": "3"}));
     assert!(e.starts_with("Nothing was written.") && e.contains("waterjet"), "{e}");
+    // The machine in use too must do the job's process.
+    s.ctx.cfg.active_machine = 2;
+    let e = err(&mut s, "export", json!({"machines": "3"}));
+    assert!(e.contains("waterjet machine and this job is set for laser"), "{e}");
+    s.ctx.cfg.active_machine = 0;
     assert!(err(&mut s, "export", json!({"machines": "9"})).contains("no machine '9'"));
     // A plain export goes into the machine in use's own folder (EXP3), and
     // the second laser, with no folder of its own, writes into the export folder.

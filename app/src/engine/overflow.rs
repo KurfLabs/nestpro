@@ -30,6 +30,8 @@ pub fn job_dir(cfg: &AppSettings, k: usize, job_name: &str) -> PathBuf {
 /// which only ever refuses more.
 pub fn same_folder(a: &Path, b: &Path) -> bool {
     fn norm(p: &Path) -> String {
+        // A folder given from the working folder is the same as written out in full.
+        let p = &std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
         let mut rest: Vec<std::ffi::OsString> = vec![];
         let mut at = p.to_path_buf();
         let real = loop {
@@ -92,8 +94,13 @@ fn fit(cfg: &AppSettings, k: usize, job: JobRef, on: &CallMachine) -> Result<(Ve
         return Err("nothing is nested yet".into());
     }
     let t = crate::ct1::for_spec(job.spec);
-    if t.source.is_none() {
-        return Err("no technology file was found for it (a .CT1 beside its post files, or the BLM post's in the Lantek folder), so its lead-ins, micro-joints and part gap aren't known".into());
+    // Its own file: the BLM post's in the Lantek folder belongs to an LC5,
+    // never to a machine on another post.
+    let lantek = if cfg.lantek_dir.is_empty() { settings::lantek_default_dir() } else { cfg.lantek_dir.clone() };
+    let blm_file = Path::new(&lantek).join("MchFiles").join("PstAdi06.CT1");
+    let own = t.source.as_ref().is_some_and(|f| m.output == settings::Output::BlmSiemens || !same_folder(f, &blm_file));
+    if !own {
+        return Err("no technology file of its own was found (a .CT1 beside its post files; the BLM post's in the Lantek folder is the LC5's), so its lead-ins, micro-joints and part gap aren't known".into());
     }
     if !t.file.sections.is_empty() && t.applied().is_none() {
         let gas = job.spec.gas.map_or(String::new(), |g| format!(" with {}", g.name()));
@@ -161,13 +168,20 @@ pub struct Earlier {
     pub machines: Vec<usize>,
     pub dir: PathBuf,
     pub files: Vec<PathBuf>,
+    /// The folder couldn't be looked in (a share offline): why.
+    pub unread: Option<String>,
 }
 
 /// This job's program files in `dir` as `post` and the LC5 job name
 /// `blm_job` name them (sheets 1–999): plain G-code, OMAX `.omx`, LC5 `.zip`
 /// and `.XML`. One look at the folder, not one per name.
-fn job_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm_job: &str) -> Vec<PathBuf> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+fn job_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm_job: &str) -> Result<Vec<PathBuf>, String> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        // No job folder there: nothing of this job's.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e.to_string()),
+    };
     let mut names = std::collections::HashSet::new();
     for k in 1..=999 {
         let nest = crate::blm::nest_name(blm_job, k);
@@ -177,7 +191,7 @@ fn job_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm_
     }
     let mut out: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.file_name().is_some_and(|n| names.contains(&n.to_string_lossy().to_lowercase()))).collect();
     out.sort();
-    out
+    Ok(out)
 }
 
 /// EXP6: the job folders of the machines in Settings that aren't among
@@ -190,8 +204,12 @@ pub fn earlier_elsewhere(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, wr
             continue;
         }
         let blm = blm_for(spec, &blm_base(m), job_name);
-        let files = job_programs(&dir, job_name, &load_post(m), &blm.job);
-        match out.iter_mut().find(|e| same_folder(&e.dir, &dir)) {
+        let (files, unread) = match job_programs(&dir, job_name, &load_post(m), &blm.job) {
+            Ok(f) => (f, None),
+            Err(e) => (vec![], Some(e)),
+        };
+        // Machines with no folder of their own share the export folder.
+        match out.iter_mut().find(|e| e.dir == dir) {
             Some(e) => {
                 e.machines.push(i);
                 for f in files {
@@ -200,11 +218,21 @@ pub fn earlier_elsewhere(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, wr
                     }
                 }
             }
-            None => out.push(Earlier { machines: vec![i], dir, files }),
+            None => out.push(Earlier { machines: vec![i], dir, files, unread }),
         }
     }
-    out.retain(|e| !e.files.is_empty());
+    out.retain(|e| !e.files.is_empty() || e.unread.is_some());
     out
+}
+
+/// EXP6: what the review says about one: its programs will go, or its
+/// folder couldn't be looked in.
+pub fn earlier_line(cfg: &AppSettings, e: &Earlier) -> String {
+    let who = e.machines.iter().map(|&k| machine_name(cfg, k)).collect::<Vec<_>>().join(", ");
+    match &e.unread {
+        Some(why) => format!("{who}'s folder {} couldn't be looked in ({why}): check it has no programs of this job from an earlier export before anyone cuts there.", e.dir.display()),
+        None => format!("{who}'s folder has {} program file(s) of this job from an earlier export — they will be removed, so no sheet is cut on two machines.", e.files.len()),
+    }
 }
 
 /// EXP6: remove those programs. Says what went (and what couldn't, which
@@ -213,11 +241,21 @@ pub fn remove_earlier(cfg: &AppSettings, list: &[Earlier]) -> String {
     let mut said = vec![];
     for e in list {
         let who = e.machines.iter().map(|&k| machine_name(cfg, k)).collect::<Vec<_>>().join(", ");
-        let failed = e.files.iter().filter(|f| std::fs::remove_file(f).is_err()).count();
-        if failed == 0 {
+        if e.unread.is_some() {
+            said.push(format!(" {}", earlier_line(cfg, e)));
+            continue;
+        }
+        // One already gone counts as removed.
+        let failed: Vec<String> = e
+            .files
+            .iter()
+            .filter(|f| std::fs::remove_file(f).is_err_and(|err| err.kind() != std::io::ErrorKind::NotFound))
+            .map(|f| f.file_name().map_or_else(|| f.display().to_string(), |n| n.to_string_lossy().into_owned()))
+            .collect();
+        if failed.is_empty() {
             said.push(format!(" Removed this job's {} earlier program file(s) from {who}'s folder {}, so they can't be cut there too.", e.files.len(), e.dir.display()));
         } else {
-            said.push(format!(" {failed} of this job's earlier program file(s) in {who}'s folder {} couldn't be removed: delete them before anyone runs them.", e.dir.display()));
+            said.push(format!(" This job's earlier program(s) {} in {who}'s folder {} couldn't be removed: delete them before anyone runs them.", failed.join(", "), e.dir.display()));
         }
     }
     said.concat()
