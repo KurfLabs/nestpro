@@ -27,6 +27,8 @@ original (or a real job).
 
 **Reserved:** spec #179 (the same settings on every PC) holds APP-19–APP-25 here, and SG1–SG40 in `app/MECHANICS.md`.
 
+**Reserved:** the spec for drawing parts (DRW-1, first slice) holds DRW-13–DRW-24 here, and DD1–DD60 in `app/MECHANICS.md`.
+
 ## Sheets and stock (STK)
 
 | ID | What | Status | Pri | Notes / source |
@@ -300,7 +302,7 @@ original (or a real job).
 
 | ID | What | Status | Pri | Notes / source |
 |---|---|---|---|---|
-| DRW-1 | Drafting: points, shapes, delete geometry, modify, transform, figures | Missing | ★★ | full list in the app: Drawing → "What's still missing" (`MISSING` in `drawing.rs`) |
+| DRW-1 | Drafting: points, shapes, delete geometry, modify, transform, figures | Missing | ★★ | full list in the app: Drawing → "What's still missing" (`MISSING` in `drawing.rs`). Planned 2026-11-25 (ADR 0008): first slice = draw a new part with an AutoCAD-style command line (lines, arcs, circles, polylines, rectangles, slots, polygons, object snaps, Erase/Move/Copy/Rotate/Mirror, undo); Offset, Trim, Extend, Fillet and Chamfer next |
 | DRW-2 | Dimension notes on the part drawing | Missing | ★ | |
 | DRW-3 | Move / edit one text | Missing | ★ | add / delete work |
 | DRW-4 | Utilities: contours, compare parts, lifting | Missing | ★ | |
