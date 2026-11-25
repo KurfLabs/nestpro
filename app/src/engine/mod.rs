@@ -751,15 +751,15 @@ pub fn placed_count(sheets: &[Vec<Placed>], formats: &[SheetFormat], part: usize
 /// sheet stock when it has sheets for this job (`stock`, see stockflow), else
 /// on the job's sheet size — the job's own sheet list first either way (JS3) — then every part settles against its neighbours'
 /// real contours (not on remnants: compaction assumes a rectangular sheet).
-pub fn nest_all(parts: &[Part], spec: &SheetSpec, group_nest: bool, stock: Option<&stockflow::StockUse>) -> NestResult {
+/// `equal`: Do All's "Deal with equal sheets" (SR13), also when the stock
+/// isn't used.
+pub fn nest_all(parts: &[Part], spec: &SheetSpec, group_nest: bool, stock: Option<&stockflow::StockUse>, equal: bool) -> NestResult {
     let mt = crate::ct1::active();
     if group_nest && nest::part_groups(parts).len() > 1 {
         let mut r = nest::nest_grouped(parts, spec, if mt.group_zones { mt.zone_gap } else { 0.0 });
         r.normalise(spec);
         return r;
     }
-    // SR13: Do All's "Deal with equal sheets" (on when there are no options).
-    let equal = stock.is_none_or(|u| u.st.equal_sheets);
     // JS3: the job's own sheet list first; without the stock, then the job's size.
     let mut r = stock.and_then(|u| stockflow::nest_from_stock(parts, spec, u)).unwrap_or_else(|| {
         let mut plan = stockflow::list_slots(spec, stock).0;

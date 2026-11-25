@@ -2222,7 +2222,7 @@ impl App {
         // JS4: the job's sheet list as this nesting reads it (its own
         // remnants are those of the nesting it replaces).
         let list_notes = engine::stockflow::list_slots(&self.spec, Some(&self.stock_use())).1;
-        self.result = engine::nest_all(&self.parts, &self.spec, self.group_nest, Some(&self.stock_use()));
+        self.result = engine::nest_all(&self.parts, &self.spec, self.group_nest, Some(&self.stock_use()), self.cfg.stock.equal_sheets);
         self.manual_cuts.clear();
         self.ssim = None;
         self.cut_lines.clear();

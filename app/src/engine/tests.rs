@@ -596,7 +596,8 @@ fn a_jobs_own_sheet_list_is_nested_on_first() {
     call(&mut s, "stock", None, json!({"mode": "create", "ref": "THICK", "w": 1000, "h": 500, "thickness": 6, "qty": 2}));
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 30}));
     let job = || jobfile::load(Path::new(jp)).unwrap();
-    let sizes = |j: &JobFile| j.formats.iter().map(|f| (f.w, f.h, f.stock_ref.clone())).collect::<Vec<_>>();
+    // Every sheet as often as it is cut (SR1): equal sheets come out as one cut twice.
+    let sizes = |j: &JobFile| j.formats.iter().flat_map(|f| std::iter::repeat_n((f.w, f.h, f.stock_ref.clone()), f.runs())).collect::<Vec<_>>();
 
     let r = call(&mut s, "sheet-list", None, json!({}));
     assert!(r["message"].as_str().unwrap().contains("is empty"), "{r}");
@@ -623,7 +624,7 @@ fn a_jobs_own_sheet_list_is_nested_on_first() {
     assert_eq!(&f[..4], &[(1000.0, 500.0, "D1".to_string()), (1000.0, 500.0, "D1".into()), (1200.0, 800.0, String::new()), (1200.0, 800.0, String::new())], "{r}");
     assert!(f[4..].iter().all(|x| x.2 == "BIG"), "then the stock: {f:?}");
     assert_eq!(f.iter().filter(|x| x.2 == "D1").count(), 2, "the stock doesn't offer the listed drops again");
-    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+    assert_eq!(crate::nest::pieces_on(&j.sheets, &j.formats), 30);
     assert!(r["message"].as_str().unwrap().contains("of sizes from the job's sheet list"), "{r}");
     check_sheets(&j);
 
@@ -634,7 +635,7 @@ fn a_jobs_own_sheet_list_is_nested_on_first() {
     call(&mut s, "nest", None, json!({}));
     let j = job();
     assert_eq!(&sizes(&j)[..4], &f[..4], "the list's four sheets first, as listed");
-    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+    assert_eq!(crate::nest::pieces_on(&j.sheets, &j.formats), 30);
     s.ctx.cfg.stock = was;
 
     // The list's order is the nesting order.
@@ -647,7 +648,7 @@ fn a_jobs_own_sheet_list_is_nested_on_first() {
     call(&mut s, "nest", None, json!({}));
     let j = job();
     assert!(j.formats.iter().all(|f| (f.w, f.h) == (1200.0, 800.0)), "{:?}", sizes(&j));
-    assert_eq!(j.sheets.iter().map(|s| s.len()).sum::<usize>(), 30);
+    assert_eq!(crate::nest::pieces_on(&j.sheets, &j.formats), 30);
 
     // Without the stock (stock=off) a stock line can't be read: said, sizes still used.
     call(&mut s, "sheet-list", None, json!({"mode": "qty", "line": 1, "qty": 1}));

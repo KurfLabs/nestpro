@@ -2749,13 +2749,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 st.use_stock = true;
                 st.fallback_job_size = false;
             }
-            // stock=off still carries the options, for Deal with equal sheets.
-            let off = mode == "off";
-            if off {
-                st.use_stock = false;
-            }
-            let stock = Some(stockflow::StockUse { st: &st, ..ctx.stock_use(job) });
-            let r = nest_all(&job.parts, &job.spec, group, stock.as_ref());
+            let stock = (mode != "off").then(|| stockflow::StockUse { st: &st, ..ctx.stock_use(job) });
+            let r = nest_all(&job.parts, &job.spec, group, stock.as_ref(), st.equal_sheets);
             let grouped = group && nest::part_groups(&job.parts).len() > 1;
             let mut unreachable = stock.as_ref().filter(|_| !grouped).and_then(stockflow::stock_unreachable_note).unwrap_or_default();
             // JS4: a line of the job's sheet list that couldn't be used is said.
