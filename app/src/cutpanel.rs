@@ -1219,7 +1219,7 @@ pub(crate) mod tests {
         assert_eq!(slow.label(&CutQualities::default()), "Quality 1");
         assert_eq!(Row::Cut(CutQuality::new(2)).label(&named), "Quality 2");
         // The Mark card says etch, the shop's word.
-        let g = crate::engine::qualityguide::guide(&crate::nest::SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }, &crate::ct1::MachineTech::default(), &crate::settings::Machine::default());
+        let g = crate::engine::qualityguide::guide(&crate::nest::SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] }, &crate::ct1::MachineTech::default(), &crate::settings::Machine::default());
         let ex = Explain { guide: &g, unit: crate::units::LenUnit::Mm };
         assert!(Row::Mark.card(&named, ex).1[0].to_lowercase().contains("etch"));
         // A quality's card says what it means here, and where to say what it is for.

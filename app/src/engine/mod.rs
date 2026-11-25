@@ -32,6 +32,7 @@ pub mod session;
 pub mod shop;
 pub mod updates;
 pub mod sheetpick;
+pub mod sheetlist;
 pub mod stockflow;
 
 use crate::cnc::{self, ManualCut, SheetPlan};
@@ -658,7 +659,7 @@ pub fn placed_count(sheets: &[Vec<Placed>], part: usize) -> usize {
 /// Nest every part (Do All): with several part groups (and grouping on), each
 /// group in its own zone (CT1 A785/A787, zone gap A788); otherwise from the
 /// sheet stock when it has sheets for this job (`stock`, see stockflow), else
-/// on the job's sheet size — then every part settles against its neighbours'
+/// on the job's sheet size — the job's own sheet list first either way (JS3) — then every part settles against its neighbours'
 /// real contours (not on remnants: compaction assumes a rectangular sheet).
 pub fn nest_all(parts: &[Part], spec: &SheetSpec, group_nest: bool, stock: Option<&stockflow::StockUse>) -> NestResult {
     let mt = crate::ct1::active();
@@ -667,7 +668,15 @@ pub fn nest_all(parts: &[Part], spec: &SheetSpec, group_nest: bool, stock: Optio
         r.normalise(spec);
         return r;
     }
-    let mut r = stock.and_then(|u| stockflow::nest_from_stock(parts, spec, u)).unwrap_or_else(|| nest::nest(parts, spec));
+    // JS3: the job's own sheet list first; without the stock, then the job's size.
+    let mut r = stock.and_then(|u| stockflow::nest_from_stock(parts, spec, u)).unwrap_or_else(|| {
+        let mut plan = stockflow::list_slots(spec, stock).0;
+        if plan.is_empty() {
+            return nest::nest(parts, spec);
+        }
+        plan.push(nest::FormatSlot { format: nest::SheetFormat::rect(spec.w, spec.h), qty: None });
+        nest::nest_plan(parts, spec, &plan)
+    });
     r.normalise(spec);
     for (s, f) in r.sheets.iter_mut().zip(&r.formats) {
         if f.outline.is_none() {
@@ -2150,7 +2159,8 @@ impl JobFile {
 /// A new job's sheet with the part gap and edge margin from Settings →
 /// Nesting (HM12) and the active machine's gas (GS12). It keeps the size it
 /// was made from, but Nest all starts with any size in stock: a size picked
-/// for another job isn't picked for this one (ST18). Every way a job is made
+/// for another job isn't picked for this one (ST18), and starts with no sheet
+/// list of its own (JS1). Every way a job is made
 /// starts from it: New job, the agents' `new`, the XML import, a job opened
 /// from programs, the ERP link (`with_prefs_for`).
 pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
@@ -2161,12 +2171,13 @@ pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
 /// once the job is made: the ERP link's work runs on the machine its step is
 /// scheduled on (F21), and the job starts with that machine's gas (GS12).
 pub fn with_prefs_for(spec: &SheetSpec, cfg: &AppSettings, m: &settings::Machine) -> SheetSpec {
-    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, gas: new_job_gas(m), pick: crate::nest::SheetPick::Stock, ..spec.clone() }
+    // JS1: the sheets listed for one job aren't another's.
+    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, gas: new_job_gas(m), pick: crate::nest::SheetPick::Stock, sheet_list: vec![], ..spec.clone() }
 }
 
 /// The default sheet of a new job: 2000 × 1000 mm, 3 mm mild steel, level 3.
 pub fn default_spec() -> SheetSpec {
-    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
+    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] }
 }
 
 #[cfg(test)]

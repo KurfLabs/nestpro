@@ -7941,6 +7941,36 @@
   "group": "feedback",
   "value": "an error on the window's own thread that the program doesn't catch itself",
   "source": "FB8; own design"
+ },
+ {
+  "name": "sheet list line quantity",
+  "group": "job sheet list",
+  "value": "1 to 999, or as many as needed",
+  "source": "JS1"
+ },
+ {
+  "name": "same sheet added again",
+  "group": "job sheet list",
+  "value": "adds to its line (same stock item, or same size within 0.05 mm)",
+  "source": "JS1"
+ },
+ {
+  "name": "sheet list order",
+  "group": "job sheet list",
+  "value": "the list's lines first, in its order, then the stock, then the job's sheet size",
+  "source": "JS3"
+ },
+ {
+  "name": "listed stock sheet low efficiency",
+  "group": "job sheet list",
+  "value": "kept (never dropped by the minimum efficiency)",
+  "source": "JS3"
+ },
+ {
+  "name": "listed stock line most sheets",
+  "group": "job sheet list",
+  "value": "what the stock has plus what the job holds, unless sheets with too little stock may be used",
+  "source": "JS4"
  }
 ]
 }

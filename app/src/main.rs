@@ -44,6 +44,7 @@ mod manual;
 mod radial;
 mod settings;
 mod settings_ui;
+mod sheetlistui;
 mod sheetsim;
 mod textedit;
 mod dxf;
@@ -416,6 +417,8 @@ pub struct App {
     pub autorefresh: refreshui::AutoRefresh,
     /// The Feedback window and the note after a crash (FB1–FB8).
     pub feedback: feedbackui::FeedbackUi,
+    /// The Add sheet size window for the job's own sheet list (JS1).
+    pub sheet_list_ui: sheetlistui::SheetListUi,
     /// The Drawing module's view state (axes, colours, simulation, measuring…).
     pub dv: drawing::DrawView,
     /// The cut technology panel on the part's drawing screen (CS6).
@@ -627,7 +630,7 @@ impl App {
             job_name: "Sample job 1-3.0000".into(),
             parts: demo_parts(),
             sel_part: Some(1),
-            spec: SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() },
+            spec: SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] },
             result: NestResult::default(),
             plans: vec![],
             program: String::new(),
@@ -738,6 +741,7 @@ impl App {
             clock: shared::Clock::pc(),
             autorefresh: Default::default(),
             feedback: Default::default(),
+            sheet_list_ui: Default::default(),
             dv: drawing::DrawView::default(),
             cut_panel: Default::default(),
             order_pick: Default::default(),
@@ -1982,6 +1986,9 @@ impl App {
         // nobody loses it without knowing (Ctrl+Z brings it back).
         let lost_order = self.manual_cuts.iter().filter(|s| !s.is_empty()).count();
         let lost_lines: usize = self.cut_lines.iter().map(|s| s.len()).sum();
+        // JS4: the job's sheet list as this nesting reads it (its own
+        // remnants are those of the nesting it replaces).
+        let list_notes = engine::stockflow::list_slots(&self.spec, Some(&self.stock_use())).1;
         self.result = engine::nest_all(&self.parts, &self.spec, self.group_nest, Some(&self.stock_use()));
         self.manual_cuts.clear();
         self.ssim = None;
@@ -2009,6 +2016,12 @@ impl App {
             if let Some(n) = engine::stockflow::stock_unreachable_note(&self.stock_use()) {
                 self.status += &n;
             }
+            // JS4: a line of the job's sheet list that couldn't be used.
+            for n in list_notes {
+                self.status += &format!(" {n}");
+            }
+        } else if !self.spec.sheet_list.is_empty() {
+            self.status += " The job's sheet list wasn't used: groups nest in their own zones on the job's sheet size.";
         }
         let mut lost = vec![];
         if lost_order > 0 {
@@ -2950,6 +2963,7 @@ impl eframe::App for App {
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
         self.drops_window(&ctx);
+        self.sheet_list_window(&ctx);
         if self.follow_system {
             if let Some(t) = ctx.system_theme() {
                 let dark = t == egui::Theme::Dark;
@@ -3704,6 +3718,27 @@ fn main() -> eframe::Result {
                     s.add_sheet(stock::Item::sheet("DEMO-AL1", (m + 2) % crate::engine::material::count(), 3.0, 3048.0, 1524.0, 1), true)
                 });
                 app.stockui.sel = Some("DEMO-R1".into());
+            }
+            // --sheet-list (screenshots): the job's own sheet list (JS5) with a
+            // made-up remnant from --stock-demo and two sizes, nested on;
+            // --sheet-list-add: the Add sheet size window open too (JS1).
+            if std::env::args().any(|a| a == "--sheet-list") {
+                app.workspace = Workspace::Nesting;
+                if let Some(it) = stock::Stock::load(&app.library_dir()).ok().and_then(|s| s.get("DEMO-R1").cloned()) {
+                    let _ = app.add_sheet_list_line(crate::nest::ListSheet::stock(&it, Some(1)));
+                }
+                let _ = app.add_sheet_list_line(crate::nest::ListSheet::size(1219.2, 609.6, Some(2)));
+                let _ = app.add_sheet_list_line(crate::nest::ListSheet::size(1524.0, 1219.2, None));
+                if !app.parts.is_empty() {
+                    app.run_nesting();
+                }
+                if std::env::args().any(|a| a == "--sheet-list-add") {
+                    app.open_sheet_list_add();
+                    app.sheet_list_ui_pick_demo();
+                    if std::env::args().any(|a| a == "--sheet-list-size") {
+                        app.sheet_list_ui_size_demo();
+                    }
+                }
             }
             // --stock-other (screenshots): a made-up sheet of another material,
             // picked, so the window offers to switch the job to it (ST16).

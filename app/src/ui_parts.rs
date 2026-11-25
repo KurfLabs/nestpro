@@ -2466,11 +2466,11 @@ impl App {
     /// thickness, grouping or picked size change, or every few seconds
     /// (another PC may take sheets).
     pub(crate) fn nest_on(&self, ctx: &egui::Context) -> crate::engine::stockflow::NestOn {
-        type Key = (usize, u64, bool, bool, bool, usize, u64, u64, crate::nest::SheetPick);
+        type Key = (usize, u64, bool, bool, bool, usize, u64, u64, crate::nest::SheetPick, usize);
         #[derive(Clone)]
         struct Memo(Key, f64, crate::engine::stockflow::NestOn);
         let grouped = self.group_nest && crate::nest::part_groups(&self.parts).len() > 1;
-        let key: Key = (self.spec.material, self.spec.thickness.to_bits(), grouped, self.cfg.stock.use_stock, self.cfg.stock.fallback_job_size, self.held.len(), self.spec.w.to_bits(), self.spec.h.to_bits(), self.spec.pick);
+        let key: Key = (self.spec.material, self.spec.thickness.to_bits(), grouped, self.cfg.stock.use_stock, self.cfg.stock.fallback_job_size, self.held.len(), self.spec.w.to_bits(), self.spec.h.to_bits(), self.spec.pick, self.spec.sheet_list.len());
         let now = ctx.input(|i| i.time);
         let id = egui::Id::unique("nest_on_memo");
         if let Some(m) = ctx.data(|d| d.get_temp::<Memo>(id)).filter(|m| m.0 == key && now - m.1 < 3.0) {
@@ -2614,12 +2614,15 @@ impl App {
         let mut pick_sheet = None;
         let mut pick_part = None;
         let mut renest = None;
+        let mut add_size = false;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
-            egui::CollapsingHeader::new(RichText::new(&self.job_name).strong())
+            let job = egui::CollapsingHeader::new(RichText::new(&self.job_name).strong())
                 .id_salt("job_node")
                 .default_open(true)
                 .show(ui, |ui| {
+                    // JS5: the job's own sheets to nest on, above its nested sheets.
+                    self.sheet_list_node(ui);
                     if self.result.sheets.is_empty() {
                         ui.label(RichText::new("No sheets — press Nest all").weak());
                     }
@@ -2660,7 +2663,17 @@ impl App {
                         });
                     }
                 });
+            // JS1: right-click the job to add a sheet size, stock sheet or drop to nest on.
+            job.header_response.on_hover_text("Right-click to add a sheet size or drop for this job to nest on").context_menu(|ui| {
+                if ui.button("Add sheet size…").on_hover_text("Add a size, stock sheet, remnant or drop to this job's sheet list; Nest all fills the list first").clicked() {
+                    add_size = true;
+                    ui.close();
+                }
+            });
         });
+        if add_size {
+            self.open_sheet_list_add();
+        }
         if let Some(i) = pick_sheet {
             self.select_sheet(i);
         }

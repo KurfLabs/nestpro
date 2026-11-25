@@ -1696,7 +1696,7 @@ mod tests {
         let mut iu = ImportUi { sync: true, ..Default::default() };
         assert!(iu.go(d.to_path_buf()));
         iu.focus = Some(f.clone());
-        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         let width = |iu: &ImportUi| match iu.cache.get(&f) {
             Some((_, _, Shown::Drawing(p))) => p.parts[0].part.as_ref().unwrap().0.w,
             _ => panic!("no preview"),
@@ -1961,7 +1961,7 @@ mod tests {
         assert_eq!(iu.picked.iter().collect::<Vec<_>>(), [&d.join("DEMO-PLATE.dxf")]);
         assert_eq!(iu.picked_names(), "DEMO-PLATE.dxf");
         let cfg = AppSettings::default();
-        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
+        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         match read_preview(&cfg, &spec, &d.join("DEMO-PLATE.dxf")) {
             Shown::Drawing(p) => {
                 let (part, _) = p.parts[0].part.as_ref().unwrap();

@@ -14,7 +14,7 @@
 
 use super::selection::{Take, Window};
 use super::*;
-use crate::nest::{CutQuality, JointType, LeadType, TextKind};
+use crate::nest::{CutQuality, JointType, LeadType, ListSheet, TextKind};
 use serde_json::{json, Map, Value};
 
 /// What kind of value an argument takes.
@@ -237,6 +237,12 @@ pub static OPS: &[Op] = &[
         SHEET, a("ref", Ty::Str, "Stock reference"), a("w", Ty::Num, "Or: length X, mm"), a("h", Ty::Num, "Width Y, mm"), a("job_sheet", Ty::Bool, "true = back to the job's own sheet"),
     ] },
     Op { name: "sheet-delete", group: "Nesting", kind: Kind::Write, help: "Delete a nested sheet; its parts are no longer nested.", args: &[r("sheet", Ty::Int, "Sheet number, from 1")] },
+    Op { name: "sheet-list", group: "Nesting", kind: Kind::Write, help: "The job's own list of sheets to nest on (the window's Nesting Explorer → right-click the job → Add sheet size…): sizes of its own and stock sheets, remnants or drops, each with how many. nest fills them first, in the list's order, then goes on as the Do All options say (the stock, then the job's sheet size); a line with as many as needed takes everything that fits on it. Adding the same sheet again adds to its line. A stock line takes at most what the stock has plus what the job holds. Groups nested in zones don't use the list.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: false, help: "list (default), add, remove, qty, move or clear", choices: &["list", "add", "remove", "qty", "move", "clear"] },
+        a("ref", Ty::Str, "add: a stock sheet, remnant or drop by reference (see stock mode=list)"), a("w", Ty::Num, "add: or a size of its own, length X, mm"), a("h", Ty::Num, "add: width Y, mm"),
+        a("qty", Ty::Int, "add / qty: how many sheets (default 1 for add); leave out with as_needed=true"), a("as_needed", Ty::Bool, "add / qty: as many as needed instead of a number"),
+        a("line", Ty::Int, "remove / qty / move: the line, from 1"), a("to", Ty::Int, "move: the place to move it to, from 1"),
+    ] },
     Op { name: "clear-sheets", group: "Nesting", kind: Kind::Write, help: "Take every part off the sheets.", args: &[] },
     Op { name: "compact", group: "Nesting", kind: Kind::Write, help: "Slide every part on a sheet left, then down, along the real contours, to leave one big remnant.", args: &[SHEET] },
     Op { name: "renest-sheet", group: "Nesting", kind: Kind::Write, help: "Nest one sheet again: only the parts already on it, on the same sheet (or remnant), by the job's automatic level; the other sheets stay as they are. Its cut lines and hand-picked cut order go (the automatic remnant line comes back if \"generate remnants after nesting\" is on). Refused, with the sheet unchanged, if they don't all fit back on it. Use nest to re-nest the whole job.", args: &[
@@ -834,7 +840,7 @@ fn nest_on_json(job: &JobFile, ctx: &Ctx) -> Value {
     let near = stockflow::near_stock(&job.spec, &ctx.stock_use(job))
         .map(|t| json!({"thickness": (t.thickness * 1000.0).round() / 1000.0, "sheets": t.sheets, "remnants": t.remnants, "hint": format!("set-sheet thickness={} to nest on it", (t.thickness * 1000.0).round() / 1000.0)}));
     json!({
-        "mode": on.key(), "from_stock": on.from_stock(), "picked": on.picked, "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes, "stock_thicknesses": thicknesses, "near_stock": near,
+        "mode": on.key(), "from_stock": on.from_stock(), "picked": on.picked, "listed": on.listed, "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes, "stock_thicknesses": thicknesses, "near_stock": near,
         // MA23: what the Material ▾ shows beside each material in stock at this thickness.
         "materials_in_stock": stockflow::in_stock_by_material(&job.spec, &ctx.stock_use(job), grouped).into_iter().map(|(m, n)| json!({"material": m, "name": super::material::name_or(m, "?"), "qty": n})).collect::<Vec<_>>(),
         "line": on.line(&format!("{:.0} × {:.0} mm", job.spec.w, job.spec.h)), "why": on.explain(),
@@ -927,6 +933,8 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         "totals": { "ordered": need, "nested": placed, "sheets": job.sheets.len(), "cut_len_mm": r1(tot.0), "rapid_len_mm": r1(tot.1), "pierces": tot.2, "time_s": r1(tot.3), "method": job.method },
         "warnings": warnings,
         "nest_on": nest_on_json(job, ctx),
+        // JS1: the job's own sheets, nested on first.
+        "sheet_list": super::sheetlist::to_json(&job.spec),
         "stock": {
             "booked": job.booked,
             "held": job.held,
@@ -1700,6 +1708,86 @@ fn sheet_source(job: &JobFile, ctx: &Ctx, a: &Args, replacing: Option<usize>) ->
         (None, None) => Ok(SheetFormat::rect(job.spec.w, job.spec.h)),
         _ => Err("give both w and h (mm, above 0), or ref".into()),
     }
+}
+
+/// sheet-list (JS1–JS6): the job's own sheets to nest on.
+fn sheet_list_op(job: &mut JobFile, ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
+    use super::sheetlist;
+    let line = |a: &Args| -> Result<usize, String> {
+        let n = a.int("line")?.ok_or("give line= (from 1; see sheet-list mode=list)")?;
+        if n < 1 {
+            return Err("line is from 1".into());
+        }
+        usize::try_from(n - 1).map_err(|_| "line is from 1".to_string())
+    };
+    let qty = |a: &Args, default: Option<u32>| -> Result<Option<u32>, String> {
+        match (a.bool("as_needed")?.unwrap_or(false), a.int("qty")?) {
+            (true, Some(_)) => Err("give qty= or as_needed=true, not both".into()),
+            (true, None) => Ok(None),
+            (false, Some(n)) if n >= 1 => Ok(Some(n.min(sheetlist::MAX_QTY as i64) as u32)),
+            (false, Some(_)) => Err("qty is 1 or more (or as_needed=true)".into()),
+            (false, None) => Ok(default),
+        }
+    };
+    let mode = a.str("mode").unwrap_or_else(|| "list".into());
+    let msg = match mode.as_str() {
+        "list" => {
+            let m = if job.spec.sheet_list.is_empty() {
+                "The job's sheet list is empty: nest uses the stock and the job's sheet size as the Do All options say. Add sheets with sheet-list mode=add.".to_string()
+            } else {
+                let lines: Vec<String> = job.spec.sheet_list.iter().enumerate().map(|(k, l)| format!("{}. {}", k + 1, sheetlist::describe(l))).collect();
+                format!("The job's sheet list, nested on first in this order:\n{}", lines.join("\n"))
+            };
+            return Ok(Outcome::read(m, json!({ "sheet_list": sheetlist::to_json(&job.spec) })));
+        }
+        "add" => {
+            let q = qty(a, Some(1))?;
+            let l = match (a.str("ref"), a.num("w")?, a.num("h")?) {
+                (Some(r), None, None) => {
+                    let st = ctx.stock()?;
+                    let it = st.get(&r).ok_or_else(|| format!("No sheet '{r}' in stock — see stock mode=list, or give w= and h= for a size of its own."))?;
+                    sheetlist::check_stock_item(&job.spec, it)?;
+                    ListSheet::stock(it, q)
+                }
+                (None, Some(w), Some(h)) => ListSheet::size(w, h, q),
+                (Some(_), _, _) => return Err("give ref= or w= and h=, not both".into()),
+                _ => return Err("give ref= (a stock sheet, remnant or drop) or both w= and h= (mm)".into()),
+            };
+            sheetlist::add(&mut job.spec, l)?
+        }
+        "remove" => {
+            let l = sheetlist::remove(&mut job.spec, line(a)?)?;
+            format!("Took {} off the job's sheet list.", sheetlist::describe(&l))
+        }
+        "qty" => {
+            let i = line(a)?;
+            let q = qty(a, None).and_then(|q| if q.is_none() && !a.bool("as_needed")?.unwrap_or(false) { Err("give qty= or as_needed=true".into()) } else { Ok(q) })?;
+            sheetlist::set_qty(&mut job.spec, i, q)?;
+            format!("Line {} is now {}.", i + 1, sheetlist::describe(&job.spec.sheet_list[i]))
+        }
+        "move" => {
+            let i = line(a)?;
+            let to = a.int("to")?.ok_or("give to= (from 1)")?;
+            if to < 1 {
+                return Err("to is from 1".into());
+            }
+            let to = usize::try_from(to - 1).map_err(|_| "to is from 1".to_string())?;
+            sheetlist::move_to(&mut job.spec, i, to)?;
+            format!("Moved line {} to {}: nest takes the list in this order.", i + 1, to.min(job.spec.sheet_list.len() - 1) + 1)
+        }
+        "clear" => {
+            let n = job.spec.sheet_list.len();
+            job.spec.sheet_list.clear();
+            format!("Cleared the job's sheet list ({n} line(s)); nest uses the stock and the job's sheet size again.")
+        }
+        m => return Err(format!("mode is list, add, remove, qty, move or clear (not '{m}')")),
+    };
+    if !job.sheets.is_empty() {
+        job.stale = true;
+    }
+    let mut o = Outcome::msg(format!("{msg} Nest again to use it."));
+    o.data = json!({ "sheet_list": sheetlist::to_json(&job.spec) });
+    Ok(o)
 }
 
 /// Sizes typed as "1524x1219, 610x610" (mm).
@@ -2647,7 +2735,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let stock = (mode != "off").then(|| stockflow::StockUse { st: &st, ..ctx.stock_use(job) });
             let r = nest_all(&job.parts, &job.spec, group, stock.as_ref());
             let grouped = group && nest::part_groups(&job.parts).len() > 1;
-            let unreachable = stock.as_ref().filter(|_| !grouped).and_then(stockflow::stock_unreachable_note).unwrap_or_default();
+            let mut unreachable = stock.as_ref().filter(|_| !grouped).and_then(stockflow::stock_unreachable_note).unwrap_or_default();
+            // JS4: a line of the job's sheet list that couldn't be used is said.
+            if !grouped {
+                for n in stockflow::list_slots(&job.spec, stock.as_ref()).1 {
+                    unreachable += &format!(" {n}");
+                }
+            } else if !job.spec.sheet_list.is_empty() {
+                unreachable += " The job's sheet list wasn't used: groups nest in their own zones on the job's sheet size.";
+            }
             drop(stock);
             job.sheets = r.sheets;
             job.formats = r.formats;
@@ -2667,8 +2763,20 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let need: u32 = job.parts.iter().map(|p| p.qty).sum();
             let placed: usize = job.sheets.iter().map(|s| s.len()).sum();
             let from_stock = job.formats.iter().filter(|f| !f.stock_ref.is_empty()).count();
-            let on_job_sheet = job.sheets.len() - from_stock;
-            let from = if from_stock > 0 { format!(" ({from_stock} from stock{})", if on_job_sheet > 0 { format!(", {on_job_sheet} the job's sheet size") } else { String::new() }) } else { String::new() };
+            // JS3: sizes of their own from the job's sheet list.
+            let own = job.formats.iter().filter(|f| f.stock_ref.is_empty() && !job.spec.is_size(f.w, f.h)).count();
+            let on_job_sheet = job.sheets.len() - from_stock - own;
+            let mut kinds = vec![];
+            if from_stock > 0 {
+                kinds.push(format!("{from_stock} from stock"));
+            }
+            if own > 0 {
+                kinds.push(format!("{own} of sizes from the job's sheet list"));
+            }
+            if on_job_sheet > 0 && !kinds.is_empty() {
+                kinds.push(format!("{on_job_sheet} the job's sheet size"));
+            }
+            let from = if kinds.is_empty() { String::new() } else { format!(" ({})", kinds.join(", ")) };
             let m = if placed as u32 == need {
                 format!("Nesting done: {placed} parts on {} sheet(s){from} — level {}, best of {} methods.", job.sheets.len(), job.spec.nest_level().name, r.tried)
             } else if from_stock > 0 && on_job_sheet == 0 {
@@ -2681,6 +2789,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             o.data = json!({ "sheets": usage, "method": job.method });
             Ok(o)
         }
+        "sheet-list" => sheet_list_op(job, ctx, &a),
         "clear-sheets" => {
             job.clear_nestings();
             Ok(Outcome::msg("Sheets cleared."))
@@ -3764,6 +3873,15 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Text/{label}", "text"),
     // --- right-click menus and panel buttons ("file.rs/Label"; one entry covers each control with that label in the file) ---
     ("ui_parts.rs/Nest this sheet again", "renest-sheet"),
+    // JS1–JS5: the job's own sheet list in the Nesting Explorer.
+    ("ui_parts.rs/Add sheet size…", "sheet-list"),
+    ("sheetlistui.rs/Add sheet size…", "sheet-list"),
+    ("sheetlistui.rs/🗑  Remove from the list", "sheet-list"),
+    ("sheetlistui.rs/Type a size instead", "view: switches the Add sheets window to its size half"),
+    ("sheetlistui.rs/Done", "gui: closes the Add sheets window"),
+    ("sheetlistui.rs/⇄", "gui: swaps the typed length and width before adding (sheet-list w= h=)"),
+    ("sheetlistui.rs/Clear the list", "sheet-list"),
+    ("sheetlistui.rs/As many as needed", "sheet-list"),
     // Settings → Machines → Pick quality by size (CQ9): agents read the rows (`qualities`).
     ("settings_ui.rs/+ Add row", "todo: [TEC-37] machine settings are changed in the app only"),
     ("settings_ui.rs/↑", "todo: [TEC-37] machine settings are changed in the app only"),
