@@ -244,18 +244,21 @@ pub fn earlier_elsewhere(cfg: &AppSettings, job_name: &str, spec: &SheetSpec, wr
         }
         let blm = blm_for(spec, &blm_base(m), job_name);
         let post = load_post(m);
-        let (files, mut unread) = job_programs(&dir, job_name, &post, &blm.job);
+        let (mut files, mut unread) = job_programs(&dir, job_name, &post, &blm.job);
         let base = programs_base(cfg, i);
         if unread.is_none() && !dir.exists() {
-            // No job folder: none of its programs, unless its own programs
-            // folder can't be reached (a control switched off, a share offline).
-            if !m.programs_dir.trim().is_empty() && !base.is_dir() {
+            // No job folder: none of its programs, unless the folder it writes
+            // under, one set in Settings, can't be reached (a control switched
+            // off, a share offline).
+            let set = !m.programs_dir.trim().is_empty() || !cfg.export_dir.is_empty();
+            if set && !base.is_dir() {
                 unread = Some(format!("its programs folder {} can't be reached", base.display()));
             }
-        } else if unread.is_none() && !post.missing.is_empty() {
+        } else if !post.missing.is_empty() {
             // Its program names come from its post: one that can't be read
-            // leaves them unknown (EXP2).
-            unread = Some(format!("its post file {} can't be read, so the names of its programs aren't known", post.missing.join(", ")));
+            // leaves them unknown, and its programs stay (EXP2): said, not removed.
+            files.clear();
+            unread.get_or_insert(format!("its post file {} can't be read, so the names of its programs aren't known", post.missing.join(", ")));
         }
         // Machines with no folder of their own share the export folder.
         match out.iter_mut().find(|e| e.dir == dir) {

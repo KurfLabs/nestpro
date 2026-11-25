@@ -9377,6 +9377,14 @@ fn an_agent_exports_the_same_sheets_for_a_second_machine_into_its_own_folder() {
     // the second laser, with no folder of its own, writes into the export folder.
     call(&mut s, "export", None, json!({"machines": "4"}));
     assert!(job_in("shared").join("SQUARESX1.CNC").is_file());
+    // A machine whose post file can't be read keeps its programs (EXP2):
+    // its folder is named to be checked, nothing there is removed.
+    let post = std::mem::take(&mut s.ctx.cfg.machines[3].post_lib);
+    s.ctx.cfg.machines[3].post_lib = d.join("posts").join("GONE.CFF").to_string_lossy().into_owned();
+    let e = call(&mut s, "export", None, json!({}));
+    assert!(job_in("shared").join("SQUARESX1.CNC").is_file(), "{e}");
+    assert!(e["message"].as_str().unwrap().contains("GONE.CFF can't be read"), "{e}");
+    s.ctx.cfg.machines[3].post_lib = post;
     let e = call(&mut s, "export", None, json!({}));
     assert!(job_in("m1").join("SQUARESX1.CNC").is_file(), "{e}");
     assert!(!job_in("shared").join("SQUARESX1.CNC").exists(), "EXP6: {e}");

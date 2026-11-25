@@ -4574,7 +4574,7 @@ mod tests {
         let waterjet = settings::Machine { name: "Demo waterjet".into(), kind: crate::machine::MachineKind::Waterjet, output: settings::Output::Omax, programs_dir: folder("m4"), ..Default::default() };
         a.cfg.machines = vec![m("Demo laser 1", folder("m1")), m("Demo laser 2", folder("m2")), m("Demo laser 3", String::new()), waterjet];
         // The controls' folders are there; one that isn't would be said (EXP6).
-        for n in ["m1", "m2", "m4"] {
+        for n in ["m1", "m2", "m4", "shared"] {
             std::fs::create_dir_all(d.join(n)).unwrap();
         }
         a.cfg.active_machine = 0;

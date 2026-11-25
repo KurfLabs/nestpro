@@ -3745,6 +3745,11 @@ fn export_machines(ctx: &Ctx, job: &JobFile, a: &Args) -> Result<Outcome, String
     }
     let ks = machines_arg(ctx, a)?;
     let dir = a.str("dir").map(PathBuf::from);
+    // EXP6: with nothing nested, no machine keeps this job's programs.
+    if job.sheets.is_empty() && dir.is_none() {
+        let gone = remove_earlier_from(ctx, job, &[]);
+        return Err(format!("Nothing to export — nest first.{gone}"));
+    }
     if dir.is_some() && ks.len() > 1 {
         return Err("dir= would put every machine's programs into one folder, where each export removes the others' (EXP1). Leave dir out: each machine writes into its own programs folder (Settings → Machines). Nothing was written.".into());
     }
