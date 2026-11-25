@@ -1226,6 +1226,15 @@ pub fn free_beyond(item: &Item, held: &BTreeMap<String, i32>, formats: &[SheetFo
     free - used
 }
 
+/// SR4: (sheets of a stock item free for sheet `k`, how many it needs: its
+/// cycles, or 1 for a new first sheet when `k` is past the last sheet). What
+/// the job holds counts as free, its other sheets' use doesn't.
+pub fn free_for_sheet(item: &Item, held: &BTreeMap<String, i32>, formats: &[SheetFormat], n_sheets: usize, k: usize) -> (i32, i32) {
+    let on = (k < n_sheets).then_some(k);
+    let need = on.map_or(1, |k| crate::nest::runs_at(formats, k)) as i32;
+    (free_beyond(item, held, formats, n_sheets, on), need)
+}
+
 pub fn one_free(item: &Item, held: &BTreeMap<String, i32>, formats: &[SheetFormat], n_sheets: usize, replacing: Option<usize>) -> bool {
     free_beyond(item, held, formats, n_sheets, replacing) > 0
 }

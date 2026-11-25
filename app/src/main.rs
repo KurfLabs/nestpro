@@ -1623,7 +1623,8 @@ impl App {
                         let more = if n > 3 { format!(" and {} more", n - 3) } else { String::new() };
                         egui::Grid::new("export_review").num_columns(2).spacing([14.0, 6.0]).show(ui, |ui| {
                             ui.label(RichText::new("Sheets").color(th().text_dim));
-                            ui.label(RichText::new(format!("all {n} sheet(s) of {}", self.job_name)).strong());
+                            // SR1, SR21: one program per nesting, the sheets cut counted with their cycles.
+                            ui.label(RichText::new(format!("all {} of {}", engine::sheets_text(&self.result.formats, n), self.job_name)).strong());
                             ui.end_row();
                             // The machine can be changed here, without leaving the review;
                             // its program format comes with it (MK1).
@@ -3469,7 +3470,9 @@ pub fn open_folder(dir: &std::path::Path) {
 pub fn export_tip(app: &App) -> String {
     let n = app.result.sheets.len();
     let what = if app.blm.on { "BLM LC5 program set" } else { "CNC program" };
-    format!("Writes a {what} for each of the {n} sheet(s), plus a parts report, to\n{}\n(Settings → Folders, or the machine's own programs folder in Settings → Machines, to change it).", app.export_dir().display())
+    // SR21: one program per nesting, run as often as the sheet is cut.
+    let each = if app.sheets_cut() == n { format!("each of the {n} sheet(s)") } else { format!("each of the {n} nesting(s) ({}; a sheet cut several times runs its program again)", engine::sheets_text(&app.result.formats, n)) };
+    format!("Writes a {what} for {each}, plus a parts report, to\n{}\n(Settings → Folders, or the machine's own programs folder in Settings → Machines, to change it).", app.export_dir().display())
 }
 
 fn main() -> eframe::Result {

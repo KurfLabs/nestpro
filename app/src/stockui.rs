@@ -197,10 +197,8 @@ impl App {
         // job's first sheet: one), unless sheets with no stock left are allowed.
         let k = self.cur_sheet;
         if !self.cfg.stock.allow_no_stock {
-            let n = self.result.sheets.len();
-            let (runs, on) = if k < n { (self.runs(k), Some(k)) } else { (1, None) };
-            let free = stockflow::free_beyond(&it, &self.held, &self.result.formats, n, on);
-            if free < runs as i32 {
+            let (free, runs) = stockflow::free_for_sheet(&it, &self.held, &self.result.formats, self.result.sheets.len(), k);
+            if free < runs {
                 self.status = if runs > 1 {
                     format!("Sheet {} is cut {runs} times, but only {free} of {reference} are free for it — lower its cycles first, or add sheets to stock.", k + 1)
                 } else {
@@ -275,8 +273,12 @@ impl App {
         };
         let why = if it.material != self.spec.material || (it.thickness - self.spec.thickness).abs() > stock::TOL {
             Some(format!("{reference} is {}; this job is {}.", self.mat_thk(it.material, it.thickness), self.mat_thk(self.spec.material, self.spec.thickness)))
-        } else if it.qty == 0 && !self.cfg.stock.allow_no_stock {
-            Some(format!("None of {reference} is left in stock."))
+        } else if !self.cfg.stock.allow_no_stock && {
+            // SR4: what the job holds counts as free; one for every cycle.
+            let (free, need) = stockflow::free_for_sheet(&it, &self.held, &self.result.formats, self.result.sheets.len(), self.cur_sheet);
+            free < need
+        } {
+            Some(format!("Not enough of {reference} is left in stock for sheet {}.", self.cur_sheet + 1))
         } else {
             None
         };
@@ -401,6 +403,7 @@ impl App {
             let allow_empty = self.cfg.stock.allow_no_stock;
             let refs = self.cfg.stock.with_references;
             let on_cur: &[crate::nest::Placed] = self.result.sheets.get(cur).map_or(&[][..], |v| &v[..]);
+            let (formats, n_sheets) = (&self.result.formats, self.result.sheets.len());
             let spec = &self.spec;
             ui.horizontal_top(|ui| {
                 // Left: the material shelf picks what the list shows.
@@ -620,7 +623,8 @@ impl App {
                     let why = match &selected {
                         None => Some("Pick a sheet or remnant in the list (double-click puts it on straight away).".to_string()),
                         Some(i) if other.is_some() => Some(format!("{} is {}; this job is {job_mat}.", i.reference, other.as_deref().unwrap_or(""))),
-                        Some(i) if i.qty == 0 && !allow_empty => Some("None of it left in stock.".to_string()),
+                        // SR4: what the job holds counts as free; one for every cycle.
+                        Some(i) if !allow_empty && { let (free, need) = stockflow::free_for_sheet(i, &held, formats, n_sheets, cur); free < need } => Some("Not enough of it left in stock for this sheet.".to_string()),
                         _ => None,
                     };
                     let placed_n = on_cur.len();
@@ -1490,6 +1494,13 @@ mod tests {
         a.result = Default::default();
         a.use_stock_item_on_sheet("Z");
         assert_eq!(a.result.sheets.len(), 1, "allowed: {}", a.status);
+        // None on the rack, but the job holds one since its last save: it can
+        // go back on (a double-click goes the same way).
+        a.cfg.stock.allow_no_stock = false;
+        a.result = Default::default();
+        a.held.insert("Z".into(), 1);
+        a.use_stock_default("Z");
+        assert_eq!(a.result.sheets.len(), 1, "held: {}", a.status);
         let _ = std::fs::remove_dir_all(dir);
     }
 
