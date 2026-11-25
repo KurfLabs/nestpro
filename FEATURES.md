@@ -27,7 +27,7 @@ original (or a real job).
 
 **Reserved:** spec #179 (the same settings on every PC) holds APP-19–APP-25 here, and SG1–SG40 in `app/MECHANICS.md`.
 
-**Reserved:** the spec for drawing parts (DRW-1, first slice) holds DRW-13–DRW-24 here, and DD1–DD60 in `app/MECHANICS.md`.
+**Reserved:** the spec for drawing parts (DRW-1, first slice) holds DRW-13–DRW-24 here (DRW-21–DRW-23 are the spec's own gaps), and DD1–DD60 in `app/MECHANICS.md`.
 
 ## Sheets and stock (STK)
 
@@ -313,6 +313,9 @@ original (or a real job).
 | DRW-10 | Which way a selection box is dragged (SW1) follows CAD programs: to the right takes what is wholly inside, to the left what it touches. The original's nesting and drawing screens aren't studied for this, and its new import assistant's notes give the opposite (dragged right = touching, JOB-46). If the shop wants the original's way it could be a setting | Estimate | ★ | MECHANICS SW1–SW5 |
 | DRW-11 | A machined part or sheet shows by its cut contours turning from the plain contour colour to their cut quality's colours (CS8). The original turns them its technology colour (red by default); a fixed "machined" colour (the original's red) could be a setting for shops that want it | Estimate | ★ | MECHANICS CS8, CS7 |
 | DRW-12 | Turning a part's drawing goes in quarter turns only (GR3): Transform → Rotate to any angle and Mirror of the drawing aren't built (DRW-1) | Missing | ★ | MECHANICS GR3 |
+| DRW-21 | Drawing snaps that wait for a later point: a line tangent to two circles, a perpendicular solved once the other end is known; and Tab to step between snaps that are near each other. The first drawing slice snaps tangent and perpendicular from a point already given | Missing | ★ | spec for drawing parts (DRW-1) |
+| DRW-22 | Changing a drawn part that has technology set by hand (its own leads, joints, picked starts, hand-set cut order, picked sheet cuts) asks to remove that technology first; nothing is moved onto the changed contours | Missing | ★★ | spec for drawing parts (DRW-1), T8 |
+| DRW-23 | Drafting extras not in the first drawing slice: polar and object-snap tracking, input at the cursor, grips, a snap grid, splines, ellipses, hatches, blocks, layers beyond Cut / Mark / Construction, infinite construction lines | Missing | ★ | spec for drawing parts (DRW-1) |
 | DRW-7 | Export DXF writes only the cut and marked contours: No cut contours and Bend lines aren't in it (a bending program would want the bend lines) | Missing | ★ | MECHANICS DF1, CS3 |
 
 ## Simulation, reports, machine link (OUT)
