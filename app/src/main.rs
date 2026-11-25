@@ -165,7 +165,20 @@ pub enum Pending {
     /// before writing; with the sheets that have overlapping parts or parts off
     /// the sheet: (sheet index, overlapping pairs, parts off the sheet).
     /// `checks`: Verify machining's findings per sheet (sheet, problems).
-    ExportReview { problems: Vec<(usize, usize, usize)>, checks: Vec<(usize, usize)> },
+    /// `also`: the other machines in Settings it can write the same sheets
+    /// for (EXP4); `earlier`: this job's programs other machines' folders
+    /// still hold, removed on export (EXP6).
+    ExportReview { problems: Vec<(usize, usize, usize)>, checks: Vec<(usize, usize)>, also: Vec<AlsoRow>, earlier: Vec<engine::overflow::Earlier> },
+}
+
+/// EXP4: one other machine in the Export review: where its programs go,
+/// whether it can take the nest as it is (else why not), and ticked.
+#[derive(Clone)]
+pub struct AlsoRow {
+    pub machine: usize,
+    pub dir: PathBuf,
+    pub ready: Result<(), String>,
+    pub ticked: bool,
 }
 
 /// Answers to "this part has technology" (the original's choices, rule PT2).
@@ -1575,6 +1588,9 @@ impl App {
             return;
         }
         let mut close = false;
+        // EXP4: a machine picked in the Export review, or a machine ticked.
+        let review_machine = self.cfg.active_machine;
+        let (mut rebuild, mut flip): (bool, Option<(usize, bool)>) = (false, None);
         let title = match &p {
             Pending::TechPartEdit { .. } => "Part with technology",
             Pending::NestedSpecChange { .. } => "Nested parts will change",
@@ -1588,7 +1604,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_max_width(420.0);
                 match p {
-                    Pending::ExportReview { problems, checks } => {
+                    Pending::ExportReview { problems, checks, also, earlier } => {
                         // What will be written, for which machine and where.
                         let n = self.result.sheets.len();
                         let dir = self.export_dir().join(engine::safe_name(&self.job_name));
@@ -1605,6 +1621,10 @@ impl App {
                             if self.machine_combo(ui, 200.0) {
                                 self.refresh();
                             }
+                            // EXP4: the other machines' rows follow the machine picked.
+                            if self.cfg.active_machine != review_machine {
+                                rebuild = true;
+                            }
                             ui.end_row();
                             ui.label(RichText::new("Program format").color(th().text_dim));
                             ui.label(self.cfg.machines.get(self.cfg.active_machine).map_or("—", |m| crate::settings_ui::output_name(m.output)));
@@ -1616,6 +1636,34 @@ impl App {
                             ui.label(RichText::new(dir.display().to_string()).monospace().size(12.0));
                             ui.end_row();
                         });
+                        // EXP4: the same sheets for other machines, each into its own folder.
+                        if !also.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("Also write for").color(th().text_dim)).on_hover_text("When this machine is busy: the same sheets for another machine, with its own lead-ins, micro-joints and post, into its own programs folder");
+                            for (i, row) in also.iter().enumerate() {
+                                let Some(m) = self.cfg.machines.get(row.machine) else { continue };
+                                let mut on = row.ticked;
+                                let text = format!("{}  ·  {}", m.name, crate::settings_ui::output_name(m.output));
+                                let r = ui.add_enabled(row.ready.is_ok(), egui::Checkbox::new(&mut on, text));
+                                if r.changed() {
+                                    flip = Some((i, on));
+                                }
+                                match &row.ready {
+                                    Ok(()) => {
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(24.0);
+                                            ui.label(RichText::new(row.dir.display().to_string()).monospace().size(11.5).color(th().text_dim));
+                                        });
+                                    }
+                                    Err(why) => {
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(24.0);
+                                            ui.add(egui::Label::new(RichText::new(format!("Can't take this nest: {why}.")).size(11.5).color(th().text_dim)).wrap());
+                                        });
+                                    }
+                                }
+                            }
+                        }
                         ui.add_space(4.0);
                         ui.label(RichText::new("The programs follow each sheet's machining as Cutting path shows it — lead-ins, cut order, and your hand-picked order where you set one.").size(12.0).color(th().text_dim));
                         // Verify machining, run for this review on every sheet.
@@ -1638,6 +1686,12 @@ impl App {
                         if old > 0 {
                             ui.label(RichText::new(format!("⚠ This folder already has {old} file(s) from an earlier export of this job — they will be replaced.")).size(12.5).color(th().warn_fg));
                         }
+                        // EXP6: said before, so nobody is surprised a program went.
+                        for e in &earlier {
+                            let who = e.machines.iter().map(|&k| engine::overflow::machine_name(&self.cfg, k)).collect::<Vec<_>>().join(", ");
+                            ui.add(egui::Label::new(RichText::new(format!("⚠ {who}'s folder has {} program file(s) of this job from an earlier export — they will be removed, so no sheet is cut on two machines.", e.files.len())).size(12.5).color(th().warn_fg)).wrap());
+                        }
+                        let ticked: Vec<usize> = also.iter().filter(|r| r.ticked).map(|r| r.machine).collect();
                         if !problems.is_empty() {
                             ui.add_space(6.0);
                             ui.label(RichText::new("These sheets would cut parts into each other or past the sheet:").color(Color32::from_rgb(185, 28, 28)));
@@ -1656,10 +1710,14 @@ impl App {
                         ui.horizontal(|ui| {
                             if problems.is_empty() {
                                 let old = std::fs::read_dir(&dir).map_or(0, |rd| rd.flatten().filter(|e| e.path().is_file()).count());
-                                let label = if old > 0 { format!("Replace and export {n} program(s)") } else { format!("Export {n} program(s)") };
+                                let label = match (old > 0, ticked.len()) {
+                                    (_, t) if t > 0 => format!("Export {n} program(s) for {} machines", t + 1),
+                                    (true, _) => format!("Replace and export {n} program(s)"),
+                                    (false, _) => format!("Export {n} program(s)"),
+                                };
                                 let primary = egui::Button::new(RichText::new(label).color(Color32::WHITE).strong()).fill(th().accent);
                                 if ui.add(primary).clicked() {
-                                    self.export();
+                                    self.export_with(&ticked);
                                     close = true;
                                 }
                             } else {
@@ -1671,7 +1729,7 @@ impl App {
                                     close = true;
                                 }
                                 if ui.button("Export anyway").clicked() {
-                                    self.export();
+                                    self.export_with(&ticked);
                                     close = true;
                                 }
                             }
@@ -1742,6 +1800,13 @@ impl App {
         if close {
             self.pending = None;
             self.tech_all_box = false;
+        } else if rebuild {
+            self.export_checked();
+        } else if let (Some((i, on)), Some(Pending::ExportReview { also, .. })) = (flip, self.pending.as_mut()) {
+            if let Some(r) = also.get_mut(i) {
+                r.ticked = on && r.ready.is_ok();
+            }
+            self.review_earlier();
         }
     }
 
@@ -1902,7 +1967,45 @@ impl App {
 
     /// Where Export CNC writes, for its tooltip: all sheets, the folder, the format.
     pub fn export_dir(&self) -> PathBuf {
-        if !self.cfg.export_dir.is_empty() { PathBuf::from(&self.cfg.export_dir) } else { library::documents_dir() }
+        // EXP3: the machine's own programs folder, else Settings → Folders.
+        engine::overflow::programs_base(&self.cfg, self.cfg.active_machine)
+    }
+
+    /// The open job as an export writes it (EXP4).
+    pub fn job_ref(&self) -> engine::overflow::JobRef<'_> {
+        engine::overflow::JobRef { name: &self.job_name, parts: &self.parts, sheets: &self.result.sheets, formats: &self.result.formats, spec: &self.spec, manual: &self.manual_cuts, cuts: &self.cut_lines }
+    }
+
+    /// EXP4: the Export review's other machines: each checked with its own
+    /// technology (read now, once per review; the machine in use is back
+    /// after), ticked again when it was and still can take the nest.
+    fn also_rows(&self, ticked: &[usize]) -> Vec<AlsoRow> {
+        let here = self.export_dir().join(engine::safe_name(&self.job_name));
+        let active = self.cfg.active_machine;
+        (0..self.cfg.machines.len())
+            .filter(|&k| k != active)
+            .map(|k| {
+                let dir = engine::overflow::job_dir(&self.cfg, k, &self.job_name);
+                let ready = if engine::overflow::same_folder(&dir, &here) {
+                    Err(format!("it writes into the same folder as {} ({}), where each export removes the other's programs. Give it its own programs folder in Settings → Machines", engine::overflow::machine_name(&self.cfg, active), here.display()))
+                } else {
+                    engine::overflow::check(&self.cfg, k, self.job_ref())
+                };
+                AlsoRow { machine: k, dir, ticked: ticked.contains(&k) && ready.is_ok(), ready }
+            })
+            .collect()
+    }
+
+    /// EXP6: the review's list of this job's programs in other machines'
+    /// folders that the export, as ticked now, would remove.
+    fn review_earlier(&mut self) {
+        let Some(Pending::ExportReview { also, .. }) = self.pending.as_ref() else { return };
+        let mut written = vec![self.export_dir().join(engine::safe_name(&self.job_name))];
+        written.extend(also.iter().filter(|r| r.ticked).map(|r| r.dir.clone()));
+        let list = engine::overflow::earlier_elsewhere(&self.cfg, &self.job_name, &self.spec, &written);
+        if let Some(Pending::ExportReview { earlier, .. }) = self.pending.as_mut() {
+            *earlier = list;
+        }
     }
 
     /// Export CNC from the ribbon: a review first — the sheets, the machine and
@@ -1932,17 +2035,29 @@ impl App {
                 (n > 0).then_some((k, n))
             })
             .collect();
-        self.pending = Some(Pending::ExportReview { problems: bad, checks });
+        // EXP4: machines ticked before (a machine picked in the review) stay ticked.
+        let ticked: Vec<usize> = match &self.pending {
+            Some(Pending::ExportReview { also, .. }) => also.iter().filter(|r| r.ticked).map(|r| r.machine).collect(),
+            _ => vec![],
+        };
+        let also = self.also_rows(&ticked);
+        self.pending = Some(Pending::ExportReview { problems: bad, checks, also, earlier: vec![] });
+        self.review_earlier();
     }
 
     pub fn export(&mut self) {
+        self.export_with(&[]);
+    }
+
+    /// Export CNC for the machine in use and, EXP4, the same sheets for the
+    /// other machines `also` (each into its own programs folder, checked with
+    /// its own technology first); then, EXP6, this job's programs left in
+    /// any other machine's folder go.
+    pub fn export_with(&mut self, also: &[usize]) {
         // Nothing nested: engine::export says so (and removes the job's old programs).
-        // Settings → Folders, or Documents\Sheet Nesting.
-        let base = if !self.cfg.export_dir.is_empty() {
-            PathBuf::from(&self.cfg.export_dir)
-        } else {
-            library::documents_dir()
-        };
+        // EXP3: the machine's programs folder, else Settings → Folders, or
+        // Documents\Sheet Nesting.
+        let base = self.export_dir();
         // UP16: in a trial nothing reaches the shop folder, programs neither.
         if let Some(shop) = self.versions().trial_of {
             if let Err(e) = shared::trial_may_write(&base, &shop, "The programs") {
@@ -1966,7 +2081,8 @@ impl App {
                 let names = ex.files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().to_string())).collect();
                 let what = engine::programs_written(n, &self.spec, &self.blm, self.unit());
                 self.last_export = Some((ex.dir.clone(), names, ex.warning.clone(), what));
-                engine::export_note(&ex, n, &self.spec, &self.blm, self.unit())
+                let note = engine::export_note(&ex, n, &self.spec, &self.blm, self.unit());
+                note + &self.export_also(ex.dir.clone(), also)
             }
             Err(e) => {
                 // A refused export takes the job's programs with it (BL39).
@@ -1974,6 +2090,47 @@ impl App {
                 e
             }
         };
+    }
+
+    /// EXP4, EXP6: after the machine in use's programs went to `here`, the
+    /// same sheets for each of `also`, then this job's programs left in the
+    /// other machines' folders removed. What happened, for the status line.
+    fn export_also(&self, here: PathBuf, also: &[usize]) -> String {
+        use engine::overflow;
+        let mut said = String::new();
+        let mut written = vec![here];
+        let mut names = vec![overflow::machine_name(&self.cfg, self.cfg.active_machine)];
+        let trial = self.versions().trial_of;
+        let n = self.result.sheets.len();
+        for &k in also {
+            let name = overflow::machine_name(&self.cfg, k);
+            let base = overflow::programs_base(&self.cfg, k);
+            let dir = base.join(engine::safe_name(&self.job_name));
+            if written.iter().any(|w| overflow::same_folder(w, &dir)) {
+                said += &format!(" Not written for {name}: it writes into the same folder as another machine here ({}).", dir.display());
+                continue;
+            }
+            // UP16: in a trial nothing reaches the shop folder.
+            if let Some(Err(e)) = trial.as_ref().map(|shop| shared::trial_may_write(&base, shop, "The programs")) {
+                said += &format!(" Not written for {name}: {e}");
+                continue;
+            }
+            let marks = || (0..n).map(|i| self.remnant_marks(i)).collect();
+            match overflow::write(&self.cfg, k, self.job_ref(), &base, &marks, self.cfg.stock.line.edge_offset) {
+                Ok((ex, blm)) => {
+                    said += &format!(" {name}: {}", engine::export_note(&ex, n, &self.spec, &blm, self.unit()));
+                    written.push(ex.dir);
+                    names.push(name);
+                }
+                Err(e) => said += &format!(" Not written for {name}: {e}."),
+            }
+        }
+        said += &overflow::cut_once_note(&names);
+        let earlier: Vec<_> = overflow::earlier_elsewhere(&self.cfg, &self.job_name, &self.spec, &written)
+            .into_iter()
+            .filter(|e| trial.as_ref().is_none_or(|shop| shared::trial_may_write(&e.dir, shop, "The programs").is_ok()))
+            .collect();
+        said + &overflow::remove_earlier(&self.cfg, &earlier)
     }
 
     pub fn run_nesting(&mut self) {
@@ -4073,6 +4230,21 @@ fn main() -> eframe::Result {
             }
             // --export-review / --part-check (screenshots): the Export CNC
             // review, or Verify machining's result on the opened part.
+            // --machines-demo (screenshots): made-up machines, each with its own
+            // programs folder, for the review's Also write for (EXP4).
+            if app.shot.is_some() && std::env::args().any(|a| a == "--machines-demo") {
+                let m = |name: &str, output, kind, dir: &str| settings::Machine { name: name.into(), output, kind, programs_dir: dir.into(), ..Default::default() };
+                use crate::machine::MachineKind::{Laser, Waterjet};
+                app.cfg.machines = vec![
+                    m("BLM 1", settings::Output::BlmSiemens, Laser, r"\\srv\cnc\BLM 1"),
+                    m("BLM 2", settings::Output::BlmSiemens, Laser, r"\\srv\cnc\BLM 2"),
+                    m("Fiber laser", settings::Output::Iso, Laser, ""),
+                    m("Waterjet", settings::Output::Omax, Waterjet, r"\\srv\cnc\Waterjet"),
+                ];
+                app.cfg.export_dir = r"\\srv\cnc\Programs".into();
+                app.cfg.active_machine = 0;
+                app.apply_settings(true);
+            }
             if std::env::args().any(|a| a == "--export-review") {
                 app.export_checked();
             }
@@ -4302,6 +4474,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// EXP3, EXP4, EXP6: the Export review's Also write for, as a person
+    /// ticks it: the same sheets for a second laser in its own folder; a
+    /// waterjet greyed out; the next export for one machine only takes the
+    /// other's programs away, said in the review first.
+    #[test]
+    fn the_export_review_writes_the_same_sheets_for_a_ticked_machine_too() {
+        let d = crate::testdir::TestDir::new("also_write_for");
+        let mut a = App::new(None);
+        std::fs::create_dir_all(d.join("Lantek").join("MchFiles")).unwrap();
+        std::fs::write(d.join("Lantek").join("MchFiles").join("PstAdi06.CT1"), "# Demo laser\nB056 1.0\n").unwrap();
+        let folder = |n: &str| d.join(n).to_string_lossy().into_owned();
+        a.cfg.lantek_dir = folder("Lantek");
+        a.cfg.export_dir = folder("shared");
+        let m = |name: &str, dir: String| settings::Machine { name: name.into(), programs_dir: dir, ..Default::default() };
+        let waterjet = settings::Machine { name: "Demo waterjet".into(), kind: crate::machine::MachineKind::Waterjet, output: settings::Output::Omax, programs_dir: folder("m4"), ..Default::default() };
+        a.cfg.machines = vec![m("Demo laser 1", folder("m1")), m("Demo laser 2", folder("m2")), m("Demo laser 3", String::new()), waterjet];
+        a.cfg.active_machine = 0;
+        a.job_name = "DEMO-001".into();
+        a.parts = vec![Part { name: "A".into(), shape: Shape::Rectangle, w: 300.0, h: 200.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        a.run_nesting();
+        let programs = |n: &str| std::fs::read_dir(d.join(n).join("DEMO-001")).map_or(0, |rd| rd.flatten().filter(|f| f.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("cnc"))).count());
+        a.export_checked();
+        let Some(Pending::ExportReview { also, earlier, .. }) = a.pending.clone() else { panic!("no review") };
+        assert_eq!(also.iter().map(|r| r.machine).collect::<Vec<_>>(), [1, 2, 3]);
+        assert!(also[0].ready.is_ok() && also[1].ready.is_ok(), "{:?}", also.iter().map(|r| r.ready.clone()).collect::<Vec<_>>());
+        assert!(also[2].ready.as_ref().unwrap_err().contains("waterjet"));
+        assert!(earlier.is_empty());
+        a.export_with(&[1]);
+        assert!(programs("m1") > 0 && programs("m2") > 0 && programs("shared") == 0, "{}", a.status);
+        assert!(a.status.contains("Demo laser 2:") && a.status.contains("one machine only"), "{}", a.status);
+        // The next export for the first laser only: the review says the
+        // second's programs will go, and they do.
+        a.export_checked();
+        let Some(Pending::ExportReview { earlier, .. }) = a.pending.clone() else { panic!("no review") };
+        assert_eq!(earlier.iter().map(|e| e.machines.clone()).collect::<Vec<_>>(), [vec![1]]);
+        a.export();
+        assert!(programs("m1") > 0 && programs("m2") == 0, "{}", a.status);
+        assert!(a.status.contains("Removed this job's") && a.status.contains("Demo laser 2's folder"), "{}", a.status);
     }
 
     #[test]

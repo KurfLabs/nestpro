@@ -5377,6 +5377,30 @@
   "source": "MECHANICS EXP2"
  },
  {
+  "name": "a machine's own programs folder (empty = the export folder)",
+  "group": "export",
+  "value": true,
+  "source": "MECHANICS EXP3"
+ },
+ {
+  "name": "also write the same sheets for other machines of the job's process, each checked with its own technology first",
+  "group": "export",
+  "value": true,
+  "source": "MECHANICS EXP4"
+ },
+ {
+  "name": "another machine's programs use its automatic micro-joints; the job is not changed",
+  "group": "export",
+  "value": true,
+  "source": "MECHANICS EXP5"
+ },
+ {
+  "name": "export removes this job's programs from other machines' folders it didn't write",
+  "group": "export",
+  "value": true,
+  "source": "MECHANICS EXP6"
+ },
+ {
   "name": "unsaved changes = differs from the job as last saved or opened",
   "group": "saving",
   "value": true,

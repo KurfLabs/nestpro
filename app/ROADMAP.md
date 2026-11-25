@@ -77,6 +77,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Cycles, pockets, nibbling, punch macros | Missing (punch / milling) | ★ |
 | Clamps and work zone, sheet reposition, multihead | Missing | ★ |
 | Verify machining, verify unstable contours | Part — Verify Machining with safe distance; unstable contours not yet | ★ |
+| Export to another machine when one is busy | Have (the rebuild's own) — each machine its own programs folder; the Export review's *Also write for* writes the same sheets for other machines of the job's process, each checked with its own technology (MECHANICS EXP3–EXP6); a laser job to the waterjet not yet (FEATURES MAC-109) | ★★★ |
 
 ## Simulation, View and helpers
 

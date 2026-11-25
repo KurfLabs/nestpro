@@ -350,7 +350,7 @@ pub static OPS: &[Op] = &[
         a("sheet", Ty::Str, "Sheet number or \"all\" (default all)"), a("safe", Ty::Num, "Safe distance, mm (default: the part gap; 0 = don't check)"),
     ] },
     Op { name: "program", group: "Machining", kind: Kind::Read, help: "The CNC program of a sheet (the active machine's post: G-code, an LC5 set, or an OMAX .omx path file), returned and optionally written to a file. machine= writes it for another of the machines in Settings for this call only (AG4).", args: &[SHEET, a("out", Ty::Path, "Also write it here"), MACHINE] },
-    Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, BLM LC5 sets, or OMAX .omx path files) and a CSV parts report into <folder>\\<job>. Never sends anything to the machine. machine= writes them for another of the machines in Settings for this call only (AG4).", args: &[a("dir", Ty::Path, "Folder (default Settings → export folder, else Documents\\Sheet Nesting)"), MACHINE] },
+    Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, BLM LC5 sets, or OMAX .omx path files) and a CSV parts report into <folder>\\<job>, the folder being the machine's own programs folder (Settings → Machines), else the export folder (EXP3). Never sends anything to the machine. machine= writes them for another of the machines in Settings for this call only (AG4). machines= writes the same sheets for several machines of the job's process at once (when one is busy, another cuts them), each into its own programs folder: the machine in use as always, every other one checked first with its own technology (its technology file and table for the material, Verify machining with its lead-ins, micro-joints, part gap and margin); one that can't take the nest as it is gets nothing and says why, the others are still written (EXP4, EXP5). Without dir=, this job's programs left by an earlier export in another machine's folder are removed, so a sheet is never cut on two machines (EXP6).", args: &[a("dir", Ty::Path, "Folder (default: the machine's programs folder, else Settings → export folder, else Documents\\Sheet Nesting); with machines=, one machine only"), MACHINE, a("machines", Ty::Str, "Several machines to write for, each into its own programs folder: numbers or names as `machines` lists them, e.g. 1,2 (or a JSON list); not with machine=")] },
     // --- stock ---
     Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants (each with who changed it last and when: changed_by, changed_at in this PC's local time), create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window). Every change is recorded as this PC's user, marked (agent).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "create", "add", "remove", "block", "unblock", "edit", "delete", "rules"] },
@@ -3652,22 +3652,150 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             Ok(o)
         }
         "export" => {
-            let base = a.str("dir").map(PathBuf::from).unwrap_or_else(|| ctx.export_dir());
+            // EXP4: several machines at once, each into its own folder.
+            if a.get("machines").is_some() {
+                return export_machines(ctx, job, &a);
+            }
+            // AG4: the machine named for this call; EXP3: into its own
+            // programs folder (else the export folder) unless dir= is given.
+            let named = a.str("machine");
+            let k = match named.as_deref() {
+                Some(w) => super::find_machine(&ctx.cfg, w)?,
+                None => ctx.cfg.active_machine,
+            };
+            let base = a.str("dir").map(PathBuf::from).unwrap_or_else(|| super::overflow::programs_base(&ctx.cfg, k));
             trial_guard(ctx, &base, "The programs")?;
-            // AG4: the machine named for this call (before the plans: its technology file).
-            let on = super::CallMachine::of(ctx, a.str("machine").as_deref(), job.spec.machine)?;
-            let plans = job.plans();
-            let blm = blm_for(&job.spec, &on.blm, &job.name);
-            let marks = stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock);
-            let ex = export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &on.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
+            let (ex, blm, note) = export_one(ctx, job, named.as_deref(), &base)?;
             // GS16: the material, thickness and gas they're for.
-            let mut o = Outcome::read(format!("{}{}", export_note(&ex, job.sheets.len(), &job.spec, &on.blm, crate::units::LenUnit::Mm), on.note), Value::Null);
+            let mut msg = format!("{}{note}", export_note(&ex, job.sheets.len(), &job.spec, &blm, crate::units::LenUnit::Mm));
+            // EXP6: this job's programs left in other machines' folders go.
+            if a.str("dir").is_none() {
+                msg += &remove_earlier_from(ctx, job, &[ex.dir.clone()]);
+            }
+            let mut o = Outcome::read(msg, Value::Null);
             o.files = ex.files;
             Ok(o)
         }
         "render" => Err("render is handled by the session".into()),
         n => Err(format!("{n} is not built into the engine")),
     }
+}
+
+/// Export for one machine as `export` always has: the machine in use, or the
+/// one named for this call (AG4), with the job's plans under its technology.
+/// The written files, that machine's LC5 switches and the AG4 note.
+fn export_one(ctx: &Ctx, job: &JobFile, named: Option<&str>, base: &Path) -> Result<(Exported, crate::blm::BlmSettings, String), String> {
+    // AG4: the machine named for this call (before the plans: its technology file).
+    let on = super::CallMachine::of(ctx, named, job.spec.machine)?;
+    let plans = job.plans();
+    let blm = blm_for(&job.spec, &on.blm, &job.name);
+    let marks = stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock);
+    let ex = export(base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &on.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
+    Ok((ex, on.blm.clone(), on.note.clone()))
+}
+
+/// EXP6 for agents: this job's programs in the folders of the machines in
+/// Settings that this export didn't write are removed (a folder this
+/// session may not write in, a trial's shop folder, is left alone).
+fn remove_earlier_from(ctx: &Ctx, job: &JobFile, written: &[PathBuf]) -> String {
+    let list: Vec<_> = super::overflow::earlier_elsewhere(&ctx.cfg, &job.name, &job.spec, written).into_iter().filter(|e| trial_guard(ctx, &e.dir, "The programs").is_ok()).collect();
+    super::overflow::remove_earlier(&ctx.cfg, &list)
+}
+
+/// EXP4: `machines=` as numbers or names: a JSON list, or one text, a
+/// machine's whole name or several split at commas or semicolons. Each once,
+/// in the order given.
+fn machines_arg(ctx: &Ctx, a: &Args) -> Result<Vec<usize>, String> {
+    let words: Vec<String> = match a.get("machines") {
+        Some(Value::Array(list)) => list.iter().map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)).collect(),
+        Some(Value::String(s)) if super::find_machine(&ctx.cfg, s).is_ok() => vec![s.clone()],
+        Some(Value::String(s)) => s.split([',', ';']).map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect(),
+        Some(v) => vec![v.to_string()],
+        None => vec![],
+    };
+    let mut ks = vec![];
+    for w in &words {
+        let k = super::find_machine(&ctx.cfg, w)?;
+        if !ks.contains(&k) {
+            ks.push(k);
+        }
+    }
+    if ks.is_empty() {
+        return Err("machines: name one or more machines by their number or name (the machines operation lists them), e.g. machines=1,2.".into());
+    }
+    Ok(ks)
+}
+
+/// EXP4: `export machines=…`: the same sheets for each machine named, each
+/// into its own programs folder (EXP3). The machine in use writes as
+/// `export` always does; every other one is checked with its own
+/// technology first and, when it can't take the nest as it is, gets nothing
+/// and says why, while the others go ahead. Refused as a whole only when two
+/// would share a folder, or when none could be written.
+fn export_machines(ctx: &Ctx, job: &JobFile, a: &Args) -> Result<Outcome, String> {
+    use super::overflow;
+    if a.get("machine").is_some() {
+        return Err("Give machine (one machine, this call only) or machines (several, each into its own programs folder), not both. Nothing was written.".into());
+    }
+    let ks = machines_arg(ctx, a)?;
+    let dir = a.str("dir").map(PathBuf::from);
+    if dir.is_some() && ks.len() > 1 {
+        return Err("dir= would put every machine's programs into one folder, where each export removes the others' (EXP1). Leave dir out: each machine writes into its own programs folder (Settings → Machines). Nothing was written.".into());
+    }
+    let base_of = |k: usize| dir.clone().unwrap_or_else(|| overflow::programs_base(&ctx.cfg, k));
+    let dirs: Vec<PathBuf> = ks.iter().map(|&k| base_of(k).join(safe_name(&job.name))).collect();
+    for i in 0..ks.len() {
+        for j in 0..i {
+            if overflow::same_folder(&dirs[i], &dirs[j]) {
+                return Err(format!(
+                    "{} and {} would both write into {}, and each export removes the other's programs there (EXP1). Give one of them its own programs folder in Settings → Machines, or leave one out. Nothing was written.",
+                    overflow::machine_name(&ctx.cfg, ks[j]),
+                    overflow::machine_name(&ctx.cfg, ks[i]),
+                    dirs[i].display()
+                ));
+            }
+        }
+    }
+    let marks = || stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock);
+    let (mut rows, mut files, mut said, mut not, mut names, mut written) = (vec![], vec![], vec![], vec![], vec![], vec![]);
+    for (&k, d) in ks.iter().zip(&dirs) {
+        let name = overflow::machine_name(&ctx.cfg, k);
+        let base = base_of(k);
+        let res = trial_guard(ctx, &base, "The programs").and_then(|_| {
+            if k == ctx.cfg.active_machine {
+                export_one(ctx, job, None, &base).map(|(ex, blm, _)| (ex, blm))
+            } else {
+                overflow::write(&ctx.cfg, k, overflow::JobRef::of(job), &base, &marks, ctx.cfg.stock.line.edge_offset)
+            }
+        });
+        match res {
+            Ok((ex, blm)) => {
+                said.push(format!("{name}: {}", export_note(&ex, job.sheets.len(), &job.spec, &blm, crate::units::LenUnit::Mm)));
+                rows.push(json!({"machine": k + 1, "name": name, "written": true, "folder": ex.dir, "files": ex.files, "warning": ex.warning}));
+                files.extend(ex.files);
+                written.push(ex.dir);
+                names.push(name);
+            }
+            Err(e) => {
+                not.push(format!("{name}: {e}"));
+                rows.push(json!({"machine": k + 1, "name": name, "written": false, "folder": d, "why": e}));
+            }
+        }
+    }
+    if names.is_empty() {
+        return Err(format!("Nothing was written. {}", not.join(" ")));
+    }
+    let mut msg = format!("Written for {} of {} machine(s). {}", names.len(), ks.len(), said.join(" "));
+    if !not.is_empty() {
+        msg += &format!(" NOT written for {}.", not.join("; "));
+    }
+    msg += &overflow::cut_once_note(&names);
+    if dir.is_none() {
+        msg += &remove_earlier_from(ctx, job, &written);
+    }
+    let mut o = Outcome::read(msg, json!(rows));
+    o.files = files;
+    Ok(o)
 }
 
 /// Every ribbon command of the GUI, as "Ribbon group/Button label" (a

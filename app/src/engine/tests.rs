@@ -9285,6 +9285,95 @@ fn an_agent_names_the_machine_for_one_export_and_the_settings_stay() {
 }
 
 #[test]
+fn an_agent_exports_the_same_sheets_for_a_second_machine_into_its_own_folder() {
+    // EXP3–EXP6: one machine busy, another of the same process takes the
+    // same sheets, each into its own programs folder; one that can't take the
+    // nest as it is says why and gets nothing; the job's programs never stay
+    // behind in a folder this export didn't write.
+    use crate::machine::MachineKind;
+    use crate::settings::Output;
+    let d = dir("overflow");
+    let folder = |n: &str| d.join(n).to_string_lossy().into_owned();
+    let mach = |name: &str, output, kind, programs: &str| crate::settings::Machine { name: name.into(), output, kind, programs_dir: if programs.is_empty() { String::new() } else { folder(programs) }, ..Default::default() };
+    // Machine 5 has its own technology file: a part gap far wider than the
+    // squares are apart. Machine 6's has a table for stainless steel only.
+    std::fs::create_dir_all(d.join("posts")).unwrap();
+    for (n, ct1) in [("WIDE", "# Demo wide\nB056 800\n"), ("STAINLESS", "# Demo stainless\nZ000 \"##MATEXP0100##\"\nZ001 0.4\nZ002 20.1\nZ006 9\nZ999 0\n")] {
+        std::fs::write(d.join("posts").join(format!("{n}.CFF")), "").unwrap();
+        std::fs::write(d.join("posts").join(format!("{n}.CT1")), ct1).unwrap();
+    }
+    let with_post = |mut m: crate::settings::Machine, n: &str| {
+        m.post_lib = d.join("posts").join(format!("{n}.CFF")).to_string_lossy().into_owned();
+        m
+    };
+    let machines = vec![
+        mach("Demo laser", Output::Iso, MachineKind::Laser, "m1"),
+        mach("Demo LC5", Output::BlmSiemens, MachineKind::Laser, "m2"),
+        mach("Demo waterjet", Output::Omax, MachineKind::Waterjet, "m3"),
+        mach("Demo laser 2", Output::Iso, MachineKind::Laser, ""),
+        with_post(mach("Demo wide", Output::Iso, MachineKind::Laser, "m5"), "WIDE"),
+        with_post(mach("Demo stainless", Output::Iso, MachineKind::Laser, "m6"), "STAINLESS"),
+    ];
+    let mut cfg = shop_settings(&d.join("Lantek"), "# Demo laser\nB056 6.0\n", machines);
+    cfg.export_dir = folder("shared");
+    let mut s = squares_job(&d, cfg);
+    let _m = apply_machine(&mut s);
+    s.ctx.post = crate::engine::load_post(&s.ctx.cfg.machine());
+    call(&mut s, "leads", None, json!({"mode": "machine"}));
+    let (cfg, tech) = (s.ctx.cfg.clone(), crate::ct1::active());
+    let job_in = |n: &str| d.join(n).join("squares");
+    // The laser in use and the LC5, each into its own folder, each in its format.
+    let e = call(&mut s, "export", None, json!({"machines": "1, Demo LC5"}));
+    let m = e["message"].as_str().unwrap();
+    assert!(job_in("m1").join("SQUARESX1.CNC").is_file(), "{e}");
+    assert!(std::fs::read_dir(job_in("m2")).unwrap().flatten().any(|f| f.path().extension().is_some_and(|x| x == "zip")), "{e}");
+    assert!(!job_in("m2").join("SQUARESX1.CNC").exists() && !job_in("shared").exists(), "{e}");
+    assert!(m.contains("Written for 2 of 2") && m.contains("cut each sheet on one machine only"), "{m}");
+    assert_eq!(e["data"].as_array().unwrap().iter().map(|r| r["written"].as_bool().unwrap()).collect::<Vec<_>>(), [true, true]);
+    // The settings and the machine in use (its technology) are as before.
+    assert_eq!(s.ctx.cfg, cfg);
+    assert_eq!(crate::ct1::active(), tech);
+    // A waterjet, a part gap the nest doesn't keep, no table for the material:
+    // each says why and gets nothing; the laser is still written, and the
+    // LC5's programs from the export before go, so no sheet is cut twice.
+    let e = call(&mut s, "export", None, json!({"machines": [1, 3, 5, 6]}));
+    let m = e["message"].as_str().unwrap();
+    assert!(m.contains("Written for 1 of 4") && m.contains("NOT written for Demo waterjet"), "{m}");
+    let why = |k: usize| e["data"][k]["why"].as_str().unwrap().to_string();
+    assert!(why(1).contains("waterjet machine and this job is set for laser") && why(1).contains("MAC-109"), "{e}");
+    assert!(why(2).contains("part gap 800 mm") && why(2).contains("nest the job for it"), "{e}");
+    assert!(why(3).contains("no table for Mild steel 3 mm"), "{e}");
+    for n in ["m3", "m5", "m6"] {
+        assert!(!job_in(n).exists(), "{n}: {e}");
+    }
+    assert!(m.contains("Removed this job's 2 earlier program file(s) from Demo LC5's folder"), "{m}");
+    assert!(std::fs::read_dir(job_in("m2")).unwrap().flatten().all(|f| f.path().extension().is_none_or(|x| x == "csv")), "{e}");
+    assert!(!m.contains("one machine only"), "only one machine has them: {m}");
+    // Two machines that would share a folder are refused before anything is
+    // written, whatever the folder's slashes and case.
+    s.ctx.cfg.machines[3].programs_dir = format!("{}/M1/", d.display());
+    let e = err(&mut s, "export", json!({"machines": "1,4"}));
+    assert!(e.contains("Demo laser and Demo laser 2 would both write into") && e.contains("Nothing was written"), "{e}");
+    s.ctx.cfg.machines[3].programs_dir.clear();
+    // One folder for several machines, machine and machines together, and
+    // none of them able to: refused.
+    assert!(err(&mut s, "export", json!({"machines": "1,2", "dir": folder("out")})).contains("Leave dir out"));
+    assert!(err(&mut s, "export", json!({"machines": "2", "machine": 1})).contains("not both"));
+    let e = err(&mut s, "export", json!({"machines": "3"}));
+    assert!(e.starts_with("Nothing was written.") && e.contains("waterjet"), "{e}");
+    assert!(err(&mut s, "export", json!({"machines": "9"})).contains("no machine '9'"));
+    // A plain export goes into the machine in use's own folder (EXP3), and
+    // the second laser, with no folder of its own, writes into the export folder.
+    call(&mut s, "export", None, json!({"machines": "4"}));
+    assert!(job_in("shared").join("SQUARESX1.CNC").is_file());
+    let e = call(&mut s, "export", None, json!({}));
+    assert!(job_in("m1").join("SQUARESX1.CNC").is_file(), "{e}");
+    assert!(!job_in("shared").join("SQUARESX1.CNC").exists(), "EXP6: {e}");
+    assert_eq!(s.ctx.cfg, cfg);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn an_agent_turns_a_part_to_the_grain_and_the_nest_never_turns_it_across() {
     // GR1–GR5 through the operations: the sheet's grain runs along X.
     let d = dir("grain");

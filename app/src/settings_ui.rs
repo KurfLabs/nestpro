@@ -1074,6 +1074,7 @@ impl App {
         let mut delete = false;
         let mut use_now = false;
         let kind_before = self.cfg.machines[k].kind;
+        let export_dir = if self.cfg.export_dir.is_empty() { "Documents\\Sheet Nesting".to_string() } else { self.cfg.export_dir.clone() };
         card(ui, "Machine", "", |ui| {
             let can_delete = self.cfg.machines.len() > 1;
             let active = self.cfg.active_machine == k;
@@ -1093,6 +1094,20 @@ impl App {
             row(ui, "Program format", |ui| {
                 for (o, title) in [(Output::Iso, "ISO G-code (.CNC) — most controls"), (Output::BlmSiemens, "BLM / Siemens 840D (.SPF set + XML, zipped)"), (Output::Omax, "OMAX waterjet (.omx path file)")] {
                     ui.radio_value(&mut m.output, o, title);
+                }
+            });
+            // EXP3: where this machine's programs go, the folder its control reads.
+            row(ui, "Programs folder", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut m.programs_dir).desired_width(300.0).hint_text(&export_dir)).on_hover_text(
+                    "Where Export CNC writes this machine's programs (a sub-folder per job), e.g. the folder its control reads. Empty = the export folder (Settings → Folders). With a folder of its own, the Export review can write the same sheets for it too when another machine is busy.",
+                );
+                if ui.button("Browse…").clicked() {
+                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                        m.programs_dir = d.display().to_string();
+                    }
+                }
+                if !m.programs_dir.is_empty() && ui.small_button("✖").clicked() {
+                    m.programs_dir.clear();
                 }
             });
             // GS17: the machine's gas, a pick from the list: the gas a new
