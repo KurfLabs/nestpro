@@ -109,6 +109,8 @@ pub enum Icon {
     Shapes,
     /// One sheet with two parts on it (nest this sheet).
     NestSheet,
+    /// Two stacked sheets with a turning arrow: a sheet cut several times (SR1).
+    Cycles,
     /// A stack of sheets (sheet stock).
     Stock,
     /// A right angle with its square mark (orthogonal mode).
@@ -929,6 +931,22 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
             rr(Rect::from_min_size(v(-5.0, -8.0), Vec2::new(5.0, 17.0)), s);
             p.line_segment([v(7.0, -5.0), v(7.0, 5.0)], Stroke::new(2.0, accent));
             p.line_segment([v(2.0, 0.0), v(12.0, 0.0)], Stroke::new(2.0, accent));
+        }
+        Icon::Cycles => {
+            // Two sheets, one behind the other, and a loop: the same sheet again.
+            let back = Rect::from_center_size(c + Vec2::new(2.5, -2.5), Vec2::new(16.0, 12.0));
+            p.rect_stroke(back, CornerRadius::same(2), s, egui::StrokeKind::Middle);
+            let front = Rect::from_center_size(c + Vec2::new(-2.5, 2.5), Vec2::new(16.0, 12.0));
+            p.rect_filled(front, CornerRadius::same(2), th().panel);
+            p.rect_stroke(front, CornerRadius::same(2), s, egui::StrokeKind::Middle);
+            let ctr = front.center();
+            let pts: Vec<Pos2> = (0..=12).map(|i| {
+                let t = -0.3 + i as f32 / 12.0 * 4.6;
+                ctr + Vec2::new(t.cos(), t.sin()) * 3.5
+            }).collect();
+            let end = *pts.last().unwrap();
+            poly(pts, Stroke::new(1.5, if mono { ink } else { accent }));
+            poly(vec![end + Vec2::new(-2.5, -1.0), end, end + Vec2::new(0.5, -3.0)], Stroke::new(1.5, if mono { ink } else { accent }));
         }
         Icon::NestSheet => {
             // One sheet with its parts and a turning arrow: nest this sheet again.
@@ -2607,6 +2625,12 @@ impl App {
             if ribbon_button(ui, Icon::Next, "Next\nsheet", false, self.cur_sheet + 1 < n).on_hover_text("Show the next sheet").clicked() {
                 self.select_sheet(self.cur_sheet + 1);
             }
+            if ribbon_button(ui, Icon::Cycles, "Sheet\ncycles", self.cycles_dlg.is_some(), self.cur_sheet < n)
+                .on_hover_text("How many times this sheet is cut: the same layout run as several identical sheets")
+                .clicked()
+            {
+                self.open_cycles(self.cur_sheet);
+            }
         });
     }
 
@@ -2615,6 +2639,7 @@ impl App {
         let mut pick_part = None;
         let mut renest = None;
         let mut add_size = false;
+        let mut cycles = None;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             let job = egui::CollapsingHeader::new(RichText::new(&self.job_name).strong())
@@ -2660,6 +2685,10 @@ impl App {
                                 renest = Some(i);
                                 ui.close();
                             }
+                            if ui.button("Cycles…").on_hover_text("How many times this sheet is cut: the same layout run as several identical sheets").clicked() {
+                                cycles = Some(i);
+                                ui.close();
+                            }
                         });
                     }
                 });
@@ -2683,6 +2712,10 @@ impl App {
         if let Some(i) = renest {
             self.select_sheet(i);
             self.renest_sheet();
+        }
+        if let Some(i) = cycles {
+            self.select_sheet(i);
+            self.open_cycles(i);
         }
     }
 
@@ -3192,16 +3225,20 @@ impl App {
     }
 
     pub fn results(&mut self, ui: &mut egui::Ui) {
-        let sheets = self.result.sheets.len();
-        let parts_area: f64 = self.result.sheets.iter().flatten().map(|p| self.parts[p.part].net_area()).sum();
+        // SR1: the whole job counts every sheet as often as it is cut; the
+        // sheet's own figures are for one sheet (SR18).
+        let sheets = self.sheets_cut();
+        let parts_area = self.parts_area_cut();
         let util = if sheets > 0 { parts_area / self.total_sheet_area().max(1.0) * 100.0 } else { 0.0 };
-        let cut: f64 = self.plans.iter().map(|p| p.cut_len).sum();
-        let secs: f64 = self.plans.iter().map(|p| p.seconds).sum();
+        let cut: f64 = self.plans.iter().enumerate().map(|(k, p)| p.cut_len * self.runs(k) as f64).sum();
+        let secs = self.job_seconds();
         let mut split = cnc::TimeSplit::default();
-        for p in &self.plans {
-            split += p.times;
+        for (k, p) in self.plans.iter().enumerate() {
+            for _ in 0..self.runs(k) {
+                split += p.times;
+            }
         }
-        let pierces: usize = self.plans.iter().map(|p| p.pierces).sum();
+        let pierces: usize = self.plans.iter().enumerate().map(|(k, p)| p.pierces * self.runs(k)).sum();
         let need: u32 = self.parts.iter().map(|p| p.qty).sum();
         let placed = self.total_placed();
         let (m, t) = (self.spec.material, self.spec.thickness);
@@ -3233,10 +3270,14 @@ impl App {
         });
         if let Some(pl) = self.plans.get(self.cur_sheet) {
             ui.add_space(10.0);
-            section_heading(ui, &format!("Sheet {} of {}", self.cur_sheet + 1, sheets));
+            section_heading(ui, &format!("Sheet {} of {}", self.cur_sheet + 1, self.result.sheets.len()));
             let (u, _, _) = self.sheet_usage(self.cur_sheet);
             let count = self.result.sheets[self.cur_sheet].len();
+            let runs = self.runs(self.cur_sheet);
             egui::Grid::new("cur_grid").num_columns(2).spacing([0.0, 3.0]).min_col_width(130.0).striped(true).show(ui, |ui| {
+                if runs > 1 {
+                    row(ui, "Cycles", format!("cut {runs} times"));
+                }
                 row(ui, "Parts", format!("{count}"));
                 row(ui, "Usage", format!("{u:.1} %"));
                 row(ui, "Cut length", format!("{:.1} m", pl.cut_len / 1000.0));

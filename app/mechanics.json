@@ -7995,6 +7995,66 @@
   "group": "job sheet list",
   "value": "what the stock has plus what the job holds, unless sheets with too little stock may be used",
   "source": "JS4"
+ },
+ {
+  "name": "sheet cycles",
+  "group": "sheet cycles",
+  "value": "one layout cut N times (N ≥ 1): parts, sheets and remnants × N",
+  "source": "SR1"
+ },
+ {
+  "name": "stock sheets per cycle",
+  "group": "sheet cycles",
+  "value": 1,
+  "source": "SR2"
+ },
+ {
+  "name": "more cycles the parts allow",
+  "group": "sheet cycles",
+  "value": "min over parts on the sheet of floor(left ÷ count on the sheet); 0 for an empty sheet",
+  "source": "SR3"
+ },
+ {
+  "name": "more cycles the stock allows",
+  "group": "sheet cycles",
+  "value": "free for the job (stock + held) less its other sheets; no cap off stock or with no-stock sheets allowed",
+  "source": "SR4"
+ },
+ {
+  "name": "cycles range",
+  "group": "sheet cycles",
+  "value": [1, "the most (SR3, SR4)"],
+  "source": "SR7"
+ },
+ {
+  "name": "cycles window starts at",
+  "group": "sheet cycles",
+  "value": "the most, or the count now for an empty sheet",
+  "source": "SR6"
+ },
+ {
+  "name": "deal with equal sheets",
+  "group": "Do All",
+  "value": true,
+  "source": "SR13"
+ },
+ {
+  "name": "create equal sheets (one-sheet nesting)",
+  "group": "machine",
+  "value": "No",
+  "source": "SR11"
+ },
+ {
+  "name": "cycles shown",
+  "group": "sheet cycles",
+  "value": " (×N) after the sheet's name and size when N > 1",
+  "source": "SR17"
+ },
+ {
+  "name": "LC5 job sheet Quantity",
+  "group": "BLM LC5",
+  "value": "the sheet's cycles",
+  "source": "SR21"
  }
 ]
 }

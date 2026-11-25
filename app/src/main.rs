@@ -17,6 +17,7 @@ mod grainui;
 mod mcp;
 mod ct1;
 mod cutpanel;
+mod cyclesui;
 mod orderpick;
 mod leadmenu;
 mod jointpics;
@@ -367,6 +368,8 @@ pub struct App {
     pub confirm_delete_job: Option<usize>,
     /// An empty sheet added with Add nesting, kept while it is the current sheet.
     pub empty_sheet_kept: Option<usize>,
+    /// The open Sheet cycles window (SR6).
+    pub cycles_dlg: Option<cyclesui::CyclesDlg>,
     /// The open job's last nesting change (see Job::cam_changed).
     pub cam_changed: Option<u64>,
     /// What the open job holds from stock (see Job::held).
@@ -730,6 +733,7 @@ impl App {
             tree_edit: None,
             confirm_delete_job: None,
             empty_sheet_kept: None,
+            cycles_dlg: None,
             open_set: vec![],
             open_idx: 0,
             open_scope: OpenScope::All,
@@ -859,6 +863,8 @@ impl App {
 
     /// Open another job: its products, sheet settings and nested sheets.
     pub fn open_job(&mut self, i: usize) {
+        // The Cycles window belongs to the job it was opened on.
+        self.cycles_dlg = None;
         if i >= self.jobs.len() || i == self.cur_job {
             return;
         }
@@ -1131,7 +1137,7 @@ impl App {
         self.store_job();
         self.mark_job_saved(self.cur_job);
         self.note_recent_job(path);
-        self.status = format!("Opened job {} from {} — {} product(s), {} sheet(s).", self.job_name, path.display(), self.parts.len(), self.result.sheets.len());
+        self.status = format!("Opened job {} from {} — {} product(s), {}.", self.job_name, path.display(), self.parts.len(), engine::sheets_text(&self.result.formats, self.result.sheets.len()));
         if let Some(why) = self.read_only() {
             self.status = format!("Opened job {} read-only. {why}", self.job_name);
         }
@@ -1967,7 +1973,7 @@ impl App {
                 self.checkpoint();
                 let n = self.result.sheets[ci].len();
                 let copies = engine::arrange::copies(&self.result.sheets[ci], &sel, d);
-                let extras = engine::pattern::put(&mut self.parts, &mut self.result.sheets, ci, &copies);
+                let extras = engine::pattern::put(&mut self.parts, &mut self.result.sheets, &self.result.formats, ci, &copies);
                 self.set_selection((n..self.result.sheets[ci].len()).collect());
                 self.refresh();
                 self.status = self.copied_status(n, extras);
@@ -2234,7 +2240,7 @@ impl App {
         let need: u32 = self.parts.iter().map(|p| p.qty).sum();
         let placed = self.total_placed();
         self.status = if placed as u32 == need {
-            format!("Nesting done: {} parts on {} sheet(s) — level {}, best of {} methods.", placed, self.result.sheets.len(), self.spec.nest_level().name, self.result.tried)
+            format!("Nesting done: {} parts on {} — level {}, best of {} methods.", placed, engine::sheets_text(&self.result.formats, self.result.sheets.len()), self.spec.nest_level().name, self.result.tried)
         } else {
             format!("{} of {} parts nested — some are larger than the sheet.", placed, need)
         };
@@ -2310,12 +2316,14 @@ impl App {
         }
     }
 
+    /// Every piece nested, each sheet as often as it is cut (SR1).
     pub fn total_placed(&self) -> usize {
-        self.result.sheets.iter().map(|s| s.len()).sum()
+        nest::pieces_on(&self.result.sheets, &self.result.formats)
     }
 
+    /// How many of a part are nested, each sheet as often as it is cut (SR1).
     pub fn placed_of(&self, part: usize) -> usize {
-        self.result.sheets.iter().flatten().filter(|p| p.part == part).count()
+        nest::placed_on(&self.result.sheets, &self.result.formats, part)
     }
 
     pub fn refresh(&mut self) {
@@ -2488,9 +2496,30 @@ impl App {
         self.spec.for_format(&self.result.format(i, &self.spec))
     }
 
-    /// The real area of all sheets in mm² (remnants count by their shape).
+    /// The real area of all sheets in mm² (remnants count by their shape),
+    /// each sheet as often as it is cut (SR1).
     pub fn total_sheet_area(&self) -> f64 {
-        (0..self.result.sheets.len()).map(|i| self.result.format(i, &self.spec).area_mm2()).sum()
+        (0..self.result.sheets.len()).map(|i| self.result.format(i, &self.spec).area_mm2() * self.runs(i) as f64).sum()
+    }
+
+    /// How many times sheet `i` is cut (SR1).
+    pub fn runs(&self, i: usize) -> usize {
+        nest::runs_at(&self.result.formats, i)
+    }
+
+    /// The sheets the job is cut on: every sheet as often as it is cut (SR1).
+    pub fn sheets_cut(&self) -> usize {
+        nest::sheets_cut(&self.result.formats, self.result.sheets.len())
+    }
+
+    /// The net area of every part nested, each sheet as often as it is cut.
+    pub fn parts_area_cut(&self) -> f64 {
+        self.result.sheets.iter().enumerate().map(|(k, s)| s.iter().map(|p| self.parts[p.part].net_area()).sum::<f64>() * self.runs(k) as f64).sum()
+    }
+
+    /// The machine time of the whole job: each sheet's as often as it is cut.
+    pub fn job_seconds(&self) -> f64 {
+        self.plans.iter().enumerate().map(|(k, p)| p.seconds * self.runs(k) as f64).sum()
     }
 
     /// A sheet's size as shown in lists, with its stock reference if it has one.
@@ -2498,10 +2527,12 @@ impl App {
         let f = self.result.format(i, &self.spec);
         let k = self.unit().factor();
         let size = format!("{:.d$}x{:.d$}", f.w / k, f.h / k, d = decimals);
+        // SR17: a sheet cut several times says how many.
+        let times = if f.runs() > 1 { format!(" (×{})", f.runs()) } else { String::new() };
         match (f.remnant, f.stock_ref.is_empty()) {
-            (true, _) => format!("{size} remnant {}", f.stock_ref),
-            (false, false) => format!("{size} [{}]", f.stock_ref),
-            _ => size,
+            (true, _) => format!("{size} remnant {}{times}", f.stock_ref),
+            (false, false) => format!("{size} [{}]{times}", f.stock_ref),
+            _ => format!("{size}{times}"),
         }
     }
 
@@ -3397,6 +3428,7 @@ impl eframe::App for App {
         self.dock_overlay(&ctx);
         self.times_window(&ctx);
         self.step_window(&ctx);
+        self.cycles_window(&ctx);
         self.pattern_window(&ctx);
         self.pending_dialog(&ctx);
         self.joint_sizes_window(&ctx);
@@ -3494,6 +3526,8 @@ fn main() -> eframe::Result {
     // --machine=laser|plasma|oxyfuel|waterjet|laserpunch|punch (screenshots).
     let want_sim = args.iter().any(|a| a == "--sim");
     let want_times = args.iter().any(|a| a == "--times");
+    // --cycles: the Sheet cycles window on the current sheet (screenshots).
+    let want_cycles = args.iter().any(|a| a == "--cycles");
     let want_db = args.iter().any(|a| a == "--db");
     let want_post = args.iter().any(|a| a == "--post");
     let want_dbb = args.iter().any(|a| a == "--dbbrowse");
@@ -4010,6 +4044,9 @@ fn main() -> eframe::Result {
             }
             if want_times {
                 app.show_times = true;
+            }
+            if want_cycles {
+                app.open_cycles(app.cur_sheet);
             }
             if want_db {
                 app.workspace = Workspace::Jobs;
@@ -5207,11 +5244,21 @@ mod rule_tests {
     fn identical_sheets_are_folded() {
         let mut a = App::new(None);
         a.parts = vec![Part { name: "P".into(), shape: Shape::Rectangle, w: 900.0, h: 900.0, qty: 6, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        a.cfg.stock.equal_sheets = false;
         a.run_nesting();
         let groups = a.sheet_groups();
         let total: usize = groups.iter().map(|g| g.1).sum();
         assert_eq!(total, a.result.sheets.len());
         assert!(groups.len() < a.result.sheets.len());
+        // SR13: with Deal with equal sheets on, Nest all cuts them as the
+        // cycles of one sheet; the folded count is the same.
+        a.cfg.stock.equal_sheets = true;
+        a.run_nesting();
+        assert!(a.result.sheets.len() < total, "{} nestings", a.result.sheets.len());
+        assert_eq!(a.sheets_cut(), total);
+        assert_eq!(a.sheet_groups().iter().map(|g| g.1).sum::<usize>(), total);
+        assert_eq!(a.total_placed(), 6);
+        assert!(a.sheet_label(0, 0).ends_with(&format!("(×{})", a.runs(0))), "{}", a.sheet_label(0, 0));
     }
 }
 

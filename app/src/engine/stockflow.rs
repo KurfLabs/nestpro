@@ -497,9 +497,9 @@ pub fn nest_from_stock(parts: &[Part], spec: &SheetSpec, u: &StockUse) -> Option
             // left): keep the last nesting.
             break;
         }
-        let (mut r, mut n_list) = nest_list_first(parts, spec, &plan, lead, combo);
+        let (mut r, mut n_list) = nest_list_first(parts, spec, &plan, lead, combo, st.equal_sheets);
         if st.best_format {
-            (r, n_list) = best_format(parts, spec, &plan, lead, combo, (r, n_list), &out_of_time);
+            (r, n_list) = best_format(parts, spec, &plan, lead, combo, st.equal_sheets, (r, n_list), &out_of_time);
         }
         // The sheets from the job's own list are kept whatever their
         // efficiency (JS3); the stock's own after them may be dropped.
@@ -523,20 +523,22 @@ pub fn nest_from_stock(parts: &[Part], spec: &SheetSpec, u: &StockUse) -> Option
 /// The plan's first `lead` slots are the job's own sheet list (JS3): they are
 /// filled first, on their own, so no search (best combination) swaps a
 /// listed sheet for another; what is left goes on the rest of the plan.
-/// Returns the result and how many of its sheets are the list's.
-fn nest_list_first(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], lead: usize, combo: Option<f64>) -> (NestResult, usize) {
+/// Returns the result and how many of its sheets are the list's. `equal`:
+/// Deal with equal sheets (SR13).
+fn nest_list_first(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], lead: usize, combo: Option<f64>, equal: bool) -> (NestResult, usize) {
     let lead = lead.min(plan.len());
     if lead == 0 {
-        return (nest::nest_plan_opt(parts, spec, plan, combo), 0);
+        return (nest::nest_plan_opt(parts, spec, plan, combo, equal), 0);
     }
-    let mut r = nest::nest_plan_opt(parts, spec, &plan[..lead], None);
+    let mut r = nest::nest_plan_opt(parts, spec, &plan[..lead], None, equal);
     let n = r.sheets.len();
     let mut left = parts.to_vec();
     for (i, p) in left.iter_mut().enumerate() {
-        p.qty = p.qty.saturating_sub(r.sheets.iter().flatten().filter(|c| c.part == i).count() as u32);
+        // SR1: a listed sheet cut several times takes its parts each time.
+        p.qty = p.qty.saturating_sub(nest::placed_on(&r.sheets, &r.formats, i) as u32);
     }
     if lead < plan.len() && left.iter().any(|p| p.qty > 0) {
-        let rest = nest::nest_plan_opt(&left, spec, &plan[lead..], combo);
+        let rest = nest::nest_plan_opt(&left, spec, &plan[lead..], combo, equal);
         r.sheets.extend(rest.sheets);
         r.formats.extend(rest.formats);
         if r.method.is_empty() {
@@ -552,9 +554,10 @@ fn nest_list_first(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], lead: 
 /// then the higher worst-sheet efficiency.
 fn format_score(parts: &[Part], r: &NestResult) -> (bool, f64, f64) {
     let need: usize = parts.iter().map(|p| p.qty as usize).sum();
-    let placed: usize = r.sheets.iter().map(|s| s.len()).sum();
+    // SR14: a sheet cut several times counts each time.
+    let placed: usize = nest::pieces_on(&r.sheets, &r.formats);
     let net = |s: &[Placed]| s.iter().map(|p| parts[p.part].net_area()).sum::<f64>();
-    let waste: f64 = r.sheets.iter().zip(&r.formats).map(|(s, f)| f.area_mm2() - net(s)).sum();
+    let waste: f64 = r.sheets.iter().zip(&r.formats).map(|(s, f)| (f.area_mm2() - net(s)) * f.runs() as f64).sum();
     let worst = r.sheets.iter().zip(&r.formats).map(|(s, f)| net(s) / f.area_mm2().max(1.0)).fold(1.0, f64::min);
     (placed >= need, -waste, worst)
 }
@@ -568,9 +571,9 @@ fn format_better(a: &(bool, f64, f64), b: &(bool, f64, f64)) -> bool {
 /// best of those and `first` (the plan in stock order). Sizes not reached
 /// before the time limit are skipped. The first `lead` slots are the job's
 /// own sheet list: every try starts with them (JS3), and a stock size the
-/// list took all of isn't tried.
+/// list took all of isn't tried. `equal`: Deal with equal sheets (SR13).
 #[allow(clippy::too_many_arguments)]
-fn best_format(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], lead: usize, combo: Option<f64>, first: (NestResult, usize), out_of_time: &dyn Fn() -> bool) -> (NestResult, usize) {
+fn best_format(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], lead: usize, combo: Option<f64>, equal: bool, first: (NestResult, usize), out_of_time: &dyn Fn() -> bool) -> (NestResult, usize) {
     let key = |f: &SheetFormat| (f.w, f.h, f.remnant);
     let (listed, plan) = plan.split_at(lead.min(plan.len()));
     let fallback = plan.last().filter(|s| s.format.stock_ref.is_empty()).cloned();
@@ -586,7 +589,7 @@ fn best_format(parts: &[Part], spec: &SheetSpec, plan: &[FormatSlot], lead: usiz
         let mut only: Vec<FormatSlot> = listed.to_vec();
         only.extend(plan.iter().filter(|s| !s.format.stock_ref.is_empty() && key(&s.format) == k).cloned());
         only.extend(fallback.clone());
-        let t = nest_list_first(parts, spec, &only, listed.len(), combo);
+        let t = nest_list_first(parts, spec, &only, listed.len(), combo, equal);
         let s = format_score(parts, &t.0);
         if format_better(&s, &best_s) {
             best_s = s;
@@ -611,12 +614,13 @@ pub fn used_area(parts: &[Part], sheet: &[Placed], f: &SheetFormat, mode: EffMod
 }
 
 /// The stock sheets the nested sheets are, per reference (empty sheets too:
-/// a sheet given to a nesting is taken, SS10).
+/// a sheet given to a nesting is taken, SS10), each as often as it is cut.
 pub fn sheets_used(formats: &[SheetFormat], n_sheets: usize) -> BTreeMap<String, i32> {
     let mut used: BTreeMap<String, i32> = BTreeMap::new();
     for f in formats.iter().take(n_sheets) {
         if !f.stock_ref.is_empty() {
-            *used.entry(f.stock_ref.clone()).or_default() += 1;
+            // SR2: a sheet cut several times takes a stock sheet each time.
+            *used.entry(f.stock_ref.clone()).or_default() += f.runs() as i32;
         }
     }
     used
@@ -794,6 +798,20 @@ pub fn all_remnant_marks(dir: &Path, j: &JobSheets, formats: &[SheetFormat], st:
 /// without one (a completed sheet kept whole, its parts cut out), where its
 /// parts are, since moving or re-nesting them changes that remnant (RN4).
 /// Always odd; 0 = stored before fingerprints were kept.
+/// What a sheet's stored remnants were made from: its remnant lines (or
+/// parts) and, for a sheet cut several times, its cycles, since each cycle
+/// leaves the same remnants (SR1, SS16). Changing the cycles makes them again.
+pub fn remnant_fingerprint(f: &SheetFormat, lines: &[CutLine], sheet: &[Placed]) -> u64 {
+    let fp = sheet_fingerprint(lines, sheet);
+    if f.runs() == 1 {
+        return fp;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (fp, f.runs()).hash(&mut h);
+    h.finish()
+}
+
 pub fn sheet_fingerprint(lines: &[CutLine], sheet: &[Placed]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -946,11 +964,13 @@ pub fn stored_state(stock_now: &Stock, f: &SheetFormat, lines: &[CutLine], sheet
         return Stored::None;
     }
     let has_line = lines.iter().any(|l| l.kind == CutKind::Remnant);
-    if f.made_from == sheet_fingerprint(lines, sheet) || f.made_from == 0 || (!has_line && f.made_from == legacy_no_line_fingerprint()) {
+    if f.made_from == remnant_fingerprint(f, lines, sheet) || f.made_from == 0 || (!has_line && f.made_from == legacy_no_line_fingerprint()) {
         // Unchanged (or stored before fingerprints were kept).
         return Stored::Unchanged;
     }
-    if !f.made.iter().all(|r| stock_now.get(r).is_some_and(|it| it.qty >= 1)) {
+    // Used: fewer left of a remnant than were stored (one per cycle, SS16).
+    let each = f.made_each.max(1) as i32;
+    if !f.made.iter().all(|r| stock_now.get(r).is_some_and(|it| it.qty >= each)) {
         return Stored::KeptUsed;
     }
     Stored::Rebuild
@@ -1077,7 +1097,8 @@ pub fn make_remnants(lib: &Library, j: &JobSheets, formats: &mut Vec<SheetFormat
                 .map(|(k, o)| {
                     // A given name, else the format (or <origin>-<number>).
                     let r = names.and_then(|m| m.get(&(p.sheet, k)).cloned()).unwrap_or_else(|| next_ref(s, j, f, p.sheet, Some(&parent), o, st));
-                    s.add_remnant(o.clone(), &parent, 1, Some(r), j.name)
+                    // SS16: one of each remnant for every cycle of the sheet.
+                    s.add_remnant(o.clone(), &parent, f.runs() as i32, Some(r), j.name)
                 })
                 .collect::<Vec<String>>();
             // Remember what replaced what, for undo (RN6).
@@ -1090,8 +1111,9 @@ pub fn make_remnants(lib: &Library, j: &JobSheets, formats: &mut Vec<SheetFormat
     })?;
     for (i, refs) in made {
         out.count += refs.len();
-        let fp = sheet_fingerprint(j.cut_lines.get(i).map_or(&[][..], |v| v.as_slice()), &j.sheets[i]);
+        let fp = remnant_fingerprint(&formats[i], j.cut_lines.get(i).map_or(&[][..], |v| v.as_slice()), &j.sheets[i]);
         formats[i].made_from = if refs.is_empty() { 0 } else { fp };
+        formats[i].made_each = formats[i].cycles;
         formats[i].made = refs;
     }
     Ok(out)
@@ -1144,10 +1166,11 @@ pub fn forget_booking(formats: &mut [SheetFormat], held: &mut BTreeMap<String, i
 
 /// Undo a job's stock booking: every sheet it holds back into stock, and the
 /// remnants it stored taken out again while nothing else has used them (their
-/// quantity is still the 1 they were stored with). Returns (sheets given back,
-/// remnants removed, remnants left because they were used elsewhere).
+/// quantity is still what they were stored with, one per cycle). Returns
+/// (sheets given back, remnants removed, remnants left because they were used
+/// elsewhere).
 pub fn release(lib: &Library, formats: &mut [SheetFormat], held: &mut BTreeMap<String, i32>) -> Result<(i32, usize, Vec<String>), String> {
-    let made: Vec<String> = formats.iter().flat_map(|f| f.made.iter().cloned()).collect();
+    let made: Vec<(String, i32)> = formats.iter().flat_map(|f| f.made.iter().map(|r| (r.clone(), f.made_each.max(1) as i32))).collect();
     let give: Vec<(String, i32)> = held.iter().map(|(r, n)| (r.clone(), *n)).collect();
     let (back, removed, kept) = Stock::update(lib, |s| {
         let mut back = 0;
@@ -1156,10 +1179,10 @@ pub fn release(lib: &Library, formats: &mut [SheetFormat], held: &mut BTreeMap<S
             back += n;
         }
         let (mut removed, mut kept) = (0, vec![]);
-        for r in &made {
+        for (r, each) in &made {
             match s.get(r).map(|it| it.qty) {
-                Some(q) if q >= 1 => {
-                    s.change_qty(r, -1)?;
+                Some(q) if q >= *each => {
+                    s.change_qty(r, -each)?;
                     removed += 1;
                 }
                 Some(_) => kept.push(r.clone()),
@@ -1179,10 +1202,32 @@ pub fn release(lib: &Library, formats: &mut [SheetFormat], held: &mut BTreeMap<S
 /// Is one more of stock item `reference` free for this job: in stock, plus
 /// what the job holds, less the job's sheets already of it (`replacing`: a
 /// sheet being changed, which no longer counts)?
-pub fn one_free(item: &Item, held: &BTreeMap<String, i32>, formats: &[SheetFormat], n_sheets: usize, replacing: Option<usize>) -> bool {
+/// How many times the stock lets sheet `k` be cut (SR4): its stock item's
+/// sheets free for this job (what it held at its last save counts as free,
+/// SS12) less what its other sheets use. None when the sheet isn't from
+/// stock or "Use sheets with no stock left" is on; its cycles now when the
+/// stock can't be read or no longer has the item.
+pub fn stock_cap(dir: &Path, st: &StockSettings, held: &BTreeMap<String, i32>, formats: &[SheetFormat], n_sheets: usize, k: usize) -> Option<usize> {
+    let f = formats.get(k)?;
+    if f.stock_ref.is_empty() || st.allow_no_stock {
+        return None;
+    }
+    let Some(it) = Stock::load(dir).ok().and_then(|s| s.get(&f.stock_ref).cloned()) else {
+        return Some(f.runs());
+    };
+    Some(free_beyond(&it, held, formats, n_sheets, Some(k)).max(0) as usize)
+}
+
+/// How many sheets of a stock item are free for this job beyond what its
+/// sheets use (each as often as it is cut), not counting sheet `except`'s.
+pub fn free_beyond(item: &Item, held: &BTreeMap<String, i32>, formats: &[SheetFormat], n_sheets: usize, except: Option<usize>) -> i32 {
     let free = item.qty + held.get(&item.reference).copied().unwrap_or(0);
-    let used = formats.iter().take(n_sheets).enumerate().filter(|(k, f)| Some(*k) != replacing && f.stock_ref == item.reference).count() as i32;
-    used < free
+    let used: i32 = formats.iter().take(n_sheets).enumerate().filter(|(k, f)| Some(*k) != except && f.stock_ref == item.reference).map(|(_, f)| f.runs() as i32).sum();
+    free - used
+}
+
+pub fn one_free(item: &Item, held: &BTreeMap<String, i32>, formats: &[SheetFormat], n_sheets: usize, replacing: Option<usize>) -> bool {
+    free_beyond(item, held, formats, n_sheets, replacing) > 0
 }
 
 #[cfg(test)]

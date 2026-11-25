@@ -239,7 +239,8 @@ impl App {
         Some(slide(first, across).map_or(first, |s| s.1))
     }
 
-    /// Drop a copy at `c`. Beyond the ordered quantity the order grows by one.
+    /// Drop a copy at `c`. Beyond the ordered quantity the order grows by one
+    /// (on a sheet cut several times, by one for every cycle short, SR20).
     pub fn ghost_drop(&mut self, c: Placed) -> bool {
         if !self.ghost_ok(&c) {
             self.status = "It would overlap another part or leave the sheet — move it to a free spot.".into();
@@ -252,9 +253,10 @@ impl App {
         }
         let s = self.cur_sheet.min(self.result.sheets.len() - 1);
         self.cur_sheet = s;
-        let extra = self.placed_of(c.part) as u32 >= self.parts[c.part].qty;
+        let need = (self.placed_of(c.part) + self.runs(s)) as u32;
+        let extra = need > self.parts[c.part].qty;
         if extra {
-            self.parts[c.part].qty += 1;
+            self.parts[c.part].qty = need;
         }
         self.result.sheets[s].push(c);
         self.sel_placed = Some(self.result.sheets[s].len() - 1);

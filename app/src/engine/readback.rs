@@ -493,7 +493,7 @@ mod tests {
         let parts = vec![Part { name: "DEMO-001".into(), shape: Shape::Disc, w: 200.0, h: 200.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let placed = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false, spin: Default::default() }, Placed { part: 0, x: 300.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false, spin: Default::default() }];
         let plan = crate::cnc::plan(&parts, &placed, &spec());
-        let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &[], &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"));
+        let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &[], &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"), 1);
         (parts, placed, plan, set)
     }
 
@@ -577,7 +577,7 @@ mod tests {
         let (parts, placed, plan, _) = job();
         let line = CutLine { pts: vec![[0.0, 300.0], [1000.0, 300.0]], kind: CutKind::Remnant };
         let cuts = vec![line.clone()];
-        let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"));
+        let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"), 1);
         assert_eq!(check_set(&set, &parts, &placed, &plan, &cuts), Vec::<String>::new());
         let mut bad = set;
         let main = bad.spf.iter_mut().find(|f| !f.0.contains("70") && !f.0.contains("LIS")).unwrap();
@@ -607,7 +607,7 @@ mod tests {
     fn a_cut_off_line_written_with_compensation_is_found() {
         let (parts, placed, plan, _) = job();
         let cuts = vec![CutLine { pts: vec![[0.0, 300.0], [1000.0, 300.0]], kind: CutKind::Remnant }];
-        let mut set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"));
+        let mut set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"), 1);
         let file = set.spf.iter_mut().find(|f| f.1.contains("HD_DWN_OFF")).unwrap();
         file.1 = file.1.replace("G01 G40", "G01 G41");
         let out = check_set(&set, &parts, &placed, &plan, &cuts);
@@ -618,7 +618,7 @@ mod tests {
     fn a_cut_line_with_no_length_is_not_expected() {
         let (parts, placed, plan, _) = job();
         let cuts = vec![CutLine { pts: vec![[900.0, 400.0], [900.0, 400.0]], kind: CutKind::Free }];
-        let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"));
+        let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"), 1);
         assert_eq!(check_set(&set, &parts, &placed, &plan, &cuts), Vec::<String>::new());
     }
 
@@ -662,7 +662,7 @@ mod tests {
         let full = CutLine { pts: vec![[600.0, -0.02], [600.0, 500.02]], kind: CutKind::Remnant };
         for leg in [vec![[-0.02, 300.0], [600.0, 300.0]], vec![[600.0, 300.0], [-0.02, 300.0]]] {
             let cuts = vec![full.clone(), CutLine { pts: leg, kind: CutKind::Remnant }];
-            let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"));
+            let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &cuts, &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"), 1);
             assert!(check_set(&set, &parts, &placed, &plan, &cuts).is_empty(), "{:?}", check_set(&set, &parts, &placed, &plan, &cuts));
             let main = &set.spf[0].1;
             // The leg is called first, placed at its edge end.

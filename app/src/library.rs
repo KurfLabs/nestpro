@@ -1211,7 +1211,7 @@ fn saved_line(saved: Option<&Saved>, written: u64) -> (u64, Option<Who>) {
 
 fn job_entry(id: u64, j: &JobFile, written: u64) -> Entry {
     let (updated, saved_by) = saved_line(j.saved.as_ref(), written);
-    Entry { kind: Kind::Job, id, name: j.name.clone(), folder: j.week.clone(), material: j.spec.material, material_name: unresolved_name(j.spec.material, &j.material_name), thickness: j.spec.thickness, w: j.spec.w, h: j.spec.h, count_a: j.parts.len(), count_b: j.sheets.len(), updated, tech: false, saved_by, gas: j.spec.gas }
+    Entry { kind: Kind::Job, id, name: j.name.clone(), folder: j.week.clone(), material: j.spec.material, material_name: unresolved_name(j.spec.material, &j.material_name), thickness: j.spec.thickness, w: j.spec.w, h: j.spec.h, count_a: j.parts.len(), count_b: crate::nest::sheets_cut(&j.formats, j.sheets.len()), updated, tech: false, saved_by, gas: j.spec.gas }
 }
 
 fn product_entry(id: u64, p: &ProductFile, written: u64) -> Entry {

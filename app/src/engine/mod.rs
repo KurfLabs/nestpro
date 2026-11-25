@@ -650,9 +650,96 @@ pub fn copy_name(parts: &[Part], base: &str) -> String {
     (1..10).map(|k| format!("{base} ({k})")).find(|n| !parts.iter().any(|p| &p.name == n)).unwrap_or_else(|| format!("{base} copy"))
 }
 
-/// How often a part is placed on the sheets.
-pub fn placed_count(sheets: &[Vec<Placed>], part: usize) -> usize {
-    sheets.iter().flatten().filter(|p| p.part == part).count()
+/// How many times a sheet can be cut (SR3, SR4, SR6): by the parts still to
+/// nest, and by the stock when the sheet is a stock sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CyclesLimit {
+    /// How many times it is cut now.
+    pub now: usize,
+    /// The most the parts allow: now + the cycles the parts left fill (SR3).
+    pub by_parts: usize,
+    /// The most the stock allows (SR4); None when the sheet isn't from stock.
+    pub by_stock: Option<usize>,
+}
+
+impl CyclesLimit {
+    /// The most it can be cut, at least once.
+    pub fn most(&self) -> usize {
+        self.by_stock.map_or(self.by_parts, |s| self.by_parts.min(s)).max(1)
+    }
+
+    /// Why sheet `k` can't be cut `n` times (SR7, SR10); None when it can.
+    /// Fewer than now is always allowed: the parts and sheets go back (SR8).
+    pub fn refusal(&self, k: usize, n: usize) -> Option<String> {
+        if n == 0 {
+            return Some("A sheet is cut at least once — to stop cutting it, delete the sheet.".into());
+        }
+        if n <= self.now || n <= self.most() {
+            return None;
+        }
+        let most = self.most();
+        let why = if self.by_stock.is_some_and(|s| s < self.by_parts) {
+            format!("the stock has only {} of its sheet free for it — add sheets to stock, or turn on \"Use sheets with no stock left\"", self.by_stock.unwrap_or(0))
+        } else if self.by_parts == self.now {
+            "the parts left don't fill it again — raise their quantities first".to_string()
+        } else {
+            format!("the parts left fill it only {} more time(s) — raise their quantities first", self.by_parts - self.now)
+        };
+        Some(format!("Sheet {} can be cut at most {most} time(s): {why}.", k + 1))
+    }
+}
+
+/// How many times sheet `k` can be cut (SR3, SR6): the parts still to nest
+/// (every sheet counted as often as it is cut) ÷ how many of each the sheet
+/// holds, plus the times it is cut now; `by_stock` from
+/// `stockflow::stock_cap`.
+pub fn cycles_limit(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], k: usize, by_stock: Option<usize>) -> CyclesLimit {
+    let now = nest::runs_at(formats, k);
+    let left: Vec<u32> = (0..parts.len()).map(|i| parts[i].qty.saturating_sub(nest::placed_on(sheets, formats, i) as u32)).collect();
+    let more = sheets.get(k).map_or(0, |s| nest::more_runs(s, &left));
+    CyclesLimit { now, by_parts: now + more, by_stock }
+}
+
+/// Cut sheet `k` `n` times (SR8): one layout, so its parts are nested and its
+/// stock sheets taken `n` times over (the stock follows on save, SS10).
+/// Refused, nothing changed, beyond what `limit` allows (SR10). Returns the
+/// message.
+pub fn set_cycles(formats: &mut Vec<SheetFormat>, spec: &SheetSpec, n_sheets: usize, k: usize, n: usize, limit: &CyclesLimit) -> Result<String, String> {
+    if k >= n_sheets {
+        return Err(format!("There is no sheet {} — the job has {n_sheets}.", k + 1));
+    }
+    if let Some(why) = limit.refusal(k, n) {
+        return Err(why);
+    }
+    while formats.len() < n_sheets {
+        formats.push(SheetFormat::rect(spec.w, spec.h));
+    }
+    let was = formats[k].runs();
+    formats[k].cycles = n as u32;
+    Ok(if n == was {
+        format!("Sheet {} is already cut {n} time(s).", k + 1)
+    } else if n == 1 {
+        format!("Sheet {} is now cut once.", k + 1)
+    } else {
+        format!("Sheet {} is now cut {n} times.", k + 1)
+    })
+}
+
+/// The sheets a job is cut on, said in a message: "3 sheet(s)", or with
+/// sheets cut several times (SR1) "3 sheets (2 nestings: sheet 1 ×2)".
+pub fn sheets_text(formats: &[SheetFormat], n_sheets: usize) -> String {
+    let cut = nest::sheets_cut(formats, n_sheets);
+    if cut == n_sheets {
+        return format!("{n_sheets} sheet(s)");
+    }
+    let many: Vec<String> = (0..n_sheets).filter(|&k| nest::runs_at(formats, k) > 1).map(|k| format!("sheet {} ×{}", k + 1, nest::runs_at(formats, k))).collect();
+    format!("{cut} sheets ({n_sheets} nesting{}: {})", if n_sheets == 1 { "" } else { "s" }, many.join(", "))
+}
+
+/// How many of a part are nested: on every sheet, each sheet as often as it
+/// is cut (SR1).
+pub fn placed_count(sheets: &[Vec<Placed>], formats: &[SheetFormat], part: usize) -> usize {
+    nest::placed_on(sheets, formats, part)
 }
 
 // ---------------------------------------------------------------------------
@@ -671,14 +758,13 @@ pub fn nest_all(parts: &[Part], spec: &SheetSpec, group_nest: bool, stock: Optio
         r.normalise(spec);
         return r;
     }
+    // SR13: Do All's "Deal with equal sheets" (on when there are no options).
+    let equal = stock.is_none_or(|u| u.st.equal_sheets);
     // JS3: the job's own sheet list first; without the stock, then the job's size.
     let mut r = stock.and_then(|u| stockflow::nest_from_stock(parts, spec, u)).unwrap_or_else(|| {
         let mut plan = stockflow::list_slots(spec, stock).0;
-        if plan.is_empty() {
-            return nest::nest(parts, spec);
-        }
         plan.push(nest::FormatSlot { format: nest::SheetFormat::rect(spec.w, spec.h), qty: None });
-        nest::nest_plan(parts, spec, &plan)
+        nest::nest_plan_opt(parts, spec, &plan, None, equal)
     });
     r.normalise(spec);
     for (s, f) in r.sheets.iter_mut().zip(&r.formats) {
@@ -1657,8 +1743,8 @@ pub fn format_at(formats: &[SheetFormat], spec: &SheetSpec, k: usize) -> SheetFo
 /// Identical sheets folded together, in nesting order (original: rows with
 /// CopyIndx > 1 are hidden and Quantity counts the copies — MECHANICS.md #4):
 /// the same parts in the same places on the same kind of sheet (a remnant or
-/// another stock size is a different sheet). Returns (first sheet index,
-/// number of identical sheets).
+/// another stock size is a different sheet), each sheet as often as it is
+/// cut (SR1). Returns (first sheet index, number of identical sheets).
 pub fn sheet_groups(result: &crate::nest::NestResult, spec: &SheetSpec) -> Vec<(usize, usize)> {
     let sig = |s: &Vec<Placed>| {
         let mut v: Vec<(usize, i64, i64, u8, bool, i64)> = s.iter().map(|p| (p.part, (p.x * 10.0).round() as i64, (p.y * 10.0).round() as i64, p.turns, p.mirror, (p.spin.deg * 100.0).round() as i64)).collect();
@@ -1672,10 +1758,11 @@ pub fn sheet_groups(result: &crate::nest::NestResult, spec: &SheetSpec) -> Vec<(
     let mut groups: Vec<(usize, usize, Vec<(usize, i64, i64, u8, bool, i64)>)> = vec![];
     for (i, s) in result.sheets.iter().enumerate() {
         let g = sig(s);
+        let runs = nest::runs_at(&result.formats, i);
         if let Some(e) = groups.iter_mut().find(|e| e.2 == g && fmt(e.0) == fmt(i)) {
-            e.1 += 1;
+            e.1 += runs;
         } else {
-            groups.push((i, 1, g));
+            groups.push((i, runs, g));
         }
     }
     groups.into_iter().map(|(i, n, _)| (i, n)).collect()
@@ -1939,7 +2026,7 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
         for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
             let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
             let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
-            let set = crate::blm::sheet_set(k + 1, parts, s, spec, pl, c, b);
+            let set = crate::blm::sheet_set(k + 1, parts, s, spec, pl, c, b, nest::runs_at(formats, k));
             let issues = readback::check_set(&set, parts, s, pl, c);
             if !issues.is_empty() {
                 return Err(format!("{}{}", readback::refusal(k + 1, &issues), remove_programs_note(&dir, job_name, post, blm)));
@@ -1981,7 +2068,7 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
         remove_stale_programs(&dir, job_name, post, blm, &files)?;
         let mut csv = String::from("reference,shape,width_mm,height_mm,quantity,nested\n");
         for (i, p) in parts.iter().enumerate() {
-            csv.push_str(&format!("{},{},{:.1},{:.1},{},{}\n", p.name.replace(',', " "), p.shape.label(), p.w, p.h, p.qty, placed_count(sheets, i)));
+            csv.push_str(&format!("{},{},{:.1},{:.1},{},{}\n", p.name.replace(',', " "), p.shape.label(), p.w, p.h, p.qty, placed_count(sheets, formats, i)));
         }
         let f = dir.join("parts.csv");
         std::fs::write(&f, csv)?;
@@ -2038,6 +2125,11 @@ impl JobFile {
 
     pub fn plans(&self) -> Vec<SheetPlan> {
         plans(&self.parts, &self.sheets, &self.formats, &self.spec, &self.manual_cuts)
+    }
+
+    /// How many times sheet `k` is cut (SR1).
+    pub fn runs(&self, k: usize) -> usize {
+        nest::runs_at(&self.formats, k)
     }
 
     /// Sheet `k`'s format (size, remnant outline, stock reference).

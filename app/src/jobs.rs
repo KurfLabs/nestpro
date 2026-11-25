@@ -228,7 +228,7 @@ impl App {
                 continue;
             }
             let name = if i == self.cur_job { &self.job_name } else { &j.name };
-            let sheets = if i == self.cur_job { self.result.sheets.len() } else { j.result.sheets.len() };
+            let sheets = if i == self.cur_job { self.sheets_cut() } else { crate::nest::sheets_cut(&j.result.formats, j.result.sheets.len()) };
             if let Some(crate::jobtree::TreeEdit::Job { index, text }) = cx.edit {
                 if *index == i {
                     let mut t = text.clone();
@@ -544,10 +544,10 @@ impl App {
 
     pub fn job_summary_body(&mut self, ui: &mut egui::Ui) {
         let need: u32 = self.parts.iter().map(|p| p.qty).sum();
-        let sheets = self.result.sheets.len();
-        let parts_area: f64 = self.result.sheets.iter().flatten().map(|p| self.parts[p.part].net_area()).sum();
+        let sheets = self.sheets_cut();
+        let parts_area = self.parts_area_cut();
         let util = if sheets > 0 { parts_area / self.total_sheet_area().max(1.0) * 100.0 } else { 0.0 };
-        let secs: f64 = self.plans.iter().map(|p| p.seconds).sum();
+        let secs = self.job_seconds();
         egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 2)).show(ui, |ui| {
             // Values that don't fit wrap onto a second line rather than being
             // cut off: a job or part number cut short could pass for another one.
@@ -657,7 +657,7 @@ impl App {
     }
 
     fn sheet_area(&mut self, ui: &mut egui::Ui) {
-        let n = self.result.sheets.len();
+        let n = self.sheets_cut();
         let rows = self.sheet_groups().len();
         pane_header(ui, &format!("Sheet View: {rows} / Total Qty: {n}"));
         if n == 0 {
@@ -841,7 +841,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(format!("Product List: {} / Total Qty: {}", self.parts.len(), need));
             ui.separator();
-            ui.label(format!("Sheets: {}", self.result.sheets.len()));
+            ui.label(format!("Sheets: {}", self.sheets_cut()));
             ui.separator();
             let line = self.selection_line();
             if !line.is_empty() {

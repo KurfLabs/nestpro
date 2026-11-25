@@ -2468,7 +2468,40 @@ of sheets for Do All (that list's own rules weren't traced); all estimated.
 | JS6 | **Agents**: `sheet-list` with `mode=list` (default), `add` (`ref=` or `w=` `h=`, `qty=` or `as_needed=true`), `remove`, `qty`, `move` (`line=`, `to=`) and `clear`; `info` shows `sheet_list` and `nest_on.listed`; `nest` fills the list first and says which lines it left out. With `nest stock=off` a stock line can't be read and is left out. |
 
 Not yet built: remnant reference points for the post-processor (RF11, meaning estimated),
-prenesting, "nesting equals sheet" (UI25).
+prenesting. "Nesting equals sheet" (UI25) is built as *Deal with equal sheets* (SR13);
+its machine-file twin for one sheet is not (SR11, SR12).
+
+### Sheet cycles: one nesting cut several times
+
+A nesting is one layout with a count of how many times it is cut (its *cycles*;
+the original calls it the nesting's quantity or repetitions). 300 parts that fill
+120 to a sheet nest as one sheet cut twice and a different last sheet, not three
+separate sheets. The app keeps the count on the sheet (`SheetFormat.cycles`).
+
+| # | Rule | |
+|---|---|---|
+| SR1 | A nesting is one layout and a count of at least 1. Its parts are nested, its sheets taken and its remnants made that many times over; the job's totals (parts nested, sheets, area, weight, cut length, pierces, machine time) count every cycle. | observed |
+| SR2 | Sheets taken from stock = cycles × the sheets loaded each cycle (1 unless the machine loads several at once; the app loads one). | observed |
+| SR3 | How many more times a layout can be cut: for each part on it, what is still to nest of the part (every sheet counted at its cycles) ÷ how many the layout holds, rounded down; the smallest of those. An empty layout: none. | observed |
+| SR4 | For a stock sheet, the stock caps it: its sheets free for this job (what the job held at its last save counts as free) less what its other sheets use. No cap when the sheet isn't from stock or *Use sheets with no stock left* is on; when the stock can't be read or no longer has the sheet, it can't be raised. | observed; the cap when the stock can't be read is estimated |
+| SR5 | Raising the count by the automatic paths only ever uses what SR3 allows, so it never nests more than ordered. | observed |
+| SR6 | *Sheet cycles* (Sheets group, or right-click a sheet in the Nesting Explorer) shows the stock free for the sheet, how many times it is cut now, the most (SR3, SR4) and the new count, starting at the most when the parts left fill it again, else at the count now. | observed (the window's layout is ours) |
+| SR7 | The new count is a whole number from 1 up to the most; more can't be typed. Agents asking for more are refused with what limits it. | observed (window); agent refusal is ours |
+| SR8 | A new count changes only the number: lowering it gives the parts back (they are no longer nested), raising it nests them again; the layout stays as it is. | observed |
+| SR9 | The stock follows: sheets taken or given back, and the sheet's remnants made again with the new count (unless one is already used, ST12). The app settles both when the job is saved (ST4). | observed; settled on save is the rebuild's |
+| SR10 | A raise the stock can't cover is refused and nothing changes. | observed |
+| SR11 | The machine setting "Create equal sheets" (No / Yes / Ask, default No) does the same after the automatic nesting of one sheet. | observed; not built |
+| SR12 | Ask offers a count from now to the most, the most picked first; Cancel keeps it; nothing is asked when it can't grow. | observed (the first pick estimated); not built |
+| SR13 | *Deal with equal sheets* (Do All option, on by default): as soon as Nest all has nested a sheet, the sheet is cut again as many times as SR3 and that format's stock (SR4) allow, and the next sheet starts from what is left. The only test is whether the parts left fill the same layout; finished sheets are never compared. Off: every sheet is its own nesting. Agents: `nest equal_sheets=`. | observed |
+| SR14 | When Do All tries several sheet formats, each try is scored with its cycles: parts placed and waste count every cycle. | observed |
+| SR15 | When the best combination search picks another format for a sheet, that sheet's cycles follow from that format's stock and the parts left, as for any other sheet. | estimated |
+| SR16 | A "repetition preference" (few / moderate / many) exists in the help but nothing in the program's Do All was found to use it. | unknown; not built |
+| SR17 | A sheet cut several times shows its count after its name and size in the Nesting Explorer, the title bar and the status bar: `1W 120.000x60.000 (×2)`; once, nothing is added. | observed (the original writes `(2)`) |
+| SR18 | Usage %, remnant %, parts, cut length and time shown for one sheet are for one cycle; the job's totals multiply (SR1). | observed |
+| SR19 | Editing a sheet cut several times (moving, turning, adding or removing a part) changes every cycle: it is one layout. Undo takes back a change to the count. | observed |
+| SR20 | A part added to a sheet cut N times needs N pieces still to place. The original asks to raise the order; the rebuild raises it by the pieces short, as it does for any extra piece (HM19), and says so. | observed; raising without asking is the rebuild's |
+| SR21 | One program per nesting, run as many times as its cycles: the LC5 job sheet's Quantity is the count (BL32); the job's other programs are written once per nesting. | observed for the LC5 job sheet; whether the LC5 repeats the program by itself is unknown |
+
 
 ### The stock through the agent operations (engine/stockflow.rs, engine/ops.rs)
 

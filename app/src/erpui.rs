@@ -1028,8 +1028,8 @@ impl App {
                     ui.label(RichText::new(if planner { "— not from the ERP. Open a work order below to make one." } else { "— not from the ERP. Tick job operations below and import them to make one." }).color(t.text_dim));
                     return;
                 }
-                let placed: usize = self.result.sheets.iter().map(|s| s.len()).sum();
-                ui.label(RichText::new(format!("· {from_erp} ERP part kind(s) · {} sheet(s), {placed} placed", self.result.sheets.len())).color(t.text_dim));
+                let placed = self.total_placed();
+                ui.label(RichText::new(format!("· {from_erp} ERP part kind(s) · {} sheet(s), {placed} placed", self.sheets_cut())).color(t.text_dim));
                 if let Some(l) = &self.erp_job {
                     if !l.material_name.is_empty() {
                         ui.label(RichText::new(format!("· {} on {}", l.material_name, l.operation_name)).color(t.text_dim));

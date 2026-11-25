@@ -608,8 +608,9 @@ pub fn sheet_margins(plan: &SheetPlan, cuts: &[crate::cutoff::CutLine], w: f64, 
     [room(w - hi[0]), room(h - hi[1]), room(lo[0]), room(lo[1])]
 }
 
-/// Build the BLM program set for one sheet.
-pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[crate::cutoff::CutLine], set: &BlmSettings) -> BlmSet {
+/// Build the BLM program set for one sheet, cut `runs` times (its cycles).
+#[allow(clippy::too_many_arguments)]
+pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[crate::cutoff::CutLine], set: &BlmSettings, runs: usize) -> BlmSet {
     let nest = nest_name(&set.job, sheet_no);
     let origin_of = |i: usize| bounds(parts, &sheet[i..i + 1]).0;
     // One subprogram per part as machined: copies share one only when their
@@ -720,7 +721,8 @@ pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &Sheet
     tag(&mut x, 1, "Width", &plain(spec.h));
     tag(&mut x, 1, "PartXMax", &plain(xmax));
     tag(&mut x, 1, "PartYMax", &plain(ymax));
-    tag(&mut x, 1, "Quantity", "1");
+    // BL32, SR21: how many times the sheet is cut (its cycles).
+    tag(&mut x, 1, "Quantity", &format!("{}", runs.max(1)));
     tag(&mut x, 1, "NestingTime", &format!("{}", plan.seconds.round() as i64));
     tag(&mut x, 1, "GasId", &format!("{}", set.gas_id));
     tag(&mut x, 1, "GasName", &set.gas_name);
@@ -882,6 +884,18 @@ pub fn write_sheet(dir: &std::path::Path, set: &BlmSet) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod blm_tests {
+
+    /// BL32, SR21: the job sheet says how many times the sheet is cut.
+    #[test]
+    fn the_job_sheet_says_how_many_times_the_sheet_is_cut() {
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
+        let parts = vec![Part { name: "P".into(), shape: crate::nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        let sheet = vec![Placed { part: 0, x: 20.0, y: 20.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() }];
+        let plan = crate::cnc::plan_manual(&parts, &sheet, &spec, &[]);
+        let set = BlmSettings::for_spec(&spec, "LC5", "J");
+        assert!(sheet_set(1, &parts, &sheet, &spec, &plan, &[], &set, 1).xml.contains("<Quantity>1</Quantity>"));
+        assert!(sheet_set(1, &parts, &sheet, &spec, &plan, &[], &set, 3).xml.contains("<Quantity>3</Quantity>"));
+    }
     use super::*;
     use crate::nest::Shape;
 
@@ -1089,7 +1103,7 @@ mod blm_tests {
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         let picks = [crate::cnc::ManualCut { placed: 0, contour: 0, start: [30.0, 100.0], reverse: false, whole: None }, crate::cnc::ManualCut { placed: 0, contour: 2, start: [10.0, 100.0], reverse: false, whole: None }];
         let plan = crate::cnc::plan_manual(&parts, &sheet, &spec, &picks);
-        let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &BlmSettings::for_spec(&spec, "LC5", "J-1"));
+        let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &BlmSettings::for_spec(&spec, "LC5", "J-1"), 1);
         let main = &s.spf[0].1;
         assert!(main.find("J1X1702_spf").unwrap() < main.find("J1X1701_spf").unwrap(), "{main}");
     }
@@ -1112,7 +1126,7 @@ mod blm_tests {
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
         let plan = crate::cnc::plan(&parts, &sheet, &spec);
         let set = BlmSettings::for_spec(&spec, "LC5 YLS6000", "J-1");
-        let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &set);
+        let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &set, 1);
         let names: Vec<&str> = s.spf.iter().map(|f| f.0.as_str()).collect();
         assert_eq!(names, vec!["J1X1.SPF", "J1X1701.SPF", "J1X1LIS.SPF"]);
         let main = &s.spf[0].1;
