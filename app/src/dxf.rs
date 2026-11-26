@@ -1305,15 +1305,21 @@ mod tests {
         for (x, y, bulge) in v {
             lw += &format!("10\n{x}\n20\n{y}\n42\n{bulge}\n");
         }
-        let text = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{lw}0\nCIRCLE\n8\n0\n10\n1\n20\n1\n30\n0\n40\n0.125\n0\nENDSEC\n0\nEOF\n");
+        // A second 1/4" hole drawn as arcs of 116°, 116°, 116° and 12°: pieces
+        // of different lengths on one circle stay one circle.
+        let arcs: String = [(0.0, 116.0), (116.0, 232.0), (232.0, 348.0), (348.0, 360.0)].iter().map(|(a0, a1)| format!("0\nARC\n8\n0\n10\n3\n20\n1\n30\n0\n40\n0.125\n50\n{a0}\n51\n{a1}\n")).collect();
+        let text = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{lw}0\nCIRCLE\n8\n0\n10\n1\n20\n1\n30\n0\n40\n0.125\n{arcs}0\nENDSEC\n0\nEOF\n");
         let g = parse(&text).unwrap().0;
+        assert_eq!(g.holes.len(), 2);
         let geo = crate::nest::Geo { outline: g.outline.clone(), fills: vec![], holes: g.holes.clone() };
         let el = crate::nest::elements_of(&geo);
         let kinds = |c: usize, k: crate::nest::ElemKind| el.iter().filter(|e| e.contour == c && e.kind == k).count();
         use crate::nest::ElemKind::*;
-        assert_eq!(el.iter().filter(|e| e.contour == 0).count(), 1, "the hole: {:?}", el.iter().map(|e| e.kind).collect::<Vec<_>>());
-        assert_eq!(kinds(0, Circle), 1);
-        assert_eq!((kinds(1, Line), kinds(1, Arc)), (4, 4), "the outline: {:?}", el.iter().filter(|e| e.contour == 1).map(|e| (e.kind, e.length)).collect::<Vec<_>>());
+        for h in 0..2 {
+            assert_eq!(el.iter().filter(|e| e.contour == h).count(), 1, "hole {h}: {:?}", el.iter().filter(|e| e.contour == h).map(|e| (e.kind, e.length)).collect::<Vec<_>>());
+            assert_eq!(kinds(h, Circle), 1);
+        }
+        assert_eq!((kinds(2, Line), kinds(2, Arc)), (4, 4), "the outline: {:?}", el.iter().filter(|e| e.contour == 2).map(|e| (e.kind, e.length)).collect::<Vec<_>>());
         // Every circle, however small, bends less than a corner at each point.
         for d in [0.0625, 0.125, 0.25, 0.375, 0.4375, 0.5, 0.625] {
             let n = arc_segments(d * 25.4 / 2.0, std::f64::consts::TAU);
