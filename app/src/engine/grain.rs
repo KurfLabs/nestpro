@@ -197,7 +197,7 @@ pub fn turn_part(parts: &mut [Part], sheets: &mut [Vec<Placed>], i: usize, deg: 
 
 /// A part of one of the built-in shapes as a drawing of its own, so it can be
 /// turned: the same outline and holes, cut the same way.
-fn drawn(p: &Part) -> CustomGeo {
+pub(crate) fn drawn(p: &Part) -> CustomGeo {
     let g = p.geometry();
     let (w, h) = p.bbox();
     CustomGeo {

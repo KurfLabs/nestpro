@@ -205,6 +205,14 @@ pub static OPS: &[Op] = &[
         a("max_radius", Ty::Num, "Lines that would need a larger radius stay lines, mm (default 50000)"),
         a("min_lines", Ty::Int, "An arc replaces at least this many lines, and never fewer than 2 (default 0)"),
     ] },
+    Op { name: "break-elements", group: "Parts", kind: Kind::Write, help: "Modify a part's own drawing by picking its lines, arcs and circles at points (\"x,y\" in part mm; part-info gives the contours): break splits the element at `at` (an open line becomes two lines; a closed contour stays closed, with an element end there); cut takes away the piece of each element picked in `cut` that runs past (or between) where it crosses or touches the base element picked at `base` — one pick is the original's Cut 1, several are Cut several, and it is how a line hanging over another is snipped; join takes away the piece round each of the two picks `first` and `second` up to where the two elements cross, leaving a corner; bridge cuts a bridge `width` mm wide square off the element at `first` to the element at `second` (across a hole it leaves a strip of material and two holes; from a hole to the outline it opens the hole to the outside). Loose ends the edit leaves that meet are joined again, and a chain that closes becomes a closed contour (a hole is cut). An edit that would open the outline or split the part in two is refused. A built-in shape becomes a drawing of its own. Leads and joints on contours the edit didn't touch stay; nested copies keep their place.", args: &[
+        PART, Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["break", "cut", "join", "bridge"] },
+        a("at", Ty::Points, "break: the break point \"x,y\""), a("base", Ty::Points, "cut: a point on the base element \"x,y\""),
+        a("cut", Ty::Points, "cut: a point on each piece to take away, \"x,y\" or several \"x,y;x,y\""),
+        a("first", Ty::Points, "join: on the piece of the first element to take away; bridge: where the bridge starts, on the first element"),
+        a("second", Ty::Points, "join: on the piece of the second element to take away; bridge: on the element the bridge runs to"),
+        a("width", Ty::Num, "bridge: the bridge's width, mm"), a("tol", Ty::Num, "How near a pick must be to its element, mm (default 1)"),
+    ] },
     Op { name: "remove-part", group: "Parts", kind: Kind::Write, help: "Take a part out of the job (its placed copies go too).", args: &[PART] },
     Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default; each cut or marked contour's place in the cut order, cut_order from 1, and cut_order_by_hand when set with part-cut-order), the whole cut order (contours in the order cut, and those set by hand), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
     Op { name: "contour-tech", group: "Technology", kind: Kind::Write, help: "Set contours of an imported part (numbers from part-info: holes first, the outline, then open lines) to cut, mark (marked on the surface, open or closed), no-cut (kept on the part and shown, never machined), bend-line (a no-cut line in its own colour) or leave-out (not on the part), and/or give cut contours a cut quality by hand (1-12, which wins over the part's size ranges and quality and the machine's size bands; auto gives the choice back to them). same=true also sets every contour equal to one of them (same shape, moved; with only a quality, the equal contours that are cut). The outline is always cut, open lines can't be cut yet, and a mark always uses the machine's marking quality.", args: &[
@@ -2283,6 +2291,30 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             o.data = json!({"contours": done.done.contours.iter().map(|k| k + 1).collect::<Vec<_>>(), "arcs": done.done.count.arcs, "lines": done.done.count.lines});
             Ok(o)
         }
+        "break-elements" => {
+            use super::breakelems as be;
+            let i = one_part(job, &a)?;
+            let tol = a.num("tol")?.unwrap_or(be::PICK_TOL);
+            let need = |k: &str, what: &str| a.point(k).and_then(|p| p.ok_or_else(|| format!("Give {k}=\"x,y\" (part mm): {what}.")));
+            let (parts, sheets, manual) = (&mut job.parts, &mut job.sheets, &mut job.manual_cuts);
+            let done = match a.need_str("mode")?.as_str() {
+                "break" => be::break_at(parts, sheets, manual, i, need("at", "the point to break the element at")?, tol)?,
+                "cut" => {
+                    let pieces = a.points("cut")?.filter(|v| !v.is_empty()).ok_or("Give cut=\"x,y\" (or several, \"x,y;x,y\"): a point on each piece to take away.")?;
+                    be::cut(parts, sheets, manual, i, need("base", "a point on the base element the pieces are cut back to")?, &pieces, tol)?
+                }
+                "join" => be::join(parts, sheets, manual, i, need("first", "on the piece of the first element to take away")?, need("second", "on the piece of the second element to take away")?, tol)?,
+                "bridge" => {
+                    let width = a.num("width")?.ok_or("Give width= the bridge's width in mm.")?;
+                    be::bridge(parts, sheets, manual, i, need("first", "where the bridge starts, on the first element")?, need("second", "on the element the bridge runs to")?, width, tol)?
+                }
+                m => return Err(format!("break-elements mode '{m}': give break, cut, join or bridge.")),
+            };
+            if done.nested {
+                job.stale = true;
+            }
+            Ok(Outcome::msg(done.message))
+        }
         "remove-part" => {
             let i = one_part(job, &a)?;
             let n = job.parts[i].name.clone();
@@ -4014,6 +4046,11 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Parts/Previous\npart", "view: parts are named by number"),
     ("Parts/Next\npart", "view: parts are named by number"),
     ("Grain/Turn\nleft", "turn-part"),
+    ("Modify/Break", "break-elements"),
+    ("Modify/Cut 1", "break-elements"),
+    ("Modify/Cut several", "break-elements"),
+    ("Modify/Join", "break-elements"),
+    ("Modify/Bridges", "break-elements"),
     ("Grain/Turn\nright", "turn-part"),
     ("Grain/Lock", "edit-part"),
     ("Draw/Points", "todo: [DRW-1] drafting (greyed out in the app too)"),

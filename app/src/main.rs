@@ -1916,7 +1916,28 @@ impl App {
         if self.sel_part.is_some_and(|i| i >= self.parts.len()) {
             self.sel_part = None;
         }
+        // A Break elements tool's clicks and marks were on the drawing
+        // before; they go, but Cut several keeps its base while it is still
+        // on a line (BE1).
+        let base = self.dv.modify_picks.first().copied().filter(|_| self.dv.modify == Some(crate::drawing::Modify::CutSeveral));
+        self.dv.modify_picks.clear();
+        self.dv.modify_marks.clear();
+        self.dv.modify_note = None;
         self.refresh();
+        if let (Some(b), Some(i)) = (base, self.shown_part()) {
+            if crate::engine::breakelems::element_at(&self.parts[i], b, 1e-6, &[]).is_some() {
+                self.dv.modify_picks.push(b);
+            }
+        }
+        self.dv.modify_base_kept = !self.dv.modify_picks.is_empty();
+    }
+
+    /// With a Break elements tool in hand, its note says the drawing was
+    /// put back (or forward), in place of what the last click did.
+    fn modify_note_after(&mut self, what: &str) {
+        if self.dv.modify.is_some() {
+            self.dv.modify_note = Some(crate::drawing::ModifyNote { text: what.into(), ok: true, spot: None });
+        }
     }
 
     pub fn undo(&mut self) {
@@ -1926,6 +1947,7 @@ impl App {
             self.restore(s);
             self.result_card = None;
             self.status = "Undone.".into();
+            self.modify_note_after("Undone: the drawing is back as it was. Ctrl+Y puts the change back.");
         }
     }
 
@@ -1936,6 +1958,7 @@ impl App {
             self.restore(s);
             self.result_card = None;
             self.status = "Redone.".into();
+            self.modify_note_after("Redone.");
         }
     }
 
@@ -3882,7 +3905,7 @@ fn main() -> eframe::Result {
             }
             // --import=<folder> [--import-pick=<file name>]: the Import drawings
             // window there, with that file picked and previewed (screenshots).
-            if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--import=").map(PathBuf::from)) {
+            if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--import=").map(PathBuf::from)).filter(|d| !d.is_file()) {
                 app.importui.sync = true;
                 app.importui.show(std::slice::from_ref(&d));
                 if let Some(f) = std::env::args().find_map(|a| a.strip_prefix("--import-pick=").map(|n| d.join(n))) {
@@ -4469,6 +4492,34 @@ fn main() -> eframe::Result {
                 };
                 if ["--lead-scope=", "--lead-slide=", "--lead-add=", "--lead-remove="].iter().any(|k| arg(k).is_some()) {
                     app.tab = Tab::Technology;
+                }
+                // --modify=<break|cut1|cut-several|join|bridge> picks up a Break
+                // elements tool on the part shown; --modify-click=x,y;x,y clicks
+                // the part there (part mm) as the canvas does (BE1);
+                // --modify-width=mm sets the bridge width first.
+                if let Some(m) = arg("--modify=") {
+                    use crate::drawing::Modify;
+                    let tool = match m.as_str() {
+                        "break" => Some(Modify::Break),
+                        "cut1" => Some(Modify::Cut1),
+                        "cut-several" => Some(Modify::CutSeveral),
+                        "join" => Some(Modify::Join),
+                        "bridge" => Some(Modify::Bridge),
+                        _ => None,
+                    };
+                    app.set_modify(tool);
+                    if let Some(w) = arg("--modify-width=").and_then(|v| v.parse::<f64>().ok()) {
+                        app.dv.bridge_width = w;
+                    }
+                    let clicks = arg("--modify-click=").unwrap_or_default();
+                    for xy in clicks.split(';').filter(|t| !t.trim().is_empty()) {
+                        if let Some((x, y)) = xy.split_once(',').and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?))) {
+                            app.modify_click([x, y], 1.0);
+                        }
+                    }
+                    // --modify-hover=x,y: the pointer is taken to be there, for
+                    // the preview of the next click (BE15).
+                    app.dv.shot_hover = arg("--modify-hover=").and_then(|v| v.split_once(',').and_then(|(x, y)| Some([x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?])));
                 }
                 // --part-pan-px=<x>,<y>: the Part view moved by that many pixels.
                 if let Some((x, y)) = arg("--part-pan-px=").and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))) {

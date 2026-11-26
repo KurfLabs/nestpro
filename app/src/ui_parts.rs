@@ -169,6 +169,16 @@ pub enum Icon {
     OrderCut,
     /// A list of colour swatches (contours of one cut quality).
     OrderQuality,
+    /// A line with a gap and a dot in it: break an element at a point.
+    BreakAt,
+    /// A line crossing another, its overhang dashed: cut one piece back.
+    Trim,
+    /// Several lines crossing one, their overhangs dashed: cut several.
+    TrimMany,
+    /// Two lines meeting at a corner, the crossed-out ends dashed: join.
+    Corner,
+    /// A slot split by a strip of material: a bridge.
+    Bridge,
 }
 
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -916,6 +926,42 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
                 p.circle_stroke(v(x, 0.0), 3.5, a);
             }
             p.extend(EShape::dashed_line(&[v(-1.5, 0.0), v(1.5, 0.0)], Stroke::new(1.0, accent), 1.5, 1.5));
+        }
+        Icon::BreakAt => {
+            // A line with a break in it, the break point marked.
+            p.line_segment([v(-11.0, 4.0), v(-2.0, 4.0)], s);
+            p.line_segment([v(2.0, 4.0), v(11.0, 4.0)], s);
+            p.circle_filled(v(0.0, 4.0), 2.4, accent);
+            poly(vec![v(-3.0, -9.0), v(0.0, -3.0), v(3.0, -9.0)], a);
+        }
+        Icon::Trim | Icon::TrimMany => {
+            // The base line across, and lines that should stop on it; what
+            // runs past it is dashed (cut away).
+            p.line_segment([v(-11.0, -2.0), v(11.0, -2.0)], a);
+            let xs: &[f32] = if icon == Icon::Trim { &[0.0] } else { &[-6.0, 0.0, 6.0] };
+            for &x in xs {
+                p.line_segment([v(x, -2.0), v(x, 10.0)], s);
+                for y in [-5.0f32, -9.5] {
+                    p.line_segment([v(x, y), v(x, y - 2.5)], Stroke::new(1.3, ink));
+                }
+            }
+        }
+        Icon::Corner => {
+            // Two lines meeting at a corner, their crossed ends dashed.
+            poly(vec![v(-7.0, 10.0), v(-7.0, -4.0), v(10.0, -4.0)], s);
+            p.circle_filled(v(-7.0, -4.0), 2.0, accent);
+            for y in [-7.0f32, -11.0] {
+                p.line_segment([v(-7.0, y), v(-7.0, y - 2.0)], Stroke::new(1.3, ink));
+            }
+            for x in [-10.0f32, -14.0] {
+                p.line_segment([v(x, -4.0), v(x + 2.0, -4.0)], Stroke::new(1.3, ink));
+            }
+        }
+        Icon::Bridge => {
+            // A slot cut in two by a strip of material.
+            rr(Rect::from_min_max(v(-11.0, -6.0), v(-2.5, 6.0)), s);
+            rr(Rect::from_min_max(v(2.5, -6.0), v(11.0, 6.0)), s);
+            p.rect_filled(Rect::from_min_max(v(-1.5, -6.0), v(1.5, 6.0)), CornerRadius::ZERO, accent);
         }
         Icon::OrderQuality => {
             for (k, y) in [-6.0f32, 0.0, 6.0].into_iter().enumerate() {

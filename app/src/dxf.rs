@@ -262,6 +262,9 @@ pub struct ImportReport {
     pub gaps_closed: usize,
     /// Objects drawn twice in the same place, left out once (DX4).
     pub duplicates: usize,
+    /// Places where lines that ran past each other were split so the
+    /// outline closes (BE13).
+    pub crossings_split: usize,
     /// Objects the drawing hides or draws as drafting lines, left out (DX3):
     /// (layer row, objects).
     pub hidden_left_out: Vec<(String, usize)>,
@@ -967,6 +970,112 @@ fn join_pieces(pieces: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>, report: &mut Import
     Ok(still_open)
 }
 
+/// The most segments the open lines may have for BE13's crossing search
+/// (every pair is tried); a drawing with more is read as before.
+const SPLIT_SEGS: usize = 6000;
+
+/// BE13: the open chains split at every point where one crosses another or
+/// ends on another's side (within 0.01 mm), and how many such points there
+/// were; `None` when none cross, or there are too many segments to try.
+fn split_at_crossings(chains: &[Vec<P>]) -> Option<(Vec<Vec<P>>, usize)> {
+    let total: usize = chains.iter().map(|c| c.len().saturating_sub(1)).sum();
+    if chains.is_empty() || total > SPLIT_SEGS {
+        return None;
+    }
+    let boxes: Vec<[f64; 4]> = chains
+        .iter()
+        .map(|c| c.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]))
+        .collect();
+    let eps = JOIN_TOL;
+    // Per chain: (segment, share along it) where it is to be split.
+    let mut cuts: Vec<Vec<(usize, f64)>> = vec![vec![]; chains.len()];
+    // Chains against each other, and each against itself (its ends can run
+    // past each other where three corners already joined).
+    for a in 0..chains.len() {
+        for b in a..chains.len() {
+            let (ba, bb) = (boxes[a], boxes[b]);
+            if ba[0] > bb[2] + eps || bb[0] > ba[2] + eps || ba[1] > bb[3] + eps || bb[1] > ba[3] + eps {
+                continue;
+            }
+            for i in 0..chains[a].len().saturating_sub(1) {
+                for j in (if a == b { i + 2 } else { 0 })..chains[b].len().saturating_sub(1) {
+                    let (p0, p1, q0, q1) = (chains[a][i], chains[a][i + 1], chains[b][j], chains[b][j + 1]);
+                    let (r, s) = ([p1[0] - p0[0], p1[1] - p0[1]], [q1[0] - q0[0], q1[1] - q0[1]]);
+                    let (lr, ls) = (r[0].hypot(r[1]), s[0].hypot(s[1]));
+                    let den = r[0] * s[1] - r[1] * s[0];
+                    if lr < 1e-12 || ls < 1e-12 || den.abs() <= 1e-12 * lr * ls {
+                        continue;
+                    }
+                    let qp = [q0[0] - p0[0], q0[1] - p0[1]];
+                    let t = (qp[0] * s[1] - qp[1] * s[0]) / den;
+                    let u = (qp[0] * r[1] - qp[1] * r[0]) / den;
+                    if t < -eps / lr || t > 1.0 + eps / lr || u < -eps / ls || u > 1.0 + eps / ls {
+                        continue;
+                    }
+                    // Within one chain its own pieces meet end to end: only a
+                    // true crossing counts, or one of the chain's two ends
+                    // landing on another of its edges.
+                    if a == b {
+                        let last = chains[a].len() - 2;
+                        let inner = |v: f64, l: f64| v > eps / l && v < 1.0 - eps / l;
+                        let chain_end = |k: usize, v: f64, l: f64| (k == 0 && v <= eps / l) || (k == last && v >= 1.0 - eps / l);
+                        if !(inner(t, lr) && (inner(u, ls) || chain_end(j, u, ls)) || inner(u, ls) && chain_end(i, t, lr)) {
+                            continue;
+                        }
+                    }
+                    cuts[a].push((i, t.clamp(0.0, 1.0)));
+                    cuts[b].push((j, u.clamp(0.0, 1.0)));
+                }
+            }
+        }
+    }
+    // A chain's end lying on one of its own points further along (or back)
+    // splits it there too.
+    for (c, at) in chains.iter().zip(cuts.iter_mut()).filter(|(c, _)| c.len() >= 3) {
+        let last = c.len() - 1;
+        for &(e, other) in &[(c[0], 0usize), (c[last], last)] {
+            for k in 1..last {
+                if k.abs_diff(other) > 1 && close(c[k], e, eps) {
+                    at.push((k, 0.0));
+                }
+            }
+        }
+    }
+    let mut out = vec![];
+    let mut n = 0;
+    for (c, mut at) in chains.iter().zip(cuts) {
+        at.sort_by(|x, y| (x.0, x.1).partial_cmp(&(y.0, y.1)).unwrap_or(std::cmp::Ordering::Equal));
+        let mut piece = vec![c[0]];
+        // The next point of the chain not yet in a piece.
+        let mut v = 1;
+        for (i, t) in at {
+            while v <= i {
+                piece.push(c[v]);
+                v += 1;
+            }
+            let q = [c[i][0] + (c[i + 1][0] - c[i][0]) * t, c[i][1] + (c[i + 1][1] - c[i][1]) * t];
+            if !close(q, piece[piece.len() - 1], eps) {
+                piece.push(q);
+            }
+            // A split at the chain's own start or end (by place along it, not
+            // by point: the chain's end can lie on its own first edge), or
+            // on the last split, splits nothing.
+            let seg = ((c[i + 1][0] - c[i][0]).hypot(c[i + 1][1] - c[i][1])).max(1e-12);
+            let at_end = i + 2 == c.len() && t >= 1.0 - eps / seg;
+            if piece.len() >= 2 && !at_end {
+                out.push(std::mem::replace(&mut piece, vec![q]));
+                n += 1;
+            }
+        }
+        piece.extend(c[v..].iter().copied());
+        piece.dedup_by(|a, b| close(*a, *b, eps));
+        if piece.len() >= 2 {
+            out.push(piece);
+        }
+    }
+    (n > 0).then_some((out, n))
+}
+
 /// Turn a read drawing into one part, using a role per layer (missing = Cut).
 pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(CustomGeo, ImportReport), String> {
     let role = |l: &str| roles.get(l).copied().unwrap_or_else(|| d.default_role(l));
@@ -1013,8 +1122,28 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
     // pieces only with each other (CS2), so a bend line ending on an outline
     // corner can't take that corner's place in the outline, while a hole drawn
     // dashed and set to Cut still closes.
-    let open_lines = join_pieces(open, &mut loops, &mut report)?;
+    let mut open_lines = join_pieces(open, &mut loops, &mut report)?;
     let bend_lines = join_pieces(bend_pieces, &mut loops, &mut report)?;
+    // BE13 (after the dashed rows' loops are in, so a dashed outline counts):
+    // lines that run past each other (an overhang) don't join end to
+    // end. When the lines left open close a bigger contour once they are
+    // split where they cross, the drawing is read that way: the outline
+    // closes, the ends that stick out of it are left off like any open
+    // piece off the part, and those inside stay as open lines to cut back
+    // (Modify → Cut 1).
+    if let Some((pieces, n)) = split_at_crossings(&open_lines) {
+        let mut more: Vec<Vec<P>> = vec![];
+        let mut rep = report.clone();
+        if let Ok(rest) = join_pieces(pieces, &mut more, &mut rep) {
+            let biggest = |l: &[Vec<P>]| l.iter().map(|q| area(q)).fold(0.0, f64::max);
+            if biggest(&more) > biggest(&loops) + JOIN_TOL {
+                loops.extend(more);
+                report = rep;
+                report.crossings_split += n;
+                open_lines = rest;
+            }
+        }
+    }
     // A loop with a point that isn't a number (a damaged file) can't be an outline.
     let loops: Vec<Vec<P>> = loops.into_iter().filter(|l| l.iter().all(|p| p[0].is_finite() && p[1].is_finite())).map(|l| cleanup(l, eps)).filter(|l| l.len() >= 3).collect();
     if loops.is_empty() {
@@ -1165,6 +1294,68 @@ mod tests {
         assert_eq!(rep.open_pieces, 0);
         let tri: f64 = g.fills.iter().map(|t| area(t)).sum();
         assert!((tri - 5000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_corner_whose_two_lines_both_run_past_still_closes() {
+        // BE13: three corners meet end to end, the fourth's two lines run
+        // past each other, so the joined chain crosses itself.
+        let line = |a: [f64; 4]| format!("0\nLINE\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], a[2], a[3]);
+        let mut d = String::from("0\nSECTION\n2\nENTITIES\n");
+        for l in [[0.0, 55.0, 0.0, 0.0], [0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [100.0, 50.0, -5.0, 50.0]] {
+            d.push_str(&line(l));
+        }
+        d.push_str("0\nENDSEC\n0\nEOF\n");
+        let (g, rep) = parse(&d).unwrap();
+        assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes");
+        assert!(rep.crossings_split > 0);
+    }
+
+    #[test]
+    fn a_corner_where_one_line_runs_past_still_closes() {
+        // BE13: the top ends on the left side, which runs 5 mm past it.
+        let line = |a: [f64; 4]| format!("0\nLINE\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], a[2], a[3]);
+        let mut d = String::from("0\nSECTION\n2\nENTITIES\n");
+        for l in [[0.0, 55.0, 0.0, 0.0], [0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [100.0, 50.0, 0.0, 50.0]] {
+            d.push_str(&line(l));
+        }
+        d.push_str("0\nENDSEC\n0\nEOF\n");
+        let (g, _) = parse(&d).unwrap();
+        assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes");
+        // The same with the left side a polyline that has a point where the top ends.
+        let poly = "0\nLWPOLYLINE\n90\n3\n70\n0\n10\n0\n20\n55\n10\n0\n20\n50\n10\n0\n20\n0\n";
+        let mut d2 = String::from("0\nSECTION\n2\nENTITIES\n");
+        d2.push_str(poly);
+        for l in [[0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [100.0, 50.0, 0.0, 50.0]] {
+            d2.push_str(&line(l));
+        }
+        d2.push_str("0\nENDSEC\n0\nEOF\n");
+        let (g, _) = parse(&d2).unwrap();
+        assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes at the polyline's point");
+    }
+
+    #[test]
+    fn lines_running_past_each_other_still_make_the_outline() {
+        // BE13: a 100 × 50 plate drawn as four lines; the top runs 5 mm past
+        // both sides, the left side 5 mm below the bottom, and a 10 mm line
+        // stands on the top edge inside the plate. Nothing joins end to
+        // end, so before BE13 there was no outline at all.
+        let line = |a: [f64; 4]| format!("0\nLINE\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], a[2], a[3]);
+        let mut d = String::from("0\nSECTION\n2\nENTITIES\n");
+        for l in [[-5.0, 50.0, 105.0, 50.0], [0.0, -5.0, 0.0, 50.0], [0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [50.0, 50.0, 50.0, 40.0]] {
+            d.push_str(&line(l));
+        }
+        d.push_str("0\nENDSEC\n0\nEOF\n");
+        let (g, rep) = parse(&d).unwrap();
+        assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes");
+        assert!((g.w - 100.0).abs() < 1e-9 && (g.h - 50.0).abs() < 1e-9, "the ends sticking out aren't part of it");
+        assert_eq!(rep.crossings_split, 4);
+        assert_eq!(rep.open_pieces, 3, "the three ends outside are left off");
+        // The line inside stays, to be cut back by hand.
+        assert_eq!(g.contours.iter().filter(|c| !c.closed).count(), 1);
+        // A drawing that joins as it is reads exactly as before.
+        let (_, rep) = parse(SAMPLE_DXF).unwrap();
+        assert_eq!(rep.crossings_split, 0);
     }
 
     #[test]
