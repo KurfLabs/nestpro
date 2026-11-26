@@ -64,6 +64,81 @@ impl Snap {
     }
 }
 
+/// The Modify → Break elements tool in use on the part (BE1–BE8).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Modify {
+    Break,
+    Cut1,
+    CutSeveral,
+    Join,
+    Bridge,
+}
+
+impl Modify {
+    /// The tool's name, as on its button.
+    pub fn label(self) -> &'static str {
+        match self {
+            Modify::Break => "Break",
+            Modify::Cut1 => "Cut 1",
+            Modify::CutSeveral => "Cut several",
+            Modify::Join => "Join",
+            Modify::Bridge => "Bridges",
+        }
+    }
+
+    /// What to click next, after `picks` clicks (the note in the Part view
+    /// and the status bar).
+    pub fn prompt(self, picks: usize) -> &'static str {
+        match (self, picks) {
+            (Modify::Break, _) => "Click the line where it is to be broken (the white ring shows where).",
+            (Modify::Cut1 | Modify::CutSeveral, 0) => "Click the base line: the one the overhang should stop at.",
+            (Modify::Cut1, _) => "Click the piece to cut away. Red dashes show what goes.",
+            (Modify::CutSeveral, _) => "Click each piece to cut away, back to the same base. Red dashes show what goes.",
+            (Modify::Join, 0) => "Click the piece of the first line to take away (the bit past where the two cross).",
+            (Modify::Join, _) => "Click the piece of the second line to take away. Red dashes show what goes.",
+            (Modify::Bridge, 0) => "Click the first line where the bridge is to be (it runs square off that line).",
+            (Modify::Bridge, _) => "Click the line the bridge runs to. Green sides become cuts; the label says if the strip stays.",
+        }
+    }
+
+    /// The edit the clicks so far make with one more click at `next` (the
+    /// last click, or the point under the pointer for the preview); `None`
+    /// while the tool needs more clicks.
+    pub fn edit(self, picks: &[P], next: P, width: f64) -> Option<crate::engine::breakelems::Edit> {
+        use crate::engine::breakelems::Edit;
+        if picks.len() + 1 < self.picks() {
+            return None;
+        }
+        Some(match self {
+            Modify::Break => Edit::Break(next),
+            Modify::Cut1 | Modify::CutSeveral => Edit::Cut { base: picks[0], pieces: vec![next] },
+            Modify::Join => Edit::Join(picks[0], next),
+            Modify::Bridge => Edit::Bridge { first: picks[0], second: next, width },
+        })
+    }
+
+    /// Clicks it takes before the tool acts.
+    pub fn picks(self) -> usize {
+        match self {
+            Modify::Break => 1,
+            _ => 2,
+        }
+    }
+}
+
+/// What a Break elements click did, for the note under the tool's prompt.
+#[derive(Clone, Debug)]
+pub struct ModifyNote {
+    pub text: String,
+    /// Done (true) or refused.
+    pub ok: bool,
+    /// A refused click: where, so the view can ring it.
+    pub spot: Option<P>,
+}
+
+/// The bridge width the Bridges tool starts with, mm (our choice; BE7).
+pub const BRIDGE_WIDTH: f64 = 3.0;
+
 /// State of the drawing view.
 #[derive(Clone, Debug)]
 pub struct DrawView {
@@ -107,6 +182,20 @@ pub struct DrawView {
     pub cursor: Option<P>,
     /// The Smooth window, open with the values being set (SM21).
     pub smooth: Option<crate::engine::smooth::Smooth>,
+    /// The Break elements tool in use, and the points clicked for it so far
+    /// (each on the element it picked, so zooming between clicks keeps it).
+    pub modify: Option<Modify>,
+    pub modify_picks: Vec<P>,
+    /// What the last click did (done or refused), shown under the tool's
+    /// prompt in the Part view until the next click.
+    pub modify_note: Option<ModifyNote>,
+    /// Where Break put element ends while the tool is in hand (white ticks).
+    pub modify_marks: Vec<P>,
+    /// Screenshots: the pointer is taken to be here (part mm) for the
+    /// Break elements preview.
+    pub shot_hover: Option<P>,
+    /// The Bridges tool's width, mm: kept for the next bridge (BE7).
+    pub bridge_width: f64,
 }
 
 impl Default for DrawView {
@@ -137,6 +226,12 @@ impl Default for DrawView {
             sim_follow: false,
             cursor: None,
             smooth: None,
+            modify: None,
+            modify_picks: vec![],
+            modify_note: None,
+            modify_marks: vec![],
+            shot_hover: None,
+            bridge_width: BRIDGE_WIDTH,
         }
     }
 }
@@ -146,7 +241,7 @@ impl Default for DrawView {
 pub const MISSING: &[(&str, &str, &[&str])] = &[
     ("Home", "Draw", &["Delete Geometry", "2D points", "Line segments", "Lines", "Continuous line/arc", "Arc segments", "Full circles", "Squares", "Rectangles", "Modified rectangles", "Polygons", "Obround slots", "Radial slots", "Ovals", "Ellipses", "Pulleys"]),
     ("Home", "Access to points", &["Center point contour", "Intersection point", "Double intersection", "Tangent point", "Projected point", "Quadrant point", "Mixed point"]),
-    ("Home", "Modify", &["Break elements", "Fillets", "Chamfer", "Offset", "Lengthen elements", "Join elements", "Fitting: By points, Make tangent, Reduce overlappings", "Shorten-lengthen", "Join and fillet"]),
+    ("Home", "Modify", &["Fillets", "Chamfer", "Offset", "Lengthen elements", "Join elements", "Fitting: By points, Make tangent, Reduce overlappings", "Shorten-lengthen", "Join and fillet"]),
     ("Home", "One-touch Figures", &["One-touch figures 1–12"]),
     ("Home", "Transform", &["Copy", "Move", "Stretch", "Rotate", "Scale", "Place Near", "Mirror", "Break Parts", "Union", "Subtraction", "Intersection", "Change Cutting Direction", "Contour Ordering", "Transform One-Touch Figures"]),
     ("Home", "Review", &["Detect part", "View Verify Geometry Points"]),
@@ -173,7 +268,7 @@ pub const MISSING: &[(&str, &str, &[&str])] = &[
 
 /// What the rebuild already has in the Drawing module.
 pub const BUILT: &[(&str, &str)] = &[
-    ("Home", "Back/previous/next part, Access to points (picked, end, mid, centre, near), Smooth (Fitting → Smooth), Verify Part, Time and cost, View Geometry, Distance and Angle, Angle between three points, Orthogonal"),
+    ("Home", "Back/previous/next part, Access to points (picked, end, mid, centre, near), Smooth (Fitting → Smooth), Break elements (Break, Cut 1, Cut several, Join, Bridges), Verify Part, Time and cost, View Geometry, Distance and Angle, Angle between three points, Orthogonal"),
     ("Technology", "Lead-ins (4 types, keypad position, on element), micro-joints (gap, leads, corner; edit leads), loops, cut quality, marking / special / note texts (curved), apply to selected or all parts"),
     ("Machining", "Automatic, Delete instructions, Contours (Manual Contours by click, box or sweep, Automatic, Parts, All Marks, All Cut, All Contours of one Quality), cut order numbers and rapids, CN and system (kerf) compensation, Current status, Verify the Machining"),
     ("View", "Axis, Color Display, Machining Window, Restore Panels, Full Screen, Show Parts, Zoom All / Window / Previous / In / Out"),
@@ -594,6 +689,7 @@ impl App {
             soon_menu(&r, "Draw", &["2D points", "Line segments", "Lines", "Continuous line/arc", "Arc segments", "Full circles", "Squares", "Rectangles", "Modified rectangles", "Polygons", "Obround slots", "Radial slots", "Ovals", "Ellipses", "Pulleys"]);
             ribbon_button(ui, Icon::Remove, "Delete\ngeometry", false, false).on_hover_text(soon("Delete Geometry"));
         });
+        self.modify_group(ui);
         self.edit_geometry_group(ui);
         // Kept apart by kind: a check (a command), what is shown (on/off), and
         // the measuring tools (one at a time).
@@ -647,6 +743,134 @@ impl App {
             // "Coming soon" sits with the other unavailable commands, not in
             // the everyday ribbon (Settings → General shows them).
             self.missing_group(ui);
+        }
+    }
+
+    /// Modify → Break elements (BE1–BE8): the tools that cut the part's own
+    /// lines back, split them, join them at a corner or cut a bridge. One
+    /// tool at a time; clicking the lit one, or Esc, puts it down.
+    fn modify_group(&mut self, ui: &mut egui::Ui) {
+        let mut chose = None;
+        let cur = self.dv.modify;
+        let unit = self.unit();
+        ribbon_group(ui, "Modify", |ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add_space(1.0);
+                if ribbon_small(ui, Icon::BreakAt, "Break", cur == Some(Modify::Break), true).on_hover_text("Break an element in two at the point you click. An open line becomes two lines; a closed contour stays closed and is cut the same.").clicked() {
+                    chose = Some(Modify::Break);
+                }
+                if ribbon_small(ui, Icon::Trim, "Cut 1", cur == Some(Modify::Cut1), true).on_hover_text("Snip a line that runs past another: click the base line (the one it should stop at), then the piece to cut away. Red dashes show what goes before you click.").clicked() {
+                    chose = Some(Modify::Cut1);
+                }
+                if ribbon_small(ui, Icon::TrimMany, "Cut several", cur == Some(Modify::CutSeveral), true).on_hover_text("Like Cut 1 for many lines: click the base line once, then each piece to cut away. Esc picks another base; Esc again puts the tool down.").clicked() {
+                    chose = Some(Modify::CutSeveral);
+                }
+            });
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add_space(1.0);
+                if ribbon_small(ui, Icon::Corner, "Join", cur == Some(Modify::Join), true).on_hover_text("Join two crossing lines at a corner: click the piece of each line to take away (the part past the crossing). Red dashes show what goes before you click.").clicked() {
+                    chose = Some(Modify::Join);
+                }
+                if ribbon_small(ui, Icon::Bridge, "Bridges", cur == Some(Modify::Bridge), true).on_hover_text("Cut a bridge of the width beside it between two lines: click where it starts on the first, then the second. Across a hole it leaves a strip of material (two holes). Before the second click the bridge shows shaded, with its green sides to be cut.").clicked() {
+                    chose = Some(Modify::Bridge);
+                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Width").size(12.0).color(th().text_dim));
+                    crate::units::drag_len_in(ui, &mut self.dv.bridge_width, unit, 0.1, 1000.0).on_hover_text("The bridge's width (Bridges keeps it for the next one)");
+                });
+            });
+        });
+        if let Some(m) = chose {
+            self.set_modify(if cur == Some(m) { None } else { Some(m) });
+        }
+    }
+
+    /// Pick up a Break elements tool (or put it down with `None`): the other
+    /// pointer tools (measuring, zoom window, placing a text, painting
+    /// contours, picking the cut order) stop, and the Part view says what to
+    /// click (BE1).
+    pub fn set_modify(&mut self, m: Option<Modify>) {
+        self.dv.modify = m;
+        self.dv.modify_picks.clear();
+        self.dv.modify_note = None;
+        self.dv.modify_marks.clear();
+        if let Some(m) = m {
+            self.dv.measure_on = false;
+            self.dv.zoom_window = false;
+            self.placing_text = false;
+            self.cut_panel.row = None;
+            if self.order_pick.on.is_some() {
+                self.order_pick_end();
+            }
+            self.status = format!("{}: {} Esc stops.", m.label(), m.prompt(0));
+        } else {
+            self.status.clear();
+        }
+    }
+
+    /// Esc or right-click with a Break elements tool in hand (BE1): the
+    /// clicks so far go and the tool stays; with none, the tool is put down.
+    pub fn modify_back(&mut self) {
+        let Some(m) = self.dv.modify else { return };
+        if self.dv.modify_picks.is_empty() {
+            self.set_modify(None);
+        } else {
+            self.dv.modify_picks.clear();
+            self.dv.modify_note = None;
+            self.status = format!("{}: {}", m.label(), m.prompt(0));
+        }
+    }
+
+    /// A click on the part with a Break elements tool in hand: it is noted
+    /// (as the point on the element it picked), and once the tool has its
+    /// clicks the part is changed (one undo step). A refused last click is
+    /// taken back, so the clicks before it stay (BE1).
+    pub fn modify_click(&mut self, at: P, tol: f64) {
+        let (Some(m), Some(i)) = (self.dv.modify, self.shown_part()) else { return };
+        use crate::engine::breakelems as be;
+        let picks = self.dv.modify_picks.clone();
+        let Some(hit) = be::element_at(&self.parts[i], at, tol, &picks) else {
+            self.dv.modify_note = Some(ModifyNote { text: "No line there: click right on a line of the part.".into(), ok: false, spot: Some(at) });
+            self.status = format!("No line there. {}", m.prompt(picks.len()));
+            return;
+        };
+        let Some(edit) = m.edit(&picks, hit.at, self.dv.bridge_width) else {
+            self.dv.modify_picks.push(hit.at);
+            self.dv.modify_note = None;
+            self.status = format!("{}: {}", m.label(), m.prompt(self.dv.modify_picks.len()));
+            return;
+        };
+        let mut parts = self.parts.clone();
+        let mut sheets = self.result.sheets.clone();
+        let mut manual = self.manual_cuts.clone();
+        match be::apply_in_view(&mut parts, &mut sheets, &mut manual, i, &edit, tol) {
+            Ok(e) => {
+                self.checkpoint();
+                self.parts = parts;
+                self.result.sheets = sheets;
+                self.manual_cuts = manual;
+                if e.nested {
+                    self.stale = true;
+                }
+                self.refresh();
+                // Cut several keeps its base for the next piece; the others start over.
+                if m == Modify::CutSeveral {
+                    self.dv.modify_picks.truncate(1);
+                } else {
+                    self.dv.modify_picks.clear();
+                }
+                if m == Modify::Break {
+                    self.dv.modify_marks.push(hit.at);
+                }
+                self.dv.modify_note = Some(ModifyNote { text: format!("{} Ctrl+Z undoes it.", e.short), ok: true, spot: None });
+                self.status = e.message;
+            }
+            Err(e) => {
+                self.dv.modify_note = Some(ModifyNote { text: format!("Nothing changed: {e}"), ok: false, spot: Some(hit.at) });
+                self.status = format!("{e} {}", m.prompt(self.dv.modify_picks.len()));
+            }
         }
     }
 
@@ -1306,5 +1530,66 @@ mod drawing_tests {
         assert_eq!(snap_point(&el, [198.0, 2.0], 5.0, Snap::End), [200.0, 0.0]);
         let (d, _, _, a) = measure([0.0, 0.0], [0.0, 10.0]);
         assert!((d - 10.0).abs() < 1e-9 && (a - 90.0).abs() < 1e-9);
+    }
+
+    /// A 100 × 50 plate with a 40 × 20 hole and a line standing on the
+    /// hole's top edge, 15 mm long, open in the window's Part view.
+    fn app_with_stub() -> crate::App {
+        use crate::dxf::{Contour, ContourState, CustomGeo};
+        let rect = |x0: f64, y0: f64, x1: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        let contours = vec![Contour::new(rect(20.0, 10.0, 60.0, 30.0), true, ContourState::Cut), Contour::new(rect(0.0, 0.0, 100.0, 50.0), true, ContourState::Cut), Contour::new(vec![[30.0, 30.0], [30.0, 45.0]], false, ContourState::NoCut)];
+        let mut g = CustomGeo { outline: vec![], holes: vec![], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 100.0, h: 50.0, contours, hand_order: vec![] };
+        g.apply_states();
+        let mut a = crate::App::new(None);
+        a.parts = vec![Part { name: "DEMO-001".into(), shape: Shape::Custom, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: Some(std::sync::Arc::new(g)), rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        a.result = Default::default();
+        a.manual_cuts.clear();
+        a.open_set = vec![0];
+        a.open_idx = 0;
+        a.refresh();
+        a.undo.clear();
+        a
+    }
+
+    #[test]
+    fn a_refused_click_keeps_the_base_and_esc_steps_back() {
+        // BE1: the base stays picked after a refused piece; Esc takes the
+        // clicks back, then puts the tool down.
+        let mut a = app_with_stub();
+        a.set_modify(Some(Modify::Cut1));
+        a.modify_click([50.0, 30.3], 1.0);
+        assert_eq!(a.dv.modify_picks, vec![[50.0, 30.0]], "kept on the line it picked");
+        a.modify_click([0.3, 25.0], 1.0);
+        assert!(a.dv.modify_note.as_ref().is_some_and(|n| !n.ok), "the outline edge doesn't cross the base");
+        assert_eq!(a.dv.modify_picks.len(), 1, "the base is still picked");
+        a.modify_click([30.0, 40.0], 1.0);
+        assert!(a.dv.modify_note.as_ref().is_some_and(|n| n.ok && n.text.contains("Ctrl+Z")));
+        assert_eq!(crate::engine::contours::list(&a.parts[0]).len(), 2, "the stub is gone");
+        a.set_modify(Some(Modify::Cut1));
+        a.modify_click([50.0, 30.0], 1.0);
+        a.modify_back();
+        assert_eq!(a.dv.modify, Some(Modify::Cut1));
+        assert!(a.dv.modify_picks.is_empty());
+        a.modify_back();
+        assert_eq!(a.dv.modify, None);
+    }
+
+    #[test]
+    fn undo_with_cut_several_keeps_the_base_and_says_so() {
+        // BE1: after Ctrl+Z the note says the drawing is back; Cut several's
+        // base stays picked while it is still on a line.
+        let mut a = app_with_stub();
+        a.set_modify(Some(Modify::CutSeveral));
+        a.modify_click([50.0, 30.0], 1.0);
+        a.modify_click([30.0, 40.0], 1.0);
+        assert!(a.dv.modify_note.as_ref().is_some_and(|n| n.ok && n.text.starts_with("Cut away 1 piece")), "{:?}", a.dv.modify_note);
+        a.undo();
+        assert_eq!(crate::engine::contours::list(&a.parts[0]).len(), 3, "the stub is back");
+        assert_eq!(a.dv.modify_picks, vec![[50.0, 30.0]]);
+        assert!(a.dv.modify_note.as_ref().is_some_and(|n| n.text.starts_with("Undone")));
+        // The view names lines by what they are, not by number.
+        a.modify_click([0.3, 25.0], 1.0);
+        let n = a.dv.modify_note.clone().unwrap();
+        assert!(!n.ok && n.text.contains("The outline doesn't cross") && !n.text.contains("contour"), "{}", n.text);
     }
 }

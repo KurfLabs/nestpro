@@ -14068,3 +14068,54 @@ fn an_agent_smooths_a_hole_drawn_as_short_lines_into_arcs() {
     call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "smooth_tolerance": 0.01}));
     assert_eq!(lc5_arcs(jp3)[0], 0);
 }
+
+#[test]
+fn an_agent_snips_overhanging_lines_and_cuts_a_bridge_across_a_hole() {
+    // BE13 on import, then BE4, BE6, BE7, BE10 through break-elements.
+    let d = dir("break_elements");
+    let job = d.join("modify.snjob");
+    let jp = job.to_str().unwrap();
+    // A 100 × 50 plate drawn as four lines whose top runs 5 mm past both
+    // sides, a 10 mm line standing on the top edge inside, a hole Ø20.
+    let line = |a: [f64; 4]| format!("0\nLINE\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], a[2], a[3]);
+    let mut body = String::new();
+    for l in [[-5.0, 50.0, 105.0, 50.0], [0.0, 0.0, 0.0, 50.0], [0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [50.0, 50.0, 50.0, 40.0]] {
+        body.push_str(&line(l));
+    }
+    body.push_str("0\nCIRCLE\n10\n25\n20\n25\n40\n10\n");
+    let dxf = d.join("DEMO-001.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{body}0\nENDSEC\n0\nEOF\n")).unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000}));
+    let r = call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 2}));
+    assert!(r.to_string().contains("ran past each other"), "{r}");
+    let kinds = |s: &mut Session| {
+        let info = call(s, "part-info", None, json!({"part": 1}));
+        let c = info["data"]["contours"].as_array().unwrap().clone();
+        (c.iter().filter(|c| c["closed"] == true).count(), c.iter().filter(|c| c["closed"] == false).count(), info["data"]["w"].as_f64().unwrap())
+    };
+    assert_eq!(kinds(&mut s), (2, 1, 100.0), "plate and hole closed, the stub inside kept");
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    // Cut 1: the base is the top edge, the piece the stub.
+    let r = call(&mut s, "break-elements", None, json!({"part": 1, "mode": "cut", "base": "20,50", "cut": "50,45"}));
+    assert!(r["message"].as_str().unwrap().contains("open lines 1 → 0"), "{r}");
+    assert_eq!(kinds(&mut s), (2, 0, 100.0));
+    // A bridge 3 mm wide across the hole: two holes, and the nest is out of date.
+    let r = call(&mut s, "break-elements", None, json!({"part": 1, "mode": "bridge", "first": [25, 35], "second": [25, 15], "width": 3}));
+    assert!(r["message"].as_str().unwrap().contains("holes cut 1 → 2"), "{r}");
+    assert_eq!(kinds(&mut s), (3, 0, 100.0));
+    assert!(call(&mut s, "info", None, json!({})).to_string().contains("nest again"));
+    // Refusals say what to do instead, and change nothing.
+    // Two edges of the outline meeting at its corner don't cross (BE3).
+    let e = err(&mut s, "break-elements", json!({"part": 1, "mode": "cut", "base": "80,50", "cut": "100,25"}));
+    assert!(e.contains("doesn't cross or touch the base"), "{e}");
+    assert!(err(&mut s, "break-elements", json!({"part": 1, "mode": "bridge", "first": "60,50", "second": "60,0", "width": 3})).contains("separate pieces"));
+    assert!(err(&mut s, "break-elements", json!({"part": 1, "mode": "join", "first": "200,200", "second": "60,0"})).contains("No line"));
+    assert!(err(&mut s, "break-elements", json!({"part": 1, "mode": "bridge", "first": "60,50", "second": "60,0"})).contains("width"));
+    assert_eq!(kinds(&mut s), (3, 0, 100.0));
+    // Break keeps a closed contour closed and cut.
+    let r = call(&mut s, "break-elements", None, json!({"part": 1, "mode": "break", "at": "70,0"}));
+    assert!(r["message"].as_str().unwrap().contains("stays closed"), "{r}");
+    assert_eq!(kinds(&mut s), (3, 0, 100.0));
+    let _ = std::fs::remove_dir_all(&d);
+}

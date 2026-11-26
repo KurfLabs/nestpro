@@ -43,6 +43,22 @@ pub const KERF_PATH: Color32 = Color32::from_rgb(56, 220, 230);
 
 /// The Part view's technology card (top left), screen px.
 const INFO_CARD: Vec2 = Vec2::new(400.0, 101.0);
+/// Extra room Fit leaves above the part for a Break elements tool's note.
+const MODIFY_BAND_PX: f32 = 28.0;
+/// The first clause of a refusal, for the one line by the pointer.
+fn first_clause(e: &str) -> String {
+    let end = [": ", ", so ", ". "].iter().filter_map(|s| e.find(s)).min().unwrap_or(e.len());
+    e[..end].trim_end_matches('.').to_string()
+}
+
+/// The Break elements preview's colours (BE15): what an edit takes away,
+/// the lines it adds, and the open lines it usually fixes.
+const MODIFY_GONE: Color32 = Color32::from_rgb(248, 80, 90);
+/// What the tool's clicks picked (light blue, apart from the part's lines).
+const MODIFY_PICK: Color32 = Color32::from_rgb(96, 165, 250);
+const MODIFY_NEW: Color32 = Color32::from_rgb(74, 222, 128);
+const MODIFY_OPEN: Color32 = Color32::from_rgb(251, 191, 36);
+
 /// A click this close to a lead (screen px) picks the lead (LE9).
 const LEAD_PICK_PX: f32 = 6.0;
 /// Width of the card of the lead clicked on.
@@ -167,6 +183,8 @@ impl App {
         self.dv.sim = None;
         self.dv.sim_run = false;
         self.dv.measure.clear();
+        self.dv.modify = None;
+        self.dv.modify_picks.clear();
         self.part_zoom = 1.0;
         self.part_pan = Vec2::ZERO;
         self.part_view_hist.clear();
@@ -179,6 +197,9 @@ impl App {
         }
         let n = self.open_set.len() as i32;
         self.open_idx = ((self.open_idx as i32 + delta).rem_euclid(n)) as usize;
+        self.dv.modify_picks.clear();
+        self.dv.modify_note = None;
+        self.dv.modify_marks.clear();
         self.sel_part = Some(self.open_set[self.open_idx]);
     }
 
@@ -374,6 +395,9 @@ impl App {
         let margin = PART_FIT_MARGIN_PX;
         // While simulating, the part fits above the Simulation Window.
         let view = if self.dv.sim.is_some() && self.dv.machining { Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.bottom() - SIM_WINDOW_BAND_PX)) } else { rect };
+        // With a Break elements tool in hand, Fit leaves room above the part
+        // for the tool's note (BE1).
+        let view = if self.dv.modify.is_some() { Rect::from_min_max(view.min + Vec2::new(0.0, MODIFY_BAND_PX), view.max) } else { view };
         // The scale and centre that fit an extent in the view.
         let framing = |ext: [f64; 4]| {
             let (ew, eh) = ((ext[2] - ext[0]).max(1.0) as f32, (ext[3] - ext[1]).max(1.0) as f32);
@@ -476,6 +500,18 @@ impl App {
             self.cut_panel_canvas(ui, &resp, &painter, idx, &to_s, &to_w, (APERTURE_PX / s) as f64);
             self.order_pick_canvas(ui, &resp, &painter, rect, idx, &to_s, &to_w, (APERTURE_PX / s) as f64);
         }
+        // Escape takes back a Break elements tool's clicks, or puts the tool
+        // down when there are none (BE1). Another pointer tool taken up
+        // puts it down too.
+        if self.dv.modify.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.modify_back();
+        }
+        if self.dv.modify.is_some() && (self.dv.measure_on || self.dv.zoom_window || self.placing_text || painting) {
+            self.dv.modify = None;
+            self.dv.modify_picks.clear();
+            self.dv.modify_note = None;
+            self.dv.modify_marks.clear();
+        }
         // Escape leaves measuring / zoom window.
         if (self.dv.measure_on || self.dv.zoom_window) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.dv.measure_on = false;
@@ -515,10 +551,12 @@ impl App {
         }
         let elems = crate::nest::elements_of(&part.geometry());
         let ap = (APERTURE_PX / s) as f64; // capture square half-size in mm
-        let hover = resp.hover_pos().filter(|_| !painting).and_then(|hp| capture(&elems, to_w(hp), ap));
+        // With a Break elements tool in hand, clicks pick its elements instead.
+        let modifying = self.dv.modify.is_some();
+        let hover = resp.hover_pos().filter(|_| !painting && !modifying).and_then(|hp| capture(&elems, to_w(hp), ap));
         // A lead under the pointer, nearer than the element there (LE9):
         // clicking it picks the lead, whose card changes its shape.
-        let lead_under = resp.hover_pos().filter(|_| !painting && !space && !self.dv.measure_on && !self.placing_text).and_then(|hp| {
+        let lead_under = resp.hover_pos().filter(|_| !painting && !space && !self.dv.measure_on && !self.placing_text && !modifying).and_then(|hp| {
             let d = |pts: &[P]| path_dist_px(hp, pts, &to_s);
             let elem_d = hover.and_then(|i| elems.get(i)).map_or(f32::MAX, |e| d(&e.pts));
             plan.contours
@@ -537,8 +575,13 @@ impl App {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         // Right-click (or S): the radial tool menu. An element under the pointer is
-        // selected first, so the element tools act on it.
-        if let Some(hp) = resp.hover_pos() {
+        // selected first, so the element tools act on it. With a Break
+        // elements tool in hand, right-click does what Esc does (BE1).
+        if modifying {
+            if resp.hover_pos().is_some() && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary)) {
+                self.modify_back();
+            }
+        } else if let Some(hp) = resp.hover_pos() {
             if self.radial_trigger(ui) {
                 let tu = crate::textedit::text_at(&part.texts, to_w(hp), ap.max(1.0));
                 if let (Some(e), None) = (hover, tu) {
@@ -562,7 +605,11 @@ impl App {
         }
         self.paint_edited_text(&painter, idx, &to_s);
         let shift = ui.input(|i| i.modifiers.shift);
-        if self.dv.measure_on {
+        if modifying {
+            if let (true, false, Some(hp)) = (resp.clicked(), space, resp.hover_pos()) {
+                self.modify_click(to_w(hp), ap);
+            }
+        } else if self.dv.measure_on {
             if let (true, Some(hp)) = (resp.clicked(), resp.hover_pos()) {
                 let tol = (crate::drawing::SNAP_PX / s) as f64;
                 let mut q = crate::drawing::snap_point(&elems, to_w(hp), tol, self.dv.snap);
@@ -691,6 +738,12 @@ impl App {
                 }
             }
         }
+        // The Break elements tool: what the next click would do is drawn
+        // before it is made (BE15).
+        if self.dv.modify.is_some() {
+            let at = self.dv.shot_hover.or(resp.hover_pos().filter(|_| !space).map(to_w));
+            self.paint_modify(ui, &painter, rect, part, at, ap, &to_s);
+        }
         let lead_label = lead_under.filter(|&ci| self.sel_lead != Some((idx, ci))).map(|ci| format!("Lead on contour {} · click to change its shape", crate::engine::contour_number(part, ci)));
         if let (Some(txt), Some(hp)) = (lead_label, resp.hover_pos()) {
             let g = painter.layout_no_wrap(txt, FontId::proportional(12.0), Color32::WHITE);
@@ -726,7 +779,9 @@ impl App {
         let lead_out_col = Color32::from_rgb(129, 140, 248);
         let pierce_col = Color32::from_rgb(248, 80, 90);
         let punch_col = Color32::from_rgb(255, 140, 60);
-        for (k, c) in plan.contours.iter().enumerate() {
+        // While a Break elements tool is in hand the technology (leads,
+        // pierces, the cut order) is hidden, so the lines being fixed show.
+        for (k, c) in plan.contours.iter().enumerate().filter(|_| !modifying) {
             // Standard-shape recognition label.
             if self.dv.std_shapes {
                 if let Some(sh) = crate::machine::recognise(&c.points) {
@@ -942,7 +997,7 @@ impl App {
         // The cut order (CO13): each contour's number where it starts and
         // the rapids between them, from the engine's order; while sweeping,
         // as it would be were the sweep let go.
-        if self.dv.machining {
+        if self.dv.machining && !modifying {
             let preview = self.order_preview(idx);
             let stops = crate::orderpick::stops(preview.as_ref().unwrap_or(&self.parts[idx]), &plan);
             crate::orderpick::paint_order(&painter, &stops, &to_s);
@@ -1029,17 +1084,23 @@ impl App {
             ),
         ];
         let card = Rect::from_min_size(rect.left_top() + Vec2::new(12.0, 12.0), INFO_CARD);
-        if self.dv.info {
+        let info = self.dv.info && self.dv.modify.is_none();
+        if info {
             painter.rect_filled(card, CornerRadius::same(10), th().overlay);
         }
-        for (k, l) in lines.iter().enumerate().filter(|_| self.dv.info) {
+        for (k, l) in lines.iter().enumerate().filter(|_| info) {
             let col = if k == 0 { Color32::WHITE } else { Color32::from_rgb(200, 205, 220) };
             painter.text(card.left_top() + Vec2::new(12.0, 10.0 + k as f32 * 17.0), Align2::LEFT_TOP, l, FontId::proportional(if k == 0 { 13.5 } else { 12.0 }), col);
         }
         // Legend.
         let lg = rect.left_bottom() + Vec2::new(14.0, -18.0);
-        let mut items: Vec<(&str, Color32)> = vec![("lead-in", Color32::WHITE), ("lead-out", Color32::from_rgb(129, 140, 248)), ("joint / loop", jcol), ("pierce", Color32::from_rgb(248, 80, 90))];
-        if plan.contours.iter().any(|c| c.comp.system) {
+        // With a Break elements tool in hand the legend says what its colours mean.
+        let mut items: Vec<(&str, Color32)> = if modifying {
+            vec![("picked", MODIFY_PICK), ("goes", MODIFY_GONE), ("new line", MODIFY_NEW), ("open line", MODIFY_OPEN)]
+        } else {
+            vec![("lead-in", Color32::WHITE), ("lead-out", Color32::from_rgb(129, 140, 248)), ("joint / loop", jcol), ("pierce", Color32::from_rgb(248, 80, 90))]
+        };
+        if !modifying && plan.contours.iter().any(|c| c.comp.system) {
             items.push(("kerf path", KERF_PATH));
         }
         let mut x = lg.x;
@@ -1048,7 +1109,7 @@ impl App {
             painter.text(Pos2::new(x + 24.0, lg.y), Align2::LEFT_CENTER, name, FontId::proportional(11.5), dim);
             x += 104.0;
         }
-        if self.dv.machining {
+        if self.dv.machining && !modifying {
             crate::orderpick::legend(&painter, Pos2::new(x, lg.y), dim);
         }
         self.part_zoom_bar(ui, rect);
@@ -1100,8 +1161,11 @@ impl App {
             self.sel_lead = Some((idx, ci));
             self.sel_elems.clear();
         }
-        self.lead_same_overlay(ui, rect, idx, painting);
-        self.lead_card(ui, rect, idx, painting, &plan, &to_s);
+        // The lead chips stay out of the way of a Break elements tool.
+        if !modifying {
+            self.lead_same_overlay(ui, rect, idx, painting);
+            self.lead_card(ui, rect, idx, painting, &plan, &to_s);
+        }
         // A joint lead was dragged: all joints of the part take the new lead.
         if let Some((len, ang)) = joint_edit {
             // The lead's distance off the contour is what the joint record keeps (D, AM6).
@@ -1119,6 +1183,178 @@ impl App {
 
     /// Remember the current view (rule V3: the original stores the window
     /// before every change).
+    /// The Break elements tool in hand (BE1, BE15): open lines stand out,
+    /// the clicks so far stay lit, and what the next click would do is drawn
+    /// under the pointer — red dashes for what goes, green for new lines, a
+    /// white ring where Break puts an element end — or, where it would be
+    /// refused, why. A note at the top of the drawing says which step this
+    /// is and what the last click did.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_modify(&self, ui: &egui::Ui, painter: &egui::Painter, rect: Rect, part: &crate::nest::Part, at: Option<P>, ap: f64, to_s: &dyn Fn(P) -> Pos2) {
+        use crate::engine::breakelems as be;
+        let Some(m) = self.dv.modify else { return };
+        let line = |pts: &[P], st: Stroke| {
+            painter.add(EShape::line(pts.iter().map(|&q| to_s(q)).collect(), st));
+        };
+        let ring = |q: P, r: f32, col: Color32| {
+            painter.circle_stroke(to_s(q), r, Stroke::new(2.0, col));
+        };
+        // Open lines are what these tools mostly fix.
+        for c in crate::engine::contours::list(part).iter().filter(|c| !c.closed && c.state != crate::dxf::ContourState::LeaveOut && c.pts.len() > 1) {
+            line(&c.pts, Stroke::new(2.0, MODIFY_OPEN));
+            for q in [c.pts[0], c.pts[c.pts.len() - 1]] {
+                painter.circle_filled(to_s(q), 3.0, MODIFY_OPEN);
+            }
+        }
+        let picks = &self.dv.modify_picks;
+        // Cut's base is the whole straight line (BE4).
+        let cut = matches!(m, crate::drawing::Modify::Cut1 | crate::drawing::Modify::CutSeveral);
+        for (k, &q) in picks.iter().enumerate() {
+            let e = if cut && k == 0 { be::base_at(part, q, ap) } else { be::element_at(part, q, ap, &picks[..k]) };
+            if let Some(e) = e {
+                line(&e.pts, Stroke::new(4.0, MODIFY_PICK));
+                for q in [e.pts[0], e.pts[e.pts.len() - 1]] {
+                    painter.circle_filled(to_s(q), 4.5, MODIFY_PICK);
+                }
+            }
+            painter.circle_filled(to_s(q), 4.0, MODIFY_PICK);
+        }
+        for &q in &self.dv.modify_marks {
+            ring(q, 6.0, Color32::WHITE);
+        }
+        let note = self.dv.modify_note.as_ref();
+        if let Some(q) = note.and_then(|n| n.spot) {
+            ring(q, 9.0, MODIFY_OPEN);
+        }
+        // Under the pointer: the element, or the whole edit once this click
+        // would make it.
+        let mut refused = None;
+        let mut say = None;
+        if let Some(p) = at {
+            if let Some(hit) = be::element_at(part, p, ap, picks) {
+                match m.edit(picks, hit.at, self.dv.bridge_width) {
+                    None => {
+                        let pts = if cut { be::base_at(part, p, ap).map_or(hit.pts, |b| b.pts) } else { hit.pts };
+                        line(&pts, Stroke::new(3.0, Color32::from_white_alpha(190)));
+                    }
+                    Some(edit) => match be::preview(part, &edit, ap) {
+                        Ok(pv) => {
+                            // A bridge's strip: across a hole it becomes material
+                            // that stays; through material (a hole to the outline)
+                            // it is cut out.
+                            if let [a, b] = &pv.added[..] {
+                                if a.len() == 2 && b.len() == 2 {
+                                    let c = [(a[0][0] + a[1][0] + b[0][0] + b[1][0]) / 4.0, (a[0][1] + a[1][1] + b[0][1] + b[1][1]) / 4.0];
+                                    let g = part.geometry();
+                                    let solid = crate::nest::point_in_poly(&g.outline, c) && !g.holes.iter().any(|h| crate::nest::point_in_poly(h, c));
+                                    let (fill, say_strip) = if solid { (MODIFY_GONE, "This strip is cut out") } else { (MODIFY_NEW, "This strip stays as a bridge") };
+                                    painter.add(EShape::convex_polygon(vec![to_s(a[0]), to_s(a[1]), to_s(b[1]), to_s(b[0])], with_alpha(fill, 60), Stroke::NONE));
+                                    say = Some((say_strip.to_string(), fill));
+                                }
+                            }
+                            // A hole that would open says so before the click.
+                            if say.is_none() && pv.holes.1 < pv.holes.0 {
+                                say = Some((format!("A hole opens: holes cut {} → {}", pv.holes.0, pv.holes.1), MODIFY_OPEN));
+                            }
+                            for r in &pv.removed {
+                                line(r, Stroke::new(7.0, with_alpha(MODIFY_GONE, 60)));
+                                line(r, Stroke::new(4.0, th().canvas_a));
+                                painter.extend(EShape::dashed_line(&r.iter().map(|&q| to_s(q)).collect::<Vec<_>>(), Stroke::new(3.0, MODIFY_GONE), 7.0, 4.0));
+                            }
+                            for a in &pv.added {
+                                line(a, Stroke::new(2.5, MODIFY_NEW));
+                            }
+                            for &q in &pv.marks {
+                                ring(q, 6.0, Color32::WHITE);
+                            }
+                        }
+                        Err(e) => {
+                            // Red is for what goes; a refused click shows grey.
+                            line(&hit.pts, Stroke::new(3.0, Color32::from_gray(120)));
+                            refused = Some(e);
+                        }
+                    },
+                }
+            }
+            if rect.contains(to_s(p)) {
+                ui.ctx().set_cursor_icon(if refused.is_some() { egui::CursorIcon::NotAllowed } else { egui::CursorIcon::Crosshair });
+            }
+        }
+        // By the pointer, one short line: what a bridge here leaves, that a
+        // hole opens, or why this click would be refused (the whole reason
+        // goes in the note at the top). Kept inside the drawing.
+        let say = say.or(refused.as_ref().map(|e| (first_clause(e), MODIFY_OPEN)));
+        if let (Some((txt, col)), Some(p)) = (say, at) {
+            let g = painter.layout_no_wrap(txt, FontId::proportional(12.0), Color32::WHITE);
+            let mut r = Rect::from_min_size(to_s(p) + Vec2::new(16.0, 14.0), g.size() + Vec2::new(14.0, 8.0));
+            if r.right() > rect.right() - 8.0 {
+                r = r.translate(Vec2::new(-(r.width() + 32.0), 0.0));
+            }
+            if r.bottom() > rect.bottom() - 8.0 {
+                r = r.translate(Vec2::new(0.0, -(r.height() + 28.0)));
+            }
+            painter.rect_filled(r, CornerRadius::same(6), th().overlay);
+            painter.rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, col), egui::StrokeKind::Inside);
+            painter.galley(r.min + Vec2::new(7.0, 4.0), g, Color32::WHITE);
+        }
+        // The prompt at the top of the drawing, in the margin Fit leaves:
+        // tool, step and what to click. What the last click did goes at the
+        // bottom. Either fades while the pointer is over it.
+        let n = m.picks();
+        let step = (picks.len() + 1).min(n);
+        let head = if n == 1 { format!("{}   ", m.label()) } else { format!("{} · step {step} of {n}   ", m.label()) };
+        let wrap = (rect.width() - 80.0).clamp(240.0, 720.0);
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&head, 0.0, egui::TextFormat { font_id: FontId::proportional(12.5), color: th().accent_fg, valign: egui::Align::Center, ..Default::default() });
+        job.append(m.prompt(picks.len()), 0.0, egui::TextFormat { font_id: FontId::proportional(14.0), color: Color32::WHITE, valign: egui::Align::Center, ..Default::default() });
+        job.wrap.max_width = wrap;
+        let g_ask = painter.layout_job(job);
+        // Below it: what the last click did, and how to step back. It stays
+        // put in the room Fit leaves above the part; only with the pointer
+        // right on it (zoomed in) does it move to the bottom.
+        let back = match (picks.is_empty(), m) {
+            (true, _) => "Esc or right-click puts the tool down",
+            (false, crate::drawing::Modify::CutSeveral) => "Esc or right-click picks another base; again puts the tool down",
+            (false, _) => "Esc or right-click starts the clicks again",
+        };
+        let back = if m == crate::drawing::Modify::Bridge { format!("{back}  ·  bridge width {}", self.cfg.nesting.units.len(self.dv.bridge_width, 1)) } else { back.to_string() };
+        // While the pointer is on a click that would be refused, the note
+        // gives the whole reason; otherwise what the last click did.
+        let shown = match &refused {
+            Some(e) => Some((e.clone(), MODIFY_OPEN)),
+            None => note.map(|nt| (nt.text.clone(), if nt.ok { MODIFY_NEW } else { MODIFY_OPEN })),
+        };
+        let g_note = shown.map(|(t, col)| (painter.layout(t, FontId::proportional(13.0), Color32::WHITE, wrap - 12.0), col));
+        let g_back = painter.layout_no_wrap(back, FontId::proportional(11.5), Color32::from_rgb(170, 175, 190));
+        let mut w = g_ask.size().x.max(g_back.size().x);
+        let mut h = g_ask.size().y + g_back.size().y + 13.0;
+        if let Some((g, _)) = &g_note {
+            w = w.max(g.size().x + 12.0);
+            h += g.size().y + 3.0;
+        }
+        let size = Vec2::new(w + 24.0, h);
+        let top = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 6.0 + size.y / 2.0), size);
+        // Whether the pointer is on the note goes by its usual two lines, so
+        // a reason shown for the click under the pointer doesn't move it.
+        let usual = Rect::from_min_size(top.min, Vec2::new(size.x, g_ask.size().y + g_back.size().y + 13.0));
+        let near = at.map(to_s).is_some_and(|q| usual.contains(q));
+        let pill = if near { Rect::from_center_size(Pos2::new(rect.center().x, rect.bottom() - 32.0 - size.y / 2.0), size) } else { top };
+        painter.rect_filled(pill, CornerRadius::same(10), th().overlay);
+        painter.rect_stroke(pill, CornerRadius::same(10), Stroke::new(1.0, with_alpha(th().accent_fg, 120)), egui::StrokeKind::Inside);
+        let mut y = pill.top() + 5.0;
+        let x = pill.left() + 12.0;
+        let gy = g_ask.size().y;
+        painter.galley(Pos2::new(x, y), g_ask, Color32::WHITE);
+        y += gy + 3.0;
+        if let Some((g, col)) = g_note {
+            let gh = g.size().y;
+            painter.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(4.0, gh)), CornerRadius::same(2), col);
+            painter.galley(Pos2::new(x + 12.0, y), g, Color32::WHITE);
+            y += gh + 3.0;
+        }
+        painter.galley(Pos2::new(x, y), g_back, Color32::WHITE);
+    }
+
     pub fn push_part_view(&mut self) {
         let v = (self.part_zoom, self.part_pan);
         if self.part_view_hist.last() != Some(&v) {

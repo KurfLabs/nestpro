@@ -82,7 +82,7 @@ impl App {
             }
             if unbuilt {
                 let r = dropdown(ui, Icon::Joint, "Modify", true);
-                soon_menu(&r, "Modify", &["Break elements", "Fillets", "Chamfer", "Offset", "Lengthen elements", "Join elements", "Fitting: By points, Make tangent, Reduce overlappings", "Shorten-lengthen", "Join and fillet"]);
+                soon_menu(&r, "Modify", &["Fillets", "Chamfer", "Offset", "Lengthen elements", "Join elements", "Fitting: By points, Make tangent, Reduce overlappings", "Shorten-lengthen", "Join and fillet"]);
                 let r = dropdown(ui, Icon::Rotate, "Transform", true);
                 soon_menu(&r, "Transform", &["Copy", "Move", "Stretch", "Rotate", "Scale", "Place Near", "Mirror", "Break Parts", "Union", "Subtraction", "Intersection", "Change Cutting Direction", "Contour Ordering", "Transform One-Touch Figures"]);
                 let r = dropdown(ui, Icon::Grid, "Figures", true);

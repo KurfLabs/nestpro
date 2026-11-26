@@ -8115,6 +8115,102 @@
   "group": "smoothing",
   "value": "0.5 mm (largest radius 50000 mm, fewest elements 0)",
   "source": "SM21"
+ },
+ {
+  "name": "element end on a straight run",
+  "group": "break elements",
+  "value": "a turn under 0.0001\u00b0",
+  "source": "BE2"
+ },
+ {
+  "name": "crossing tolerance",
+  "group": "break elements",
+  "value": "0.01 mm (a line ending on another touches it)",
+  "source": "BE3"
+ },
+ {
+  "name": "pick tolerance (agents)",
+  "group": "break elements",
+  "value": "1 mm",
+  "source": "BE1"
+ },
+ {
+  "name": "Cut 1 / Cut several",
+  "group": "break elements",
+  "value": "the piece round the click, between the nearest crossings with the base (or the element's end)",
+  "source": "BE4"
+ },
+ {
+  "name": "Break on a closed contour",
+  "group": "break elements",
+  "value": "stays closed and cut, with an element end at the point",
+  "source": "BE5"
+ },
+ {
+  "name": "Join",
+  "group": "break elements",
+  "value": "both pieces up to the crossing taken away: a corner",
+  "source": "BE6"
+ },
+ {
+  "name": "bridge width to start with",
+  "group": "break elements",
+  "value": "3 mm",
+  "source": "BE7"
+ },
+ {
+  "name": "bridge direction",
+  "group": "break elements",
+  "value": "square off the first element from its click",
+  "source": "BE7"
+ },
+ {
+  "name": "ends joined after an edit",
+  "group": "break elements",
+  "value": "within 0.01 mm, same state; a chain that closes is a closed contour",
+  "source": "BE9"
+ },
+ {
+  "name": "edits refused",
+  "group": "break elements",
+  "value": "outline opened, or a closed contour outside the outline",
+  "source": "BE10"
+ },
+ {
+  "name": "import: split lines that cross",
+  "group": "import",
+  "value": "when the open lines then close a bigger contour than any closed one",
+  "source": "BE13"
+ },
+ {
+  "name": "import: crossing search limit",
+  "group": "import",
+  "value": "6000 open segments",
+  "source": "BE13"
+ },
+ {
+  "name": "Esc or right-click with a tool in hand",
+  "group": "break elements",
+  "value": "takes back the clicks so far; with none, puts the tool down",
+  "source": "BE1"
+ },
+ {
+  "name": "second click near an element already picked",
+  "group": "break elements",
+  "value": "takes another element within reach first",
+  "source": "BE14"
+ },
+ {
+  "name": "Cut base",
+  "group": "break elements",
+  "value": "the whole straight line the picked element lies on",
+  "source": "BE4"
+ },
+ {
+  "name": "preview of the next click",
+  "group": "break elements",
+  "value": "red dashes for what goes, green for new lines, white ring for a break; refusal reason by the pointer",
+  "source": "BE15"
  }
 ]
 }

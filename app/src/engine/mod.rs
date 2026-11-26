@@ -7,6 +7,7 @@
 //! `render.rs` draws a sheet or a part to PNG/SVG so an agent can look at it.
 
 pub mod arrange;
+pub mod breakelems;
 pub mod catalogue;
 pub mod contours;
 pub mod cutorder;
@@ -544,6 +545,9 @@ pub fn import_notes(name: &str, rep: &dxf::ImportReport) -> Vec<String> {
     }
     if rep.outside_loops > 0 {
         notes.push(format!("{name}: {} outline(s) outside the part left out", rep.outside_loops));
+    }
+    if rep.crossings_split > 0 {
+        notes.push(format!("{name}: lines ran past each other at {} place(s); split there so the outline closes, the ends sticking out left off (Modify → Cut 1 cuts back any left inside)", rep.crossings_split));
     }
     if rep.duplicates > 0 {
         notes.push(format!("{name}: {} object(s) drawn twice in the same place, cut once", rep.duplicates));
