@@ -5613,7 +5613,7 @@
  {
   "name": "fewest pieces to a full circle",
   "group": "dxf",
-  "value": "16",
+  "value": "24",
   "source": "MECHANICS DX2"
  },
  {

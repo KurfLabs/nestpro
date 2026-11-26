@@ -816,7 +816,12 @@ impl Element {
 /// Turn more than this (degrees) at a vertex ends an element.
 pub const ELEMENT_CORNER_DEG: f64 = 20.0;
 
-/// Split every contour of a part into elements (lines, arcs, circles).
+/// Split every contour of a part into elements (lines, arcs, circles): an
+/// element ends where the contour turns more than `ELEMENT_CORNER_DEG`, and
+/// where a straight meets an arc running on from it (a piece more than
+/// `leads::ELEMENT_LENGTH_RATIO` times longer or shorter than the one
+/// before), the same breaks leads and joints use (`leads::is_break`). A
+/// rectangle with round corners is four lines and four arcs, not one circle.
 pub fn elements_of(geo: &Geo) -> Vec<Element> {
     let mut out = vec![];
     let contours: Vec<&Vec<P>> = geo.holes.iter().chain(std::iter::once(&geo.outline)).collect();
@@ -833,7 +838,8 @@ pub fn elements_of(geo: &Geo) -> Vec<Element> {
             let lu = (u[0] * u[0] + u[1] * u[1]).sqrt().max(1e-12);
             let lw = (w[0] * w[0] + w[1] * w[1]).sqrt().max(1e-12);
             let dot = ((u[0] * w[0] + u[1] * w[1]) / (lu * lw)).clamp(-1.0, 1.0);
-            dot.acos().to_degrees() > ELEMENT_CORNER_DEG
+            let ratio = crate::leads::ELEMENT_LENGTH_RATIO;
+            dot.acos().to_degrees() > ELEMENT_CORNER_DEG || lu > lw * ratio || lw > lu * ratio
         };
         let corners: Vec<usize> = (0..n).filter(|&i| corner(i)).collect();
         if corners.is_empty() {
