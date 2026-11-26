@@ -188,6 +188,8 @@ pub static OPS: &[Op] = &[
         a("layers", Ty::Str, "Layer roles: \"LAYER=cut|mark|ignore,…\" (others: cut, or mark for a format's marking layers)"),
         a("contours", Ty::Str, "Contour choices, in order, as contour-tech makes them: \"CONTOURS=WHAT; …\" with WHAT a state (cut, mark, no-cut, bend-line, leave-out), quality 1-12 or auto, and/or same, e.g. \"7=mark; 1=leave-out; 2=quality 1 same\""),
         a("qty", Ty::Int, "Quantity for every imported part (default: the file's, else from the file name, else 1)"), a("name", Ty::Str, "Reference (one part only)"), a("group", Ty::Str, "Group for the imported parts"),
+        a("smooth", Ty::Bool, "Smooth the drawings (radii and round holes drawn as many short lines become true arcs, as the smooth operation does) — default: Settings → General → Smoothing on import (off unless turned on there)"),
+        a("smooth_tolerance", Ty::Num, "Smoothing: the largest gap allowed between a line and its arc, mm (default: Settings → General → Smoothing on import, 0.05); giving it turns smoothing on"),
     ] },
     Op { name: "edit-part", group: "Parts", kind: Kind::Write, help: "Change a part's reference, quantity, size (built-in shapes), rotations, grain lock or group. Changing the size of a part with technology needs tech=copy (keep it, change a copy) or tech=drop (remove its technology).", args: &[
         PART, a("name", Ty::Str, "New reference"), a("qty", Ty::Int, "Quantity ordered"), a("w", Ty::Num, "Length X, mm (built-in shapes)"), a("h", Ty::Num, "Width Y, mm (built-in shapes)"),
@@ -196,6 +198,12 @@ pub static OPS: &[Op] = &[
     ] },
     Op { name: "turn-part", group: "Parts", kind: Kind::Write, help: "Turn a part's own drawing by a quarter turn, with its contours, texts, picked lead-ins and micro-joints, so it is drawn the way the sheet's grain (along the sheet's length, X) must run through it. A part with no grain lock is kept to the grain from then on (grain, see edit-part). Copies already nested stay where they are on the sheet; nest again so they follow the grain. To turn a nested copy on the sheet instead, use rotate or turn.", args: &[
         PART, r("by", Ty::Int, "Degrees counter-clockwise: 90 (left), 180, or -90 (right)"),
+    ] },
+    Op { name: "smooth", group: "Parts", kind: Kind::Write, help: "Smooth an imported part's drawing (the part screen's Smooth): a radius or round hole drawn as many short straight lines becomes true arcs, so the machine cuts a smooth curve instead of facets. From each point the longest run of lines that lies on one circle becomes one arc, under a half circle, ending on the drawing's own points; every line, its middle included, must stay within `tolerance` of the arc, so straight edges and sharp corners stay as they are. Contours keep their numbers, technology and places on the sheets (an arc can bulge out by up to the tolerance: check the gaps of nested copies, or nest again). Built-in shapes are refused (their arcs are exact).", args: &[
+        PART, a("contours", Ty::Str, "Contour numbers from part-info, e.g. \"5\", \"1,3\" or \"2-4\" (default: every contour)"),
+        a("tolerance", Ty::Num, "The largest gap allowed between a line and its arc, mm (default: the part screen's Smooth window, 0.5)"),
+        a("max_radius", Ty::Num, "Lines that would need a larger radius stay lines, mm (default 50000)"),
+        a("min_lines", Ty::Int, "An arc replaces at least this many lines, and never fewer than 2 (default 0)"),
     ] },
     Op { name: "remove-part", group: "Parts", kind: Kind::Write, help: "Take a part out of the job (its placed copies go too).", args: &[PART] },
     Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default; each cut or marked contour's place in the cut order, cut_order from 1, and cut_order_by_hand when set with part-cut-order), the whole cut order (contours in the order cut, and those set by hand), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
@@ -2139,18 +2147,30 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     drawings.len()
                 ));
             }
+            // SM10: smoothing as Settings → General → Smoothing on import has it, unless asked here.
+            let mut cfg = ctx.cfg.clone();
+            if let Some(on) = a.bool("smooth")? {
+                cfg.smooth.on_import = on;
+            }
+            if let Some(t) = a.num("smooth_tolerance")? {
+                cfg.smooth.on_import = a.bool("smooth")?.unwrap_or(true);
+                cfg.smooth.import.tol = t;
+            }
+            if cfg.smooth.on_import {
+                cfg.smooth.import.check()?;
+            }
             let mut notes = vec![];
             let mut added = vec![];
             for inc in &drawings {
                 // IM12: the contours chosen, numbered on the part these roles make.
                 let choices = match &wanted {
                     Some(c) => {
-                        let (bare, _) = part_from_read(&ctx.cfg, &job.spec, &inc.file, &inc.name, &inc.part.drawing, &inc.part.meta, &roles, 0)?;
+                        let (bare, _) = part_from_read(&cfg, &job.spec, &inc.file, &inc.name, &inc.part.drawing, &inc.part.meta, &roles, 0)?;
                         contour_choices_from(c, contours::list(&bare).len())?
                     }
                     None => vec![],
                 };
-                let (mut p, n) = imports::chosen_part(&ctx.cfg, &job.spec, inc, &roles, &choices, next_color(&job.parts))?;
+                let (mut p, n) = imports::chosen_part(&cfg, &job.spec, inc, &roles, &choices, next_color(&job.parts))?;
                 notes.extend(n);
                 if let Some(q) = a.int("qty")? {
                     p.qty = q.max(0) as u32;
@@ -2243,6 +2263,25 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 job.stale = true;
             }
             Ok(Outcome::msg(done.message))
+        }
+        "smooth" => {
+            let i = one_part(job, &a)?;
+            let d = ctx.cfg.smooth.command;
+            let o = super::smooth::Smooth {
+                tol: a.num("tolerance")?.unwrap_or(d.tol),
+                max_r: a.num("max_radius")?.unwrap_or(d.max_r),
+                min_lines: a.int("min_lines")?.map_or(d.min_lines, |n| n.clamp(0, super::smooth::MAX_MIN_LINES as i64) as usize),
+            };
+            let picks = a.str("contours").filter(|c| !c.trim().is_empty()).map(|c| contours::parse_numbers(&c, contours::list(&job.parts[i]).len())).transpose()?;
+            // The same engine function as the part screen's Smooth (SM21).
+            let done = super::smooth::smooth_part(&mut job.parts, &mut job.sheets, i, picks.as_deref(), &o)?;
+            if done.nested {
+                job.stale = true;
+            }
+            let mut o = Outcome::msg(done.message);
+            o.changed = !done.done.contours.is_empty();
+            o.data = json!({"contours": done.done.contours.iter().map(|k| k + 1).collect::<Vec<_>>(), "arcs": done.done.count.arcs, "lines": done.done.count.lines});
+            Ok(o)
         }
         "remove-part" => {
             let i = one_part(job, &a)?;
@@ -3980,6 +4019,9 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Draw/Points", "todo: [DRW-1] drafting (greyed out in the app too)"),
     ("Draw/Shapes", "todo: [DRW-1] drafting (greyed out in the app too)"),
     ("Draw/Delete\ngeometry", "todo: [DRW-1] drafting (greyed out in the app too)"),
+    ("Edit geometry/Smooth", "smooth"),
+    ("smoothui.rs/Smooth the part", "smooth"),
+    ("settings_ui.rs/Smooth every drawing when it is imported", "import-drawing"),
     ("Edit geometry/Modify", "todo: [DRW-1] drafting (greyed out in the app too)"),
     ("Edit geometry/Transform", "todo: [DRW-1] drafting (greyed out in the app too)"),
     ("Edit geometry/Figures", "todo: [DRW-1] drafting (greyed out in the app too)"),

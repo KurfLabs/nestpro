@@ -13990,3 +13990,81 @@ fn sheets_text_names_the_sheets_cut_several_times() {
     let long: Vec<SheetFormat> = (0..6).map(|_| f(2)).collect();
     assert_eq!(sheets_text(&long, 6), "12 sheets (6 nestings: sheet 1 ×2, sheet 2 ×2, sheet 3 ×2, 3 more cut several times)");
 }
+
+/// A plate whose Ø60 hole is drawn as 120 short LINEs, the corners a hair
+/// off the circle (±0.02 mm, as some CAD exports write them), and its R10
+/// corner as 18 more.
+fn faceted_plate_dxf(path: &Path) {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let line = |a: [f64; 2], b: [f64; 2]| format!("0\nLINE\n8\n0\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], b[0], b[1]);
+    let hole: Vec<[f64; 2]> = (0..120).map(|k| (k, k as f64 * TAU / 120.0)).map(|(k, a)| (30.0 + if k % 2 == 0 { 0.02 } else { -0.02 }, a)).map(|(r, a)| [100.0 + r * a.cos(), 50.0 + r * a.sin()]).collect();
+    let mut outline = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 90.0]];
+    outline.extend((1..18).map(|k| FRAC_PI_2 * k as f64 / 18.0).map(|a| [190.0 + 10.0 * a.cos(), 90.0 + 10.0 * a.sin()]));
+    outline.extend([[190.0, 100.0], [0.0, 100.0]]);
+    let ring = |v: &[[f64; 2]]| (0..v.len()).map(|k| line(v[k], v[(k + 1) % v.len()])).collect::<String>();
+    std::fs::write(path, format!("0\nSECTION\n2\nENTITIES\n{}{}0\nENDSEC\n0\nEOF\n", ring(&outline), ring(&hole))).unwrap();
+}
+
+/// How many arcs the LC5's writer finds along each closed contour of part 1.
+fn lc5_arcs(jp: &str) -> Vec<usize> {
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    let g = j.parts[0].custom.clone().unwrap();
+    g.contours.iter().map(|c| crate::blm::fit_moves(&c.path()).iter().filter(|m| matches!(m, crate::blm::Move::Arc { .. })).count()).collect()
+}
+
+#[test]
+fn an_agent_smooths_a_hole_drawn_as_short_lines_into_arcs() {
+    // SM10–SM21 through the operations: a hole drawn as many short lines,
+    // their corners off the circle, goes to the LC5 as straight moves until
+    // it is smoothed.
+    let d = dir("smooth");
+    let dxf = d.join("DEMO-001.dxf");
+    faceted_plate_dxf(&dxf);
+    let job = d.join("smooth.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap()}));
+    assert_eq!(lc5_arcs(jp), vec![0, 1], "unsmoothed: the hole is 120 straight moves, the exact R10 corner already one arc");
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let before = jobfile::load(Path::new(jp)).unwrap();
+    let placed = before.sheets[0].clone();
+    // The default tolerance of the command (0.5 mm).
+    let r = call(&mut s, "smooth", None, json!({"part": 1}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("arc(s)") && m.contains("nest again"), "{m}");
+    assert_eq!(r["data"]["contours"], json!([1, 2]), "{r}");
+    let arcs = lc5_arcs(jp);
+    assert!((1..=4).contains(&arcs[0]) && arcs[1] == 1, "the hole goes out as a few arcs: {arcs:?}");
+    let after = jobfile::load(Path::new(jp)).unwrap();
+    assert_eq!(after.sheets[0].len(), placed.len(), "nested copies stay");
+    let g = after.parts[0].custom.clone().unwrap();
+    // The arcs run through the drawing's corners (±0.02 mm off): the hole
+    // stays Ø60 well within the 0.5 mm tolerance.
+    let off = g.contours[0].pts.iter().map(|p| ((p[0] - 100.0).hypot(p[1] - 50.0) - 30.0).abs()).fold(0.0, f64::max);
+    assert!(off < 0.1, "the hole is still Ø60: {off:.4} mm off");
+    // A built-in shape is refused, in shop terms; a contour number checked.
+    assert!(err(&mut s, "smooth", json!({"part": 1, "contours": "9"})).contains("contour"));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 50, "name": "DEMO-002"}));
+    assert!(err(&mut s, "smooth", json!({"part": 2})).contains("built-in"));
+    assert!(err(&mut s, "smooth", json!({"part": 1, "tolerance": 0})).contains("more than 0"));
+
+    // On import: smooth=true with the import tolerance (0.05 mm) takes the
+    // hole (each line within 0.05 of the circle) and notes it.
+    let job2 = d.join("smooth2.snjob");
+    let jp2 = job2.to_str().unwrap();
+    call(&mut s, "new", Some(jp2), json!({"w": 1500, "h": 1000}));
+    let r = call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "smooth": true}));
+    assert!(r["message"].as_str().unwrap().contains("smoothed"), "{r}");
+    let j2 = jobfile::load(Path::new(jp2)).unwrap();
+    let hole2 = j2.parts[0].custom.clone().unwrap().contours[0].pts.clone();
+    // The LC5's writer may join the smoothed arcs, all but on one circle,
+    // into one move: one arc instead of 120 straight moves.
+    assert!(lc5_arcs(jp2)[0] >= 1 && hole2.len() < 120, "{:?}, hole of {} points, {r}", lc5_arcs(jp2), hole2.len());
+    // A tolerance too tight for the ±0.02 mm corners leaves the hole alone.
+    let job3 = d.join("smooth3.snjob");
+    let jp3 = job3.to_str().unwrap();
+    call(&mut s, "new", Some(jp3), json!({"w": 1500, "h": 1000}));
+    call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "smooth_tolerance": 0.01}));
+    assert_eq!(lc5_arcs(jp3)[0], 0);
+}

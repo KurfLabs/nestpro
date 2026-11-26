@@ -14,6 +14,7 @@ mod filewatch;
 mod gas;
 mod feedbackui;
 mod grainui;
+mod smoothui;
 mod mcp;
 mod ct1;
 mod cutpanel;
@@ -3730,6 +3731,10 @@ fn main() -> eframe::Result {
                     }
                     _ => Tab::Home,
                 };
+            }
+            // --smooth-window: the part screen's Smooth window open (SM21).
+            if std::env::args().any(|a| a == "--smooth-window") {
+                app.dv.smooth = Some(app.cfg.smooth.command);
             }
             app.apply_settings(true);
             // --part-sim-at=<share>: the part's simulation that far through its program.

@@ -87,6 +87,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Panels: explorer, viewers, lists, machining window, restore panels | Have (dockable panes) | |
 | Zoom all / window / previous / scale, full screen | Part — zoom, fit | ★ |
 | Part drawing (Drafting): lines, arcs, circles, slots, polygons, fillets, offset, trim, union/subtract, dimension notes | Part — the Drawing module's tabs, look, Verify Part, measuring, machining check and simulation are in; drafting commands are shown greyed out | ★★ |
+| Fitting → Smooth (radii and holes drawn as short lines become arcs), and smoothing on import | Have — Smooth on the Part screen and the import setting; Fitting's other modes missing (FEATURES DRW-25) | ★ |
 | **Reports / labels** (`Reports\*.rpt`: sheet lists, part labels, cost lists) | Part — CSV report | ★★ |
 | **DNC — sending programs to the machine** (one link per control maker) | Missing | ★★ |
 | Importing other CAM programs (Amada, Trumpf, Messer…) and other makers' tech tables | Missing | ★ |

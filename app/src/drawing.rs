@@ -105,6 +105,8 @@ pub struct DrawView {
     /// Previous, Next or End, when zoomed in).
     pub sim_follow: bool,
     pub cursor: Option<P>,
+    /// The Smooth window, open with the values being set (SM21).
+    pub smooth: Option<crate::engine::smooth::Smooth>,
 }
 
 impl Default for DrawView {
@@ -134,6 +136,7 @@ impl Default for DrawView {
             sim_speed: PART_SIM_SPEED,
             sim_follow: false,
             cursor: None,
+            smooth: None,
         }
     }
 }
@@ -143,7 +146,7 @@ impl Default for DrawView {
 pub const MISSING: &[(&str, &str, &[&str])] = &[
     ("Home", "Draw", &["Delete Geometry", "2D points", "Line segments", "Lines", "Continuous line/arc", "Arc segments", "Full circles", "Squares", "Rectangles", "Modified rectangles", "Polygons", "Obround slots", "Radial slots", "Ovals", "Ellipses", "Pulleys"]),
     ("Home", "Access to points", &["Center point contour", "Intersection point", "Double intersection", "Tangent point", "Projected point", "Quadrant point", "Mixed point"]),
-    ("Home", "Modify", &["Break elements", "Fillets", "Chamfer", "Offset", "Lengthen elements", "Join elements", "Fitting", "Shorten-lengthen", "Join and fillet"]),
+    ("Home", "Modify", &["Break elements", "Fillets", "Chamfer", "Offset", "Lengthen elements", "Join elements", "Fitting: By points, Make tangent, Reduce overlappings", "Shorten-lengthen", "Join and fillet"]),
     ("Home", "One-touch Figures", &["One-touch figures 1–12"]),
     ("Home", "Transform", &["Copy", "Move", "Stretch", "Rotate", "Scale", "Place Near", "Mirror", "Break Parts", "Union", "Subtraction", "Intersection", "Change Cutting Direction", "Contour Ordering", "Transform One-Touch Figures"]),
     ("Home", "Review", &["Detect part", "View Verify Geometry Points"]),
@@ -170,7 +173,7 @@ pub const MISSING: &[(&str, &str, &[&str])] = &[
 
 /// What the rebuild already has in the Drawing module.
 pub const BUILT: &[(&str, &str)] = &[
-    ("Home", "Back/previous/next part, Access to points (picked, end, mid, centre, near), Verify Part, Time and cost, View Geometry, Distance and Angle, Angle between three points, Orthogonal"),
+    ("Home", "Back/previous/next part, Access to points (picked, end, mid, centre, near), Smooth (Fitting → Smooth), Verify Part, Time and cost, View Geometry, Distance and Angle, Angle between three points, Orthogonal"),
     ("Technology", "Lead-ins (4 types, keypad position, on element), micro-joints (gap, leads, corner; edit leads), loops, cut quality, marking / special / note texts (curved), apply to selected or all parts"),
     ("Machining", "Automatic, Delete instructions, Contours (Manual Contours by click, box or sweep, Automatic, Parts, All Marks, All Cut, All Contours of one Quality), cut order numbers and rapids, CN and system (kerf) compensation, Current status, Verify the Machining"),
     ("View", "Axis, Color Display, Machining Window, Restore Panels, Full Screen, Show Parts, Zoom All / Window / Previous / In / Out"),
@@ -591,16 +594,7 @@ impl App {
             soon_menu(&r, "Draw", &["2D points", "Line segments", "Lines", "Continuous line/arc", "Arc segments", "Full circles", "Squares", "Rectangles", "Modified rectangles", "Polygons", "Obround slots", "Radial slots", "Ovals", "Ellipses", "Pulleys"]);
             ribbon_button(ui, Icon::Remove, "Delete\ngeometry", false, false).on_hover_text(soon("Delete Geometry"));
         });
-        if self.dv.show_unbuilt {
-        ribbon_group(ui, "Edit geometry", |ui| {
-            let r = dropdown(ui, Icon::Joint, "Modify", true);
-            soon_menu(&r, "Modify", &["Break elements", "Fillets", "Chamfer", "Offset", "Lengthen elements", "Join elements", "Fitting", "Shorten-lengthen", "Join and fillet"]);
-            let r = dropdown(ui, Icon::Rotate, "Transform", true);
-            soon_menu(&r, "Transform", &["Copy", "Move", "Stretch", "Rotate", "Scale", "Place Near", "Mirror", "Break Parts", "Union", "Subtraction", "Intersection", "Change Cutting Direction", "Contour Ordering", "Transform One-Touch Figures"]);
-            let r = dropdown(ui, Icon::Grid, "Figures", true);
-            soon_menu(&r, "One-touch Figures", &["One-touch figures 1–12"]);
-        });
-        }
+        self.edit_geometry_group(ui);
         // Kept apart by kind: a check (a command), what is shown (on/off), and
         // the measuring tools (one at a time).
         ribbon_group(ui, "Check", |ui| {

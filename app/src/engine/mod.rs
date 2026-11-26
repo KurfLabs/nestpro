@@ -33,6 +33,7 @@ pub mod session;
 pub mod shop;
 pub mod updates;
 pub mod sheetpick;
+pub mod smooth;
 pub mod sheetlist;
 pub mod stockflow;
 
@@ -579,8 +580,16 @@ fn spec_mismatch(spec: &SheetSpec, material: Option<&str>, thickness: Option<f64
 /// what was left out or doesn't match the job.
 #[allow(clippy::too_many_arguments)]
 pub fn part_from_read(cfg: &AppSettings, spec: &SheetSpec, file: &str, name: &str, d: &dxf::Drawing, meta: &crate::formats::Meta, roles: &BTreeMap<String, dxf::LayerRole>, color: usize) -> Result<(Part, Vec<String>), String> {
-    let (g, rep) = dxf::build(d, roles).map_err(|e| format!("{name}: {e}"))?;
+    let (mut g, rep) = dxf::build(d, roles).map_err(|e| format!("{name}: {e}"))?;
     let mut notes = import_notes(name, &rep);
+    // SM10: smoothing on import (Settings → General → Smoothing on import), after the pieces are
+    // joined and gaps closed.
+    if cfg.smooth.on_import {
+        let done = smooth::smooth_geo(&mut g, None, &cfg.smooth.import);
+        if !done.contours.is_empty() {
+            notes.push(format!("{name}: smoothed, {}", done.summary()));
+        }
+    }
     // Part data from the file name (v44 "Text definition in the file name") —
     // the real file name, never a part's numbered name ("DEMO-2" isn't quantity 2).
     let fd = crate::filename::parse_format(&cfg.name_format).ok().and_then(|f| crate::filename::read(&f, file));

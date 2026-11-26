@@ -216,6 +216,9 @@ pub struct AppSettings {
     /// Keep and the second place of this PC's own backups, when it isn't in
     /// a shop (BK6; a shop keeps its own in the shop file).
     pub backups: crate::backup::Settings,
+    /// Smoothing drawings: on import, and the part screen's Smooth command
+    /// (SM10, SM21).
+    pub smooth: crate::engine::smooth::SmoothSettings,
 }
 
 /// Moving parts by hand on the sheet, and the units lengths are shown in
@@ -361,6 +364,7 @@ impl Default for AppSettings {
             integrations: default_integrations(),
             refresh_minutes: 0,
             backups: Default::default(),
+            smooth: Default::default(),
         }
     }
 }
@@ -472,6 +476,7 @@ impl AppSettings {
         s += &format!("refresh_minutes = {}\n", self.refresh_minutes);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
         s += &format!("nesting = {}\n", serde_json::to_string(&self.nesting).unwrap_or_default());
+        s += &format!("smooth = {}\n", serde_json::to_string(&self.smooth).unwrap_or_default());
         s += &format!("backups = {}\n", esc(&serde_json::to_string(&self.backups).unwrap_or_default()));
         crate::engine::material::write_pc(self, &mut s, |x| esc(x));
         for c in &self.connections {
@@ -585,6 +590,7 @@ impl AppSettings {
                     "stock" => st.stock = serde_json::from_str(&v).unwrap_or_default(),
                     "backups" => st.backups = serde_json::from_str(&v).unwrap_or_default(),
                     "nesting" => st.nesting = serde_json::from_str::<NestPrefs>(&v).unwrap_or_default().sane(),
+                    "smooth" => st.smooth = serde_json::from_str::<crate::engine::smooth::SmoothSettings>(&v).unwrap_or_default().sane(),
                     "refresh_minutes" => st.refresh_minutes = crate::engine::refresh::period(v.parse::<i64>().unwrap_or(0)),
                     "scroll_speed" => st.scroll_speed = v.parse::<f32>().ok().filter(|x| (0.5..=6.0).contains(x)).unwrap_or(SCROLL_SPEED_DEFAULT),
                     _ if k.starts_with("material") => {
@@ -810,6 +816,10 @@ impl AppSettings {
             self.nesting.import_cfg(&b.iter().map(|&c| c as char).collect::<String>());
             moves = format!(" Moving parts: step {}.", self.nesting.units.show_long(self.nesting.step));
         }
+        // Smoothing (SM10, SM21): the DXF reading settings and the drawing
+        // settings' Fitting values.
+        let latin = |f: &str| std::fs::read(p.join(f)).map(|b| b.iter().map(|&c| c as char).collect::<String>()).unwrap_or_default();
+        self.smooth.import_cfg(&latin("DXFASYSW.CFG"), &latin("LANTEKPR.CFG"));
         format!("Imported {name} and {added} machine(s) from {dir}.{moves}")
     }
 }
@@ -1007,6 +1017,7 @@ mod settings_tests {
             scroll_speed: 3.0,
             refresh_minutes: 15,
             backups: crate::backup::Settings { keep_days: 14, second_place: r"\\nas\Backups".into() },
+            smooth: crate::engine::smooth::SmoothSettings { on_import: true, import: crate::engine::smooth::Smooth { tol: 0.08, max_r: 9000.0, min_lines: 4 }, command: crate::engine::smooth::Smooth { tol: 1.5, max_r: 20000.0, min_lines: 10 } },
             stock: crate::stock::StockSettings { order: crate::stock::Order::ByPriority, min_efficiency: 0.6, ..Default::default() },
             nesting: NestPrefs { units: crate::units::LenUnit::Inch, part_gap: 6.35, edge_margin: 6.35, step: 25.4 / 16.0, keys_clockwise: true, snap: false, snap_px: 20.0, halo: true, turn_step: 7.5, turn_bar: false },
             integrations: vec![crate::integrations::Integration {

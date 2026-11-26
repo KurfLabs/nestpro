@@ -345,6 +345,29 @@ The original has no PDF reader of its own: it runs a bundled PDF-to-DXF converte
 | PD8 | Protected, damaged and non-PDF files are refused in plain words; a broken cross-reference table is recovered by scanning the file. | own design |
 | PD9 | Form XObjects are drawn through their matrix; images and shadings are skipped and reported. | estimated |
 
+### Smoothing drawings (radii drawn as short lines)
+
+Some drawings come with radii and round holes drawn as many short straight lines. Smoothing
+turns each run of lines that lies on one circle into a true arc. It runs on import (Settings →
+General → Smoothing on import, off by default) and from the Part screen's **Smooth** (agents: `smooth`, and
+`smooth=` on `import-drawing`). The app keeps curves as points split within 0.1 mm (DF4), so a
+smoothed arc is stored the same way and the posts that write arcs find it again.
+
+| # | Rule | |
+|---|------|---|
+| SM10 | On import, smoothing runs on every drawing once its pieces are joined and its gaps closed, before the outline and holes are sorted. Off by default; tolerance **0.05 mm**, largest radius **50 000 mm**, fewest elements **0**, the same in every drawing format. | observed |
+| SM11 | The original also stores a *largest* number of elements per arc (32 767); it is never used, so a long run is never split or skipped for its length. The rebuild doesn't offer it. | observed |
+| SM12 | A run is a stretch of consecutive straight lines of one contour, walked from the contour's first point; it never runs on past that point, so a radius across it is split there. A contour of one line, or a full circle, is left alone. There is no corner or length test: corners are only kept by the tolerance. | observed. The rebuild has no separate arcs after import, so a drawing's own arcs (split within 0.1 mm) are walked as lines too and come out on the same circle; and, its own rule, a run breaks where one line is more than twice as long as the next (as contours break into elements), so a straight edge beside a radius is never bowed into its arc, where the original's runs stop at the drawing's arcs |
+| SM13 | From each point the run is grown 29 points at a time while a quick try fits (circle through the start, a point 7, 14 or 21 on, and the end), then shortened one point at a time until the full fit (SM14) holds. Where no arc fits, the point keeps its line and the next point is tried. | observed |
+| SM14 | An arc candidate is the circle through the run's start, its end and a middle point a quarter, half or three quarters along; of those that pass SM15, the one whose lines keep closest to it wins. Three points in a row (the end within 0.01 mm of the line through the other two) make no arc, nor does a radius over the largest radius. | observed |
+| SM15 | Every point of the run, and every line's middle (its sag towards the centre), is within the tolerance of the circle, a gap of 0.01 mm or less counting as none; every line lies within the arc's sweep. So an arc is always **less than a half circle** (an exact half circle, to the rounding of its points, is not). | observed |
+| SM16 | An arc replaces at least the fewest-elements value of lines, and never fewer than 2. | observed |
+| SM17 | The arc runs exactly from the run's first point to its last, so the contour stays joined, and turns the way the points run. Neighbouring lines aren't made tangent. | observed |
+| SM18 | A closed polygon never becomes one full circle: it comes back as two or three arcs, each under a half circle, split at the contour's first point. | observed (code), not yet seen running |
+| SM19 | Not built: the original's automatic trial smoothing during part verification (over 1000 elements, kept when it removes more than a quarter of them). | observed |
+| SM20 | Not built: smoothing the points of splines as they are read (IGES and DXF), with its own values. The rebuild reads splines within 0.1 mm (DW10) and smooths them with the rest when smoothing is on. | observed (original), own (rebuild) |
+| SM21 | **Smooth** on the Part screen smooths every contour of the open part (agents can name contours) with its own values: tolerance **0.5 mm**, fewest elements 0, largest radius 50 000 mm, kept for next time. Contours keep their numbers, so picked leads and micro-joints stay on them; the part's box is kept at 0,0 and nested copies stay on the same spots (an arc can bulge out by up to the tolerance). Built-in shapes are refused. | observed (0.5 mm, the most common starting value; its other modes By points, Make tangent and Reduce overlappings are not built), estimated (largest radius) |
+
 # Part Technology tab (Lead-in/Lead-outs, Micro-Joints, Loops, Cut Technology)
 
 The original drawing module's **Technology** tab has: Lead-in/Lead-outs (Automatic, Delete,
@@ -1059,7 +1082,7 @@ shapes are recognised.
 |---|------|
 | MC1 | Every machine library starts with **A001 machine type: 0 CUT, 1 CUTPUNCH, 2 PUNCH**. The standard library set has 1 063 cutting machines, 100 combined punch + cut and 150 punching machines. |
 | MC2 | Cutting machines differ by their technology tables: laser (A035 lens, gas, power), oxyfuel / plasma (A039 power, gas), waterjet (A040–A044 nozzle, pressure, abrasive). Other header values: A002 default technology (1 cut, 2 mark), A004 fixed cut cycle (1 centre-punch, 2 on/off), **A005 machine tolerance 0.005**, A023 entry to circles (0 none, 1 line, 2 arc), A024 circles in one move, A037 speed factor 1.0. |
-| MC3 | **Standard-shape recognition** tries, in order: **0 circle** — one circle element, or an arc whose sweep is 360°; **1 rectangle** — more than 3 straight elements and no arcs (4 corners checked square); **2 obround** — 4 elements, 2 straight and 2 arcs alternating, both arcs 180°, the arc centres further apart than the straight sides are long; **3 ring sector** — 2 straight and 2 concentric arcs whose straight sides' lines meet at the arcs' centre. Each returns the centre and size. |
+| MC3 | **Standard-shape recognition** tries, in order: **0 circle** — one circle element, or an arc whose sweep is 360°; **1 rectangle** — more than 3 straight elements and no arcs (4 corners checked square); **2 obround** — 4 elements, 2 straight and 2 arcs alternating, both arcs 180°, the arc centres further apart than the straight sides are long; **3 ring sector** — 2 straight and 2 concentric arcs whose straight sides' lines meet at the arcs' centre. Each returns the centre and size. (The rebuild's contours are points: a circle's centre is the centroid of its area, so a hole whose points are spread unevenly, as after smoothing, SM17, is still found round.) |
 | MC4 | Standard contours are machined as one **standard macro** (start/end markers around it) rather than point by point; a punching machine looks for a matching punch (round, rectangular, obround). |
 | MC5 | Machining a part can be **automatic** (Machining → Automatic), **manual** (Contours → Manual Contours: pick contours in order, MM1–MM6) or by contour type (Contours → All Cut / All Marks / All Contours of one Quality / Automatic Cycles / Automatic Punch). |
 

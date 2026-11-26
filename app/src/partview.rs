@@ -257,6 +257,7 @@ impl App {
             self.dock_panels(ui);
         }
         self.missing_window(&ui.ctx().clone());
+        self.smooth_window(&ui.ctx().clone());
         // The cut technology panel (CS6), opened from Technology → Paint contours.
         if self.cut_panel.open {
             let mut open = true;
