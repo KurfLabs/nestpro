@@ -1012,10 +1012,16 @@ fn split_at_crossings(chains: &[Vec<P>]) -> Option<(Vec<Vec<P>>, usize)> {
                     if t < -eps / lr || t > 1.0 + eps / lr || u < -eps / ls || u > 1.0 + eps / ls {
                         continue;
                     }
-                    // Within one chain only a true crossing counts: its own
-                    // pieces meet end to end everywhere else.
-                    if a == b && (t <= eps / lr || t >= 1.0 - eps / lr || u <= eps / ls || u >= 1.0 - eps / ls) {
-                        continue;
+                    // Within one chain its own pieces meet end to end: only a
+                    // true crossing counts, or one of the chain's two ends
+                    // landing on another of its edges.
+                    if a == b {
+                        let last = chains[a].len() - 2;
+                        let inner = |v: f64, l: f64| v > eps / l && v < 1.0 - eps / l;
+                        let chain_end = |k: usize, v: f64, l: f64| (k == 0 && v <= eps / l) || (k == last && v >= 1.0 - eps / l);
+                        if !(inner(t, lr) && (inner(u, ls) || chain_end(j, u, ls)) || inner(u, ls) && chain_end(i, t, lr)) {
+                            continue;
+                        }
                     }
                     cuts[a].push((i, t.clamp(0.0, 1.0)));
                     cuts[b].push((j, u.clamp(0.0, 1.0)));
@@ -1027,7 +1033,6 @@ fn split_at_crossings(chains: &[Vec<P>]) -> Option<(Vec<Vec<P>>, usize)> {
     let mut n = 0;
     for (c, mut at) in chains.iter().zip(cuts) {
         at.sort_by(|x, y| (x.0, x.1).partial_cmp(&(y.0, y.1)).unwrap_or(std::cmp::Ordering::Equal));
-        let end = c[c.len() - 1];
         let mut piece = vec![c[0]];
         // The next point of the chain not yet in a piece.
         let mut v = 1;
@@ -1040,8 +1045,12 @@ fn split_at_crossings(chains: &[Vec<P>]) -> Option<(Vec<Vec<P>>, usize)> {
             if !close(q, piece[piece.len() - 1], eps) {
                 piece.push(q);
             }
-            // A split at the chain's own start or end, or on the last split, splits nothing.
-            if piece.len() >= 2 && !close(q, end, eps) {
+            // A split at the chain's own start or end (by place along it, not
+            // by point: the chain's end can lie on its own first edge), or
+            // on the last split, splits nothing.
+            let seg = ((c[i + 1][0] - c[i][0]).hypot(c[i + 1][1] - c[i][1])).max(1e-12);
+            let at_end = i + 2 == c.len() && t >= 1.0 - eps / seg;
+            if piece.len() >= 2 && !at_end {
                 out.push(std::mem::replace(&mut piece, vec![q]));
                 n += 1;
             }
@@ -1288,6 +1297,19 @@ mod tests {
         let (g, rep) = parse(&d).unwrap();
         assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes");
         assert!(rep.crossings_split > 0);
+    }
+
+    #[test]
+    fn a_corner_where_one_line_runs_past_still_closes() {
+        // BE13: the top ends on the left side, which runs 5 mm past it.
+        let line = |a: [f64; 4]| format!("0\nLINE\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], a[2], a[3]);
+        let mut d = String::from("0\nSECTION\n2\nENTITIES\n");
+        for l in [[0.0, 55.0, 0.0, 0.0], [0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [100.0, 50.0, 0.0, 50.0]] {
+            d.push_str(&line(l));
+        }
+        d.push_str("0\nENDSEC\n0\nEOF\n");
+        let (g, _) = parse(&d).unwrap();
+        assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes");
     }
 
     #[test]

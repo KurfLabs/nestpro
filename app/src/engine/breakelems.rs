@@ -358,7 +358,9 @@ impl Drawing {
     /// so it comes as one or two (from, to) pieces.
     fn portion(&self, e: &Elem, s: f64, xs: &[f64]) -> Result<Vec<(f64, f64)>, String> {
         let (s0, s1) = self.range(e);
-        if xs.iter().any(|&x| (x - s).abs() < JOIN) {
+        let len = s1 - s0;
+        let apart = |x: f64| if e.ring { (x - s).abs().min(len - (x - s).abs()) } else { (x - s).abs() };
+        if xs.iter().any(|&x| apart(x) < JOIN) {
             return Err("The pick is right on the crossing: pick on the piece to take away.".into());
         }
         let below = xs.iter().copied().filter(|&x| x < s - 1e-9).fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))));
@@ -411,6 +413,9 @@ struct Item {
     from: usize,
     /// It holds a piece of the old outline (BE10).
     of_outline: bool,
+    /// Every piece of it came from an open line (or a bridge's side): only
+    /// such a chain is cut once it closes (BE9).
+    from_open: bool,
 }
 
 /// What an edit does to the contour list before it is tidied (BE9).
@@ -523,7 +528,7 @@ fn tidy(d: &Drawing, ch: Change) -> Result<(Vec<Contour>, Vec<Option<usize>>), S
     let mut items: Vec<Item> = vec![];
     let mut fresh: Vec<bool> = vec![];
     for (k, c) in old.iter().enumerate() {
-        let item = |pts: Vec<P>, closed: bool, was: Option<usize>| Item { pts, closed, state: c.state, quality: c.quality, was, from: k, of_outline: Some(k) == old_outline };
+        let item = |pts: Vec<P>, closed: bool, was: Option<usize>| Item { pts, closed, state: c.state, quality: c.quality, was, from: k, of_outline: Some(k) == old_outline, from_open: !c.closed };
         if let Some(cuts) = ch.cut.get(&k) {
             for p in kept(&d.tracks[k], cuts) {
                 items.push(item(p, false, None));
@@ -543,7 +548,7 @@ fn tidy(d: &Drawing, ch: Change) -> Result<(Vec<Contour>, Vec<Option<usize>>), S
         }
     }
     for (pts, state) in ch.added {
-        items.push(Item { pts, closed: false, state, quality: None, was: None, from: usize::MAX, of_outline: false });
+        items.push(Item { pts, closed: false, state, quality: None, was: None, from: usize::MAX, of_outline: false, from_open: true });
         fresh.push(true);
     }
     if ch.rejoin {
@@ -579,6 +584,7 @@ fn tidy(d: &Drawing, ch: Change) -> Result<(Vec<Contour>, Vec<Option<usize>>), S
                     it.was = None;
                     it.from = it.from.min(items[j].from);
                     it.of_outline |= items[j].of_outline;
+                    it.from_open &= items[j].from_open;
                     if it.quality != items[j].quality {
                         it.quality = None;
                     }
@@ -601,7 +607,7 @@ fn tidy(d: &Drawing, ch: Change) -> Result<(Vec<Contour>, Vec<Option<usize>>), S
                 it.closed = true;
                 // Open lines on a cut layer come in as No cut only because
                 // they are open (CS2); closed now, they are cut (BE9).
-                if it.state == ContourState::NoCut {
+                if it.state == ContourState::NoCut && it.from_open {
                     it.state = ContourState::Cut;
                 }
             }
@@ -635,9 +641,11 @@ fn tidy(d: &Drawing, ch: Change) -> Result<(Vec<Contour>, Vec<Option<usize>>), S
     }
     // A changed outline, or a hole the edit made, must not run through
     // another closed contour (a bridge across a second hole).
-    let fresh_outline = items[outline].was.is_none();
-    if items.iter().enumerate().any(|(i, it)| i != outline && it.closed && (fresh_outline || it.was.is_none()) && rings_cross(&ring, &it.pts)) {
-        return Err("That would run the outline through another hole. Pick a place where the bridge crosses no other hole.".into());
+    let closed: Vec<usize> = (0..items.len()).filter(|&i| items[i].closed).collect();
+    for &a in closed.iter().filter(|&&a| items[a].was.is_none()) {
+        if closed.iter().any(|&b| b != a && rings_cross(&items[a].pts, &items[b].pts)) {
+            return Err("That would run a cut through another hole. Pick a place where the bridge crosses no other hole.".into());
+        }
     }
     let mut order: Vec<usize> = (0..items.len()).filter(|&i| i != outline && items[i].closed).collect();
     order.push(outline);
@@ -913,8 +921,12 @@ fn plan_break(d: &Drawing, p: P, tol: f64) -> Result<(Change, String), String> {
     let t = &d.tracks[k];
     if t.closed {
         let (s0, s1) = d.range(&e);
-        if (s - s0).abs() < JOIN || (s1 - s).abs() < JOIN {
+        // A circle's start is no element end: it is broken beside it too.
+        if !e.ring && ((s - s0).abs() < JOIN || (s1 - s).abs() < JOIN) {
             return Err(format!("{} already has an element end{}: nothing to break.", cap(&d.name(k)), d.place(t.point(s))));
+        }
+        if e.ring && s1 - s < 3.0 * JOIN {
+            s = s0;
         }
         // On a point of an arc drawn in short lines, which can't be an
         // element end, the break goes just beside it (BE5).
@@ -1279,6 +1291,40 @@ mod tests {
         let l = contours(&p);
         assert_eq!(l.len(), 2);
         assert!(l[0].closed && l[0].state == ContourState::Cut);
+    }
+
+    #[test]
+    fn a_pick_just_before_a_round_hole_start_is_on_the_crossing() {
+        // A line through the circle's start: a pick 0.005 mm before it is on it.
+        let p = part_of(vec![cut_c(round(10.0)), cut_c(rect(0.0, 0.0, 100.0, 50.0)), line(vec![[30.0, 25.0], [70.0, 25.0]])]);
+        let a: f64 = -0.0005;
+        let (r, _) = run(p, |ps, sh, m| cut(ps, sh, m, 0, [35.0, 25.0], &[[50.0 + 10.0 * a.cos(), 25.0 + 10.0 * a.sin()]], PICK_TOL));
+        assert!(r.unwrap_err().contains("right on the crossing"));
+    }
+
+    #[test]
+    fn break_at_a_round_hole_start_breaks_beside_it() {
+        let p = part_of(vec![cut_c(round(10.0)), cut_c(rect(0.0, 0.0, 100.0, 50.0))]);
+        let (r, p) = run(p, |ps, sh, m| break_at(ps, sh, m, 0, [60.0, 25.0], PICK_TOL));
+        r.unwrap();
+        assert_eq!(contours(&p)[0].pts.len(), 37);
+    }
+
+    #[test]
+    fn a_bridge_between_two_holes_through_a_third_is_refused() {
+        let p = part_of(vec![cut_c(rect(40.0, 5.0, 60.0, 15.0)), cut_c(rect(45.0, 20.0, 60.0, 30.0)), cut_c(rect(40.0, 35.0, 60.0, 45.0)), cut_c(rect(0.0, 0.0, 100.0, 50.0))]);
+        let (r, _) = run(p, |ps, sh, m| bridge(ps, sh, m, 0, [50.0, 15.0], [50.0, 35.0], 3.0, PICK_TOL));
+        assert!(r.unwrap_err().contains("another hole"));
+    }
+
+    #[test]
+    fn a_bridge_across_a_no_cut_contour_leaves_it_no_cut() {
+        // BE9: only chains of open lines become cut when they close.
+        let p = part_of(vec![Contour::new(rect(40.0, 20.0, 60.0, 30.0), true, ContourState::NoCut), cut_c(rect(0.0, 0.0, 100.0, 50.0))]);
+        let (r, p) = run(p, |ps, sh, m| bridge(ps, sh, m, 0, [50.0, 30.0], [50.0, 20.0], 3.0, PICK_TOL));
+        r.unwrap();
+        let l = contours(&p);
+        assert_eq!(l.iter().filter(|c| c.closed && c.state == ContourState::NoCut).count(), 2, "{l:?}");
     }
 
     #[test]

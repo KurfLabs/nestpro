@@ -510,11 +510,12 @@ impl App {
         }
         // Clicks, note and marks belong to one part: another part shown
         // (however it was picked) starts clean.
-        if self.dv.modify_part != Some(idx) {
+        if self.dv.modify_part != Some((idx, self.parts.len())) {
             self.dv.modify_picks.clear();
+            self.dv.modify_base_kept = false;
             self.dv.modify_note = None;
             self.dv.modify_marks.clear();
-            self.dv.modify_part = Some(idx);
+            self.dv.modify_part = Some((idx, self.parts.len()));
         }
         if self.dv.modify.is_some() && (self.dv.measure_on || self.dv.zoom_window || self.placing_text || painting) {
             self.dv.modify = None;
@@ -1243,11 +1244,9 @@ impl App {
         let mut refused = None;
         let mut say = None;
         if let Some(p) = at {
-            // Right where Break has just broken, nothing more to show: the
-            // note keeps saying what the click did.
             let just_broken = m == crate::drawing::Modify::Break && self.dv.modify_marks.iter().any(|&q| (q[0] - p[0]).hypot(q[1] - p[1]) <= 2.0 * ap);
-            if let Some(hit) = be::element_at(part, p, ap, picks).filter(|_| !just_broken) {
-                match m.edit_either_way(part, picks, hit.at, self.dv.bridge_width, ap).map(|(e, swapped)| {
+            if let Some(hit) = be::element_at(part, p, ap, picks) {
+                match m.edit_either_way(part, picks, hit.at, self.dv.bridge_width, ap, self.dv.modify_base_kept).map(|(e, swapped)| {
                     if swapped {
                         say = Some(("Taken the other way round: this line is the base".to_string(), MODIFY_PICK));
                     }
@@ -1292,6 +1291,9 @@ impl App {
                                 ring(q, 6.0, Color32::WHITE);
                             }
                         }
+                        // Right where Break has just broken, "nothing to break"
+                        // isn't shown: the note keeps saying what the click did.
+                        Err(_) if just_broken => {}
                         Err(e) => {
                             // Red is for what goes; a refused click shows grey.
                             line(&hit.pts, Stroke::new(3.0, Color32::from_gray(120)));

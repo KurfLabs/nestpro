@@ -122,10 +122,13 @@ impl Modify {
     /// either order — when the edit as clicked would be refused or would
     /// open a hole, and the second click's line works as the base without
     /// that, that is the edit (BE4).
-    pub fn edit_either_way(self, part: &crate::nest::Part, picks: &[P], next: P, width: f64, tol: f64) -> Option<(crate::engine::breakelems::Edit, bool)> {
+    /// Only the first pair of clicks may swap: Cut several's kept base
+    /// (`kept`) stays the base.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_either_way(self, part: &crate::nest::Part, picks: &[P], next: P, width: f64, tol: f64, kept: bool) -> Option<(crate::engine::breakelems::Edit, bool)> {
         use crate::engine::breakelems::{preview, Edit};
         let edit = self.edit(picks, next, width)?;
-        if let (Modify::Cut1 | Modify::CutSeveral, [first]) = (self, picks) {
+        if let (Modify::Cut1 | Modify::CutSeveral, [first], false) = (self, picks, kept) {
             let other = Edit::Cut { base: next, pieces: vec![*first] };
             let opens = |v: &crate::engine::breakelems::Preview| v.holes.1 < v.holes.0;
             let worse = preview(part, &edit, tol).map_or(true, |v| opens(&v));
@@ -210,8 +213,11 @@ pub struct DrawView {
     pub modify_note: Option<ModifyNote>,
     /// Where Break put element ends while the tool is in hand (white ticks).
     pub modify_marks: Vec<P>,
-    /// The part those clicks, the note and the marks are on.
-    pub modify_part: Option<usize>,
+    /// The part those clicks, the note and the marks are on (its number,
+    /// and how many parts there were, so a part removed starts clean too).
+    pub modify_part: Option<(usize, usize)>,
+    /// Cut several's base is kept from an earlier cut (it no longer swaps).
+    pub modify_base_kept: bool,
     /// Screenshots: the pointer is taken to be here (part mm) for the
     /// Break elements preview.
     pub shot_hover: Option<P>,
@@ -252,6 +258,7 @@ impl Default for DrawView {
             modify_note: None,
             modify_marks: vec![],
             modify_part: None,
+            modify_base_kept: false,
             shot_hover: None,
             bridge_width: BRIDGE_WIDTH,
         }
@@ -816,6 +823,7 @@ impl App {
     pub fn set_modify(&mut self, m: Option<Modify>) {
         self.dv.modify = m;
         self.dv.modify_picks.clear();
+        self.dv.modify_base_kept = false;
         self.dv.modify_note = None;
         self.dv.modify_marks.clear();
         if let Some(m) = m {
@@ -840,6 +848,7 @@ impl App {
             self.set_modify(None);
         } else {
             self.dv.modify_picks.clear();
+            self.dv.modify_base_kept = false;
             self.dv.modify_note = None;
             self.status = format!("{}: {}", m.label(), m.prompt(0));
         }
@@ -852,15 +861,16 @@ impl App {
     pub fn modify_click(&mut self, at: P, tol: f64) {
         let (Some(m), Some(i)) = (self.dv.modify, self.shown_part()) else { return };
         use crate::engine::breakelems as be;
-        self.dv.modify_part = Some(i);
+        self.dv.modify_part = Some((i, self.parts.len()));
         let picks = self.dv.modify_picks.clone();
         let Some(hit) = be::element_at(&self.parts[i], at, tol, &picks) else {
             self.dv.modify_note = Some(ModifyNote { text: "No line there: click right on a line of the part.".into(), ok: false, spot: Some(at) });
             self.status = format!("No line there. {}", m.prompt(picks.len()));
             return;
         };
-        let Some((edit, swapped)) = m.edit_either_way(&self.parts[i], &picks, hit.at, self.dv.bridge_width, tol) else {
+        let Some((edit, swapped)) = m.edit_either_way(&self.parts[i], &picks, hit.at, self.dv.bridge_width, tol, self.dv.modify_base_kept) else {
             self.dv.modify_picks.push(hit.at);
+            self.dv.modify_base_kept = false;
             self.dv.modify_note = None;
             self.status = format!("{}: {}", m.label(), m.prompt(self.dv.modify_picks.len()));
             return;
@@ -885,6 +895,7 @@ impl App {
                 // the others start over.
                 if m == Modify::CutSeveral {
                     self.dv.modify_picks = vec![if swapped { hit.at } else { picks[0] }];
+                    self.dv.modify_base_kept = true;
                 } else {
                     self.dv.modify_picks.clear();
                 }
@@ -1611,6 +1622,16 @@ mod drawing_tests {
         assert!(n.ok && n.text.starts_with("Took the second line as the base"), "{}", n.text);
         assert_eq!(crate::engine::contours::list(&a.parts[0]).len(), 2, "the stub is gone");
         assert_eq!(a.dv.modify_picks, vec![[50.0, 30.0]], "the hole's edge is Cut several's base now");
+    }
+
+    #[test]
+    fn cut_several_keeps_its_kept_base_the_base() {
+        // BE4: only the first pair of clicks may be taken the other way round.
+        let a = app_with_stub();
+        let (_, swapped) = Modify::CutSeveral.edit_either_way(&a.parts[0], &[[30.0, 40.0]], [50.0, 30.0], 3.0, 1.0, false).unwrap();
+        assert!(swapped);
+        let (_, swapped) = Modify::CutSeveral.edit_either_way(&a.parts[0], &[[30.0, 40.0]], [50.0, 30.0], 3.0, 1.0, true).unwrap();
+        assert!(!swapped);
     }
 
     #[test]

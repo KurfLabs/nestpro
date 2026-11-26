@@ -1929,6 +1929,7 @@ impl App {
                 self.dv.modify_picks.push(b);
             }
         }
+        self.dv.modify_base_kept = !self.dv.modify_picks.is_empty();
     }
 
     /// With a Break elements tool in hand, its note says the drawing was
