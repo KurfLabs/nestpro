@@ -1320,6 +1320,21 @@ mod tests {
             assert_eq!(kinds(h, Circle), 1);
         }
         assert_eq!((kinds(2, Line), kinds(2, Arc)), (4, 4), "the outline: {:?}", el.iter().filter(|e| e.contour == 2).map(|e| (e.kind, e.length)).collect::<Vec<_>>());
+        // The same plate drawn as LINEs and ARCs, each round corner split
+        // 5° + 80° + 5°: still four lines and four arcs.
+        let mut ents = String::new();
+        for (x0, y0, x1, y1) in [(0.125, 0.0, 3.875, 0.0), (4.0, 0.125, 4.0, 1.875), (3.875, 2.0, 0.125, 2.0), (0.0, 1.875, 0.0, 0.125)] {
+            ents += &format!("0\nLINE\n8\n0\n10\n{x0}\n20\n{y0}\n11\n{x1}\n21\n{y1}\n");
+        }
+        for (cx, cy, a) in [(3.875, 0.125, 270.0), (3.875, 1.875, 0.0), (0.125, 1.875, 90.0), (0.125, 0.125, 180.0)] {
+            for (s, e) in [(0.0, 5.0), (5.0, 85.0), (85.0, 90.0)] {
+                ents += &format!("0\nARC\n8\n0\n10\n{cx}\n20\n{cy}\n40\n0.125\n50\n{}\n51\n{}\n", a + s, a + e);
+            }
+        }
+        let g = parse(&format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{ents}0\nENDSEC\n0\nEOF\n")).unwrap().0;
+        let el = crate::nest::elements_of(&crate::nest::Geo { outline: g.outline.clone(), fills: vec![], holes: vec![] });
+        let n = |k: crate::nest::ElemKind| el.iter().filter(|e| e.kind == k).count();
+        assert_eq!((n(Line), n(Arc), el.len()), (4, 4, 8), "split corners: {:?}", el.iter().map(|e| (e.kind, e.length)).collect::<Vec<_>>());
         // Every circle, however small, bends less than a corner at each point.
         for d in [0.0625, 0.125, 0.25, 0.375, 0.4375, 0.5, 0.625] {
             let n = arc_segments(d * 25.4 / 2.0, std::f64::consts::TAU);
