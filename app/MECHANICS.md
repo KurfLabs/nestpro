@@ -163,8 +163,12 @@ How the rebuild uses them:
   0.001 mm, either way round, whatever their layer) are taken once, so a circle drawn twice isn't
   pierced and cut twice; the notes say how many ("N object(s) drawn twice in the same place, cut
   once"). Objects that only overlap in part are not merged. Estimated (own design).
-- **At least 16 pieces to the full circle (DX2)**: however small the arc, so small holes stay round,
-  are recognised as round and reach the LC5 as arcs. Estimated (own design).
+- **At least 24 pieces to the full circle (DX2)**: however small the arc, so small holes stay round,
+  are recognised as round and reach the LC5 as arcs. Each bend is then 15° or less, under the 20°
+  that makes a corner, so a small hole is one circle and a small corner radius one arc when picking
+  lines, placing leads and joints, and offsetting the kerf, never a run of short straight lines
+  (16 pieces bent 22.5° each and split holes up to 7/16" and radii up to 3/16"). Drawings imported
+  before keep their old points until imported again. Estimated (own design).
 - **Layers (DF5)**: a drawing's layers are listed in the import preview's cut technology panel
   (IM11); a dropped drawing with more than one layer opens the Import drawings window with it (IM12).
   Every layer starts as **Cut** (code 13) and can be set to **Mark** or **Leave out**. Marking lines show
@@ -498,8 +502,10 @@ How the drawing module picks elements and places a lead on a picked element.
 How the rebuild uses them:
 
 - The Part view splits each contour into elements: a turn of more than **20°** ends an element
-  (estimate). A run with two points is a **Line**, a longer run an **Arc**; a contour with no
-  corners is one **Circle**. Holes come first, then the outline, the same order the cut plan uses.
+  (estimate), and so does a straight meeting a curve that runs on from it (one piece more than
+  **2×** longer or shorter than the one before, as leads and joints split it), so a rectangle with
+  round corners is four lines and four arcs. A run with two points is a **Line**, a longer run an
+  **Arc**; a contour with no breaks is one **Circle**. Holes come first, then the outline, the same order the cut plan uses.
 - Hovering highlights the element under the cursor and shows its type and length. Click selects
   it; Shift+click adds or removes it; dragging a box to the right selects the elements fully
   inside (E2), to the left every element it touches (SW1, SW2).

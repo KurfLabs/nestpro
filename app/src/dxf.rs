@@ -22,8 +22,10 @@ pub const JOIN_TOL: f64 = 0.01;
 /// Largest gap between an arc and its straight segments, in mm (original default 0.1).
 pub const ARC_CHORD_ERR: f64 = 0.1;
 /// Fewest straight segments for a full circle, however small (DX2), so a small
-/// hole stays round and its arcs can be written as arcs.
-pub const ARC_MIN_SEGMENTS: f64 = 16.0;
+/// hole stays round and its arcs can be written as arcs. 24 keeps every bend
+/// at 15° or less, under `nest::ELEMENT_CORNER_DEG`, so a small hole or corner
+/// radius is one circle or arc, not a run of short lines.
+pub const ARC_MIN_SEGMENTS: f64 = 24.0;
 /// Most outline edges the hole tests of one drawing may look at.
 const HOLE_WORK: usize = 200_000_000;
 
@@ -1289,6 +1291,54 @@ mod tests {
                 let dev = r - ((mid[0] - c[0]).powi(2) + (mid[1] - c[1]).powi(2)).sqrt();
                 assert!(dev <= ARC_CHORD_ERR + 1e-6, "hole r {r:.1}: chord {dev:.3} mm off");
             }
+        }
+    }
+
+    #[test]
+    fn small_holes_and_corner_radii_are_one_circle_or_arc() {
+        // DX2: a 4" × 2" plate with 1/8" corner radii (bulges) and a 1/4"
+        // hole. Each radius is one arc and the hole one circle, never a run
+        // of short lines picked, led in or jointed one by one.
+        let b = (std::f64::consts::FRAC_PI_2 / 4.0).tan();
+        let v = [(0.125, 0.0, 0.0), (3.875, 0.0, b), (4.0, 0.125, 0.0), (4.0, 1.875, b), (3.875, 2.0, 0.0), (0.125, 2.0, b), (0.0, 1.875, 0.0), (0.0, 0.125, b)];
+        let mut lw = String::from("0\nLWPOLYLINE\n8\n0\n90\n8\n70\n1\n");
+        for (x, y, bulge) in v {
+            lw += &format!("10\n{x}\n20\n{y}\n42\n{bulge}\n");
+        }
+        // A second 1/4" hole drawn as arcs of 116°, 116°, 116° and 12°: pieces
+        // of different lengths on one circle stay one circle.
+        let arcs: String = [(0.0, 116.0), (116.0, 232.0), (232.0, 348.0), (348.0, 360.0)].iter().map(|(a0, a1)| format!("0\nARC\n8\n0\n10\n3\n20\n1\n30\n0\n40\n0.125\n50\n{a0}\n51\n{a1}\n")).collect();
+        let text = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{lw}0\nCIRCLE\n8\n0\n10\n1\n20\n1\n30\n0\n40\n0.125\n{arcs}0\nENDSEC\n0\nEOF\n");
+        let g = parse(&text).unwrap().0;
+        assert_eq!(g.holes.len(), 2);
+        let geo = crate::nest::Geo { outline: g.outline.clone(), fills: vec![], holes: g.holes.clone() };
+        let el = crate::nest::elements_of(&geo);
+        let kinds = |c: usize, k: crate::nest::ElemKind| el.iter().filter(|e| e.contour == c && e.kind == k).count();
+        use crate::nest::ElemKind::*;
+        for h in 0..2 {
+            assert_eq!(el.iter().filter(|e| e.contour == h).count(), 1, "hole {h}: {:?}", el.iter().filter(|e| e.contour == h).map(|e| (e.kind, e.length)).collect::<Vec<_>>());
+            assert_eq!(kinds(h, Circle), 1);
+        }
+        assert_eq!((kinds(2, Line), kinds(2, Arc)), (4, 4), "the outline: {:?}", el.iter().filter(|e| e.contour == 2).map(|e| (e.kind, e.length)).collect::<Vec<_>>());
+        // The same plate drawn as LINEs and ARCs, each round corner split
+        // 5° + 80° + 5°: still four lines and four arcs.
+        let mut ents = String::new();
+        for (x0, y0, x1, y1) in [(0.125, 0.0, 3.875, 0.0), (4.0, 0.125, 4.0, 1.875), (3.875, 2.0, 0.125, 2.0), (0.0, 1.875, 0.0, 0.125)] {
+            ents += &format!("0\nLINE\n8\n0\n10\n{x0}\n20\n{y0}\n11\n{x1}\n21\n{y1}\n");
+        }
+        for (cx, cy, a) in [(3.875, 0.125, 270.0), (3.875, 1.875, 0.0), (0.125, 1.875, 90.0), (0.125, 0.125, 180.0)] {
+            for (s, e) in [(0.0, 5.0), (5.0, 85.0), (85.0, 90.0)] {
+                ents += &format!("0\nARC\n8\n0\n10\n{cx}\n20\n{cy}\n40\n0.125\n50\n{}\n51\n{}\n", a + s, a + e);
+            }
+        }
+        let g = parse(&format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{ents}0\nENDSEC\n0\nEOF\n")).unwrap().0;
+        let el = crate::nest::elements_of(&crate::nest::Geo { outline: g.outline.clone(), fills: vec![], holes: vec![] });
+        let n = |k: crate::nest::ElemKind| el.iter().filter(|e| e.kind == k).count();
+        assert_eq!((n(Line), n(Arc), el.len()), (4, 4, 8), "split corners: {:?}", el.iter().map(|e| (e.kind, e.length)).collect::<Vec<_>>());
+        // Every circle, however small, bends less than a corner at each point.
+        for d in [0.0625, 0.125, 0.25, 0.375, 0.4375, 0.5, 0.625] {
+            let n = arc_segments(d * 25.4 / 2.0, std::f64::consts::TAU);
+            assert!(360.0 / n as f64 <= 15.0 + 1e-9, "Ø{d}\": {n} pieces");
         }
     }
 }

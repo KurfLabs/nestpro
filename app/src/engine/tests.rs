@@ -1916,8 +1916,8 @@ fn contour_tech_marks_a_bend_line_leaves_out_a_hole_and_sets_every_equal_hole() 
     assert_eq!(states(&mut s), ["leave-out", "cut", "cut", "cut", "mark", "no-cut"]);
     assert_eq!(program(&mut s).matches("M07").count(), 3);
     let pi = call(&mut s, "part-info", None, json!({"part": 1}));
-    // The plate less two 10 mm holes, each 16 straight pieces (DX2).
-    let small = 8.0 * 25.0 * (std::f64::consts::PI / 8.0).sin();
+    // The plate less two 10 mm holes, each 24 straight pieces (DX2).
+    let small = 12.0 * 25.0 * (std::f64::consts::PI / 12.0).sin();
     assert!((pi["data"]["area_mm2"].as_f64().unwrap() - (20000.0 - 2.0 * small)).abs() < 0.5, "{pi}");
     // Elements name their contour by the same numbers (the holes are 2 and 3 now).
     let on: std::collections::BTreeSet<u64> = pi["data"]["elements"].as_array().unwrap().iter().map(|e| e["contour"].as_u64().unwrap()).collect();

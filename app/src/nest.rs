@@ -816,7 +816,31 @@ impl Element {
 /// Turn more than this (degrees) at a vertex ends an element.
 pub const ELEMENT_CORNER_DEG: f64 = 20.0;
 
-/// Split every contour of a part into elements (lines, arcs, circles).
+/// Whether the points `t` lie (within `dxf::JOIN_TOL`) on the circle through
+/// the three points `c`; never for three points in a line.
+fn same_circle(c: [P; 3], t: [P; 2]) -> bool {
+    let [a, v, b] = c;
+    let dd = 2.0 * (a[0] * (v[1] - b[1]) + v[0] * (b[1] - a[1]) + b[0] * (a[1] - v[1]));
+    if dd.abs() < 1e-12 {
+        return false;
+    }
+    let s = |p: P| p[0] * p[0] + p[1] * p[1];
+    let o = [
+        (s(a) * (v[1] - b[1]) + s(v) * (b[1] - a[1]) + s(b) * (a[1] - v[1])) / dd,
+        (s(a) * (b[0] - v[0]) + s(v) * (a[0] - b[0]) + s(b) * (v[0] - a[0])) / dd,
+    ];
+    let r = ((a[0] - o[0]).powi(2) + (a[1] - o[1]).powi(2)).sqrt();
+    t.iter().all(|p| (((p[0] - o[0]).powi(2) + (p[1] - o[1]).powi(2)).sqrt() - r).abs() <= crate::dxf::JOIN_TOL)
+}
+
+/// Split every contour of a part into elements (lines, arcs, circles): an
+/// element ends where the contour turns more than `ELEMENT_CORNER_DEG`, and
+/// where a straight meets an arc running on from it (a piece more than
+/// `leads::ELEMENT_LENGTH_RATIO` times longer or shorter than the one
+/// before), the same breaks leads and joints use (`leads::is_break`). A
+/// rectangle with round corners is four lines and four arcs, not one circle.
+/// Pieces of different lengths on one circle (a hole drawn as arcs of
+/// different sizes) stay one element.
 pub fn elements_of(geo: &Geo) -> Vec<Element> {
     let mut out = vec![];
     let contours: Vec<&Vec<P>> = geo.holes.iter().chain(std::iter::once(&geo.outline)).collect();
@@ -833,7 +857,16 @@ pub fn elements_of(geo: &Geo) -> Vec<Element> {
             let lu = (u[0] * u[0] + u[1] * u[1]).sqrt().max(1e-12);
             let lw = (w[0] * w[0] + w[1] * w[1]).sqrt().max(1e-12);
             let dot = ((u[0] * w[0] + u[1] * w[1]) / (lu * lw)).clamp(-1.0, 1.0);
-            dot.acos().to_degrees() > ELEMENT_CORNER_DEG
+            if dot.acos().to_degrees() > ELEMENT_CORNER_DEG {
+                return true;
+            }
+            let ratio = crate::leads::ELEMENT_LENGTH_RATIO;
+            // The circle comes from the three points on the short pieces' side
+            // and must hold the two on the long side: a straight beside a
+            // round corner never fits it, however the drawing is laid out.
+            let (p, q) = (pts[(i + n - 2) % n], pts[(i + 2) % n]);
+            let one_circle = if lw < lu { same_circle([v, b, q], [a, p]) } else { same_circle([p, a, v], [b, q]) };
+            (lu > lw * ratio || lw > lu * ratio) && !one_circle
         };
         let corners: Vec<usize> = (0..n).filter(|&i| corner(i)).collect();
         if corners.is_empty() {
