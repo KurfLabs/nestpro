@@ -8055,6 +8055,66 @@
   "group": "BLM LC5",
   "value": "the sheet's cycles",
   "source": "SR21"
+ },
+ {
+  "name": "smooth on import",
+  "group": "smoothing",
+  "value": "off; tolerance 0.05 mm, largest radius 50000 mm, fewest elements 0",
+  "source": "SM10"
+ },
+ {
+  "name": "largest elements per arc",
+  "group": "smoothing",
+  "value": "not used",
+  "source": "SM11"
+ },
+ {
+  "name": "smoothing run",
+  "group": "smoothing",
+  "value": "consecutive straight lines from the contour's first point, never past it; own: breaks where a line is over twice the next or the lines turn over 30°",
+  "source": "SM12"
+ },
+ {
+  "name": "smoothing grow step",
+  "group": "smoothing",
+  "value": "29 points; quick try through points 7, 14, 21 on",
+  "source": "SM13"
+ },
+ {
+  "name": "smoothing arc candidates",
+  "group": "smoothing",
+  "value": "circle through start, end and a point 1/4, 1/2 or 3/4 along; best fit wins",
+  "source": "SM14"
+ },
+ {
+  "name": "smoothing tolerance test",
+  "group": "smoothing",
+  "value": "every point and every line's sag within the tolerance; arc under 180° (the original counts gaps up to 0.01 mm as none; ours holds to the tolerance)",
+  "source": "SM15"
+ },
+ {
+  "name": "fewest lines per arc",
+  "group": "smoothing",
+  "value": "max(fewest elements, 2)",
+  "source": "SM16"
+ },
+ {
+  "name": "smoothed arc ends",
+  "group": "smoothing",
+  "value": "exactly on the run's first and last points; not made tangent; own: kept in at least 4 pieces, each within the tolerance",
+  "source": "SM17"
+ },
+ {
+  "name": "smoothed polygon",
+  "group": "smoothing",
+  "value": "two or three arcs under 180°, never one full circle",
+  "source": "SM18"
+ },
+ {
+  "name": "Smooth command tolerance",
+  "group": "smoothing",
+  "value": "0.5 mm (largest radius 50000 mm, fewest elements 0)",
+  "source": "SM21"
  }
 ]
 }

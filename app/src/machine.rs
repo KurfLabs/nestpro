@@ -197,6 +197,21 @@ fn corners(pts: &[P]) -> Vec<P> {
         .collect()
 }
 
+/// The centroid of the area a closed polygon encloses (None when it
+/// encloses none).
+fn area_centre(v: &[P]) -> Option<P> {
+    let n = v.len();
+    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for i in 0..n {
+        let (p, q) = (v[i], v[(i + 1) % n]);
+        let cr = p[0] * q[1] - q[0] * p[1];
+        a += cr;
+        cx += (p[0] + q[0]) * cr;
+        cy += (p[1] + q[1]) * cr;
+    }
+    (a.abs() > 1e-12).then(|| [cx / (3.0 * a), cy / (3.0 * a)])
+}
+
 /// Recognise a closed contour as a standard shape, in the original's order:
 /// circle, rectangle, obround (MC3). A circle is one
 /// full circle (an arc of 360°); a rectangle has four straight sides at right
@@ -214,7 +229,9 @@ pub fn recognise(pts: &[P]) -> Option<StdShape> {
     let tol = MACHINE_TOL + STD_TOL_REL * size;
     // 0 — circle.
     if n >= 12 {
-        let c = [v.iter().map(|p| p[0]).sum::<f64>() / n as f64, v.iter().map(|p| p[1]).sum::<f64>() / n as f64];
+        // The centre of the area, not the average of the points: a contour
+        // smoothed into arcs (SM17) has its points spread unevenly round it.
+        let c = area_centre(&v).unwrap_or([v.iter().map(|p| p[0]).sum::<f64>() / n as f64, v.iter().map(|p| p[1]).sum::<f64>() / n as f64]);
         let r = v.iter().map(|&p| dist(p, c)).sum::<f64>() / n as f64;
         // The outline turns once all the way round (360°), never back.
         let turning: f64 = (0..n)

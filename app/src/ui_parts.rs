@@ -151,6 +151,9 @@ pub enum Icon {
     Reverse,
     /// Two sheets with arrows either side (go between the sheets).
     SheetNav,
+    /// A radius drawn as a few straight lines, and the true arc they become
+    /// (smooth a drawing).
+    Smooth,
     /// Arrows in four directions (move parts).
     MoveArrows,
     /// A plate edge cut at an angle, with the angle marked (bevels).
@@ -831,6 +834,24 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
                     p.rect_stroke(r, CornerRadius::same(2), s, egui::StrokeKind::Middle);
                 }
             }
+        }
+        Icon::Smooth => {
+            // A radius drawn as three straight lines with their points, and
+            // inside it the true arc they become.
+            let arc = |r: f32, n: usize| -> Vec<Pos2> {
+                (0..=n)
+                    .map(|k| {
+                        let t = std::f32::consts::FRAC_PI_2 * k as f32 / n as f32;
+                        v(-10.0 + r * t.sin(), 10.0 - r * t.cos())
+                    })
+                    .collect()
+            };
+            let facets = arc(19.0, 3);
+            for q in &facets {
+                p.circle_filled(*q, 1.6, ink);
+            }
+            poly(facets, Stroke::new(1.3, ink));
+            poly(arc(12.0, 24), a);
         }
         Icon::SheetNav => {
             let back = Rect::from_center_size(v(2.0, -2.0), Vec2::new(14.0, 11.0));

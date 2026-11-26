@@ -708,6 +708,26 @@ impl App {
             }
         });
         ui.add_space(10.0);
+        // SM10: smoothing on import, off as in the original.
+        card(ui, "Smoothing on import", "Some drawings come with radii and round holes drawn as many short straight lines. Smoothing turns each run of lines that lies on one circle into a true arc, so it cuts smooth instead of in facets. The part screen's Smooth does the same to one part.", |ui| {
+            let unit = self.cfg.nesting.units;
+            let sm = &mut self.cfg.smooth;
+            ui.checkbox(&mut sm.on_import, "Smooth every drawing when it is imported");
+            ui.add_enabled_ui(sm.on_import, |ui| {
+                egui::Grid::new("smooth_import").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                    ui.label("Tolerance");
+                    ui.add(crate::smoothui::tol_drag(&mut sm.import.tol, unit)).on_hover_text("The largest gap allowed between a line and its arc, its middle included (0.05 mm by default: only finely drawn radii are smoothed)");
+                    ui.end_row();
+                    ui.label("Largest radius");
+                    ui.add(crate::units::len_drag(&mut sm.import.max_r, unit, 1.0, 1_000_000.0)).on_hover_text("Lines that would need a larger radius stay straight lines");
+                    ui.end_row();
+                    ui.label("Fewest lines per arc");
+                    ui.add(egui::DragValue::new(&mut sm.import.min_lines).range(0..=crate::engine::smooth::MAX_MIN_LINES).speed(0.2)).on_hover_text("An arc replaces at least this many lines (never fewer than 2)");
+                    ui.end_row();
+                });
+            });
+        });
+        ui.add_space(10.0);
         card(ui, "Example jobs", "Five example jobs to try the app with. Turn off to start with one empty job.", |ui| {
             ui.checkbox(&mut self.cfg.examples, "Start with the example jobs (takes effect next start)");
         });

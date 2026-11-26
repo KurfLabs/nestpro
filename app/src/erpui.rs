@@ -164,12 +164,12 @@ fn fetch_step(c: Box<dyn Connector>, group: Group, wo: erp::Ref, step_id: String
 }
 
 /// Turn a drawing's text into a part for `ip`, in mm.
-pub fn part_from(ip: &ImportPart, text: &str, drawing_units: Units, color: usize) -> Result<(Part, Vec<String>), String> {
+pub fn part_from(ip: &ImportPart, text: &str, drawing_units: Units, smooth: &crate::engine::smooth::SmoothSettings, color: usize) -> Result<(Part, Vec<String>), String> {
     // In mm: the file's own unit, else the integration's drawing unit.
     let d = crate::dxf::read_in(text, drawing_units.mm())?;
     // DX3: what the drawing hides or draws as drafting lines stays out whatever its name.
     let roles: std::collections::BTreeMap<String, crate::dxf::LayerRole> = d.layers().keys().map(|l| (l.clone(), if d.hidden.contains_key(l) { crate::dxf::LayerRole::Ignore } else { guess_role(l) })).collect();
-    let (g, rep) = crate::dxf::build(&d, &roles)?;
+    let (mut g, rep) = crate::dxf::build(&d, &roles)?;
     let mut notes = vec![];
     let ignored: Vec<&String> = roles.iter().filter(|(_, r)| **r == crate::dxf::LayerRole::Ignore).map(|(l, _)| l).collect();
     if !ignored.is_empty() {
@@ -184,6 +184,7 @@ pub fn part_from(ip: &ImportPart, text: &str, drawing_units: Units, color: usize
     if rep.outside_loops > 0 {
         notes.push(format!("{}: {} outline(s) outside the part left out", ip.name, rep.outside_loops));
     }
+    notes.extend(crate::engine::smooth::on_import(&mut g, smooth, &ip.name));
     let part = Part {
         name: crate::filename::part_reference("", &ip.name, ""),
         shape: Shape::Custom,
@@ -343,7 +344,7 @@ impl App {
             let mut parts = vec![];
             for &k in &ix {
                 let (ip, text) = &im.parts[k];
-                let made = text.clone().and_then(|t| part_from(ip, &t, integ.drawing_units, self.color_seq + parts.len()));
+                let made = text.clone().and_then(|t| part_from(ip, &t, integ.drawing_units, &self.cfg.smooth, self.color_seq + parts.len()));
                 match made {
                     Ok((p, n)) => {
                         notes.extend(n);
@@ -1758,19 +1759,19 @@ mod tests {
 0\nLINE\n8\nDIM\n10\n0\n20\n-1\n11\n4\n21\n-1\n0\nENDSEC\n0\nEOF\n";
         let d = |job: &str, qty: u32| erp::Demand { provider: Provider::Fulcrum, job_id: job.into(), job_name: job.into(), op_id: "o".into(), item_to_make_id: String::new(), item_id: "i".into(), qty, customer: String::new(), due: String::new(), drawing_id: "a".into(), drawing_name: "p.dxf".into() };
         let ip = ImportPart { name: "PLT-1".into(), drawing: erp::DrawingRef { id: "a".into(), file_name: "p.dxf".into(), op_specific: false }, demands: vec![d("j1", 3), d("j2", 4)], material: None };
-        let (p, notes) = part_from(&ip, dxf, Units::Millimeter, 0).unwrap();
+        let (p, notes) = part_from(&ip, dxf, Units::Millimeter, &Default::default(), 0).unwrap();
         assert!((p.w - 101.6).abs() < 1e-6 && (p.h - 50.8).abs() < 1e-6, "{} × {}", p.w, p.h);
         assert_eq!((p.qty, p.erp.len(), p.name.as_str()), (7, 2, "PLT-1"));
         assert!(notes.iter().any(|n| n.contains("DIM")), "{notes:?}");
         // Without a unit in the file, the setting decides.
         let bare = dxf.replace("9\n$INSUNITS\n70\n1\n", "");
-        let (q, _) = part_from(&ip, &bare, Units::Inch, 0).unwrap();
+        let (q, _) = part_from(&ip, &bare, Units::Inch, &Default::default(), 0).unwrap();
         assert!((q.w - 101.6).abs() < 1e-6);
-        let (q, _) = part_from(&ip, &bare, Units::Millimeter, 0).unwrap();
+        let (q, _) = part_from(&ip, &bare, Units::Millimeter, &Default::default(), 0).unwrap();
         assert!((q.w - 4.0).abs() < 1e-6);
         // A 1 inch hole in a file without a unit stays round at the inch setting.
         let holed = bare.replace("0\nENDSEC\n0\nEOF", "0\nCIRCLE\n8\n0\n10\n2\n20\n1\n40\n0.5\n0\nENDSEC\n0\nEOF");
-        let (q, _) = part_from(&ip, &holed, Units::Inch, 0).unwrap();
+        let (q, _) = part_from(&ip, &holed, Units::Inch, &Default::default(), 0).unwrap();
         let h = &q.custom.as_ref().unwrap().holes[0];
         assert!(h.len() > 20, "a 1 inch hole in {} pieces", h.len());
     }
