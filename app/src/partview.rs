@@ -54,6 +54,8 @@ fn first_clause(e: &str) -> String {
 /// The Break elements preview's colours (BE15): what an edit takes away,
 /// the lines it adds, and the open lines it usually fixes.
 const MODIFY_GONE: Color32 = Color32::from_rgb(248, 80, 90);
+/// A refused click: grey, so amber stays the open lines' colour.
+const MODIFY_REFUSED: Color32 = Color32::from_rgb(190, 194, 204);
 /// What the tool's clicks picked (light blue, apart from the part's lines).
 const MODIFY_PICK: Color32 = Color32::from_rgb(96, 165, 250);
 const MODIFY_NEW: Color32 = Color32::from_rgb(74, 222, 128);
@@ -505,6 +507,14 @@ impl App {
         // puts it down too.
         if self.dv.modify.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.modify_back();
+        }
+        // Clicks, note and marks belong to one part: another part shown
+        // (however it was picked) starts clean.
+        if self.dv.modify_part != Some(idx) {
+            self.dv.modify_picks.clear();
+            self.dv.modify_note = None;
+            self.dv.modify_marks.clear();
+            self.dv.modify_part = Some(idx);
         }
         if self.dv.modify.is_some() && (self.dv.measure_on || self.dv.zoom_window || self.placing_text || painting) {
             self.dv.modify = None;
@@ -1219,20 +1229,30 @@ impl App {
             }
             painter.circle_filled(to_s(q), 4.0, MODIFY_PICK);
         }
+        // Where Break has put element ends: a filled mark (the hollow ring
+        // is the preview).
         for &q in &self.dv.modify_marks {
-            ring(q, 6.0, Color32::WHITE);
+            painter.circle(to_s(q), 4.5, Color32::WHITE, Stroke::new(1.5, th().canvas_a));
         }
         let note = self.dv.modify_note.as_ref();
         if let Some(q) = note.and_then(|n| n.spot) {
-            ring(q, 9.0, MODIFY_OPEN);
+            ring(q, 9.0, MODIFY_REFUSED);
         }
         // Under the pointer: the element, or the whole edit once this click
         // would make it.
         let mut refused = None;
         let mut say = None;
         if let Some(p) = at {
-            if let Some(hit) = be::element_at(part, p, ap, picks) {
-                match m.edit(picks, hit.at, self.dv.bridge_width) {
+            // Right where Break has just broken, nothing more to show: the
+            // note keeps saying what the click did.
+            let just_broken = m == crate::drawing::Modify::Break && self.dv.modify_marks.iter().any(|&q| (q[0] - p[0]).hypot(q[1] - p[1]) <= 2.0 * ap);
+            if let Some(hit) = be::element_at(part, p, ap, picks).filter(|_| !just_broken) {
+                match m.edit_either_way(part, picks, hit.at, self.dv.bridge_width, ap).map(|(e, swapped)| {
+                    if swapped {
+                        say = Some(("Taken the other way round: this line is the base".to_string(), MODIFY_PICK));
+                    }
+                    e
+                }) {
                     None => {
                         let pts = if cut { be::base_at(part, p, ap).map_or(hit.pts, |b| b.pts) } else { hit.pts };
                         line(&pts, Stroke::new(3.0, Color32::from_white_alpha(190)));
@@ -1247,14 +1267,18 @@ impl App {
                                     let c = [(a[0][0] + a[1][0] + b[0][0] + b[1][0]) / 4.0, (a[0][1] + a[1][1] + b[0][1] + b[1][1]) / 4.0];
                                     let g = part.geometry();
                                     let solid = crate::nest::point_in_poly(&g.outline, c) && !g.holes.iter().any(|h| crate::nest::point_in_poly(h, c));
-                                    let (fill, say_strip) = if solid { (MODIFY_GONE, "This strip is cut out") } else { (MODIFY_NEW, "This strip stays as a bridge") };
+                                    let (fill, say_strip) = match (solid, pv.holes.1 < pv.holes.0) {
+                                        (true, true) => (MODIFY_GONE, "This strip is cut out: the hole opens to the outside"),
+                                        (true, false) => (MODIFY_GONE, "This strip is cut out"),
+                                        (false, _) => (MODIFY_NEW, "This strip stays as a bridge"),
+                                    };
                                     painter.add(EShape::convex_polygon(vec![to_s(a[0]), to_s(a[1]), to_s(b[1]), to_s(b[0])], with_alpha(fill, 60), Stroke::NONE));
                                     say = Some((say_strip.to_string(), fill));
                                 }
                             }
                             // A hole that would open says so before the click.
                             if say.is_none() && pv.holes.1 < pv.holes.0 {
-                                say = Some((format!("A hole opens: holes cut {} → {}", pv.holes.0, pv.holes.1), MODIFY_OPEN));
+                                say = Some((format!("A hole opens: holes cut {} → {}", pv.holes.0, pv.holes.1), MODIFY_GONE));
                             }
                             for r in &pv.removed {
                                 line(r, Stroke::new(7.0, with_alpha(MODIFY_GONE, 60)));
@@ -1283,7 +1307,7 @@ impl App {
         // By the pointer, one short line: what a bridge here leaves, that a
         // hole opens, or why this click would be refused (the whole reason
         // goes in the note at the top). Kept inside the drawing.
-        let say = say.or(refused.as_ref().map(|e| (first_clause(e), MODIFY_OPEN)));
+        let say = say.or(refused.as_ref().map(|e| (first_clause(e), MODIFY_REFUSED)));
         if let (Some((txt, col)), Some(p)) = (say, at) {
             let g = painter.layout_no_wrap(txt, FontId::proportional(12.0), Color32::WHITE);
             let mut r = Rect::from_min_size(to_s(p) + Vec2::new(16.0, 14.0), g.size() + Vec2::new(14.0, 8.0));
@@ -1321,8 +1345,8 @@ impl App {
         // While the pointer is on a click that would be refused, the note
         // gives the whole reason; otherwise what the last click did.
         let shown = match &refused {
-            Some(e) => Some((e.clone(), MODIFY_OPEN)),
-            None => note.map(|nt| (nt.text.clone(), if nt.ok { MODIFY_NEW } else { MODIFY_OPEN })),
+            Some(e) => Some((e.clone(), MODIFY_REFUSED)),
+            None => note.map(|nt| (nt.text.clone(), if nt.ok { MODIFY_NEW } else { MODIFY_REFUSED })),
         };
         let g_note = shown.map(|(t, col)| (painter.layout(t, FontId::proportional(13.0), Color32::WHITE, wrap - 12.0), col));
         let g_back = painter.layout_no_wrap(back, FontId::proportional(11.5), Color32::from_rgb(170, 175, 190));

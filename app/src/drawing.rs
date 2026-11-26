@@ -117,6 +117,25 @@ impl Modify {
         })
     }
 
+    /// The edit the clicks make with one more at `next`, and whether it was
+    /// taken the other way round: Cut's base and piece may be clicked in
+    /// either order — when the edit as clicked would be refused or would
+    /// open a hole, and the second click's line works as the base without
+    /// that, that is the edit (BE4).
+    pub fn edit_either_way(self, part: &crate::nest::Part, picks: &[P], next: P, width: f64, tol: f64) -> Option<(crate::engine::breakelems::Edit, bool)> {
+        use crate::engine::breakelems::{preview, Edit};
+        let edit = self.edit(picks, next, width)?;
+        if let (Modify::Cut1 | Modify::CutSeveral, [first]) = (self, picks) {
+            let other = Edit::Cut { base: next, pieces: vec![*first] };
+            let opens = |v: &crate::engine::breakelems::Preview| v.holes.1 < v.holes.0;
+            let worse = preview(part, &edit, tol).map_or(true, |v| opens(&v));
+            if worse && preview(part, &other, tol).is_ok_and(|v| !opens(&v)) {
+                return Some((other, true));
+            }
+        }
+        Some((edit, false))
+    }
+
     /// Clicks it takes before the tool acts.
     pub fn picks(self) -> usize {
         match self {
@@ -191,6 +210,8 @@ pub struct DrawView {
     pub modify_note: Option<ModifyNote>,
     /// Where Break put element ends while the tool is in hand (white ticks).
     pub modify_marks: Vec<P>,
+    /// The part those clicks, the note and the marks are on.
+    pub modify_part: Option<usize>,
     /// Screenshots: the pointer is taken to be here (part mm) for the
     /// Break elements preview.
     pub shot_hover: Option<P>,
@@ -230,6 +251,7 @@ impl Default for DrawView {
             modify_picks: vec![],
             modify_note: None,
             modify_marks: vec![],
+            modify_part: None,
             shot_hover: None,
             bridge_width: BRIDGE_WIDTH,
         }
@@ -830,18 +852,21 @@ impl App {
     pub fn modify_click(&mut self, at: P, tol: f64) {
         let (Some(m), Some(i)) = (self.dv.modify, self.shown_part()) else { return };
         use crate::engine::breakelems as be;
+        self.dv.modify_part = Some(i);
         let picks = self.dv.modify_picks.clone();
         let Some(hit) = be::element_at(&self.parts[i], at, tol, &picks) else {
             self.dv.modify_note = Some(ModifyNote { text: "No line there: click right on a line of the part.".into(), ok: false, spot: Some(at) });
             self.status = format!("No line there. {}", m.prompt(picks.len()));
             return;
         };
-        let Some(edit) = m.edit(&picks, hit.at, self.dv.bridge_width) else {
+        let Some((edit, swapped)) = m.edit_either_way(&self.parts[i], &picks, hit.at, self.dv.bridge_width, tol) else {
             self.dv.modify_picks.push(hit.at);
             self.dv.modify_note = None;
             self.status = format!("{}: {}", m.label(), m.prompt(self.dv.modify_picks.len()));
             return;
         };
+        // Where Break puts its element end (beside a point of an arc).
+        let marks = be::preview(&self.parts[i], &edit, tol).map(|v| v.marks).unwrap_or_default();
         let mut parts = self.parts.clone();
         let mut sheets = self.result.sheets.clone();
         let mut manual = self.manual_cuts.clone();
@@ -855,16 +880,17 @@ impl App {
                     self.stale = true;
                 }
                 self.refresh();
-                // Cut several keeps its base for the next piece; the others start over.
+                // Cut several keeps its base for the next piece (the second
+                // click's line when the two were taken the other way round);
+                // the others start over.
                 if m == Modify::CutSeveral {
-                    self.dv.modify_picks.truncate(1);
+                    self.dv.modify_picks = vec![if swapped { hit.at } else { picks[0] }];
                 } else {
                     self.dv.modify_picks.clear();
                 }
-                if m == Modify::Break {
-                    self.dv.modify_marks.push(hit.at);
-                }
-                self.dv.modify_note = Some(ModifyNote { text: format!("{} Ctrl+Z undoes it.", e.short), ok: true, spot: None });
+                self.dv.modify_marks.extend(marks);
+                let first = if swapped { "Took the second line as the base. " } else { "" };
+                self.dv.modify_note = Some(ModifyNote { text: format!("{first}{} Ctrl+Z undoes it.", e.short), ok: true, spot: None });
                 self.status = e.message;
             }
             Err(e) => {
@@ -1572,6 +1598,19 @@ mod drawing_tests {
         assert!(a.dv.modify_picks.is_empty());
         a.modify_back();
         assert_eq!(a.dv.modify, None);
+    }
+
+    #[test]
+    fn cut_takes_its_two_clicks_in_either_order() {
+        // BE4: the stub clicked first, then the hole's edge it stands on.
+        let mut a = app_with_stub();
+        a.set_modify(Some(Modify::CutSeveral));
+        a.modify_click([30.0, 40.0], 1.0);
+        a.modify_click([50.0, 30.0], 1.0);
+        let n = a.dv.modify_note.clone().unwrap();
+        assert!(n.ok && n.text.starts_with("Took the second line as the base"), "{}", n.text);
+        assert_eq!(crate::engine::contours::list(&a.parts[0]).len(), 2, "the stub is gone");
+        assert_eq!(a.dv.modify_picks, vec![[50.0, 30.0]], "the hole's edge is Cut several's base now");
     }
 
     #[test]

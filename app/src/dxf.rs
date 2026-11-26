@@ -979,7 +979,7 @@ const SPLIT_SEGS: usize = 6000;
 /// were; `None` when none cross, or there are too many segments to try.
 fn split_at_crossings(chains: &[Vec<P>]) -> Option<(Vec<Vec<P>>, usize)> {
     let total: usize = chains.iter().map(|c| c.len().saturating_sub(1)).sum();
-    if chains.len() < 2 || total > SPLIT_SEGS {
+    if chains.is_empty() || total > SPLIT_SEGS {
         return None;
     }
     let boxes: Vec<[f64; 4]> = chains
@@ -989,14 +989,16 @@ fn split_at_crossings(chains: &[Vec<P>]) -> Option<(Vec<Vec<P>>, usize)> {
     let eps = JOIN_TOL;
     // Per chain: (segment, share along it) where it is to be split.
     let mut cuts: Vec<Vec<(usize, f64)>> = vec![vec![]; chains.len()];
+    // Chains against each other, and each against itself (its ends can run
+    // past each other where three corners already joined).
     for a in 0..chains.len() {
-        for b in a + 1..chains.len() {
+        for b in a..chains.len() {
             let (ba, bb) = (boxes[a], boxes[b]);
             if ba[0] > bb[2] + eps || bb[0] > ba[2] + eps || ba[1] > bb[3] + eps || bb[1] > ba[3] + eps {
                 continue;
             }
             for i in 0..chains[a].len().saturating_sub(1) {
-                for j in 0..chains[b].len().saturating_sub(1) {
+                for j in (if a == b { i + 2 } else { 0 })..chains[b].len().saturating_sub(1) {
                     let (p0, p1, q0, q1) = (chains[a][i], chains[a][i + 1], chains[b][j], chains[b][j + 1]);
                     let (r, s) = ([p1[0] - p0[0], p1[1] - p0[1]], [q1[0] - q0[0], q1[1] - q0[1]]);
                     let (lr, ls) = (r[0].hypot(r[1]), s[0].hypot(s[1]));
@@ -1008,6 +1010,11 @@ fn split_at_crossings(chains: &[Vec<P>]) -> Option<(Vec<Vec<P>>, usize)> {
                     let t = (qp[0] * s[1] - qp[1] * s[0]) / den;
                     let u = (qp[0] * r[1] - qp[1] * r[0]) / den;
                     if t < -eps / lr || t > 1.0 + eps / lr || u < -eps / ls || u > 1.0 + eps / ls {
+                        continue;
+                    }
+                    // Within one chain only a true crossing counts: its own
+                    // pieces meet end to end everywhere else.
+                    if a == b && (t <= eps / lr || t >= 1.0 - eps / lr || u <= eps / ls || u >= 1.0 - eps / ls) {
                         continue;
                     }
                     cuts[a].push((i, t.clamp(0.0, 1.0)));
@@ -1095,7 +1102,9 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
     // corner can't take that corner's place in the outline, while a hole drawn
     // dashed and set to Cut still closes.
     let mut open_lines = join_pieces(open, &mut loops, &mut report)?;
-    // BE13: lines that run past each other (an overhang) don't join end to
+    let bend_lines = join_pieces(bend_pieces, &mut loops, &mut report)?;
+    // BE13 (after the dashed rows' loops are in, so a dashed outline counts):
+    // lines that run past each other (an overhang) don't join end to
     // end. When the lines left open close a bigger contour once they are
     // split where they cross, the drawing is read that way: the outline
     // closes, the ends that stick out of it are left off like any open
@@ -1114,7 +1123,6 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
             }
         }
     }
-    let bend_lines = join_pieces(bend_pieces, &mut loops, &mut report)?;
     // A loop with a point that isn't a number (a damaged file) can't be an outline.
     let loops: Vec<Vec<P>> = loops.into_iter().filter(|l| l.iter().all(|p| p[0].is_finite() && p[1].is_finite())).map(|l| cleanup(l, eps)).filter(|l| l.len() >= 3).collect();
     if loops.is_empty() {
@@ -1265,6 +1273,21 @@ mod tests {
         assert_eq!(rep.open_pieces, 0);
         let tri: f64 = g.fills.iter().map(|t| area(t)).sum();
         assert!((tri - 5000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_corner_whose_two_lines_both_run_past_still_closes() {
+        // BE13: three corners meet end to end, the fourth's two lines run
+        // past each other, so the joined chain crosses itself.
+        let line = |a: [f64; 4]| format!("0\nLINE\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], a[2], a[3]);
+        let mut d = String::from("0\nSECTION\n2\nENTITIES\n");
+        for l in [[0.0, 55.0, 0.0, 0.0], [0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [100.0, 50.0, -5.0, 50.0]] {
+            d.push_str(&line(l));
+        }
+        d.push_str("0\nENDSEC\n0\nEOF\n");
+        let (g, rep) = parse(&d).unwrap();
+        assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes");
+        assert!(rep.crossings_split > 0);
     }
 
     #[test]

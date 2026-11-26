@@ -8201,6 +8201,12 @@
   "source": "BE14"
  },
  {
+  "name": "Cut's two clicks",
+  "group": "break elements",
+  "value": "either order: taken the other way round when that avoids a refusal or an opened hole",
+  "source": "BE4"
+ },
+ {
   "name": "Cut base",
   "group": "break elements",
   "value": "the whole straight line the picked element lies on",

@@ -329,10 +329,18 @@ impl Drawing {
                     continue;
                 }
                 let (t, u) = (t.clamp(0.0, 1.0), u.clamp(0.0, 1.0));
-                let (sa, sb) = (ta.at[i] + t * lr, tb.at[j] + u * ls);
-                // Two neighbouring segments of one contour meet at their shared point:
-                // that is no crossing.
-                if a.contour == b.contour && (sa - sb).abs() < JOIN {
+                let (mut sa, mut sb) = (ta.at[i] + t * lr, tb.at[j] + u * ls);
+                // A circle's start and end are one point: one touch there,
+                // not two.
+                if a.ring && ta.len() - sa < JOIN {
+                    sa = 0.0;
+                }
+                if b.ring && tb.len() - sb < JOIN {
+                    sb = 0.0;
+                }
+                // Two neighbouring segments of one contour meet at their shared point
+                // (a closed contour's last and first too): that is no crossing.
+                if a.contour == b.contour && ((sa - sb).abs() < JOIN || (ta.closed && ((sa - sb).abs() - ta.len()).abs() < JOIN)) {
                     continue;
                 }
                 if !out.iter().any(|x| (x.0 - sa).abs() < JOIN) {
@@ -350,6 +358,9 @@ impl Drawing {
     /// so it comes as one or two (from, to) pieces.
     fn portion(&self, e: &Elem, s: f64, xs: &[f64]) -> Result<Vec<(f64, f64)>, String> {
         let (s0, s1) = self.range(e);
+        if xs.iter().any(|&x| (x - s).abs() < JOIN) {
+            return Err("The pick is right on the crossing: pick on the piece to take away.".into());
+        }
         let below = xs.iter().copied().filter(|&x| x < s - 1e-9).fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))));
         let above = xs.iter().copied().filter(|&x| x > s + 1e-9).fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.min(x))));
         let cuts = if e.ring {
@@ -465,6 +476,27 @@ fn inside(poly: &[P], p: P) -> bool {
     c
 }
 
+/// Do two closed paths cross (not just touch)?
+fn rings_cross(a: &[P], b: &[P]) -> bool {
+    let seg = |v: &[P], i: usize| (v[i], v[(i + 1) % v.len()]);
+    (0..a.len()).any(|i| {
+        let (p0, p1) = seg(a, i);
+        let r = sub(p1, p0);
+        (0..b.len()).any(|j| {
+            let (q0, q1) = seg(b, j);
+            let s = sub(q1, q0);
+            let den = cross(r, s);
+            if den.abs() < 1e-12 {
+                return false;
+            }
+            let qp = sub(q0, p0);
+            let (t, u) = (cross(qp, s) / den, cross(qp, r) / den);
+            let (et, eu) = (JOIN / dist(p0, p1).max(1e-12), JOIN / dist(q0, q1).max(1e-12));
+            t > et && t < 1.0 - et && u > eu && u < 1.0 - eu
+        })
+    })
+}
+
 /// A point that tells which side of the outline a contour is on: the middle
 /// of its longest segment (a vertex can lie on the outline itself).
 fn probe(pts: &[P], closed: bool) -> P {
@@ -519,22 +551,30 @@ fn tidy(d: &Drawing, ch: Change) -> Result<(Vec<Contour>, Vec<Option<usize>>), S
         // the edit's, until none meet; a chain whose ends meet closes (BE9).
         loop {
             let mut joined = false;
-            'find: for i in 0..items.len() {
+            // Only pairs with a piece the edit made can meet anew; any of
+            // their four pairs of ends may meet.
+            'find: for i in (0..items.len()).filter(|&i| fresh[i]) {
                 for j in 0..items.len() {
-                    if i == j || items[i].closed || items[j].closed || !(fresh[i] || fresh[j]) || items[i].state != items[j].state {
+                    if i == j || items[i].closed || items[j].closed || items[i].pts.is_empty() || items[j].pts.is_empty() || items[i].state != items[j].state {
                         continue;
                     }
                     let (a, b) = (&items[i].pts, &items[j].pts);
-                    let (ae, bs, be) = (a[a.len() - 1], b[0], b[b.len() - 1]);
-                    let mut tail = if dist(ae, bs) < JOIN {
-                        b.clone()
+                    let (as_, ae, bs, be) = (a[0], a[a.len() - 1], b[0], b[b.len() - 1]);
+                    let rev = |v: &Vec<P>| v.iter().rev().copied().collect::<Vec<P>>();
+                    let (head, mut tail) = if dist(ae, bs) < JOIN {
+                        (a.clone(), b.clone())
                     } else if dist(ae, be) < JOIN {
-                        b.iter().rev().copied().collect()
+                        (a.clone(), rev(b))
+                    } else if dist(as_, be) < JOIN {
+                        (b.clone(), a.clone())
+                    } else if dist(as_, bs) < JOIN {
+                        (rev(a), b.clone())
                     } else {
                         continue;
                     };
                     tail.remove(0);
                     let mut it = items[i].clone();
+                    it.pts = head;
                     it.pts.extend(tail);
                     it.was = None;
                     it.from = it.from.min(items[j].from);
@@ -559,6 +599,11 @@ fn tidy(d: &Drawing, ch: Change) -> Result<(Vec<Contour>, Vec<Option<usize>>), S
             if f && !it.closed && it.pts.len() >= 4 && dist(it.pts[0], it.pts[it.pts.len() - 1]) < JOIN {
                 it.pts.pop();
                 it.closed = true;
+                // Open lines on a cut layer come in as No cut only because
+                // they are open (CS2); closed now, they are cut (BE9).
+                if it.state == ContourState::NoCut {
+                    it.state = ContourState::Cut;
+                }
             }
         }
     }
@@ -587,6 +632,12 @@ fn tidy(d: &Drawing, ch: Change) -> Result<(Vec<Contour>, Vec<Option<usize>>), S
     let ring = items[outline].pts.clone();
     if items.iter().enumerate().any(|(i, it)| i != outline && it.closed && !inside(&ring, probe(&it.pts, true))) {
         return Err("That would split the part into separate pieces (a closed contour would end up outside the outline). Cutting a part in two isn't built yet.".into());
+    }
+    // A changed outline, or a hole the edit made, must not run through
+    // another closed contour (a bridge across a second hole).
+    let fresh_outline = items[outline].was.is_none();
+    if items.iter().enumerate().any(|(i, it)| i != outline && it.closed && (fresh_outline || it.was.is_none()) && rings_cross(&ring, &it.pts)) {
+        return Err("That would run the outline through another hole. Pick a place where the bridge crosses no other hole.".into());
     }
     let mut order: Vec<usize> = (0..items.len()).filter(|&i| i != outline && items[i].closed).collect();
     order.push(outline);
@@ -639,6 +690,7 @@ fn commit(parts: &mut [Part], sheets: &mut [Vec<Placed>], manual: &mut [Vec<Manu
     let after = dxf::cut_order(&list);
     let cut_moved: Vec<Option<usize>> = before.iter().map(|&k| map.get(k).copied().flatten().and_then(|n| after.iter().position(|&a| a == n))).collect();
     let cut_changed = before.len() != after.len() || cut_moved.iter().enumerate().any(|(j, m)| *m != Some(j));
+    let outline_cut = dxf::outline_index(&list).and_then(|o| after.iter().position(|&a| a == o));
     // Where the outline's box starts now: the drawing moves back to 0, 0.
     let o = dxf::outline_index(&list).map(|k| list[k].pts.clone()).unwrap_or_default();
     let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
@@ -662,12 +714,12 @@ fn commit(parts: &mut [Part], sheets: &mut [Vec<Placed>], manual: &mut [Vec<Manu
     geo.apply_states();
     if let Some(t) = p.tech.as_mut() {
         let follow = |s: &mut Option<(u8, P)>| {
-            *s = s.and_then(|(ci, q)| cut_moved.get(ci as usize).copied().flatten().map(|n| (n as u8, [q[0] - shift[0], q[1] - shift[1]])));
+            *s = s.and_then(|(ci, q)| cut_moved.get(ci as usize).copied().flatten().and_then(|n| u8::try_from(n).ok()).map(|n| (n, [q[0] - shift[0], q[1] - shift[1]])));
         };
         t.starts.iter_mut().for_each(follow);
         t.joint_picks.iter_mut().for_each(follow);
         for e in t.lead_edits.iter_mut() {
-            *e = e.and_then(|x| cut_moved.get(x.contour as usize).copied().flatten().map(|n| crate::nest::LeadEdit { contour: n as u8, at: [x.at[0] - shift[0], x.at[1] - shift[1]], ..x }));
+            *e = e.and_then(|x| cut_moved.get(x.contour as usize).copied().flatten().and_then(|n| u8::try_from(n).ok()).map(|n| crate::nest::LeadEdit { contour: n, at: [x.at[0] - shift[0], x.at[1] - shift[1]], ..x }));
         }
     }
     p.shape = Shape::Custom;
@@ -684,9 +736,18 @@ fn commit(parts: &mut [Part], sheets: &mut [Vec<Placed>], manual: &mut [Vec<Manu
         *pl = np;
     }
     parts[i] = p;
+    // Hand picks on the sheets follow their contours; a part taken whole
+    // by a sweep or box stays taken, on its new outline (BE12).
     if cut_changed {
-        let ch = super::contours::StateChange { contours: vec![], cut_moved, cut_changed };
-        super::contours::follow_on_sheets(&ch, i, sheets, manual);
+        for (sheet, picks) in sheets.iter().zip(manual.iter_mut()) {
+            picks.retain_mut(|m| {
+                if !sheet.get(m.placed).is_some_and(|pl| pl.part == i) {
+                    return true;
+                }
+                let to = if m.whole.is_some() { outline_cut } else { cut_moved.get(m.contour).copied().flatten() };
+                to.map(|c| m.contour = c).is_some()
+            });
+        }
     }
     nested && cut_changed
 }
@@ -847,21 +908,30 @@ pub fn break_at(parts: &mut [Part], sheets: &mut [Vec<Placed>], manual: &mut [Ve
 }
 
 fn plan_break(d: &Drawing, p: P, tol: f64) -> Result<(Change, String), String> {
-    let (e, s) = d.pick(p, tol, "the break point")?;
+    let (e, mut s) = d.pick(p, tol, "the break point")?;
     let k = e.contour;
     let t = &d.tracks[k];
-    let q = t.point(s);
-    let mut ch = Change { marks: vec![q], ..Change::default() };
     if t.closed {
-        if t.at.iter().any(|&a| (a - s).abs() < JOIN) {
-            return Err(format!("{} already has an element end{}: nothing to break.", cap(&d.name(k)), d.place(q)));
+        let (s0, s1) = d.range(&e);
+        if (s - s0).abs() < JOIN || (s1 - s).abs() < JOIN {
+            return Err(format!("{} already has an element end{}: nothing to break.", cap(&d.name(k)), d.place(t.point(s))));
         }
+        // On a point of an arc drawn in short lines, which can't be an
+        // element end, the break goes just beside it (BE5).
+        if t.at.iter().any(|&a| (a - s).abs() < JOIN) {
+            s = if s + 3.0 * JOIN < s1 - JOIN { s + 2.0 * JOIN } else { s - 2.0 * JOIN };
+        }
+        let q = t.point(s);
+        let mut ch = Change { marks: vec![q], ..Change::default() };
         let mut pts = t.between(0.0, s);
         pts.extend(t.between(s, t.len()).into_iter().skip(1));
         pts.pop();
         ch.redrawn.insert(k, pts);
-        Ok((ch, format!("{} broken{}: it stays closed and is cut the same, with an element end there.", d.name(k), d.place(q))))
+        let what = if d.view { format!("{} broken here: it stays one closed contour, cut the same, with an element end there.", d.name(k)) } else { format!("{} broken{}: it stays closed and is cut the same, with an element end there.", d.name(k), d.place(q)) };
+        Ok((ch, what))
     } else {
+        let q = t.point(s);
+        let mut ch = Change { marks: vec![q], ..Change::default() };
         if s < JOIN || t.len() - s < JOIN {
             return Err(format!("The point{} is the end of {} already: pick the break point along the line.", d.place(q), d.name(k)));
         }
@@ -903,7 +973,7 @@ fn plan_cut(d: &Drawing, base: P, pieces: &[P], tol: f64) -> Result<(Change, Str
         ch.cut.entry(e.contour).or_default().extend(cuts);
     }
     let what = if pieces.len() == 1 { "1 piece".to_string() } else { format!("{} pieces", pieces.len()) };
-    Ok((ch, format!("cut away {what} ({} mm) past the base element.", num(len))))
+    Ok((ch, format!("cut away {what} ({} mm) past the base {}.", num(len), if d.view { "line" } else { "element" })))
 }
 
 /// Join (BE6): two crossing elements become a corner. The piece of each
@@ -1148,6 +1218,75 @@ mod tests {
         let (r, p) = run(p, |ps, sh, m| cut(ps, sh, m, 0, [80.0, 50.0], &[[20.0, 55.0]], PICK_TOL));
         assert!(r.unwrap().message.contains("cut away 1 piece (10 mm)"));
         assert_eq!(contours(&p)[1].pts, vec![[20.0, 40.0], [20.0, 50.0]]);
+    }
+
+    /// A round hole of 36 points round (50, 25), r 10, starting at (60, 25).
+    fn round(r: f64) -> Vec<P> {
+        (0..36).map(|k| (k as f64 * 10.0).to_radians()).map(|a| [50.0 + r * a.cos(), 25.0 + r * a.sin()]).collect()
+    }
+
+    #[test]
+    fn join_takes_two_lines_that_both_start_at_the_crossing() {
+        // BE6, BE9: the kept pieces both start at the corner; they become one line.
+        let p = part_of(vec![cut_c(rect(0.0, 0.0, 100.0, 50.0)), line(vec![[30.0, 20.0], [30.0, 40.0]]), line(vec![[20.0, 30.0], [40.0, 30.0]])]);
+        let (r, p) = run(p, |ps, sh, m| join(ps, sh, m, 0, [30.0, 25.0], [25.0, 30.0], PICK_TOL));
+        r.unwrap();
+        let open: Vec<Contour> = contours(&p).into_iter().filter(|c| !c.closed).collect();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].pts.len(), 3);
+    }
+
+    #[test]
+    fn a_pick_right_on_the_crossing_is_refused() {
+        let p = part_of(vec![cut_c(rect(20.0, 10.0, 60.0, 30.0)), cut_c(rect(0.0, 0.0, 100.0, 50.0)), line(vec![[40.0, 20.0], [40.0, 40.0]])]);
+        let (r, _) = run(p, |ps, sh, m| cut(ps, sh, m, 0, [25.0, 30.0], &[[40.0, 30.0]], PICK_TOL));
+        assert!(r.unwrap_err().contains("right on the crossing"));
+    }
+
+    #[test]
+    fn a_line_touching_a_round_hole_once_cuts_nothing_off_it() {
+        // BE3: one touch at the circle's own start is one, not two.
+        let p = part_of(vec![cut_c(round(10.0)), cut_c(rect(0.0, 0.0, 100.0, 50.0)), line(vec![[60.0, 10.0], [60.0, 40.0]])]);
+        let (r, _) = run(p, |ps, sh, m| cut(ps, sh, m, 0, [60.0, 35.0], &[[40.0, 25.0]], PICK_TOL));
+        assert!(r.unwrap_err().contains("only touches"));
+    }
+
+    #[test]
+    fn break_on_a_point_of_a_round_hole_breaks_beside_it() {
+        // BE5: a point of a circle drawn in short lines can't be an element end.
+        let p = part_of(vec![cut_c(round(10.0)), cut_c(rect(0.0, 0.0, 100.0, 50.0))]);
+        let at = round(10.0)[9];
+        let (r, p) = run(p, |ps, sh, m| break_at(ps, sh, m, 0, at, PICK_TOL));
+        assert!(r.unwrap().message.contains("stays closed"));
+        assert_eq!(contours(&p)[0].pts.len(), 37);
+    }
+
+    #[test]
+    fn trimming_an_imported_hole_overhang_makes_it_a_cut_hole() {
+        // BE9 with CS2: the hole's lines come in open (No cut) because the
+        // top one runs past the left side; cut back, the hole closes and is cut.
+        let line = |a: [f64; 4]| format!("0\nLINE\n8\n0\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], a[2], a[3]);
+        let mut d = String::from("0\nSECTION\n2\nENTITIES\n");
+        for l in [[0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [100.0, 50.0, 0.0, 50.0], [0.0, 50.0, 0.0, 0.0], [20.0, 10.0, 40.0, 10.0], [40.0, 10.0, 40.0, 30.0], [40.0, 30.0, 15.0, 30.0], [20.0, 30.0, 20.0, 10.0]] {
+            d.push_str(&line(l));
+        }
+        d.push_str("0\nENDSEC\n0\nEOF\n");
+        let (g, _) = dxf::parse(&d).unwrap();
+        let p = Part { name: "DEMO-001".into(), shape: Shape::Custom, w: g.w, h: g.h, qty: 1, rotate: true, color: 0, tech: None, custom: Some(Arc::new(g)), rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        assert!(contours(&p).iter().any(|c| !c.closed && c.state == ContourState::NoCut), "the hole comes in open");
+        let (r, p) = run(p, |ps, sh, m| cut(ps, sh, m, 0, [20.0, 20.0], &[[17.0, 30.0]], PICK_TOL));
+        assert!(r.unwrap().message.contains("holes cut 0 → 1"));
+        let l = contours(&p);
+        assert_eq!(l.len(), 2);
+        assert!(l[0].closed && l[0].state == ContourState::Cut);
+    }
+
+    #[test]
+    fn a_bridge_through_a_second_hole_is_refused() {
+        // BE10: from the outline down to one hole, crossing another on the way.
+        let p = part_of(vec![cut_c(rect(40.0, 10.0, 60.0, 20.0)), cut_c(rect(46.0, 30.0, 60.0, 40.0)), cut_c(rect(0.0, 0.0, 100.0, 50.0))]);
+        let (r, _) = run(p, |ps, sh, m| bridge(ps, sh, m, 0, [50.0, 50.0], [50.0, 20.0], 3.0, PICK_TOL));
+        assert!(r.unwrap_err().contains("another hole"));
     }
 
     #[test]
