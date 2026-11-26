@@ -925,7 +925,7 @@ fn plan_break(d: &Drawing, p: P, tol: f64) -> Result<(Change, String), String> {
         if !e.ring && ((s - s0).abs() < JOIN || (s1 - s).abs() < JOIN) {
             return Err(format!("{} already has an element end{}: nothing to break.", cap(&d.name(k)), d.place(t.point(s))));
         }
-        if e.ring && s1 - s < 3.0 * JOIN {
+        if e.ring && s1 - s < JOIN {
             s = s0;
         }
         // On a point of an arc drawn in short lines, which can't be an

@@ -1244,7 +1244,6 @@ impl App {
         let mut refused = None;
         let mut say = None;
         if let Some(p) = at {
-            let just_broken = m == crate::drawing::Modify::Break && self.dv.modify_marks.iter().any(|&q| (q[0] - p[0]).hypot(q[1] - p[1]) <= 2.0 * ap);
             if let Some(hit) = be::element_at(part, p, ap, picks) {
                 match m.edit_either_way(part, picks, hit.at, self.dv.bridge_width, ap, self.dv.modify_base_kept).map(|(e, swapped)| {
                     if swapped {
@@ -1293,7 +1292,7 @@ impl App {
                         }
                         // Right where Break has just broken, "nothing to break"
                         // isn't shown: the note keeps saying what the click did.
-                        Err(_) if just_broken => {}
+                        Err(_) if m == crate::drawing::Modify::Break && self.dv.modify_marks.iter().any(|&q| (q[0] - hit.at[0]).hypot(q[1] - hit.at[1]) < 0.05) => {}
                         Err(e) => {
                             // Red is for what goes; a refused click shows grey.
                             line(&hit.pts, Stroke::new(3.0, Color32::from_gray(120)));

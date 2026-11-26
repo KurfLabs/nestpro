@@ -1029,6 +1029,18 @@ fn split_at_crossings(chains: &[Vec<P>]) -> Option<(Vec<Vec<P>>, usize)> {
             }
         }
     }
+    // A chain's end lying on one of its own points further along (or back)
+    // splits it there too.
+    for (c, at) in chains.iter().zip(cuts.iter_mut()).filter(|(c, _)| c.len() >= 3) {
+        let last = c.len() - 1;
+        for &(e, other) in &[(c[0], 0usize), (c[last], last)] {
+            for k in 1..last {
+                if k.abs_diff(other) > 1 && close(c[k], e, eps) {
+                    at.push((k, 0.0));
+                }
+            }
+        }
+    }
     let mut out = vec![];
     let mut n = 0;
     for (c, mut at) in chains.iter().zip(cuts) {
@@ -1310,6 +1322,16 @@ mod tests {
         d.push_str("0\nENDSEC\n0\nEOF\n");
         let (g, _) = parse(&d).unwrap();
         assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes");
+        // The same with the left side a polyline that has a point where the top ends.
+        let poly = "0\nLWPOLYLINE\n90\n3\n70\n0\n10\n0\n20\n55\n10\n0\n20\n50\n10\n0\n20\n0\n";
+        let mut d2 = String::from("0\nSECTION\n2\nENTITIES\n");
+        d2.push_str(poly);
+        for l in [[0.0, 0.0, 100.0, 0.0], [100.0, 0.0, 100.0, 50.0], [100.0, 50.0, 0.0, 50.0]] {
+            d2.push_str(&line(l));
+        }
+        d2.push_str("0\nENDSEC\n0\nEOF\n");
+        let (g, _) = parse(&d2).unwrap();
+        assert!((area(&g.outline) - 5000.0).abs() < 1e-6, "the plate closes at the polyline's point");
     }
 
     #[test]
