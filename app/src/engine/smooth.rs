@@ -13,7 +13,7 @@
 //! smoothed arc is split the same way, so the posts that write arcs (BLM, OMAX)
 //! find it again as one arc.
 
-use crate::dxf::{arc_points, Contour, CustomGeo};
+use crate::dxf::{Contour, CustomGeo};
 use crate::nest::{oriented, Part, Placed, Shape, P};
 
 /// How closely lines must follow a circle to become an arc (SM14–SM16).
@@ -123,8 +123,8 @@ pub const MAX_MIN_LINES: usize = 32_767;
 
 /// Largest tolerance taken (mm): beyond it smoothing reshapes the part.
 pub const MAX_TOL: f64 = 10.0;
-/// Two points this close (mm) are one point, and a gap this small counts as
-/// none (the drawing's joining tolerance, SM15).
+/// Two points this close (mm) are one point (the drawing's joining
+/// tolerance, SM14).
 const PT_TOL: f64 = crate::dxf::JOIN_TOL;
 /// How far a run is first grown at a time, in points (SM13).
 const GROW: usize = 29;
@@ -134,6 +134,10 @@ const QUICK: [usize; 3] = [7, 14, 21];
 const HALF_EPS: f64 = 1e-6;
 /// Most one line of an arc may be longer than the next (SM12).
 const LENGTH_RATIO: f64 = 2.0;
+/// Most pieces one smoothed arc is split into (as DX2 splits an arc).
+const MAX_PIECES: usize = 720;
+/// SM12 (own): the sharpest turn between two lines of one arc, 30°.
+const MAX_TURN: f64 = std::f64::consts::PI / 6.0 + 1e-6;
 
 /// One fitted arc: centre, radius, turning direction.
 #[derive(Clone, Copy, Debug)]
@@ -189,14 +193,20 @@ fn follows(pts: &[P], s: usize, e: usize, arc: &Arc, o: &Smooth) -> Option<f64> 
     // The original's runs end at the drawing's own arcs; ours are points, so
     // without this a straight edge beside a radius could bow by up to the
     // tolerance. A radius drawn as lines has lines of one length.
+    // Nor does it go round a corner: where the lines turn more than 30° the
+    // corner is meant (a hexagon hole stays a hexagon).
     for k in s..e.saturating_sub(1) {
         let (l0, l1) = (dist(pts[k], pts[k + 1]), dist(pts[k + 1], pts[k + 2]));
         if l0.max(l1) > LENGTH_RATIO * l0.min(l1) {
             return None;
         }
+        let (u, v) = ([pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]], [pts[k + 2][0] - pts[k + 1][0], pts[k + 2][1] - pts[k + 1][1]]);
+        if (u[0] * v[1] - u[1] * v[0]).atan2(u[0] * v[0] + u[1] * v[1]).abs() > MAX_TURN {
+            return None;
+        }
     }
     let gap = |p: P| (dist(p, arc.c) - arc.r).abs();
-    let over = |g: f64| g > o.tol && g > PT_TOL;
+    let over = |g: f64| g > o.tol;
     let inside = |t: f64| t <= sweep + EPS || t >= TAU - EPS;
     let mut score = 0.0;
     for k in s..=e {
@@ -266,6 +276,16 @@ fn fit(pts: &[P], s: usize, e: usize, o: &Smooth) -> Option<Arc> {
     best.map(|b| b.1)
 }
 
+/// SM10: smooth a drawing on import when Settings → General → Smoothing on
+/// import is on; the note for the import's list, when anything changed.
+pub fn on_import(g: &mut CustomGeo, s: &SmoothSettings, name: &str) -> Option<String> {
+    if !s.on_import {
+        return None;
+    }
+    let done = smooth_geo(g, None, &s.import);
+    (!done.contours.is_empty()).then(|| format!("{name}: smoothed, {}", done.summary()))
+}
+
 /// What smoothing did to one contour.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Count {
@@ -314,7 +334,15 @@ fn smooth_path(pts: &[P], o: &Smooth) -> (Vec<P>, Count) {
             Some((e, a)) => {
                 let a0 = (pts[s][1] - a.c[1]).atan2(pts[s][0] - a.c[0]);
                 let sweep = rel(&a, a0, pts[e]);
-                let mut arc = arc_points(a.c, a.r, a0, if a.ccw { sweep } else { -sweep });
+                let sweep = if a.ccw { sweep } else { -sweep };
+                // SM17 (own): split as the app splits arcs (DX2), but in at
+                // least four pieces, so the posts find it again as an arc even
+                // when the BLM post keeps the contour's last move straight; and
+                // within the tolerance, for a radius too large for the posts'
+                // arcs.
+                let fine = if a.r > o.tol { (sweep.abs() / (2.0 * (1.0 - o.tol / a.r).acos())).ceil() as usize } else { 0 };
+                let n = crate::dxf::arc_segments(a.r, sweep).max(fine.min(MAX_PIECES)).max(crate::blm::ARC_MIN_MOVES + 1);
+                let mut arc: Vec<P> = (0..=n).map(|i| a0 + sweep * i as f64 / n as f64).map(|t| [a.c[0] + a.r * t.cos(), a.c[1] + a.r * t.sin()]).collect();
                 // SM17: the arc ends exactly on the drawing's point.
                 if let Some(l) = arc.last_mut() {
                     *l = pts[e];
@@ -476,6 +504,15 @@ pub fn smooth_part(parts: &mut [Part], sheets: &mut [Vec<Placed>], i: usize, pic
         *pl = np;
     }
     let mut message = what(&p);
+    // LE8: a lead set for All the same contours stays on the holes still of
+    // its shape; a hole smoothed differently (its points start elsewhere) is
+    // cut with the automatic lead again, and the message says so.
+    let (before, after) = (super::hand_leads(old), super::hand_leads(&p));
+    let lost: Vec<usize> = (0..before.len()).filter(|&j| before[j].is_some() && after.get(j).copied().flatten().is_none()).collect();
+    if !lost.is_empty() {
+        let nos: Vec<String> = lost.iter().map(|&j| super::contour_number(&p, j).to_string()).collect();
+        message.push_str(&format!(" Contour(s) {} no longer match the hole whose lead they shared (All the same contours), so they take the automatic lead: set theirs again.", nos.join(", ")));
+    }
     if nested {
         message.push_str(" Its nested copies stay where they are; an arc can bulge out by up to the tolerance, so check their gaps or nest again.");
     }
@@ -559,6 +596,70 @@ mod tests {
         assert!(s.pts.iter().filter(|p| p[0] > 90.0 && p[1] > 50.0).all(|&p| (dist(p, [90.0, 50.0]) - 10.0).abs() < 1e-6));
     }
 
+    /// SM12 (own): a corner turning more than 30° stays a corner: a small
+    /// hexagon hole, whose chords sag under the tolerance, is not rounded.
+    #[test]
+    fn a_hexagon_hole_stays_a_hexagon() {
+        // 5.5 mm across flats: each side sags 0.43 mm from the circle through
+        // its corners, under the 0.5 mm of the Smooth command.
+        let c = Contour::new(polygon([10.0, 10.0], 5.5 / 3f64.sqrt(), 6), true, ContourState::Cut);
+        assert!(smooth_contour(&c, &Smooth::COMMAND).is_none());
+        assert!(smooth_contour(&c, &Smooth { tol: 2.54, ..Smooth::COMMAND }).is_none());
+    }
+
+    /// SM17 (own): a short arc comes back in at least three pieces, so the
+    /// BLM and OMAX posts write it as one arc move, not two straight ones.
+    #[test]
+    fn a_short_arc_goes_to_the_machine_as_an_arc() {
+        // A 20° bend of R10 drawn as 20 lines between two straight edges.
+        let mut pts = vec![[0.0, -40.0], [10.0, -40.0]];
+        for k in 0..=20 {
+            let a = (20.0 * k as f64 / 20.0).to_radians();
+            pts.push([10.0 * a.cos(), 10.0 * a.sin()]);
+        }
+        pts.push([0.0, 30.0]);
+        let c = Contour::new(pts, true, ContourState::Cut);
+        let (s, n) = smooth_contour(&c, &Smooth::IMPORT).expect("smoothed");
+        assert_eq!(n, Count { arcs: 1, lines: 20 });
+        let arcs = |pts: &[P]| crate::blm::fit_moves(pts).iter().filter(|m| matches!(m, crate::blm::Move::Arc { .. })).count();
+        assert_eq!(arcs(&s.path()), 1, "{:?}", s.pts);
+        // The same bend ending the contour: the BLM post writes the last move
+        // as a straight, and the rest is still one arc.
+        let mut pts: Vec<P> = vec![[10.0 * 20f64.to_radians().cos(), 10.0 * 20f64.to_radians().sin()], [0.0, 30.0], [0.0, -40.0], [10.0, -40.0]];
+        pts.extend((0..20).map(|k| (k as f64).to_radians()).map(|a| [10.0 * a.cos(), 10.0 * a.sin()]));
+        let c = Contour::new(pts, true, ContourState::Cut);
+        let (s, n) = smooth_contour(&c, &Smooth::IMPORT).expect("smoothed");
+        assert_eq!(n, Count { arcs: 1, lines: 20 });
+        let path = s.path();
+        assert_eq!(arcs(&path[..path.len() - 1]), 1, "{:?}", s.pts);
+    }
+
+    /// SM17 (own): a radius too large for the posts' arcs leaves them as
+    /// lines, so its pieces stay within the tolerance.
+    #[test]
+    fn a_very_large_radius_stays_within_the_tolerance() {
+        // 1° of R10 000 in 50 lines, smoothed at 0.001 mm.
+        let r = 10_000.0;
+        let mut pts: Vec<P> = (0..=50).map(|k| (89.5 + k as f64 / 50.0).to_radians()).map(|a| [r * a.cos(), r * a.sin() - r]).collect();
+        pts.extend([[-200.0, -100.0], [200.0, -100.0]]);
+        let c = Contour::new(pts, true, ContourState::Cut);
+        let o = Smooth { tol: 0.001, ..Smooth::IMPORT };
+        let (s, n) = smooth_contour(&c, &o).expect("smoothed");
+        assert!(n.arcs >= 1, "{n:?}");
+        let on = |p: P| (dist(p, [0.0, -r]) - r).abs() < 1e-5;
+        let sag = s.path().windows(2).filter(|w| on(w[0]) && on(w[1])).map(|w| r - seg_dist([0.0, -r], w[0], w[1])).fold(0.0, f64::max);
+        assert!(sag <= o.tol + 1e-9, "sags {sag} mm");
+    }
+
+    /// SM15: a tolerance under the joining tolerance (0.01 mm) is held to:
+    /// 4° chords of R10 sag 0.006 mm, too much at 0.001 mm.
+    #[test]
+    fn a_tolerance_under_a_hundredth_is_held_to() {
+        let c = Contour::new(polygon([0.0, 0.0], 10.0, 90), true, ContourState::Cut);
+        assert!(smooth_contour(&c, &Smooth { tol: 0.001, ..Smooth::IMPORT }).is_none());
+        assert!(smooth_contour(&c, &Smooth { tol: 0.01, ..Smooth::IMPORT }).is_some());
+    }
+
     /// SM16: fewer lines than the minimum stay lines.
     #[test]
     fn an_arc_replaces_at_least_the_minimum_of_lines() {
@@ -599,6 +700,40 @@ mod tests {
             }
             other => panic!("not round both times: {other:?}"),
         }
+    }
+
+    /// LE8: two holes of one shape that start at different corners smooth
+    /// into different points; a lead they shared is then lost from the other,
+    /// and the message says which.
+    #[test]
+    fn a_shared_lead_lost_by_smoothing_is_named() {
+        let hole = |at: P, from: usize| {
+            let mut v = polygon(at, 10.0, 24);
+            v.rotate_left(from);
+            v
+        };
+        let outline = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]];
+        let holes = vec![hole([25.0, 25.0], 0), hole([75.0, 25.0], 5)];
+        // Holes first, the outline last (CS1).
+        let mut contours: Vec<Contour> = holes.iter().map(|h| Contour::new(h.clone(), true, ContourState::Cut)).collect();
+        contours.push(Contour::new(outline.clone(), true, ContourState::Cut));
+        let mut g = CustomGeo { outline, holes, fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 100.0, h: 50.0, contours, hand_order: vec![] };
+        g.apply_states();
+        let mut parts = vec![Part { name: "DEMO-001".into(), shape: Shape::Custom, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, texts: vec![], group: String::new(), erp: vec![], custom: Some(std::sync::Arc::new(g)), rots: Default::default() }];
+        let spec = crate::nest::SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default(), sheet_list: vec![] };
+        assert_eq!(super::super::same_holes(&parts[0], 0), vec![1]);
+        super::super::move_lead_start(&mut parts, 0, &spec, 0, [35.0, 25.0], 0.0, true, crate::units::LenUnit::Mm).unwrap();
+        assert!(parts[0].tech.as_ref().unwrap().lead_edits.iter().flatten().any(|e| e.same));
+        let first = parts[0].clone();
+        let done = smooth_part(&mut parts, &mut [], 0, None, &Smooth::COMMAND).unwrap();
+        assert!(super::super::same_holes(&parts[0], 0).is_empty());
+        let no = super::super::contour_number(&parts[0], 1);
+        assert!(done.message.contains(&format!("Contour(s) {no} no longer match")), "{}", done.message);
+        // A hole with its own lead keeps it, and isn't named.
+        let mut parts = vec![first.clone()];
+        super::super::move_lead_start(&mut parts, 0, &spec, 1, [85.0, 25.0], 0.0, false, crate::units::LenUnit::Mm).unwrap();
+        let done = smooth_part(&mut parts, &mut [], 0, None, &Smooth::COMMAND).unwrap();
+        assert!(!done.message.contains("no longer match"), "{}", done.message);
     }
 
     /// Smoothing a nested part keeps its copies on the same spots, and its

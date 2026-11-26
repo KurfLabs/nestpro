@@ -49,6 +49,11 @@ impl App {
                     self.checkpoint();
                     self.parts = parts;
                     self.result.sheets = sheets;
+                    // The elements are new: a selected one or a pick on the
+                    // old drawing would name a different piece now.
+                    self.sel_elems.clear();
+                    self.sel_elem_info.clear();
+                    self.sel_pick = None;
                     if done.nested {
                         self.stale = true;
                     }

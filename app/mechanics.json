@@ -8071,7 +8071,7 @@
  {
   "name": "smoothing run",
   "group": "smoothing",
-  "value": "consecutive straight lines from the contour's first point, never past it",
+  "value": "consecutive straight lines from the contour's first point, never past it; own: breaks where a line is over twice the next or the lines turn over 30°",
   "source": "SM12"
  },
  {
@@ -8089,7 +8089,7 @@
  {
   "name": "smoothing tolerance test",
   "group": "smoothing",
-  "value": "every point and every line's sag within the tolerance; gaps up to 0.01 mm count as none; arc under 180°",
+  "value": "every point and every line's sag within the tolerance; arc under 180° (the original counts gaps up to 0.01 mm as none; ours holds to the tolerance)",
   "source": "SM15"
  },
  {
@@ -8101,7 +8101,7 @@
  {
   "name": "smoothed arc ends",
   "group": "smoothing",
-  "value": "exactly on the run's first and last points; not made tangent",
+  "value": "exactly on the run's first and last points; not made tangent; own: kept in at least 4 pieces, each within the tolerance",
   "source": "SM17"
  },
  {

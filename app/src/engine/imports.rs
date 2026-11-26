@@ -80,9 +80,10 @@ pub fn xml_import(cfg: &AppSettings, lib: Option<&crate::library::Library>, path
                     match one {
                         // Every layer cut, except a format's marking layers and what the drawing hides (DX3).
                         Ok(rp) => match dxf::build(&rp.drawing, &crate::formats::default_roles([&rp])) {
-                            Ok((g, rep)) => {
+                            Ok((mut g, rep)) => {
                                 // What the drawing's import left out, named per product.
                                 out.notes.extend(super::import_notes(&p.reference, &rep));
+                                out.notes.extend(super::smooth::on_import(&mut g, &cfg.smooth, &p.reference));
                                 Some(Part {
                                 name: name.clone(),
                                 shape: Shape::Custom,

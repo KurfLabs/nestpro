@@ -584,12 +584,7 @@ pub fn part_from_read(cfg: &AppSettings, spec: &SheetSpec, file: &str, name: &st
     let mut notes = import_notes(name, &rep);
     // SM10: smoothing on import (Settings → General → Smoothing on import), after the pieces are
     // joined and gaps closed.
-    if cfg.smooth.on_import {
-        let done = smooth::smooth_geo(&mut g, None, &cfg.smooth.import);
-        if !done.contours.is_empty() {
-            notes.push(format!("{name}: smoothed, {}", done.summary()));
-        }
-    }
+    notes.extend(smooth::on_import(&mut g, &cfg.smooth, name));
     // Part data from the file name (v44 "Text definition in the file name") —
     // the real file name, never a part's numbered name ("DEMO-2" isn't quantity 2).
     let fd = crate::filename::parse_format(&cfg.name_format).ok().and_then(|f| crate::filename::read(&f, file));
